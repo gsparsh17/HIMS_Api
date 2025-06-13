@@ -1,0 +1,1 @@
+// generateInvoice.js placeholder
