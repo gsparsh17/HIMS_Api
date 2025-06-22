@@ -1,15 +1,57 @@
 const Staff = require('../models/Staff');
+const User = require('../models/User');
 
-// Create new staff member
+
 exports.createStaff = async (req, res) => {
   try {
-    const staff = new Staff(req.body);
+    const {
+      fullName,
+      email,
+      phone,
+      role,
+      department,
+      specialization,
+      joiningDate,
+      gender,
+      status,
+      password,
+    } = req.body;
+
+    // Split full name
+    const [firstName, ...lastNameArr] = fullName.trim().split(' ');
+    const lastName = lastNameArr.join(' ');
+    const normalizedGender = gender?.toLowerCase();
+
+    // 1. Create staff record (without password)
+    const staff = new Staff({
+      first_name: firstName,
+      last_name: lastName,
+      email,
+      phone,
+      role,
+      department,
+      specialization,
+      gender:normalizedGender,
+      status,
+      joined_at: joiningDate || new Date()
+    });
     await staff.save();
-    res.status(201).json(staff);
+
+    const user = new User({
+      name: fullName,
+      email,
+      phone,
+      role,
+      password
+    });
+    await user.save();
+
+    res.status(201).json({ message: 'Staff and user created', staffId: staff._id });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 };
+
 
 // Get all staff
 exports.getAllStaff = async (req, res) => {
