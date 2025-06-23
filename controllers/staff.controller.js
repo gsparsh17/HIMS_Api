@@ -56,7 +56,7 @@ exports.createStaff = async (req, res) => {
 // Get all staff
 exports.getAllStaff = async (req, res) => {
   try {
-    const staffList = await Staff.find().populate('shift_id');
+    const staffList = await Staff.find();
     res.json(staffList);
   } catch (err) {
     res.status(500).json({ error: err.message });
