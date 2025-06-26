@@ -31,7 +31,8 @@ exports.registerUser = async (req, res) => {
     const {
       name, email, password, role,
       hospitalID, registryNo, address, contact,
-      policyDetails, healthBima, additionalInfo
+      policyDetails, healthBima, additionalInfo,
+      fireNOC
     } = req.body;
 
     const userExists = await User.findOne({ email });
@@ -49,6 +50,7 @@ exports.registerUser = async (req, res) => {
         address,
         contact,
         email,
+        fireNOC,
         policyDetails,
         healthBima,
         additionalInfo,

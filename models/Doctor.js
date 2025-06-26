@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 
+
 const doctorSchema = new mongoose.Schema({
+  doctorId: { type: String, unique: true },
   firstName: { type: String, required: true },
   lastName: { type: String, required: true },
   email: { type: String, required: true, unique: true },
@@ -26,6 +28,34 @@ const doctorSchema = new mongoose.Schema({
   hasInsurance: { type: Boolean, default: true },
   notes: { type: String },
   joined_at: { type: Date, default: Date.now }
+});
+
+const Hospital = require('./Hospital'); // import Hospital model
+
+function generateRandomCode(length = 4) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+doctorSchema.pre('save', async function (next) {
+  try {
+    if (!this.doctorId) {
+      const hospital = await Hospital.findOne();
+      if (!hospital || !hospital.hospitalID) {
+        throw new Error('Hospital ID not found');
+      }
+
+      this.hospitalId = hospital.hospitalID;
+      this.doctorId = `${hospital.hospitalID}-${generateRandomCode(4)}`;
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 module.exports = mongoose.model('Doctor', doctorSchema);

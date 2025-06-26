@@ -12,4 +12,11 @@ router.delete('/medicines/:id', pharmacyController.deleteMedicine);
 router.post('/issue', pharmacyController.issueMedicine);
 router.get('/issued', pharmacyController.getIssuedMedicines);
 
+// Pharmacy
+router.post('/', pharmacyController.createPharmacy);
+router.get('/', pharmacyController.getAllPharmacies);
+router.get('/:id', pharmacyController.getPharmacyById);
+router.put('/:id', pharmacyController.updatePharmacy);
+router.delete('/:id', pharmacyController.deletePharmacy);
+
 module.exports = router;
