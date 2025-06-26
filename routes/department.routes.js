@@ -7,7 +7,7 @@ router.get('/', controller.getAllDepartments);
 router.get('/:id', controller.getDepartmentById);
 router.put('/:id', controller.updateDepartment);
 router.delete('/:id', controller.deleteDepartment);
-
+router.get('/hods/all', controller.getAllHods); 
 
 
 

@@ -37,15 +37,16 @@ exports.createStaff = async (req, res) => {
     });
     await staff.save();
 
+    if(password) {
     const user = new User({
       name: fullName,
       email,
       phone,
-      role,
+      role: "staff",
       password
     });
     await user.save();
-
+    }
     res.status(201).json({ message: 'Staff and user created', staffId: staff._id });
   } catch (err) {
     res.status(400).json({ error: err.message });
