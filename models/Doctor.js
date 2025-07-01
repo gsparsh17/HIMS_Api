@@ -14,7 +14,7 @@ const doctorSchema = new mongoose.Schema({
   state: { type: String },
   zipCode: { type: String },
   role: { type: String, enum: ['Doctor', 'Nurse', 'Technician', 'Administrator'] },
-  department: { type: String }, // Can be changed to ObjectId if needed
+  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true }, // Can be changed to ObjectId if needed
   specialization: { type: String },
   licenseNumber: { type: String, required: true, unique: true },
   experience: { type: Number },
