@@ -11,7 +11,7 @@ router.get('/:id', doctorController.getDoctorById);
 
 // Update
 router.put('/:id', doctorController.updateDoctor);
-
+router.get('/department/:departmentId', doctorController.getDoctorsByDepartmentId);
 // Delete
 router.delete('/:id', doctorController.deleteDoctor);
 

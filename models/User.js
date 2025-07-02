@@ -9,8 +9,11 @@ const userSchema = new mongoose.Schema({
     type: String, 
     enum: ['admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy'], 
     required: true 
-  }
+  },
+  resetPasswordToken: String,
+  resetPasswordExpire: Date
 }, { timestamps: true });
+
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {

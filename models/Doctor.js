@@ -27,6 +27,22 @@ const doctorSchema = new mongoose.Schema({
   isFullTime: { type: Boolean, default: true },
   hasInsurance: { type: Boolean, default: true },
   notes: { type: String },
+  paymentType: { type: String, enum: ['Fee per Visit', 'Per Hour', 'Contractual Salary',''], default: null },
+contractualSalary: { type: Number, default: null },
+feePerVisit: { type: Number, default: null },
+ratePerHour: { type: Number, default: null },
+contractStartDate: { type: Date, default: null },
+contractEndDate: { type: Date, default: null },
+visitsPerWeek: { type: Number, default: null },
+workingDaysPerWeek: { type: Number, default: null },
+timeSlots: [
+  {
+    start: { type: String },
+    end: { type: String }
+  }
+],
+aadharNumber: { type: String },
+panNumber: { type: String },
   joined_at: { type: Date, default: Date.now }
 });
 

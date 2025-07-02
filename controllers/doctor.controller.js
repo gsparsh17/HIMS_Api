@@ -5,32 +5,44 @@ const User = require('../models/User'); // ✅ import User model
 exports.createDoctor = async (req, res) => {
   try {
     const {
-      firstName,
-      lastName,
-      email,
-      password, // ✅ only used for creating User
-      phone,
-      dateOfBirth,
-      gender,
-      address,
-      city,
-      state,
-      zipCode,
-      role,
-      department,
-      specialization,
-      licenseNumber,
-      experience,
-      education,
-      shift,
-      emergencyContact,
-      emergencyPhone,
-      startDate,
-      salary,
-      isFullTime,
-      hasInsurance,
-      notes
-    } = req.body;
+  firstName,
+  lastName,
+  email,
+  password,
+  phone,
+  dateOfBirth,
+  gender,
+  address,
+  city,
+  state,
+  zipCode,
+  role,
+  department,
+  specialization,
+  licenseNumber,
+  experience,
+  education,
+  shift,
+  emergencyContact,
+  emergencyPhone,
+  startDate,
+  salary,
+  isFullTime,
+  hasInsurance,
+  notes,
+  paymentType,
+  contractualSalary,
+  feePerVisit,
+  ratePerHour,
+  contractStartDate,
+  contractEndDate,
+  visitsPerWeek,
+  workingDaysPerWeek,
+  timeSlots,
+  aadharNumber,
+  panNumber
+} = req.body;
+
 
     // Check if user already exists
     const userExists = await User.findOne({ email });
@@ -46,31 +58,43 @@ exports.createDoctor = async (req, res) => {
 
     // ✅ Step 2: Create Doctor (without password)
     const newDoctor = await Doctor.create({
-      firstName,
-      lastName,
-      email,
-      phone,
-      dateOfBirth,
-      gender,
-      address,
-      city,
-      state,
-      zipCode,
-      role,
-      department,
-      specialization,
-      licenseNumber,
-      experience,
-      education,
-      shift,
-      emergencyContact,
-      emergencyPhone,
-      startDate,
-      salary,
-      isFullTime,
-      hasInsurance,
-      notes
-    });
+  firstName,
+  lastName,
+  email,
+  phone,
+  dateOfBirth,
+  gender,
+  address,
+  city,
+  state,
+  zipCode,
+  role,
+  department,
+  specialization,
+  licenseNumber,
+  experience,
+  education,
+  shift,
+  emergencyContact,
+  emergencyPhone,
+  startDate,
+  salary,
+  isFullTime,
+  hasInsurance,
+  notes,
+  paymentType,
+  contractualSalary,
+  feePerVisit,
+  ratePerHour,
+  contractStartDate,
+  contractEndDate,
+  visitsPerWeek,
+  workingDaysPerWeek,
+  timeSlots,
+  aadharNumber,
+  panNumber
+});
+
 
     res.status(201).json({
       message: 'Doctor and user created successfully',
@@ -98,7 +122,7 @@ exports.getAllDoctors = async (req, res) => {
 // Get a doctor by ID
 exports.getDoctorById = async (req, res) => {
   try {
-    const doctor = await Doctor.findById(req.params.id).populate('department_id');
+    const doctor = await Doctor.findById(req.params.id).populate('department');
     if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
     res.json(doctor);
   } catch (err) {
@@ -116,6 +140,25 @@ exports.updateDoctor = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
+
+// Get doctors by department ID
+exports.getDoctorsByDepartmentId = async (req, res) => {
+  try {
+    const { departmentId } = req.params;
+
+    const doctors = await Doctor.find({ department: departmentId }).populate('department');
+    
+    if (!doctors.length) {
+      return res.status(404).json({ error: 'No doctors found for this department' });
+    }
+
+    res.json(doctors);
+  } catch (err) {
+    console.error('Error fetching doctors by department:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 
 // Delete a doctor by ID
 exports.deleteDoctor = async (req, res) => {
