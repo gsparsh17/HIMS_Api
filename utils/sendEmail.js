@@ -1,4 +1,5 @@
-// sendEmail.js placeholderconst nodemailer = require('nodemailer');
+// sendEmail.js placeholder
+const nodemailer = require('nodemailer');
 
 const sendEmail = async ({ to, subject, text }) => {
   const transporter = nodemailer.createTransport({
