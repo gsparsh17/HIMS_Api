@@ -15,6 +15,8 @@ exports.createStaff = async (req, res) => {
       gender,
       status,
       password,
+      aadharNumber,
+      panNumber
     } = req.body;
 
     // Split full name
@@ -33,6 +35,8 @@ exports.createStaff = async (req, res) => {
       specialization,
       gender:normalizedGender,
       status,
+      aadharNumber,
+      panNumber,
       joined_at: joiningDate || new Date()
     });
     await staff.save();

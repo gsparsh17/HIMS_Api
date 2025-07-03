@@ -12,6 +12,8 @@ const staffSchema = new mongoose.Schema({
   specialization: { type: String },
   gender: { type: String, enum: ['male', 'female', 'other'] },
   status: { type: String, enum: ['Active', 'Inactive', 'On Leave'], default: 'Active' },
+  aadharNumber: { type: String },
+  panNumber: { type: String },
   joined_at: { type: Date, default: Date.now }
 });
 
