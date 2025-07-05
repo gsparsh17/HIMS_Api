@@ -90,6 +90,15 @@ app.post('/api/register-hospital', async (req, res) => {
   }
 });
 
+app.get('/api/hospitals', async (req, res) => {
+  try {
+    const hospitals = await Hospital.find({}); // Fetches all documents from the 'hospitals' collection
+    res.json(hospitals);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch hospital data' });
+  }
+});
+
 
 // Register route for creating users (admin and staff)
 app.post('/api/register', async (req, res) => {
@@ -189,6 +198,9 @@ app.get('/api/patients', (req, res) => {
     .then((patients) => res.json(patients))
     .catch((err) => res.status(400).json(err));
 });
+
+
+
 
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
