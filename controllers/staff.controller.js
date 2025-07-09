@@ -80,15 +80,55 @@ exports.getStaffById = async (req, res) => {
 };
 
 // Update staff member
+// exports.updateStaff = async (req, res) => {
+//   try {
+//     const staff = await Staff.findByIdAndUpdate(req.params.id, req.body, { new: true });
+//     if (!staff) return res.status(404).json({ error: 'Staff not found' });
+//     res.json(staff);
+//   } catch (err) {
+//     res.status(400).json({ error: err.message });
+//   }
+// };
+
+// Update staff member
 exports.updateStaff = async (req, res) => {
   try {
     const staff = await Staff.findByIdAndUpdate(req.params.id, req.body, { new: true });
+
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
-    res.json(staff);
+
+    const { fullName, email, phone, password } = req.body;
+
+    // If password is provided, attempt to create or update the User account
+    if (password) {
+      const existingUser = await User.findOne({ email });
+
+      if (existingUser) {
+        // Update existing user password or details if necessary
+        existingUser.password = password; // (Assumes pre-save hook hashes the password)
+        existingUser.name = fullName || `${staff.first_name} ${staff.last_name}`;
+        existingUser.phone = phone;
+        await existingUser.save();
+      } else {
+        // Create new user
+        const newUser = new User({
+          name: fullName || `${staff.first_name} ${staff.last_name}`,
+          email,
+          phone,
+          role: 'staff',
+          password
+        });
+        await newUser.save();
+      }
+    }
+
+    res.json({ message: 'Staff updated successfully', staff });
+
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 };
+
 
 // Delete staff member
 exports.deleteStaff = async (req, res) => {
