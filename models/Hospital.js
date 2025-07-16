@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const hospitalSchema = new mongoose.Schema({
   hospitalID: { type: String, required: true },
   registryNo: { type: String, required: true },
-  fireNOC: { type: String, required: true},
+  fireNOC: { type: String, },
   name: { type: String, required: true },
   address: { type: String, required: true },
   contact: { type: String, required: true },
