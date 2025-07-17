@@ -93,7 +93,7 @@ exports.registerUser = async (req, res) => {
       name, email, password, role,
       hospitalID, registryNo, address, contact,
       policyDetails, healthBima, additionalInfo,
-      fireNOC
+      fireNOC, hospitalName, companyName, companyNumber
     } = req.body;
 
     const userExists = await User.findOne({ email });
@@ -105,18 +105,21 @@ exports.registerUser = async (req, res) => {
     if (role === 'admin') {
       try{
       await Hospital.create({
-        hospitalID,
-        registryNo,
-        name,
-        address,
-        contact,
-        email,
-        fireNOC,
-        policyDetails,
-        healthBima,
-        additionalInfo,
-        createdBy: user._id
-      });
+      hospitalID,
+      registryNo,
+      hospitalName, // ✅ Updated
+      companyName,
+      companyNumber,
+      name, // Contact person name
+      address,
+      contact,
+      email,
+      fireNOC, // optional during initial creation
+      policyDetails,
+      healthBima,
+      additionalInfo,
+      createdBy: user._id
+    });
     }
   catch (hospitalErr) {
     console.error('Hospital Creation Error:', hospitalErr);
