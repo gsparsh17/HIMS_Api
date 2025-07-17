@@ -97,29 +97,57 @@ const getHospitalDetails = async (req, res) => {
 };
 
 // Updates a specific hospital with additional details
+// const updateHospitalDetails = async (req, res) => {
+//   try {
+//     const { hospitalId } = req.params;
+//     const { policyDetails, healthBima, additionalInfo, fireNOC } = req.body;
+
+//     const hospital = await Hospital.findById(hospitalId);
+//     if (!hospital) {
+//       return res.status(404).json({ message: 'Hospital not found' });
+//     }
+
+//     // Update the hospital document
+//     hospital.policyDetails = policyDetails || hospital.policyDetails;
+//     hospital.healthBima = healthBima || hospital.healthBima;
+//     hospital.additionalInfo = additionalInfo || hospital.additionalInfo;
+//     hospital.fireNOC = fireNOC || hospital.fireNOC;
+
+//     await hospital.save();
+//     res.status(200).json({ message: 'Additional details saved successfully.' });
+//   } catch (error) {
+//     console.error('Error updating hospital details:', error);
+//     res.status(500).json({ message: 'Server error while updating details.' });
+//   }
+// };
+
 const updateHospitalDetails = async (req, res) => {
   try {
     const { hospitalId } = req.params;
-    const { policyDetails, healthBima, additionalInfo, fireNOC } = req.body;
+    const updateData = req.body; // Accept any fields from the request body
 
     const hospital = await Hospital.findById(hospitalId);
     if (!hospital) {
       return res.status(404).json({ message: 'Hospital not found' });
     }
 
-    // Update the hospital document
-    hospital.policyDetails = policyDetails || hospital.policyDetails;
-    hospital.healthBima = healthBima || hospital.healthBima;
-    hospital.additionalInfo = additionalInfo || hospital.additionalInfo;
-    hospital.fireNOC = fireNOC || hospital.fireNOC;
+    // Dynamically update only the fields sent in req.body
+    Object.keys(updateData).forEach((key) => {
+      hospital[key] = updateData[key] !== undefined ? updateData[key] : hospital[key];
+    });
 
     await hospital.save();
-    res.status(200).json({ message: 'Additional details saved successfully.' });
+
+    res.status(200).json({
+      message: 'Hospital details updated successfully.',
+      hospital
+    });
   } catch (error) {
     console.error('Error updating hospital details:', error);
     res.status(500).json({ message: 'Server error while updating details.' });
   }
 };
+
 
 // Export both functions correctly
 module.exports = {
