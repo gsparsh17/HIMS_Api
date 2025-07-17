@@ -170,3 +170,56 @@ exports.deleteDoctor = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// Bulk create doctors
+exports.bulkCreateDoctors = async (req, res) => {
+  const doctorsData = req.body; // Array of doctors from the parsed CSV
+
+  if (!doctorsData || !Array.isArray(doctorsData)) {
+    return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
+  }
+
+  const successfulImports = [];
+  const failedImports = [];
+
+  // Use a for...of loop to process each record sequentially
+  for (const doctor of doctorsData) {
+    try {
+      // 1. Check if user already exists
+      const userExists = await User.findOne({ email: doctor.email });
+      if (userExists) {
+        throw new Error('User with this email already exists.');
+      }
+
+      // 2. Create the User record for authentication
+      const newUser = await User.create({
+        name: `${doctor.firstName} ${doctor.lastName}`,
+        email: doctor.email,
+        password: doctor.password, // Password comes from the CSV
+        role: doctor.role?.toLowerCase() || 'doctor',
+      });
+
+      // 3. Create the Doctor profile record
+      const newDoctor = await Doctor.create({
+        ...doctor, // Pass all fields from the CSV row
+      });
+      
+      successfulImports.push(newDoctor);
+
+    } catch (err) {
+      // If any step fails, add it to the failed list and continue
+      failedImports.push({
+        email: doctor.email,
+        reason: err.message,
+      });
+    }
+  }
+
+  // 4. Send a summary response
+  res.status(201).json({
+    message: 'Bulk import process completed.',
+    successfulCount: successfulImports.length,
+    failedCount: failedImports.length,
+    failedImports: failedImports,
+  });
+};
