@@ -1,5 +1,6 @@
 const Doctor = require('../models/Doctor');
-const User = require('../models/User'); // ✅ import User model
+const User = require('../models/User');
+const Department = require('../models/Department');
 
 // Create a new doctor
 exports.createDoctor = async (req, res) => {
@@ -16,7 +17,7 @@ exports.createDoctor = async (req, res) => {
   city,
   state,
   zipCode,
-  role,
+  // role,
   department,
   specialization,
   licenseNumber,
@@ -53,11 +54,12 @@ exports.createDoctor = async (req, res) => {
       name: `${firstName} ${lastName}`,
       email,
       password,
-      role: role?.toLowerCase() || 'doctor',
+      role: 'doctor',
     });
 
     // ✅ Step 2: Create Doctor (without password)
     const newDoctor = await Doctor.create({
+  user_id: newUser._id, // Link doctor with user account
   firstName,
   lastName,
   email,
@@ -68,7 +70,7 @@ exports.createDoctor = async (req, res) => {
   city,
   state,
   zipCode,
-  role,
+  // role,
   department,
   specialization,
   licenseNumber,
@@ -112,7 +114,7 @@ exports.createDoctor = async (req, res) => {
 // Get all doctors
 exports.getAllDoctors = async (req, res) => {
   try {
-    const doctors = await Doctor.find();
+    const doctors = await Doctor.find().populate('department').populate('user_id', 'name email role');
     res.json(doctors);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -122,7 +124,7 @@ exports.getAllDoctors = async (req, res) => {
 // Get a doctor by ID
 exports.getDoctorById = async (req, res) => {
   try {
-    const doctor = await Doctor.findById(req.params.id).populate('department');
+    const doctor = await Doctor.findById(req.params.id).populate('department').populate('user_id', 'name email role');
     if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
     res.json(doctor);
   } catch (err) {
@@ -146,8 +148,8 @@ exports.getDoctorsByDepartmentId = async (req, res) => {
   try {
     const { departmentId } = req.params;
 
-    const doctors = await Doctor.find({ department: departmentId }).populate('department');
-    
+    const doctors = await Doctor.find({ department: departmentId }).populate('department').populate('user_id', 'name email role');
+
     if (!doctors.length) {
       return res.status(404).json({ error: 'No doctors found for this department' });
     }
@@ -172,8 +174,63 @@ exports.deleteDoctor = async (req, res) => {
 };
 
 // Bulk create doctors
+// exports.bulkCreateDoctors = async (req, res) => {
+//   const doctorsData = req.body; // Array of doctors from the parsed CSV
+//   console.log('Bulk import data:', doctorsData);
+//   if (!doctorsData || !Array.isArray(doctorsData)) {
+//     return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
+//   }
+
+//   const successfulImports = [];
+//   const failedImports = [];
+
+//   // Use a for...of loop to process each record sequentially
+//   for (const doctor of doctorsData) {
+//     try {
+//       // 1. Check if user already exists
+//       const userExists = await User.findOne({ email: doctor.email });
+//       if (userExists) {
+//         throw new Error('User with this email already exists.');
+//       }
+
+//       // 2. Create the User record for authentication
+//       const newUser = await User.create({
+//         name: `${doctor.firstName} ${doctor.lastName}`,
+//         email: doctor.email,
+//         password: doctor.password, // Password comes from the CSV
+//         role: 'doctor',
+//       });
+
+//       console.log(newUser)
+
+//       // 3. Create the Doctor profile record
+//       const newDoctor = await Doctor.create({
+//         ...doctor, // Pass all fields from the CSV row
+//       });
+      
+//       successfulImports.push(newDoctor);
+//       console.log(`Successfully imported doctor: ${newDoctor.firstName} ${newDoctor.lastName}`);
+//     } catch (err) {
+//       // If any step fails, add it to the failed list and continue
+//       failedImports.push({
+//         email: doctor.email,
+//         reason: err.message,
+//       });
+//     }
+//   }
+
+//   // 4. Send a summary response
+//   res.status(201).json({
+//     message: 'Bulk import process completed.',
+//     successfulCount: successfulImports.length,
+//     failedCount: failedImports.length,
+//     failedImports: failedImports,
+//   });
+// };
+
 exports.bulkCreateDoctors = async (req, res) => {
   const doctorsData = req.body; // Array of doctors from the parsed CSV
+  console.log('Bulk import data:', doctorsData);
 
   if (!doctorsData || !Array.isArray(doctorsData)) {
     return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
@@ -182,32 +239,67 @@ exports.bulkCreateDoctors = async (req, res) => {
   const successfulImports = [];
   const failedImports = [];
 
-  // Use a for...of loop to process each record sequentially
   for (const doctor of doctorsData) {
     try {
-      // 1. Check if user already exists
+      // ✅ 1. Check if user already exists
       const userExists = await User.findOne({ email: doctor.email });
       if (userExists) {
         throw new Error('User with this email already exists.');
       }
 
-      // 2. Create the User record for authentication
+      // ✅ 2. Resolve department name to ObjectId
+      let departmentId = null;
+      if (doctor.department) {
+        const dept = await Department.findOne({ name: new RegExp(`^${doctor.department}$`, 'i') });
+        if (!dept) {
+          throw new Error(`Department "${doctor.department}" not found.`);
+        }
+        departmentId = dept._id;
+        console.log(`Resolved department "${doctor.department}" to ID ${departmentId}`);
+      }
+
+      // ✅ 3. Create the User record for authentication
       const newUser = await User.create({
         name: `${doctor.firstName} ${doctor.lastName}`,
         email: doctor.email,
-        password: doctor.password, // Password comes from the CSV
-        role: doctor.role?.toLowerCase() || 'doctor',
+        password: doctor.password,
+        role: 'doctor',
       });
 
-      // 3. Create the Doctor profile record
+      // ✅ 4. Create the Doctor profile record
+      // const newDoctor = await Doctor.create({
+      //   ...doctor,
+      //   department: departmentId, // Replace name with ObjectId
+      //   user_id: newUser._id, // Optional: link doctor with user account
+      // });
+
       const newDoctor = await Doctor.create({
-        ...doctor, // Pass all fields from the CSV row
-      });
-      
-      successfulImports.push(newDoctor);
+  user_id: newUser._id,
+  firstName: doctor.firstName,
+  lastName: doctor.lastName,
+  email: doctor.email,
+  phone: doctor.phone,
+  // role: 'Doctor',
+  department: departmentId,
+  specialization: doctor.specialization || '',
+  licenseNumber: doctor.licenseNumber,
+  experience: doctor.experience ? Number(doctor.experience) : null,
+  paymentType: doctor.paymentType || null,
+  dateOfBirth: doctor.dateOfBirth ? new Date(doctor.dateOfBirth.replace(/-/g, '/')) : null,
+  gender: doctor.gender?.toLowerCase(),
+  address: doctor.address || '',
+  city: doctor.city || '',
+  state: doctor.state || '',
+  zipCode: doctor.zipCode || '',
+  aadharNumber: doctor.aadharNumber || null,
+  panNumber: doctor.panNumber || null,
+});
 
+      console.log(newDoctor);
+
+      successfulImports.push(newDoctor);
+      console.log(`Successfully imported doctor: ${newDoctor.firstName} ${newDoctor.lastName}`);
     } catch (err) {
-      // If any step fails, add it to the failed list and continue
       failedImports.push({
         email: doctor.email,
         reason: err.message,
@@ -215,7 +307,7 @@ exports.bulkCreateDoctors = async (req, res) => {
     }
   }
 
-  // 4. Send a summary response
+  // ✅ 5. Send summary response
   res.status(201).json({
     message: 'Bulk import process completed.',
     successfulCount: successfulImports.length,

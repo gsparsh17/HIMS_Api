@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 
 const doctorSchema = new mongoose.Schema({
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   doctorId: { type: String, unique: true },
   firstName: { type: String, required: true },
   lastName: { type: String, required: true },
@@ -13,7 +14,7 @@ const doctorSchema = new mongoose.Schema({
   city: { type: String },
   state: { type: String },
   zipCode: { type: String },
-  role: { type: String, enum: ['Doctor', 'Nurse', 'Technician', 'Administrator'] },
+  // role: { type: String, enum: ['Doctor', 'Nurse', 'Technician', 'Administrator'] },
   department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true }, // Can be changed to ObjectId if needed
   specialization: { type: String },
   licenseNumber: { type: String, required: true, unique: true },

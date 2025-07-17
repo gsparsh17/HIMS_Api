@@ -60,6 +60,26 @@ exports.getAllHods = async (req, res) => {
   }
 };
 
+exports.getDepartmentIdByName = async (req, res) => {
+  try {
+    const { name } = req.params;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Department name is required' });
+    }
+
+    const department = await Department.findOne({ name: new RegExp(`^${name}$`, 'i') }); // case-insensitive match
+
+    if (!department) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
+    res.json({ id: department._id, name: department.name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 
 exports.deleteDepartment = async (req, res) => {
   try {
