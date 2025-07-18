@@ -2,113 +2,109 @@ const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const Department = require('../models/Department');
 
-// Create a new doctor
+// ✅ Create a new doctor
 exports.createDoctor = async (req, res) => {
   try {
     const {
-  firstName,
-  lastName,
-  email,
-  password,
-  phone,
-  dateOfBirth,
-  gender,
-  address,
-  city,
-  state,
-  zipCode,
-  // role,
-  department,
-  specialization,
-  licenseNumber,
-  experience,
-  education,
-  shift,
-  emergencyContact,
-  emergencyPhone,
-  startDate,
-  salary,
-  isFullTime,
-  hasInsurance,
-  notes,
-  paymentType,
-  contractualSalary,
-  feePerVisit,
-  ratePerHour,
-  contractStartDate,
-  contractEndDate,
-  visitsPerWeek,
-  workingDaysPerWeek,
-  timeSlots,
-  aadharNumber,
-  panNumber
-} = req.body;
+      firstName,
+      lastName,
+      email,
+      password,
+      phone,
+      dateOfBirth,
+      gender,
+      address,
+      city,
+      state,
+      zipCode,
+      department,
+      specialization,
+      licenseNumber,
+      experience,
+      education,
+      shift,
+      emergencyContact,
+      emergencyPhone,
+      startDate,
+      isFullTime,
+      notes,
+      paymentType,
+      amount,
+      contractStartDate,
+      contractEndDate,
+      visitsPerWeek,
+      workingDaysPerWeek,
+      timeSlots,
+      aadharNumber,
+      panNumber
+    } = req.body;
 
-
-    // Check if user already exists
+    // ✅ Check if user already exists
     const userExists = await User.findOne({ email });
     if (userExists) return res.status(400).json({ error: 'User with this email already exists' });
 
-    // ✅ Step 1: Create User (with password)
+    // ✅ Create User
     const newUser = await User.create({
       name: `${firstName} ${lastName}`,
       email,
       password,
-      role: 'doctor',
+      role: 'doctor'
     });
 
-    // ✅ Step 2: Create Doctor (without password)
-    const newDoctor = await Doctor.create({
-  user_id: newUser._id, // Link doctor with user account
-  firstName,
-  lastName,
-  email,
-  phone,
-  dateOfBirth,
-  gender,
-  address,
-  city,
-  state,
-  zipCode,
-  // role,
-  department,
-  specialization,
-  licenseNumber,
-  experience,
-  education,
-  shift,
-  emergencyContact,
-  emergencyPhone,
-  startDate,
-  salary,
-  isFullTime,
-  hasInsurance,
-  notes,
-  paymentType,
-  contractualSalary,
-  feePerVisit,
-  ratePerHour,
-  contractStartDate,
-  contractEndDate,
-  visitsPerWeek,
-  workingDaysPerWeek,
-  timeSlots,
-  aadharNumber,
-  panNumber
-});
+    // ✅ Resolve department name to ObjectId
+    let departmentId = null;
+    if (department) {
+      const dept = await Department.findOne({ name: new RegExp(`^${department}$`, 'i') });
+      if (!dept) return res.status(400).json({ error: `Department "${department}" not found.` });
+      departmentId = dept._id;
+    }
 
+    // ✅ Create Doctor
+    const newDoctor = await Doctor.create({
+      user_id: newUser._id,
+      firstName,
+      lastName,
+      email,
+      phone,
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      gender,
+      address,
+      city,
+      state,
+      zipCode,
+      department: departmentId,
+      specialization,
+      licenseNumber,
+      experience: experience ? Number(experience) : null,
+      education,
+      shift,
+      emergencyContact,
+      emergencyPhone,
+      startDate: startDate ? new Date(startDate) : null,
+      isFullTime: isFullTime === true || isFullTime === 'true',
+      notes,
+      paymentType,
+      amount: amount ? Number(amount) : null,
+      contractStartDate: contractStartDate ? new Date(contractStartDate) : null,
+      contractEndDate: contractEndDate ? new Date(contractEndDate) : null,
+      visitsPerWeek: visitsPerWeek ? Number(visitsPerWeek) : null,
+      workingDaysPerWeek: workingDaysPerWeek ? Number(workingDaysPerWeek) : null,
+      timeSlots: timeSlots || [],
+      aadharNumber,
+      panNumber
+    });
 
     res.status(201).json({
       message: 'Doctor and user created successfully',
       doctor: newDoctor,
       userId: newUser._id
     });
-
   } catch (err) {
     console.error('Doctor creation error:', err.message);
     res.status(400).json({ error: err.message });
   }
 };
+
 
 
 // Get all doctors
@@ -173,63 +169,8 @@ exports.deleteDoctor = async (req, res) => {
   }
 };
 
-// Bulk create doctors
-// exports.bulkCreateDoctors = async (req, res) => {
-//   const doctorsData = req.body; // Array of doctors from the parsed CSV
-//   console.log('Bulk import data:', doctorsData);
-//   if (!doctorsData || !Array.isArray(doctorsData)) {
-//     return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
-//   }
-
-//   const successfulImports = [];
-//   const failedImports = [];
-
-//   // Use a for...of loop to process each record sequentially
-//   for (const doctor of doctorsData) {
-//     try {
-//       // 1. Check if user already exists
-//       const userExists = await User.findOne({ email: doctor.email });
-//       if (userExists) {
-//         throw new Error('User with this email already exists.');
-//       }
-
-//       // 2. Create the User record for authentication
-//       const newUser = await User.create({
-//         name: `${doctor.firstName} ${doctor.lastName}`,
-//         email: doctor.email,
-//         password: doctor.password, // Password comes from the CSV
-//         role: 'doctor',
-//       });
-
-//       console.log(newUser)
-
-//       // 3. Create the Doctor profile record
-//       const newDoctor = await Doctor.create({
-//         ...doctor, // Pass all fields from the CSV row
-//       });
-      
-//       successfulImports.push(newDoctor);
-//       console.log(`Successfully imported doctor: ${newDoctor.firstName} ${newDoctor.lastName}`);
-//     } catch (err) {
-//       // If any step fails, add it to the failed list and continue
-//       failedImports.push({
-//         email: doctor.email,
-//         reason: err.message,
-//       });
-//     }
-//   }
-
-//   // 4. Send a summary response
-//   res.status(201).json({
-//     message: 'Bulk import process completed.',
-//     successfulCount: successfulImports.length,
-//     failedCount: failedImports.length,
-//     failedImports: failedImports,
-//   });
-// };
-
 exports.bulkCreateDoctors = async (req, res) => {
-  const doctorsData = req.body; // Array of doctors from the parsed CSV
+  const doctorsData = req.body;
   console.log('Bulk import data:', doctorsData);
 
   if (!doctorsData || !Array.isArray(doctorsData)) {
@@ -241,77 +182,65 @@ exports.bulkCreateDoctors = async (req, res) => {
 
   for (const doctor of doctorsData) {
     try {
-      // ✅ 1. Check if user already exists
+      // ✅ Check if user already exists
       const userExists = await User.findOne({ email: doctor.email });
-      if (userExists) {
-        throw new Error('User with this email already exists.');
-      }
+      if (userExists) throw new Error('User with this email already exists.');
 
-      // ✅ 2. Resolve department name to ObjectId
+      // ✅ Resolve department name
       let departmentId = null;
       if (doctor.department) {
         const dept = await Department.findOne({ name: new RegExp(`^${doctor.department}$`, 'i') });
-        if (!dept) {
-          throw new Error(`Department "${doctor.department}" not found.`);
-        }
+        if (!dept) throw new Error(`Department "${doctor.department}" not found.`);
         departmentId = dept._id;
-        console.log(`Resolved department "${doctor.department}" to ID ${departmentId}`);
       }
 
-      // ✅ 3. Create the User record for authentication
+      // ✅ Create User
       const newUser = await User.create({
         name: `${doctor.firstName} ${doctor.lastName}`,
         email: doctor.email,
         password: doctor.password,
-        role: 'doctor',
+        role: 'doctor'
       });
 
-      // ✅ 4. Create the Doctor profile record
-      // const newDoctor = await Doctor.create({
-      //   ...doctor,
-      //   department: departmentId, // Replace name with ObjectId
-      //   user_id: newUser._id, // Optional: link doctor with user account
-      // });
-
+      // ✅ Create Doctor
       const newDoctor = await Doctor.create({
-  user_id: newUser._id,
-  firstName: doctor.firstName,
-  lastName: doctor.lastName,
-  email: doctor.email,
-  phone: doctor.phone,
-  // role: 'Doctor',
-  department: departmentId,
-  specialization: doctor.specialization || '',
-  licenseNumber: doctor.licenseNumber,
-  experience: doctor.experience ? Number(doctor.experience) : null,
-  paymentType: doctor.paymentType || null,
-  dateOfBirth: doctor.dateOfBirth ? new Date(doctor.dateOfBirth.replace(/-/g, '/')) : null,
-  gender: doctor.gender?.toLowerCase(),
-  address: doctor.address || '',
-  city: doctor.city || '',
-  state: doctor.state || '',
-  zipCode: doctor.zipCode || '',
-  aadharNumber: doctor.aadharNumber || null,
-  panNumber: doctor.panNumber || null,
-});
-
-      console.log(newDoctor);
+        user_id: newUser._id,
+        firstName: doctor.firstName,
+        lastName: doctor.lastName,
+        email: doctor.email,
+        phone: doctor.phone,
+        dateOfBirth: doctor.dateOfBirth ? new Date(doctor.dateOfBirth.replace(/-/g, '/')) : null,
+        gender: doctor.gender?.toLowerCase(),
+        address: doctor.address || '',
+        city: doctor.city || '',
+        state: doctor.state || '',
+        zipCode: doctor.zipCode || '',
+        department: departmentId,
+        specialization: doctor.specialization || '',
+        licenseNumber: doctor.licenseNumber || '',
+        experience: doctor.experience ? Number(doctor.experience) : null,
+        paymentType: doctor.paymentType || null,
+        amount: doctor.amount ? Number(doctor.amount) : null,
+        isFullTime: doctor.isFullTime === 'true' || doctor.isFullTime === true,
+        contractStartDate: doctor.contractStartDate ? new Date(doctor.contractStartDate) : null,
+        contractEndDate: doctor.contractEndDate ? new Date(doctor.contractEndDate) : null,
+        visitsPerWeek: doctor.visitsPerWeek ? Number(doctor.visitsPerWeek) : null,
+        workingDaysPerWeek: doctor.workingDaysPerWeek ? Number(doctor.workingDaysPerWeek) : null,
+        aadharNumber: doctor.aadharNumber || null,
+        panNumber: doctor.panNumber || null,
+        notes: doctor.notes || ''
+      });
 
       successfulImports.push(newDoctor);
-      console.log(`Successfully imported doctor: ${newDoctor.firstName} ${newDoctor.lastName}`);
     } catch (err) {
-      failedImports.push({
-        email: doctor.email,
-        reason: err.message,
-      });
+      failedImports.push({ email: doctor.email, reason: err.message });
     }
   }
 
-  // ✅ 5. Send summary response
   res.status(201).json({
     message: 'Bulk import process completed.',
     successfulCount: successfulImports.length,
     failedCount: failedImports.length,
-    failedImports: failedImports,
+    failedImports
   });
 };
