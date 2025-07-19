@@ -53,3 +53,47 @@ exports.deletePatient = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+// Add this function to your existing patient.controller.js file
+
+// Bulk create patients from CSV
+exports.bulkCreatePatients = async (req, res) => {
+  const patientsData = req.body; // Array of patients from the parsed CSV
+
+  if (!patientsData || !Array.isArray(patientsData)) {
+    return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
+  }
+
+  const successfulImports = [];
+  const failedImports = [];
+
+  // We use a for...of loop here instead of insertMany() to ensure
+  // the pre('save') hook in your Patient model is triggered for each patient,
+  // which generates the custom patientId.
+  for (const patient of patientsData) {
+    try {
+      // Check if a patient with the same email already exists to prevent duplicates
+      const patientExists = await Patient.findOne({ email: patient.email });
+      if (patientExists) {
+        throw new Error('Patient with this email already exists.');
+      }
+
+      const newPatient = await Patient.create(patient);
+      successfulImports.push(newPatient);
+
+    } catch (err) {
+      // If any record fails, we add it to the failed list and continue
+      failedImports.push({
+        email: patient.email,
+        reason: err.message,
+      });
+    }
+  }
+
+  // Send a detailed summary back to the frontend
+  res.status(201).json({
+    message: 'Bulk import process completed.',
+    successfulCount: successfulImports.length,
+    failedCount: failedImports.length,
+    failedImports: failedImports,
+  });
+};
