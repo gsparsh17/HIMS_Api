@@ -23,6 +23,7 @@ app.use('/api/rooms', require('./routes/room.routes'));
 app.use('/api/shifts', require('./routes/shift.routes'));
 app.use('/api/labreports', require('./routes/labreport.routes'));
 app.use('/api/hospitals', require('./routes/hospital.routes'));
+app.use('/api/hospital-charges', require('./routes/hospitalcharges.routes'));
 
 
 // 404 route handler
