@@ -6,12 +6,16 @@ const hospitalChargesSchema = new mongoose.Schema({
   // ✅ OPD Charges
   opdCharges: {
     registrationFee: { type: Number, default: 0 },
+    consultationFee: { type: Number, default: 0 },
     discountType: { type: String, enum: ['Percentage', 'Fixed'], default: 'Fixed' },
     discountValue: { type: Number, default: 0 }
   },
 
   // ✅ IPD Charges
   ipdCharges: {
+    admissionFee: { type: Number, default: 0 },
+    registrationFee: { type: Number, default: 0 },
+    consultationFee: { type: Number, default: 0 },
     roomCharges: [
       {
         type: { type: String, enum: ['General', 'Semi-Private', 'Private', 'ICU'], required: true },
@@ -20,7 +24,8 @@ const hospitalChargesSchema = new mongoose.Schema({
     ],
     nursingCharges: { type: Number, default: 0 },
     otCharges: { type: Number, default: 0 },
-    miscellaneous: { type: Number, default: 0 }
+    discountType: { type: String, enum: ['Percentage', 'Fixed'], default: 'Fixed' },
+    discountValue: { type: Number, default: 0 },
   },
 
   effectiveFrom: { type: Date, default: Date.now }

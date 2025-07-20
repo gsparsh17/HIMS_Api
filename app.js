@@ -24,7 +24,9 @@ app.use('/api/shifts', require('./routes/shift.routes'));
 app.use('/api/labreports', require('./routes/labreport.routes'));
 app.use('/api/hospitals', require('./routes/hospital.routes'));
 app.use('/api/hospital-charges', require('./routes/hospitalcharges.routes'));
-
+app.use('/api/calendar', require('./routes/calendar.routes'));
+// const updateCalendar = require('./jobs/calendarJob');
+// updateCalendar(); // Run once on server start
 
 // 404 route handler
 app.use((req, res, next) => {
