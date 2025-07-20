@@ -15,4 +15,7 @@ router.put('/:id', billingController.updateBillStatus);
 // Delete bill
 router.delete('/:id', billingController.deleteBill);
 
+router.get('/appointment/:appointmentId', billingController.getBillByAppointmentId);
+
+
 module.exports = router;

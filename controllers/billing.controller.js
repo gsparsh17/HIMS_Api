@@ -76,3 +76,26 @@ exports.deleteBill = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// Get bill by appointment_id
+exports.getBillByAppointmentId = async (req, res) => {
+  try {
+    const { appointmentId } = req.params;
+
+    // Find the bill for the given appointment_id
+    const bill = await Bill.findOne({ appointment_id: appointmentId })
+      .populate('patient_id')
+      .populate('appointment_id');
+
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found for this appointment' });
+    }
+
+    // Fetch related items
+    const items = await BillItem.find({ bill_id: bill._id });
+
+    res.json({ bill, items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
