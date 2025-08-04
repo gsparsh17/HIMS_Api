@@ -26,6 +26,9 @@ const Hospital = require('../models/Hospital'); // <- import
 const generateToken = require('../utils/generateToken');
 const crypto = require('crypto');
 const sendEmail = require('../utils/sendEmail'); // We'll create this
+const Doctor = require('../models/Doctor');
+const Staff = require('../models/Staff');
+const Pharmacy = require('../models/Pharmacy');
 
 exports.forgotPassword = async (req, res) => {
   const { email } = req.body;
@@ -149,15 +152,57 @@ exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
-
+    const hospitalId = await Hospital.findOne({});
     if (user && await user.matchPassword(password)) {
+      if(user.role==="doctor")
+      {
+        const doctor = await Doctor.findOne({ email })
+        res.json({
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        token: generateToken(user._id, user.role),
+        hospitalID: hospitalId._id,
+        doctorId: doctor._id
+      });
+    }
+      else if(user.role==="staff")
+      {
+        const staff = await Staff.findOne({ email })
       res.json({
         _id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
-        token: generateToken(user._id, user.role)
+        token: generateToken(user._id, user.role),
+        hospitalID: hospitalId[0]._id,
+        staffId: staff._id
       });
+    }
+    else if(user.role==="pharmacy")
+      {
+        const pharmacy = await Pharmacy.findOne({ email })
+      res.json({
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        token: generateToken(user._id, user.role),
+        hospitalID: hospitalId[0]._id,
+        pharmacyId: pharmacy._id
+      });
+    }
+    else{
+      res.json({
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        token: generateToken(user._id, user.role),
+        hospitalID: hospitalId[0]._id
+      });
+    }
     } else {
       res.status(401).json({ error: 'Invalid email or password' });
     }

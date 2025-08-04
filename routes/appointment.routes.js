@@ -12,7 +12,16 @@ router.get('/:id', appointmentController.getAppointmentById);
 // Update
 router.put('/:id', appointmentController.updateAppointment);
 
+router.put('/:id', appointmentController.updateAppointmentStatus);
+
 // Delete
 router.delete('/:id', appointmentController.deleteAppointment);
+
+// Get appointments by doctor
+router.get('/doctor/:doctorId', appointmentController.getAppointmentsByDoctorId);
+
+// Get appointments by department
+router.get('/department/:departmentId', appointmentController.getAppointmentsByDepartmentId);
+
 
 module.exports = router;
