@@ -176,7 +176,7 @@ exports.loginUser = async (req, res) => {
         email: user.email,
         role: user.role,
         token: generateToken(user._id, user.role),
-        hospitalID: hospitalId[0]._id,
+        hospitalID: hospitalId._id,
         staffId: staff._id
       });
     }
@@ -189,7 +189,7 @@ exports.loginUser = async (req, res) => {
         email: user.email,
         role: user.role,
         token: generateToken(user._id, user.role),
-        hospitalID: hospitalId[0]._id,
+        hospitalID: hospitalId._id,
         pharmacyId: pharmacy._id
       });
     }
@@ -200,7 +200,7 @@ exports.loginUser = async (req, res) => {
         email: user.email,
         role: user.role,
         token: generateToken(user._id, user.role),
-        hospitalID: hospitalId[0]._id
+        hospitalID: hospitalId._id
       });
     }
     } else {
