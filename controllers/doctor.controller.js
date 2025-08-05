@@ -52,12 +52,12 @@ exports.createDoctor = async (req, res) => {
     });
 
     // ✅ Resolve department name to ObjectId
-    let departmentId = null;
-    if (department) {
-      const dept = await Department.findOne({ name: new RegExp(`^${department}$`, 'i') });
-      if (!dept) return res.status(400).json({ error: `Department "${department}" not found.` });
-      departmentId = dept._id;
-    }
+    // let departmentId = null;
+    // if (department) {
+    //   const dept = await Department.findOne({ name: new RegExp(`^${department}$`, 'i') });
+    //   if (!dept) return res.status(400).json({ error: `Department "${department}" not found.` });
+    //   departmentId = dept._id;
+    // }
 
     // ✅ Create Doctor
     const newDoctor = await Doctor.create({
@@ -72,7 +72,7 @@ exports.createDoctor = async (req, res) => {
       city,
       state,
       zipCode,
-      department: departmentId,
+      department,
       specialization,
       licenseNumber,
       experience: experience ? Number(experience) : null,
