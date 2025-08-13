@@ -48,3 +48,36 @@ exports.recordPayment = async (req, res) => {
         res.status(400).json({ error: err.message });
     }
 };
+
+// Add this function to billingPharmacy.controller.js
+
+// Create a new invoice
+exports.createInvoice = async (req, res) => {
+  try {
+    const { patient_id, dueDate, services, subtotal, tax, total } = req.body;
+
+    // Generate a unique invoice number
+    const lastInvoice = await Invoice.findOne().sort({ createdAt: -1 });
+    let newInvoiceNumber = 'INV-0001';
+    if (lastInvoice && lastInvoice.invoiceNumber) {
+      const lastNum = parseInt(lastInvoice.invoiceNumber.split('-')[1]);
+      newInvoiceNumber = `INV-${String(lastNum + 1).padStart(4, '0')}`;
+    }
+
+    const newInvoice = new Invoice({
+      invoiceNumber: newInvoiceNumber,
+      patient_id,
+      dueDate,
+      services,
+      subtotal,
+      tax,
+      total,
+      status: 'Pending', // Invoices start as pending
+    });
+
+    await newInvoice.save();
+    res.status(201).json(newInvoice);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
