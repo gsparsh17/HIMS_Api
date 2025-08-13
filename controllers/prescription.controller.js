@@ -26,7 +26,12 @@ exports.getAllPrescriptions = async (req, res) => {
   try {
     const prescriptions = await Prescription.find()
       .populate('patient_id')
-      .populate('doctor_id');
+      // .populate('doctor_id');
+      .populate({
+        path: 'doctor_id',
+        model: 'Doctor' // Explicitly tell Mongoose which model to use
+      });
+      console.log('Sending Prescriptions:', JSON.stringify(prescriptions, null, 2));
     res.json(prescriptions);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -38,7 +43,11 @@ exports.getPrescriptionById = async (req, res) => {
   try {
     const prescription = await Prescription.findById(req.params.id)
       .populate('patient_id')
-      .populate('doctor_id');
+      // .populate('doctor_id');
+      .populate({
+        path: 'doctor_id',
+        model: 'Doctor' // Also update here for consistency
+      });
     if (!prescription) return res.status(404).json({ error: 'Not found' });
 
     const items = await PrescriptionItem.find({ prescription_id: prescription._id });

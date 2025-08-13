@@ -13,15 +13,32 @@ exports.addMedicine = async (req, res) => {
 };
 
 // Get all medicines
+// exports.getAllMedicines = async (req, res) => {
+//   try {
+//     const medicines = await Medicine.find();
+//     res.json(medicines);
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// };
+
+
+// ... other functions
+
+// Get all medicines (only non-expired ones)
 exports.getAllMedicines = async (req, res) => {
   try {
-    const medicines = await Medicine.find();
+    // Find medicines where the expiry date is greater than or equal to today
+    const medicines = await Medicine.find({
+      expiry_date: { $gte: new Date() }
+    });
     res.json(medicines);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
+// ... other functions
 // Update medicine stock
 exports.updateMedicine = async (req, res) => {
   try {
