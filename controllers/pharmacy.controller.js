@@ -49,6 +49,18 @@ exports.updateMedicine = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
+exports.getExpiredMedicines = async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Find medicines where expiry_date is less than today
+    const medicines = await Medicine.find({ expiry_date: { $lt: today } });
+    res.status(200).json(medicines);
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error: Could not fetch expired medicines.' });
+  }
+};
 
 // Delete medicine
 exports.deleteMedicine = async (req, res) => {
@@ -170,5 +182,23 @@ exports.deletePharmacy = async (req, res) => {
     res.json({ message: 'Pharmacy deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+};
+
+
+exports.getLowStockMedicines = async (req, res) => {
+  try {
+    // Get threshold from query param, default to 20 if not specified
+    const threshold = parseInt(req.query.threshold) || 20;
+
+    const medicines = await Medicine.find({
+      stock_quantity: { $lt: threshold },
+      expiry_date: { $gte: new Date() } // Optionally ignore already expired items
+    })
+    .sort({ stock_quantity: 1 }); // Show the lowest stock first
+    
+    res.status(200).json(medicines);
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error: Could not fetch low stock medicines.' });
   }
 };
