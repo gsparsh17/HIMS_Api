@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const appointmentController = require('../controllers/appointment.controller');
+const calendarController = require('../controllers/calendarController');
 
 // Create
 router.post('/', appointmentController.createAppointment);
@@ -11,17 +12,15 @@ router.get('/:id', appointmentController.getAppointmentById);
 
 // Update
 router.put('/:id', appointmentController.updateAppointment);
-
-router.put('/:id', appointmentController.updateAppointmentStatus);
+router.patch('/:id/status', calendarController.updateAppointmentStatus);
 
 // Delete
 router.delete('/:id', appointmentController.deleteAppointment);
 
-// Get appointments by doctor
+// Filters
 router.get('/doctor/:doctorId', appointmentController.getAppointmentsByDoctorId);
-
-// Get appointments by department
+router.get('/doctor/:doctorId/today', appointmentController.getTodaysAppointmentsByDoctorId);
 router.get('/department/:departmentId', appointmentController.getAppointmentsByDepartmentId);
-
+router.get('/hospital/:hospitalId', appointmentController.getAppointmentsByHospitalId);
 
 module.exports = router;

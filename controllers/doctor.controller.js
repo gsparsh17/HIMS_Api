@@ -88,7 +88,7 @@ exports.createDoctor = async (req, res) => {
       contractStartDate: contractStartDate ? new Date(contractStartDate) : null,
       contractEndDate: contractEndDate ? new Date(contractEndDate) : null,
       visitsPerWeek: visitsPerWeek ? Number(visitsPerWeek) : null,
-      workingDaysPerWeek: workingDaysPerWeek ? Number(workingDaysPerWeek) : null,
+      workingDaysPerWeek: workingDaysPerWeek ? workingDaysPerWeek : null,
       timeSlots: timeSlots || [],
       aadharNumber,
       panNumber

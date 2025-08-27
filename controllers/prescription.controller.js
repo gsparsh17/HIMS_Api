@@ -1,22 +1,90 @@
 const Prescription = require('../models/Prescription');
 const PrescriptionItem = require('../models/PrescriptionItem');
+const multer = require('multer');
+const path = require('path');
+const cloudinary = require('cloudinary').v2;
 
-// Create a prescription
+// Configure Cloudinary as you already have
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+// Configure Multer for disk storage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); 
+  }
+});
+
+// The upload endpoint with Multer middleware
+exports.uploadPrescriptionImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+    const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: 'prescriptions',
+        resource_type: 'image'
+    });
+    const fs = require('fs');
+    fs.unlinkSync(req.file.path);
+
+    res.json({ imageUrl: result.secure_url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 exports.createPrescription = async (req, res) => {
   try {
-    const { patient_id, doctor_id, diagnosis, notes, items } = req.body;
+    const { patient_id, doctor_id, diagnosis, notes, items, prescription_image } = req.body;
 
-    const prescription = new Prescription({ patient_id, doctor_id, diagnosis, notes });
+    // Create prescription with optional image
+    const prescription = new Prescription({ 
+      patient_id, 
+      doctor_id, 
+      diagnosis, 
+      notes,
+      prescription_image: prescription_image || null
+    });
+    
     await prescription.save();
 
-    const prescriptionItems = await Promise.all(
-      items.map(async (item) => {
-        return await PrescriptionItem.create({ ...item, prescription_id: prescription._id });
-      })
-    );
+    let prescriptionItems = [];
 
-    res.status(201).json({ prescription, items: prescriptionItems });
+    // Only create prescription items if they exist and contain valid data
+    if (items && Array.isArray(items) && items.length > 0) {
+      // Filter out empty items (where all fields are empty)
+      const validItems = items.filter(item => 
+        item.medicine_name && item.medicine_name.trim() !== '' &&
+        item.dosage && item.dosage.trim() !== '' &&
+        item.duration && item.duration.trim() !== ''
+      );
+
+      if (validItems.length > 0) {
+        prescriptionItems = await Promise.all(
+          validItems.map(async (item) => {
+            return await PrescriptionItem.create({ 
+              ...item, 
+              prescription_id: prescription._id 
+            });
+          })
+        );
+      }
+    }
+
+    res.status(201).json({ 
+      prescription, 
+      items: prescriptionItems,
+      message: 'Prescription created successfully' 
+    });
   } catch (err) {
+    console.error('Error creating prescription:', err);
     res.status(400).json({ error: err.message });
   }
 };

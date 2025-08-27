@@ -4,19 +4,51 @@ const BillItem = require('../models/BillItem');
 // Create a bill with items
 exports.createBill = async (req, res) => {
   try {
-    const { patient_id, appointment_id, payment_method, items } = req.body;
+    const { patient_id, appointment_id, payment_method, items, status = 'Pending' } = req.body;
 
+    // Calculate total amount
     const total_amount = items.reduce((sum, item) => sum + item.amount, 0);
 
-    const bill = new Bill({ patient_id, appointment_id, total_amount, payment_method });
+    // Create the bill
+    const bill = new Bill({ 
+      patient_id, 
+      appointment_id, 
+      total_amount, 
+      payment_method,
+      status,
+      details: items // Store the items in the bill document as well
+    });
+    
     await bill.save();
 
+    // Create bill items and associate them with the bill
     const billItems = await Promise.all(
-      items.map(item => BillItem.create({ ...item, bill_id: bill._id }))
+      items.map(item => {
+        const billItem = new BillItem({ 
+          ...item, 
+          bill_id: bill._id 
+        });
+        return billItem.save();
+      })
     );
 
-    res.status(201).json({ bill, items: billItems });
+    // Update the bill with the item references if needed
+    bill.items = billItems.map(item => item._id);
+    await bill.save();
+
+    // Populate the response with patient and appointment details
+    const populatedBill = await Bill.findById(bill._id)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('appointment_id', 'appointment_date type')
+      .populate('items');
+
+    res.status(201).json({ 
+      message: 'Bill created successfully',
+      bill: populatedBill,
+      items: billItems 
+    });
   } catch (err) {
+    console.error('Error creating bill:', err);
     res.status(400).json({ error: err.message });
   }
 };
@@ -84,8 +116,16 @@ exports.getBillByAppointmentId = async (req, res) => {
 
     // Find the bill for the given appointment_id
     const bill = await Bill.findOne({ appointment_id: appointmentId })
-      .populate('patient_id')
-      .populate('appointment_id');
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('appointment_id', 'appointment_date type doctor_id department_id')
+      .populate({
+        path: 'appointment_id',
+        populate: [
+          { path: 'doctor_id', select: 'firstName lastName' },
+          { path: 'department_id', select: 'name' }
+        ]
+      })
+      .populate('items');;
 
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found for this appointment' });

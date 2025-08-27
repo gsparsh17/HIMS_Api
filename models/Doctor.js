@@ -109,7 +109,8 @@ const doctorSchema = new mongoose.Schema({
   contractStartDate: { type: Date, default: null },
   contractEndDate: { type: Date, default: null },
   visitsPerWeek: { type: Number, default: null },
-  workingDaysPerWeek: { type: Number, default: null },
+  // workingDaysPerWeek: { type: String, default: null },
+  workingDaysPerWeek: [{ type: String }],
   timeSlots: [
     {
       start: { type: String },

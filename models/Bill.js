@@ -5,7 +5,12 @@ const billSchema = new mongoose.Schema({
   appointment_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', required: true },
   total_amount: { type: Number, required: true },
   payment_method: { type: String, enum: ['Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Government Funded Scheme'], required: true },
-  details: [{ description: String, amount: Number }],
+  details: [{  
+    description: String,
+    amount: Number,
+    quantity: { type: Number, default: 1 }
+  }],
+  items: [{ type: mongoose.Schema.Types.ObjectId, ref: 'BillItem' }], 
   status: { type: String, enum: ['Paid', 'Pending', 'Refunded'], default: 'Pending' },
   generated_at: { type: Date, default: Date.now }
 });

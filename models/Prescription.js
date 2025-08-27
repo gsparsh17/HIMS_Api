@@ -5,6 +5,7 @@ const prescriptionSchema = new mongoose.Schema({
   doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', required: true },
   diagnosis: { type: String },
   notes: { type: String },
+  prescription_image: { type: String }, // Cloudinary URL
   created_at: { type: Date, default: Date.now }
 });
 
