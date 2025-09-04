@@ -137,6 +137,11 @@ app.use(express.json());
 app.use(morgan('dev'));
 
 // Routes
+// In your main server.js or app.js
+const paymentRoutes = require('./routes/paymentRoutes'); // Make sure path is correct
+
+// This line combines the prefix with the specific route
+app.use('/api/payments', paymentRoutes); // <-- Check this line carefully!
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/patients', require('./routes/patient.routes'));
 app.use('/api/doctors', require('./routes/doctor.routes'));
