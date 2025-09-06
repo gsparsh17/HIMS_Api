@@ -23,5 +23,8 @@ router.get('/doctor/:doctorId', appointmentController.getAppointmentsByDoctorId)
 router.get('/doctor/:doctorId/today', appointmentController.getTodaysAppointmentsByDoctorId);
 router.get('/department/:departmentId', appointmentController.getAppointmentsByDepartmentId);
 router.get('/hospital/:hospitalId', appointmentController.getAppointmentsByHospitalId);
+// Add this line in your appointment.route.js
+
+// router.put('/:id/status', appointmentController.updateAppointmentStatus);
 
 module.exports = router;

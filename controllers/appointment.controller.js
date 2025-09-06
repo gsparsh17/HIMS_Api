@@ -404,3 +404,29 @@ exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+// // Add this new function to appointment.controller.js
+
+// exports.updateAppointmentStatus = async (req, res) => {
+//   try {
+//     const { status } = req.body; // Gets the new status from the request
+
+//     // Find the appointment by its ID from the URL and update it
+//     const appointment = await Appointment.findByIdAndUpdate(
+//       req.params.id,
+//       { status: status },
+//       { new: true, runValidators: true }
+//     );
+
+//     if (!appointment) {
+//       // This handles the 404 error correctly
+//       return res.status(404).json({ error: 'Appointment not found' });
+//     }
+
+//     res.json(appointment);
+//   } catch (err) {
+//     console.error("Error updating appointment status:", err);
+//     res.status(500).json({ error: 'Server error while updating status' });
+//   }
+// };
