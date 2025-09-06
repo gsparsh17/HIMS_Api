@@ -10,7 +10,6 @@ const billSchema = new mongoose.Schema({
     amount: Number,
     quantity: { type: Number, default: 1 }
   }],
-  items: [{ type: mongoose.Schema.Types.ObjectId, ref: 'BillItem' }], 
   status: { type: String, enum: ['Paid', 'Pending', 'Refunded'], default: 'Pending' },
   generated_at: { type: Date, default: Date.now }
 });

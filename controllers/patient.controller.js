@@ -14,8 +14,34 @@ exports.createPatient = async (req, res) => {
 // Get all patients
 exports.getAllPatients = async (req, res) => {
   try {
-    const patients = await Patient.find();
-    res.json(patients);
+    const { page = 1, limit = 10, search, gender, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
+
+    const filter = {};
+    if (search) {
+      filter.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } }
+      ];
+    }
+    if (gender) filter.gender = gender;
+
+    const sortOptions = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
+
+    const patients = await Patient.find(filter)
+      .sort(sortOptions)
+      .limit(parseInt(limit))
+      .skip((page - 1) * parseInt(limit));
+
+    const total = await Patient.countDocuments(filter);
+
+    res.json({
+      patients,
+      total,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page)
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

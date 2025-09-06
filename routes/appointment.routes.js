@@ -10,6 +10,7 @@ router.post('/', appointmentController.createAppointment);
 router.get('/', appointmentController.getAllAppointments);
 router.get('/:id', appointmentController.getAppointmentById);
 
+router.put('/:id/complete', appointmentController.completeAppointment)
 // Update
 router.put('/:id', appointmentController.updateAppointment);
 router.patch('/:id/status', calendarController.updateAppointmentStatus);

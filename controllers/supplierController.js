@@ -1,4 +1,4 @@
-const Supplier = require('../models/supplierModel.js');
+const Supplier = require('../models/Supplier.js');
 
 // @desc    Create a new supplier
 // @route   POST /api/suppliers

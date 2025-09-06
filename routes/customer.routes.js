@@ -18,5 +18,10 @@ const customerController = require('../controllers/customer.controller');
 // This now correctly points to the createCustomer function in your controller
 router.post('/', customerController.createCustomer);
 router.get('/', customerController.getAllCustomers);
+router.get('/:id', customerController.getCustomerById);
+router.put('/:id', customerController.updateCustomer);
+router.delete('/:id', customerController.deleteCustomer);
+router.get('/stats/summary', customerController.getCustomerStatistics);
+
 
 module.exports = router;
