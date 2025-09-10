@@ -14,7 +14,7 @@ const purchaseOrderItemSchema = new mongoose.Schema({
 });
 
 const purchaseOrderSchema = new mongoose.Schema({
-  order_number: { type: String, required: true, unique: true },
+  order_number: { type: String, unique: true },
   supplier_id: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Supplier', 

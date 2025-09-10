@@ -21,7 +21,7 @@ const serviceItemSchema = new mongoose.Schema({
   tax_rate: { type: Number, default: 0 },
   tax_amount: { type: Number, default: 0 },
   // For appointment/services
-  service_type: { type: String, enum: ['Consultation', 'Procedure', 'Test', 'Other'] }
+  service_type: { type: String, enum: ['Consultation', 'Procedure', 'Test', 'Other', 'Purchase'] }
 });
 
 const medicineItemSchema = new mongoose.Schema({
@@ -40,13 +40,13 @@ const medicineItemSchema = new mongoose.Schema({
 });
 
 const invoiceSchema = new mongoose.Schema({
-  invoice_number: { type: String, required: true, unique: true },
+  invoice_number: { type: String, unique: true },
   
   // Customer Information
   patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },
   customer_type: { 
     type: String, 
-    enum: ['Patient', 'Walk-in', 'Insurance', 'Corporate'], 
+    enum: ['Patient', 'Walk-in', 'Insurance', 'Corporate', 'Supplier', 'Other'], 
     required: true 
   },
   customer_name: { type: String },
@@ -62,7 +62,7 @@ const invoiceSchema = new mongoose.Schema({
   // Invoice Type
   invoice_type: { 
     type: String, 
-    enum: ['Appointment', 'Pharmacy', 'Mixed', 'Other'], 
+    enum: ['Appointment', 'Pharmacy', 'Mixed', 'Other', 'Purchase'], 
     required: true 
   },
   

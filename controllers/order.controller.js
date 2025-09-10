@@ -145,7 +145,7 @@ exports.createPurchaseOrder = async (req, res) => {
       total_amount,
       notes,
       expected_delivery: expected_delivery ? new Date(expected_delivery) : null,
-      created_by: req.user._id
+      // created_by: user_id
     });
     
     await purchaseOrder.save();
@@ -170,7 +170,7 @@ exports.createPurchaseOrder = async (req, res) => {
       total: total_amount,
       status: 'Issued',
       notes: `Purchase Order: ${purchaseOrder.order_number} - ${notes || ''}`,
-      created_by: req.user._id
+      // created_by: user_id
     });
 
     await invoice.save();
@@ -191,6 +191,20 @@ exports.createPurchaseOrder = async (req, res) => {
     });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+};
+
+exports.getPurchaseOrderById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const order = await PurchaseOrder.findById(id)
+      .populate('supplier_id')
+      .populate('items.medicine_id')
+      .populate('created_by', 'name');
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    res.json(order);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 };
 

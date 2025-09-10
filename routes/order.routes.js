@@ -14,14 +14,16 @@ const {
   getDailySalesReport,
   getMonthlySalesReport,
   getYearlySalesReport,
-  getRevenueComparison
+  getRevenueComparison,
+  getPurchaseOrderById
 } = require('../controllers/order.controller');
 
 // Purchase Order routes
-router.post('/purchase', createPurchaseOrder);
+router.post('/purchase-orders', createPurchaseOrder);
 router.get('/purchase', getAllPurchaseOrders);
 router.get('/purchase/stats', getPurchaseOrderStatistics);
 router.post('/purchase/:id/receive', receivePurchaseOrder);
+router.get('/purchase/:id', getPurchaseOrderById);
 
 // Sales routes
 router.post('/sale', createSale);
