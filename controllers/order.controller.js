@@ -51,19 +51,19 @@ exports.receivePurchaseOrder = async (req, res) => {
   try {
     const { id } = req.params;
     const { received_items } = req.body; // Array of { item_id, received_quantity, batch_number, expiry_date }
-    
+    console.log('received_items:', req.body);
     const order = await PurchaseOrder.findById(id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
-    
+
     for (const receivedItem of received_items) {
       const orderItem = order.items.id(receivedItem.item_id);
       if (orderItem) {
         // Create batch
         const batch = new MedicineBatch({
           medicine_id: orderItem.medicine_id,
-          batch_number: receivedItem.batch_number,
-          expiry_date: receivedItem.expiry_date,
-          quantity: receivedItem.received_quantity,
+          batch_number: orderItem.batch_number,
+          expiry_date: orderItem.expiry_date,
+          quantity: orderItem.quantity,
           purchase_price: orderItem.unit_cost,
           selling_price: orderItem.unit_cost * 1.3, // 30% markup
           supplier_id: order.supplier_id
@@ -73,7 +73,7 @@ exports.receivePurchaseOrder = async (req, res) => {
         // Update medicine stock
         await Medicine.findByIdAndUpdate(
           orderItem.medicine_id,
-          { $inc: { stock_quantity: receivedItem.received_quantity } }
+          { $inc: { stock_quantity: orderItem.quantity } }
         );
       }
     }
@@ -145,6 +145,7 @@ exports.createPurchaseOrder = async (req, res) => {
       total_amount,
       notes,
       expected_delivery: expected_delivery ? new Date(expected_delivery) : null,
+      status: 'Ordered',
       // created_by: user_id
     });
     
@@ -213,7 +214,7 @@ exports.createSale = async (req, res) => {
   try {
     const { items, patient_id, customer_name, customer_phone, payment_method, prescription_id } = req.body;
     
-    // Check stock and deduct quantities
+    console.log(req.body);
     for (const item of items) {
       const batch = await MedicineBatch.findById(item.batch_id);
       if (!batch || batch.quantity < item.quantity) {
@@ -248,7 +249,7 @@ exports.createSale = async (req, res) => {
       total_amount,
       payment_method,
       prescription_id,
-      created_by: req.user._id
+      // created_by: req.user._id
     });
     
     await sale.save();
@@ -284,8 +285,8 @@ exports.createSale = async (req, res) => {
       balance_due: payment_method !== 'Pending' ? 0 : total_amount,
       is_pharmacy_sale: true,
       dispensing_date: new Date(),
-      dispensed_by: req.user._id,
-      created_by: req.user._id
+      // dispensed_by: req.user._id,
+      // created_by: req.user._id
     });
 
     await invoice.save();

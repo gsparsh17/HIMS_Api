@@ -5,6 +5,8 @@ const PDFDocument = require('pdfkit');
 const Appointment = require('../models/Appointment');
 const Patient = require('../models/Patient');
 const Supplier = require('../models/Supplier');
+const Hospital = require('../models/Hospital');
+const Pharmacy = require('../models/Pharmacy');
 
 // Generate pharmacy invoice with stock management
 exports.generatePharmacyInvoice = async (req, res) => {
@@ -70,109 +72,199 @@ exports.generatePharmacyInvoice = async (req, res) => {
   }
 };
 
-// Download invoice PDF
 exports.downloadInvoicePDF = async (req, res) => {
   try {
-    const invoice = await Invoice.findById(req.params.id)
-      .populate('patient_id')
-      .populate('medicine_items.medicine_id')
-      .populate('service_items');
+    const { id } = req.params;
+    
+    // Fetch invoice with populated data
+    const invoice = await Invoice.findById(id)
+      .populate('patient_id', 'first_name last_name phone address')
+      .populate('medicine_items.medicine_id', 'name generic_name')
+      .populate('medicine_items.batch_id', 'batch_number expiry_date');
 
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
-    const doc = new PDFDocument({ margin: 50 });
+    // Fetch hospital and pharmacy details
+    const hospital = await Hospital.findOne(); // Get first hospital
+    const pharmacy = await Pharmacy.findOne(); // Get first pharmacy
 
+    // Create PDF document
+    const doc = new PDFDocument({ margin: 50 });
+    
     // Set response headers
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=invoice-${invoice.invoice_number}.pdf`);
+    res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoice.invoice_number}.pdf"`);
 
+    // Pipe PDF to response
     doc.pipe(res);
 
-    // Header
-    doc.fontSize(20).font('Helvetica-Bold').text('MEDICAL INVOICE', { align: 'center' });
-    doc.moveDown();
+    // Add hospital and pharmacy header
+    addHeader(doc, hospital, pharmacy);
 
-    // Invoice Details
-    doc.fontSize(12).font('Helvetica');
-    doc.text(`Invoice Number: ${invoice.invoice_number}`);
-    doc.text(`Type: ${invoice.invoice_type}`);
-    doc.text(`Date: ${new Date(invoice.issue_date).toLocaleDateString()}`);
-    doc.text(`Status: ${invoice.status}`);
-    doc.moveDown();
+    // Add invoice details
+    addInvoiceDetails(doc, invoice);
 
-    // Customer Details
-    if (invoice.patient_id) {
-      doc.text(`Patient: ${invoice.patient_id.first_name} ${invoice.patient_id.last_name}`);
-      doc.text(`Phone: ${invoice.patient_id.phone}`);
-    } else {
-      doc.text(`Customer: ${invoice.customer_name}`);
-      doc.text(`Phone: ${invoice.customer_phone}`);
-    }
-    doc.moveDown(2);
+    // Add customer/patient details
+    addCustomerDetails(doc, invoice);
 
-    // Items Table Header
-    const tableTop = doc.y;
-    doc.font('Helvetica-Bold');
-    doc.text('Description', 50, tableTop);
-    doc.text('Qty', 250, tableTop, { width: 60, align: 'right' });
-    doc.text('Price', 320, tableTop, { width: 80, align: 'right' });
-    doc.text('Total', 410, tableTop, { width: 80, align: 'right' });
-    
-    doc.moveDown();
-    doc.font('Helvetica');
+    // Add items table
+    addItemsTable(doc, invoice);
 
-    // Medicine Items
-    if (invoice.medicine_items && invoice.medicine_items.length > 0) {
-      doc.font('Helvetica-Bold').text('MEDICINES:').font('Helvetica');
-      invoice.medicine_items.forEach(item => {
-        const y = doc.y;
-        const medicineName = item.medicine_id ? item.medicine_id.name : item.medicine_name;
-        doc.text(medicineName, 50, y);
-        doc.text(item.quantity.toString(), 250, y, { width: 60, align: 'right' });
-        doc.text(`₹${item.unit_price.toFixed(2)}`, 320, y, { width: 80, align: 'right' });
-        doc.text(`₹${(item.unit_price * item.quantity).toFixed(2)}`, 410, y, { width: 80, align: 'right' });
-        doc.moveDown();
-      });
-    }
+    // Add totals and footer
+    addFooter(doc, invoice);
 
-    // Service Items
-    if (invoice.service_items && invoice.service_items.length > 0) {
-      doc.font('Helvetica-Bold').text('SERVICES:').font('Helvetica');
-      invoice.service_items.forEach(item => {
-        const y = doc.y;
-        doc.text(item.description, 50, y);
-        doc.text(item.quantity.toString(), 250, y, { width: 60, align: 'right' });
-        doc.text(`₹${item.unit_price.toFixed(2)}`, 320, y, { width: 80, align: 'right' });
-        doc.text(`₹${item.total_price.toFixed(2)}`, 410, y, { width: 80, align: 'right' });
-        doc.moveDown();
-      });
-    }
-
-    // Totals
-    doc.moveDown();
-    doc.font('Helvetica-Bold');
-    doc.text(`Subtotal: ₹${invoice.subtotal.toFixed(2)}`, 320, doc.y, { width: 80, align: 'right' });
-    doc.text(`Discount: ₹${invoice.discount.toFixed(2)}`, 320, doc.y + 20, { width: 80, align: 'right' });
-    doc.text(`Tax: ₹${invoice.tax.toFixed(2)}`, 320, doc.y + 40, { width: 80, align: 'right' });
-    doc.text(`Total: ₹${invoice.total.toFixed(2)}`, 320, doc.y + 60, { width: 80, align: 'right' });
-    
-    // Payment Info
-    doc.moveDown(3);
-    doc.font('Helvetica');
-    doc.text(`Amount Paid: ₹${invoice.amount_paid.toFixed(2)}`);
-    doc.text(`Balance Due: ₹${invoice.balance_due.toFixed(2)}`);
-    if (invoice.payment_history.length > 0) {
-      doc.text(`Payment Method: ${invoice.payment_history[0].method}`);
-    }
-
+    // Finalize PDF
     doc.end();
 
-  } catch (err) {
-    console.error('Error generating PDF:', err);
-    res.status(500).json({ error: 'Could not generate PDF' });
+  } catch (error) {
+    console.error('Error generating PDF:', error);
+    res.status(500).json({ error: 'Failed to generate invoice PDF' });
   }
+};
+
+function addHeader(doc, hospital, pharmacy) {
+  // Hospital details (left side)
+  doc.fontSize(16).font('Helvetica-Bold').text(hospital?.hospitalName || 'Hospital Name', 50, 50);
+  doc.fontSize(10).font('Helvetica');
+  doc.text(hospital?.address || 'Hospital Address', 50, 70);
+  doc.text(`Phone: ${hospital?.contact || 'N/A'} | Email: ${hospital?.email || 'N/A'}`, 50, 85);
+  doc.text(`Registry No: ${hospital?.registryNo || 'N/A'}`, 50, 100);
+
+  // Pharmacy details (right side)
+  const rightMargin = 350;
+  doc.fontSize(14).font('Helvetica-Bold').text(pharmacy?.name || 'Pharmacy', rightMargin, 50, { align: 'right' });
+  doc.fontSize(10).font('Helvetica');
+  doc.text(`License: ${pharmacy?.licenseNumber || 'N/A'}`, rightMargin, 70, { align: 'right' });
+  doc.text(pharmacy?.address || 'Pharmacy Address', rightMargin, 85, { align: 'right' });
+  doc.text(`Phone: ${pharmacy?.phone || 'N/A'} | Email: ${pharmacy?.email || 'N/A'}`, rightMargin, 100, { align: 'right' });
+
+  // Separator line
+  doc.moveTo(50, 120).lineTo(550, 120).stroke();
+}
+
+function addInvoiceDetails(doc, invoice) {
+  doc.fontSize(12).font('Helvetica-Bold').text('TAX INVOICE', 50, 140);
+  
+  // Invoice details in two columns
+  const leftCol = 50;
+  const rightCol = 300;
+  let y = 160;
+
+  doc.fontSize(10).font('Helvetica');
+  doc.text('Invoice Number:', leftCol, y);
+  doc.text(invoice.invoice_number, leftCol + 100, y);
+
+  doc.text('Invoice Date:', rightCol, y);
+  doc.text(new Date(invoice.issue_date).toLocaleDateString(), rightCol + 80, y);
+  y += 20;
+
+  doc.text('Due Date:', rightCol, y);
+  doc.text(new Date(invoice.due_date).toLocaleDateString(), rightCol + 80, y);
+  y += 30;
+}
+
+function addCustomerDetails(doc, invoice) {
+  doc.fontSize(11).font('Helvetica-Bold').text('Customer Details:', 50, 220);
+  
+  let y = 240;
+  doc.fontSize(10).font('Helvetica');
+  
+  if (invoice.patient_id) {
+    doc.text(`Name: ${invoice.patient_id.first_name} ${invoice.patient_id.last_name}`, 50, y);
+    y += 15;
+    doc.text(`Phone: ${invoice.patient_id.phone || 'N/A'}`, 50, y);
+    y += 15;
+    doc.text(`Address: ${invoice.patient_id.address || 'N/A'}`, 50, y);
+  } else {
+    doc.text(`Name: ${invoice.customer_name || 'N/A'}`, 50, y);
+    y += 15;
+    doc.text(`Phone: ${invoice.customer_phone || 'N/A'}`, 50, y);
+  }
+  y += 20;
+}
+
+function addItemsTable(doc, invoice) {
+  const tableTop = 300;
+  const itemCodeX = 50;
+  const descriptionX = 100;
+  const quantityX = 350;
+  const priceX = 400;
+  const amountX = 470;
+
+  // Table headers
+  doc.fontSize(10).font('Helvetica-Bold');
+  doc.text('Code', itemCodeX, tableTop);
+  doc.text('Description', descriptionX, tableTop);
+  doc.text('Qty', quantityX, tableTop);
+  doc.text('Price', priceX, tableTop);
+  doc.text('Amount', amountX, tableTop);
+
+  // Draw header line
+  doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
+
+  let y = tableTop + 30;
+  doc.fontSize(9).font('Helvetica');
+
+  // Medicine items
+  invoice.medicine_items.forEach((item, index) => {
+    if (y > 700) {
+      doc.addPage();
+      y = 50;
+    }
+
+    doc.text(item.batch_id?.batch_number.slice(-4) || 'N/A', itemCodeX, y);
+    doc.text(`${item.medicine_name}${item.batch_id ? ` (Batch: ${item.batch_id.batch_number})` : ''}`, descriptionX, y, { width: 240 });
+    doc.text(item.quantity.toString(), quantityX, y);
+    doc.text(`₹${item.unit_price.toFixed(2)}`, priceX, y);
+    doc.text(`₹${item.total_price.toFixed(2)}`, amountX, y);
+    
+    y += 20;
+  });
+
+  // Service items
+  invoice.service_items.forEach((item) => {
+    if (y > 700) {
+      doc.addPage();
+      y = 50;
+    }
+
+    doc.text('SRV', itemCodeX, y);
+    doc.text(item.description, descriptionX, y, { width: 240 });
+    doc.text(item.quantity.toString(), quantityX, y);
+    doc.text(`₹${item.unit_price.toFixed(2)}`, priceX, y);
+    doc.text(`₹${item.total_price.toFixed(2)}`, amountX, y);
+    
+    y += 20;
+  });
+
+  return y;
+}
+
+function addFooter(doc, invoice) {
+  const footerY = 650;
+  
+  // Summary
+  doc.fontSize(10).font('Helvetica');
+  doc.text(`Subtotal: ₹${invoice.subtotal.toFixed(2)}`, 400, footerY, { align: 'right' });
+  doc.text(`Tax: ₹${invoice.tax.toFixed(2)}`, 400, footerY + 15, { align: 'right' });
+  if (invoice.discount > 0) {
+    doc.text(`Discount: -₹${invoice.discount.toFixed(2)}`, 400, footerY + 30, { align: 'right' });
+  }
+  doc.fontSize(11).font('Helvetica-Bold');
+  doc.text(`Total: ₹${invoice.total.toFixed(2)}`, 400, footerY + 45, { align: 'right' });
+  
+  doc.fontSize(10).font('Helvetica');
+  doc.text(`Amount Paid: ₹${invoice.amount_paid.toFixed(2)}`, 400, footerY + 65, { align: 'right' });
+  doc.text(`Balance Due: ₹${invoice.balance_due.toFixed(2)}`, 400, footerY + 80, { align: 'right' });
+
+  // Status
+  doc.text(`Status: ${invoice.status}`, 50, footerY + 80);
+  
+  // Footer note
+  doc.fontSize(8).text('Thank you for your business!', 50, 750, { align: 'center' });
+  doc.text('This is a computer generated invoice and does not require a physical signature.', 50, 765, { align: 'center' });
 };
 
 // Get pharmacy invoices specifically
@@ -479,8 +571,8 @@ exports.getAllInvoices = async (req, res) => {
       .populate('patient_id', 'first_name last_name patientId')
       .populate('appointment_id', 'appointment_date type')
       .populate('sale_id', 'sale_number sale_date')
-      .populate('purchase_order_id', 'order_number order_date')
-      .populate('created_by', 'name')
+      // .populate('purchase_order_id', 'order_number order_date')
+      // .populate('created_by', 'name')
       .sort({ issue_date: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
@@ -505,8 +597,8 @@ exports.getInvoiceById = async (req, res) => {
       .populate('patient_id')
       .populate('appointment_id')
       .populate('sale_id')
-      .populate('purchase_order_id')
-      .populate('created_by', 'name');
+      // .populate('purchase_order_id')
+      // .populate('created_by', 'name');
 
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });

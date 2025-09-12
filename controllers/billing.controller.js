@@ -1,6 +1,7 @@
 const Bill = require('../models/Bill');
 const BillItem = require('../models/BillItem');
 const Invoice = require('../models/Invoice');
+const Appointment = require('../models/Appointment');
 
 // Create a bill with items
 // exports.createBill = async (req, res) => {
@@ -56,24 +57,22 @@ const Invoice = require('../models/Invoice');
 
 exports.createBill = async (req, res) => {
   try {
-    const { patient_id, appointment_id, payment_method, items, status = 'Pending' } = req.body;
+    const { patient_id, appointment_id, payment_method, items, status = 'Pending', total_amount } = req.body;
 
     // Calculate totals
-    const subtotal = items.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
+    const subtotal = items.reduce((sum, item) => sum + (item.amount), 0);
     const tax = items.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
-    const total_amount = subtotal + tax;
+    // const total_amount = subtotal + tax;
 
     // Create the bill
     const bill = new Bill({ 
       patient_id, 
       appointment_id, 
-      subtotal,
-      tax,
       total_amount, 
       payment_method,
       status,
       details: items,
-      created_by: req.user._id
+      // created_by: req.user._id
     });
     
     await bill.save();
@@ -98,11 +97,11 @@ exports.createBill = async (req, res) => {
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
       service_items: items.map(item => ({
         description: item.description,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        total_price: item.unit_price * item.quantity,
-        tax_rate: item.tax_rate || 0,
-        tax_amount: item.tax_amount || 0,
+        // quantity: item.quantity,
+        // unit_price: item.unit_price,
+        total_price: item.amount,
+        // tax_rate: item.tax_rate || 0,
+        // tax_amount: item.tax_amount || 0,
         service_type: item.service_type || 'Consultation'
       })),
       subtotal: subtotal,
@@ -113,7 +112,7 @@ exports.createBill = async (req, res) => {
       amount_paid: payment_method !== 'Pending' ? total_amount : 0,
       balance_due: payment_method !== 'Pending' ? 0 : total_amount,
       notes: `Appointment Bill - ${appointment?.appointment_date?.toLocaleDateString() || ''}`,
-      created_by: req.user._id
+      // created_by: req.user._id
     });
 
     await invoice.save();
@@ -125,7 +124,7 @@ exports.createBill = async (req, res) => {
     const populatedBill = await Bill.findById(bill._id)
       .populate('patient_id', 'first_name last_name patientId')
       .populate('appointment_id', 'appointment_date type')
-      .populate('created_by', 'name');
+      // .populate('created_by', 'name');
 
     res.status(201).json({ 
       message: 'Bill created successfully',
@@ -209,17 +208,16 @@ exports.getBillByAppointmentId = async (req, res) => {
           { path: 'doctor_id', select: 'firstName lastName' },
           { path: 'department_id', select: 'name' }
         ]
-      })
-      .populate('items');;
+      });
 
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found for this appointment' });
     }
 
     // Fetch related items
-    const items = await BillItem.find({ bill_id: bill._id });
+    // const items = await BillItem.find({ bill_id: bill._id });
 
-    res.json({ bill, items });
+    res.json({ bill });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

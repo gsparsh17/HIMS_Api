@@ -8,11 +8,14 @@ const {
   bulkCalculateAndPayPartTimeSalaries,
   bulkPaySalaries,
   getPendingSalaries,
-  generateSalaryPaymentReport
+  generateSalaryPaymentReport,
+  calculatePartTimeSalary,
+  calculateAppointmentSalary
 } = require('../controllers/salary.controller');
 
 // Salary routes
 router.get('/doctor/:doctorId', getDoctorSalaryHistory);
+router.post('/calculate-appointment/:appointmentId', calculateAppointmentSalary);
 router.get('/', getAllSalaries);
 router.get('/pending', getPendingSalaries);
 router.get('/report', generateSalaryPaymentReport);

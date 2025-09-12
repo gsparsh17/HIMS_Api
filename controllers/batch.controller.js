@@ -73,6 +73,7 @@ exports.getAllBatches = async (req, res) => {
 // Get batches for medicine
 exports.getBatchesByMedicine = async (req, res) => {
   try {
+    console.log(req.params.medicineId);
     const batches = await MedicineBatch.find({ 
       medicine_id: req.params.medicineId,
       quantity: { $gt: 0 }

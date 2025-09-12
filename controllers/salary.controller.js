@@ -3,7 +3,6 @@ const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const mongoose = require('mongoose');
 
-// Calculate and create salary for part-time doctors (run after each appointment)
 exports.calculatePartTimeSalary = async (appointmentId) => {
   try {
     const appointment = await Appointment.findById(appointmentId)
@@ -11,6 +10,7 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
       .populate('patient_id');
 
     if (!appointment || appointment.status !== 'Completed') {
+      console.log('Appointment not found or not completed');
       return null;
     }
 
@@ -18,35 +18,42 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
     
     // Check if doctor is part-time
     if (doctor.isFullTime) {
+      console.log('Doctor is full-time, no salary calculation needed');
       return null;
     }
 
     let amount = 0;
-    let notes = `Appointment: ${appointment._id}, Patient: ${appointment.patient_id.first_name}`;
+    let notes = `Appointment: ${appointment._id}, Patient: ${appointment.patient_id?.first_name || 'Unknown'}`;
 
     switch (doctor.paymentType) {
       case 'Fee per Visit':
-        amount = doctor.amount;
+        amount = doctor.amount || 0;
         notes += `, Type: Per Visit`;
         break;
       
       case 'Per Hour':
         if (appointment.duration) {
           const hours = appointment.duration / 60; // Convert minutes to hours
-          amount = doctor.amount * hours;
+          amount = (doctor.amount || 0) * hours;
           notes += `, Duration: ${appointment.duration}min, Rate: ₹${doctor.amount}/hr`;
         }
         break;
       
       default:
+        console.log('Unknown payment type:', doctor.paymentType);
         return null;
     }
 
-    if (amount > 0) {
-      const today = new Date();
-      const periodStart = new Date(today.setHours(0, 0, 0, 0));
-      const periodEnd = new Date(today.setHours(23, 59, 59, 999));
+    if (amount <= 0) {
+      console.log('No amount calculated for salary');
+      return null;
+    }
 
+    const today = new Date();
+    const periodStart = new Date(today.setHours(0, 0, 0, 0));
+    const periodEnd = new Date(today.setHours(23, 59, 59, 999));
+
+    try {
       // Check if salary entry already exists for today
       let salary = await Salary.findOne({
         doctor_id: doctor._id,
@@ -59,9 +66,10 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
         // Update existing entry
         salary.amount += amount;
         salary.appointment_count += 1;
-        salary.net_amount = salary.amount + salary.bonus - salary.deductions;
-        salary.notes += ` | ${notes}`;
+        salary.net_amount = salary.amount + (salary.bonus || 0) - (salary.deductions || 0);
+        salary.notes = salary.notes ? `${salary.notes} | ${notes}` : notes;
         await salary.save();
+        console.log('Updated existing salary entry:', salary._id);
       } else {
         // Create new entry
         salary = new Salary({
@@ -76,15 +84,36 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
           status: 'pending'
         });
         await salary.save();
+        console.log('Created new salary entry:', salary._id);
       }
 
       return salary;
+    } catch (dbError) {
+      console.error('Database error in salary calculation:', dbError);
+      return null;
     }
 
-    return null;
   } catch (error) {
     console.error('Error calculating part-time salary:', error);
-    throw error;
+    // Don't throw the error to prevent server crash
+    return null;
+  }
+};
+
+// Add this new function to handle individual appointment salary calculation
+exports.calculateAppointmentSalary = async (req, res) => {
+  try {
+    const { appointmentId } = req.params;
+    const salary = await exports.calculatePartTimeSalary(appointmentId);
+    
+    if (salary) {
+      res.json(salary);
+    } else {
+      res.json({ message: 'No salary calculated (doctor may be full-time or appointment not completed)' });
+    }
+  } catch (error) {
+    console.error('Error in calculateAppointmentSalary:', error);
+    res.status(500).json({ error: 'Failed to calculate salary' });
   }
 };
 

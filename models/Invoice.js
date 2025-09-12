@@ -16,7 +16,7 @@ const paymentSchema = new mongoose.Schema({
 const serviceItemSchema = new mongoose.Schema({
   description: { type: String, required: true },
   quantity: { type: Number, default: 1 },
-  unit_price: { type: Number, required: true },
+  // unit_price: { type: Number, required: true },
   total_price: { type: Number, required: true },
   tax_rate: { type: Number, default: 0 },
   tax_amount: { type: Number, default: 0 },

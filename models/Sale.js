@@ -12,12 +12,12 @@ const saleItemSchema = new mongoose.Schema({
   },
   quantity: { type: Number, required: true, min: 1 },
   unit_price: { type: Number, required: true },
-  total_price: { type: Number, required: true },
+  // total_price: { type: Number, required: true },
   discount: { type: Number, default: 0 }
 });
 
 const saleSchema = new mongoose.Schema({
-  sale_number: { type: String, required: true, unique: true },
+  sale_number: { type: String, unique: true },
   patient_id: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Patient' 

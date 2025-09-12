@@ -12,7 +12,7 @@ const prescriptionItemSchema = new mongoose.Schema({
   },
   dosage: { 
     type: String, 
-    required: true 
+    required: false 
   }, // e.g., "500mg", "10ml"
   frequency: { 
     type: String, 
@@ -24,7 +24,7 @@ const prescriptionItemSchema = new mongoose.Schema({
   }, // e.g., "7 days", "30 days"
   quantity: { 
     type: Number, 
-    required: true, 
+    required: false, 
     min: 1 
   }, // Number of units to dispense
   instructions: { 
