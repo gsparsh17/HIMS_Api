@@ -1,6 +1,5 @@
 const Appointment = require('../models/Appointment');
 const Calendar = require('../models/Calendar');
-const mongoose = require('mongoose');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 
 // In your appointment completion function

@@ -90,11 +90,10 @@ async function updateCalendar() {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
+
     const hospitals = await Hospital.find();
 
     for (const hospital of hospitals) {
-      // Use findOneAndUpdate with versioning to avoid conflicts
       let calendar = await Calendar.findOne({ hospitalId: hospital._id });
       if (!calendar) {
         calendar = new Calendar({ hospitalId: hospital._id, days: [] });
@@ -110,94 +109,95 @@ async function updateCalendar() {
         datesToUpdate.push(date);
       }
 
-      const doctors = await Doctor.find();
+      const allDoctors = await Doctor.find();
       let needsUpdate = false;
 
       for (const targetDate of datesToUpdate) {
         const dateStr = targetDate.toISOString().split('T')[0];
         const dayName = targetDate.toLocaleDateString('en-US', { weekday: 'long' });
         
-        // Check if this date already exists in calendar
         const existingDayIndex = calendar.days.findIndex(
           d => d.date.toISOString().split('T')[0] === dateStr
         );
 
         if (existingDayIndex !== -1) {
-          console.log(`✅ ${hospital.name} — ${dateStr} already exists`);
-          continue;
-        }
+          // Case 1: Day exists, check for new doctors
+          const existingDay = calendar.days[existingDayIndex];
+          const existingDoctorIds = new Set(existingDay.doctors.map(d => d.doctorId.toString()));
+          let dayNeedsUpdate = false;
 
-        console.log(`➕ ${hospital.name} — Adding ${dateStr} to calendar`);
-        needsUpdate = true;
+          for (const doc of allDoctors) {
+            const docIdStr = doc._id.toString();
+            // Check if the doctor is new to this day's entry
+            if (!existingDoctorIds.has(docIdStr)) {
+              console.log(`➕ ${hospital.name} — Adding new doctor ${doc.name} to ${dateStr}`);
+              needsUpdate = true;
+              dayNeedsUpdate = true;
 
-        const dayIndex = calendar.days.length;
+              const shifts = doc.isFullTime
+                ? [getShiftTimeRange(doc.shift, existingDayIndex, targetDate)].filter(Boolean)
+                : getPartTimeRanges(doc.timeSlots, targetDate);
 
-        const doctorEntries = doctors
-          .filter(doc => {
-            if (doc.isFullTime) return true;
-            if (!doc.isFullTime) {
-              return targetDate >= new Date(doc.contractStartDate) &&
-                     targetDate <= new Date(doc.contractEndDate);
+              existingDay.doctors.push({
+                doctorId: doc._id,
+                bookedAppointments: [],
+                bookedPatients: [],
+                breaks: []
+              });
             }
-            return false;
-          })
-          .map(doc => {
-            let shifts = [];
+          }
+          if (dayNeedsUpdate) {
+            console.log(`✅ ${hospital.name} — ${dateStr} updated with new doctors.`);
+          }
+        } else {
+          // Case 2: New day, add it with all doctors
+          console.log(`➕ ${hospital.name} — Adding new day ${dateStr} to calendar`);
+          needsUpdate = true;
+          
+          const doctorEntries = allDoctors
+            .filter(doc => {
+              // Ensure doc meets part-time contract dates if applicable
+              if (doc.isFullTime) return true;
+              return targetDate >= new Date(doc.contractStartDate) && targetDate <= new Date(doc.contractEndDate);
+            })
+            .map(doc => {
+              // Shifts are not initialized here since you commented out the logic
+              return {
+                doctorId: doc._id,
+                bookedAppointments: [],
+                bookedPatients: [],
+                breaks: []
+              };
+            });
 
-            if (doc.isFullTime) {
-              const range = getShiftTimeRange(doc.shift, dayIndex, targetDate);
-              if (range) shifts.push(range);
-            } else {
-              shifts = getPartTimeRanges(doc.timeSlots, targetDate);
-            }
-
-            return {
-              doctorId: doc._id,
-              // bookedAppointments: shifts.map(s => ({
-              //   startTime: s.startTime,
-              //   endTime: s.endTime,
-              //   duration: s.duration,
-              //   status: 'Available'
-              // })),
-              bookedAppointments: [],
-              bookedPatients: [],
-              breaks: []
-            };
+          calendar.days.push({
+            date: targetDate,
+            dayName,
+            doctors: doctorEntries
           });
-
-        // Add new day to calendar
-        calendar.days.push({
-          date: targetDate,
-          dayName,
-          doctors: doctorEntries
-        });
+        }
       }
 
       if (needsUpdate) {
-        // Remove days older than 15 days before today and newer than 15 days after today
+        // Filter and sort as before
+        const todayStr = today.toISOString().split('T')[0];
         calendar.days = calendar.days.filter(day => {
           const dayDate = new Date(day.date);
           const diffDays = Math.floor((dayDate - today) / (1000 * 60 * 60 * 24));
           return diffDays >= -15 && diffDays <= 15;
         });
 
-        // Sort days by date
         calendar.days.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-        // Use findOneAndUpdate to handle version conflicts
-        await Calendar.findOneAndUpdate(
-          { _id: calendar._id },
-          { $set: { days: calendar.days } },
-          { new: true }
-        );
+        await calendar.save();
         
-        console.log(`✅ ${hospital.name} — Calendar updated with 30-day rolling window`);
+        console.log(`✅ ${hospital.name} — Calendar updated successfully!`);
       } else {
         console.log(`✅ ${hospital.name} — No updates needed`);
       }
     }
 
-    console.log('✅ All hospital calendars updated successfully!');
+    console.log('✅ All hospital calendars processed.');
   } catch (err) {
     console.error('❌ Error updating calendar:', err);
   } finally {
