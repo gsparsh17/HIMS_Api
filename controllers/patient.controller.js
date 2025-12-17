@@ -19,12 +19,13 @@ exports.getAllPatients = async (req, res) => {
     const filter = {};
     if (search) {
       filter.$or = [
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } }
+        { first_name: { $regex: search, $options: 'i' } },
+        { last_name: { $regex: search, $options: 'i' } },
+        // { email: { $regex: search, $options: 'i' } },
+        // { phone: { $regex: search, $options: 'i' } }
       ];
     }
+    console.log(search)
     if (gender) filter.gender = gender;
 
     const sortOptions = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };

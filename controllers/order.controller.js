@@ -3,6 +3,7 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const Sale = require('../models/Sale');
 const MedicineBatch = require('../models/MedicineBatch');
 const Medicine = require('../models/Medicine');
+const Prescription = require('../models/Prescription');
 
 // Purchase Order Functions
 // exports.createPurchaseOrder = async (req, res) => {
@@ -249,10 +250,11 @@ exports.createSale = async (req, res) => {
       total_amount,
       payment_method,
       prescription_id,
-      // created_by: req.user._id
     });
     
     await sale.save();
+
+    await Prescription.findByIdAndUpdate(prescription_id, { status: 'Completed' });
 
     // Create invoice for the sale
     const invoice = new Invoice({

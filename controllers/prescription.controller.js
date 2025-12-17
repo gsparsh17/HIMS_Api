@@ -199,7 +199,7 @@ exports.getPrescriptionById = async (req, res) => {
   try {
     const prescription = await Prescription.findById(req.params.id)
       .populate('patient_id', 'first_name last_name patientId phone dob gender')
-      .populate('doctor_id', 'firstName lastName specialization licenseNumber')
+      .populate('doctor_id', 'firstName lastName specialization licenseNumber department')
       .populate('appointment_id', 'appointment_date type priority')
       .populate('created_by', 'name');
 

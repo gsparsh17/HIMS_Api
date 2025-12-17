@@ -1,42 +1,15 @@
 const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const Department = require('../models/Department');
+const Hospital = require('../models/Hospital'); // 👈 1. Import Hospital model
+const Calendar = require('../models/Calendar'); // 👈 2. Import Calendar model
 
 // ✅ Create a new doctor
 exports.createDoctor = async (req, res) => {
   try {
     const {
-      firstName,
-      lastName,
-      email,
-      password,
-      phone,
-      dateOfBirth,
-      gender,
-      address,
-      city,
-      state,
-      zipCode,
-      department,
-      specialization,
-      licenseNumber,
-      experience,
-      education,
-      shift,
-      emergencyContact,
-      emergencyPhone,
-      startDate,
-      isFullTime,
-      notes,
-      paymentType,
-      amount,
-      contractStartDate,
-      contractEndDate,
-      visitsPerWeek,
-      workingDaysPerWeek,
-      timeSlots,
-      aadharNumber,
-      panNumber
+      firstName, lastName, email, password, /* ...all other fields... */
+      isFullTime, contractStartDate, contractEndDate, aadharNumber, panNumber
     } = req.body;
 
     // ✅ Check if user already exists
@@ -51,48 +24,82 @@ exports.createDoctor = async (req, res) => {
       role: 'doctor'
     });
 
-    // ✅ Resolve department name to ObjectId
-    // let departmentId = null;
-    // if (department) {
-    //   const dept = await Department.findOne({ name: new RegExp(`^${department}$`, 'i') });
-    //   if (!dept) return res.status(400).json({ error: `Department "${department}" not found.` });
-    //   departmentId = dept._id;
-    // }
-
     // ✅ Create Doctor
     const newDoctor = await Doctor.create({
       user_id: newUser._id,
       firstName,
       lastName,
       email,
-      phone,
-      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-      gender,
-      address,
-      city,
-      state,
-      zipCode,
-      department,
-      specialization,
-      licenseNumber,
-      experience: experience ? Number(experience) : null,
-      education,
-      shift,
-      emergencyContact,
-      emergencyPhone,
-      startDate: startDate ? new Date(startDate) : null,
+      phone: req.body.phone,
+      dateOfBirth: req.body.dateOfBirth ? new Date(req.body.dateOfBirth) : null,
+      gender: req.body.gender,
+      address: req.body.address,
+      city: req.body.city,
+      state: req.body.state,
+      zipCode: req.body.zipCode,
+      department: req.body.department,
+      specialization: req.body.specialization,
+      licenseNumber: req.body.licenseNumber,
+      experience: req.body.experience ? Number(req.body.experience) : null,
+      education: req.body.education,
+      shift: req.body.shift,
+      emergencyContact: req.body.emergencyContact,
+      emergencyPhone: req.body.emergencyPhone,
+      startDate: req.body.startDate ? new Date(req.body.startDate) : null,
       isFullTime: isFullTime === true || isFullTime === 'true',
-      notes,
-      paymentType,
-      amount: amount ? Number(amount) : null,
+      notes: req.body.notes,
+      paymentType: req.body.paymentType,
+      amount: req.body.amount ? Number(req.body.amount) : null,
       contractStartDate: contractStartDate ? new Date(contractStartDate) : null,
       contractEndDate: contractEndDate ? new Date(contractEndDate) : null,
-      visitsPerWeek: visitsPerWeek ? Number(visitsPerWeek) : null,
-      workingDaysPerWeek: workingDaysPerWeek ? workingDaysPerWeek : null,
-      timeSlots: timeSlots || [],
+      visitsPerWeek: req.body.visitsPerWeek ? Number(req.body.visitsPerWeek) : null,
+      workingDaysPerWeek: req.body.workingDaysPerWeek ? req.body.workingDaysPerWeek : null,
+      timeSlots: req.body.timeSlots || [],
       aadharNumber,
       panNumber
     });
+    
+    // 👇 3. Immediately add the new doctor to all existing calendars
+    try {
+      console.log('🗓️  Adding new doctor to calendars...');
+      // NOTE: This assumes a new doctor should be added to ALL hospital calendars.
+      // For a single hospital, you'd need to pass a hospitalId in the request.
+      const hospitals = await Hospital.find();
+
+      for (const hospital of hospitals) {
+        // Use $push to add the new doctor to each relevant day in one operation
+        await Calendar.updateOne(
+          { hospitalId: hospital._id },
+          {
+            $push: {
+              'days.$[day].doctors': {
+                doctorId: newDoctor._id,
+                bookedAppointments: [],
+                bookedPatients: [],
+                breaks: []
+              }
+            }
+          },
+          {
+            arrayFilters: [
+              {
+                // Condition 1: Add to days where the doctor is not already present
+                'day.doctors.doctorId': { $ne: newDoctor._id },
+                // Condition 2: Add only if doctor is Full-Time OR the day is within their Part-Time contract
+                ...(newDoctor.isFullTime
+                  ? {} // If full-time, no date filter is needed
+                  : { 'day.date': { $gte: newDoctor.contractStartDate, $lte: newDoctor.contractEndDate } }
+                )
+              }
+            ]
+          }
+        );
+      }
+      console.log(`✅ Finished calendar update for Doctor ${newDoctor.firstName}`);
+    } catch (calendarError) {
+      console.error('❌ Failed to update calendar with new doctor:', calendarError);
+      // Log the error, but don't block the API response
+    }
 
     res.status(201).json({
       message: 'Doctor and user created successfully',
