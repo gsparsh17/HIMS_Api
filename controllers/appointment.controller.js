@@ -243,10 +243,14 @@ exports.updateAppointment = async (req, res) => {
     }
 
     // Update other fields
-    const { notes, priority, appointment_type } = req.body;
+const { notes, priority, appointment_type, status } = req.body; 
+    
     if (notes !== undefined) appointment.notes = notes;
     if (priority !== undefined) appointment.priority = priority;
     if (appointment_type !== undefined) appointment.appointment_type = appointment_type;
+    
+    // 2. ADD this check to actually update the status
+    if (status !== undefined) appointment.status = status; 
 
     await Promise.all([appointment.save(), calendar.save()]);
     res.json(appointment);
