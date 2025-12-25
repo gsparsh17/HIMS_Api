@@ -66,7 +66,7 @@ exports.receivePurchaseOrder = async (req, res) => {
           expiry_date: orderItem.expiry_date,
           quantity: orderItem.quantity,
           purchase_price: orderItem.unit_cost,
-          selling_price: orderItem.unit_cost * 1.3, // 30% markup
+          selling_price: orderItem.unit_cost,
           supplier_id: order.supplier_id
         });
         await batch.save();

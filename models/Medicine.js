@@ -21,14 +21,14 @@ const medicineSchema = new mongoose.Schema({
   generic_name: { type: String, trim: true },
   brand: { type: String, trim: true },
   category: { type: String, required: true },
-  dosage_form: { type: String, enum: ['Tablet', 'Capsule', 'Syrup', 'Injection', 'Ointment', 'Drops', 'Inhaler', 'Other'] },
+  // dosage_form: { type: String, enum: ['Tablet', 'Capsule', 'Syrup', 'Injection', 'Ointment', 'Drops', 'Inhaler', 'Other'] },
   strength: { type: String },
   description: { type: String },
   min_stock_level: { type: Number, default: 10 },
-  price_per_unit: { type: Number, required: true, min: 0 },
-  cost_price: { type: Number, min: 0 },
+  // price_per_unit: { type: Number, required: true, min: 0 },
+  // cost_price: { type: Number, min: 0 },
   prescription_required: { type: Boolean, default: false },
-  tax_rate: { type: Number, default: 0 },
+  // tax_rate: { type: Number, default: 0 },
   location: {
     shelf: { type: String },
     rack: { type: String }
