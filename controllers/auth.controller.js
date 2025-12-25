@@ -29,6 +29,7 @@ const sendEmail = require('../utils/sendEmail'); // We'll create this
 const Doctor = require('../models/Doctor');
 const Staff = require('../models/Staff');
 const Pharmacy = require('../models/Pharmacy');
+const Department = require('../models/Department');
 
 exports.forgotPassword = async (req, res) => {
   const { email } = req.body;
@@ -123,6 +124,11 @@ exports.registerUser = async (req, res) => {
       additionalInfo,
       createdBy: user._id
     });
+
+    await Department.create({
+      name: "Administration"
+    })
+
     }
   catch (hospitalErr) {
     console.error('Hospital Creation Error:', hospitalErr);
