@@ -10,7 +10,8 @@ const purchaseOrderItemSchema = new mongoose.Schema({
   unit_cost: { type: Number, required: true },
   total_cost: { type: Number, required: true },
   batch_number: { type: String },
-  expiry_date: { type: Date }
+  expiry_date: { type: Date },
+  selling_price: { type: Number, default: 0 }
 });
 
 const purchaseOrderSchema = new mongoose.Schema({

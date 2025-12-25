@@ -51,7 +51,7 @@ exports.getAllPurchaseOrders = async (req, res) => {
 exports.receivePurchaseOrder = async (req, res) => {
   try {
     const { id } = req.params;
-    const { received_items } = req.body; // Array of { item_id, received_quantity, batch_number, expiry_date }
+    const { received_items } = req.body; // Array of { item_id, quantity_received, batch_number, expiry_date, selling_price }
     console.log('received_items:', req.body);
     const order = await PurchaseOrder.findById(id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
@@ -59,14 +59,14 @@ exports.receivePurchaseOrder = async (req, res) => {
     for (const receivedItem of received_items) {
       const orderItem = order.items.id(receivedItem.item_id);
       if (orderItem) {
-        // Create batch
+        // Create batch with received data
         const batch = new MedicineBatch({
           medicine_id: orderItem.medicine_id,
-          batch_number: orderItem.batch_number,
-          expiry_date: orderItem.expiry_date,
-          quantity: orderItem.quantity,
+          batch_number: receivedItem.batch_number || orderItem.batch_number || '',
+          expiry_date: receivedItem.expiry_date || orderItem.expiry_date,
+          quantity: receivedItem.quantity_received || 0,
           purchase_price: orderItem.unit_cost,
-          selling_price: orderItem.unit_cost,
+          selling_price: receivedItem.selling_price || orderItem.selling_price || orderItem.unit_cost,
           supplier_id: order.supplier_id
         });
         await batch.save();
@@ -74,8 +74,15 @@ exports.receivePurchaseOrder = async (req, res) => {
         // Update medicine stock
         await Medicine.findByIdAndUpdate(
           orderItem.medicine_id,
-          { $inc: { stock_quantity: orderItem.quantity } }
+          { $inc: { stock_quantity: receivedItem.quantity_received || 0 } }
         );
+
+        // Update order item with received quantity and details
+        orderItem.received = (orderItem.received || 0) + (receivedItem.quantity_received || 0);
+        // Update batch_number, expiry_date, selling_price in the order item if provided
+        if (receivedItem.batch_number) orderItem.batch_number = receivedItem.batch_number;
+        if (receivedItem.expiry_date) orderItem.expiry_date = receivedItem.expiry_date;
+        if (receivedItem.selling_price) orderItem.selling_price = receivedItem.selling_price;
       }
     }
     
