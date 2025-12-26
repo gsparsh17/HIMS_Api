@@ -220,17 +220,41 @@ exports.getPurchaseOrderById = async (req, res) => {
 // Create sale with invoice generation
 exports.createSale = async (req, res) => {
   try {
-    const { items, patient_id, customer_name, customer_phone, payment_method, prescription_id } = req.body;
+    const { 
+      items, 
+      patient_id, 
+      customer_name, 
+      customer_phone, 
+      payment_method, 
+      prescription_id,
+      discount = 0,
+      discount_type = 'percentage',
+      tax_rate = 0,
+      notes = '',
+      subtotal, // From frontend calculation
+      discount_amount, // From frontend calculation
+      tax_amount, // From frontend calculation
+      total_amount // From frontend calculation
+    } = req.body;
     
-    console.log(req.body);
+    console.log('Sale request body:', req.body);
+    
+    // Validate all items have batches and sufficient stock
     for (const item of items) {
       const batch = await MedicineBatch.findById(item.batch_id);
-      if (!batch || batch.quantity < item.quantity) {
+      if (!batch) {
         return res.status(400).json({ 
-          error: `Insufficient stock for batch ${batch?.batch_number}` 
+          error: `Batch not found for ${item.medicine_name}` 
         });
       }
       
+      if (batch.quantity < item.quantity) {
+        return res.status(400).json({ 
+          error: `Insufficient stock for ${item.medicine_name}. Available: ${batch.quantity}, Requested: ${item.quantity}` 
+        });
+      }
+      
+      // Update batch stock
       batch.quantity -= item.quantity;
       await batch.save();
       
@@ -241,37 +265,114 @@ exports.createSale = async (req, res) => {
       );
     }
 
-    // Calculate sale totals
-    const subtotal = items.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
-    const tax = items.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
-    const total_amount = subtotal + tax;
+    // Validate totals match frontend calculations (optional security check)
+    // You can choose to trust frontend or recalculate for security
+    const calculatedSubtotal = items.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
     
-    // Create sale
+    let calculatedDiscount = 0;
+    if (discount_type === 'percentage') {
+      calculatedDiscount = calculatedSubtotal * (discount / 100);
+    } else {
+      calculatedDiscount = Math.min(discount, calculatedSubtotal);
+    }
+    
+    const afterDiscount = calculatedSubtotal - calculatedDiscount;
+    const calculatedTax = afterDiscount * (tax_rate / 100);
+    const calculatedTotal = afterDiscount + calculatedTax;
+    
+    // Optional: Validate frontend calculations match backend calculations
+    const tolerance = 0.01; // Allow small rounding differences
+    if (Math.abs(calculatedSubtotal - parseFloat(subtotal)) > tolerance ||
+        Math.abs(calculatedDiscount - parseFloat(discount_amount)) > tolerance ||
+        Math.abs(calculatedTax - parseFloat(tax_amount)) > tolerance ||
+        Math.abs(calculatedTotal - parseFloat(total_amount)) > tolerance) {
+      
+      console.warn('Frontend and backend calculations differ:', {
+        frontend: { subtotal, discount_amount, tax_amount, total_amount },
+        backend: { calculatedSubtotal, calculatedDiscount, calculatedTax, calculatedTotal }
+      });
+      
+      // You can either:
+      // 1. Use backend calculations (more secure):
+      // subtotal = calculatedSubtotal;
+      // discount_amount = calculatedDiscount;
+      // tax_amount = calculatedTax;
+      // total_amount = calculatedTotal;
+      
+      // 2. Or return error:
+      // return res.status(400).json({ 
+      //   error: 'Calculation mismatch detected. Please refresh and try again.' 
+      // });
+    }
+
+    // Generate invoice number
+    const invoiceNumber = await generateInvoiceNumber();
+    
+    // Create sale with all financial data
     const sale = new Sale({
       items,
-      patient_id,
+      patient_id: patient_id || null,
       customer_name,
       customer_phone,
-      subtotal,
-      tax,
-      total_amount,
+      subtotal: calculatedSubtotal, // Use backend calculation
+      discount,
+      discount_type,
+      discount_amount: calculatedDiscount, // Use backend calculation
+      tax_rate,
+      tax: calculatedTax, // Use backend calculation
+      total_amount: calculatedTotal, // Use backend calculation
       payment_method,
-      prescription_id,
+      prescription_id: prescription_id || null,
+      notes,
+      invoice_number: invoiceNumber,
+      // created_by: req.user?._id
     });
     
     await sale.save();
 
-    await Prescription.findByIdAndUpdate(prescription_id, { status: 'Completed' });
+    // Update prescription status if prescription exists
+    if (prescription_id) {
+      await Prescription.findByIdAndUpdate(prescription_id, { 
+        status: 'Completed',
+        last_dispensed: new Date()
+      });
+
+      // Mark prescription items as dispensed
+      const prescription = await Prescription.findById(prescription_id);
+      if (prescription && prescription.items) {
+        const updatedItems = prescription.items.map(item => {
+          // Check if this item was in the sale
+          const saleItem = items.find(si => 
+            si.medicine_name === item.medicine_name || 
+            si.prescription_item?._id?.toString() === item._id.toString()
+          );
+          if (saleItem) {
+            return {
+              ...item.toObject(),
+              is_dispensed: true,
+              dispensed_quantity: saleItem.quantity,
+              dispensed_date: new Date()
+            };
+          }
+          return item;
+        });
+
+        await Prescription.findByIdAndUpdate(prescription_id, {
+          items: updatedItems
+        });
+      }
+    }
 
     // Create invoice for the sale
     const invoice = new Invoice({
+      invoice_number: invoiceNumber,
       invoice_type: 'Pharmacy',
-      patient_id: patient_id,
+      patient_id: patient_id || null,
       customer_type: patient_id ? 'Patient' : 'Walk-in',
-      customer_name: customer_name,
-      customer_phone: customer_phone,
+      customer_name,
+      customer_phone,
       sale_id: sale._id,
-      prescription_id: prescription_id,
+      prescription_id: prescription_id || null,
       issue_date: new Date(),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
       medicine_items: items.map(item => ({
@@ -282,18 +383,23 @@ exports.createSale = async (req, res) => {
         quantity: item.quantity,
         unit_price: item.unit_price,
         total_price: item.unit_price * item.quantity,
-        tax_rate: item.tax_rate || 0,
-        tax_amount: item.tax_amount || 0
+        tax_rate: tax_rate, // Apply same tax rate to all items
+        tax_amount: (item.unit_price * item.quantity) * (tax_rate / 100)
       })),
-      subtotal: subtotal,
-      tax: tax,
-      total: total_amount,
-      status: payment_method !== 'Pending' ? 'Paid' : 'Issued',
+      subtotal: calculatedSubtotal,
+      discount: discount,
+      discount_type: discount_type,
+      discount_amount: calculatedDiscount,
+      tax_rate: tax_rate,
+      tax_amount: calculatedTax,
+      total: calculatedTotal,
+      status: payment_method === 'Pending' ? 'Pending' : 'Paid',
       payment_method: payment_method,
-      amount_paid: payment_method !== 'Pending' ? total_amount : 0,
-      balance_due: payment_method !== 'Pending' ? 0 : total_amount,
+      amount_paid: payment_method === 'Pending' ? 0 : calculatedTotal,
+      balance_due: payment_method === 'Pending' ? calculatedTotal : 0,
       is_pharmacy_sale: true,
       dispensing_date: new Date(),
+      notes: notes,
       // dispensed_by: req.user._id,
       // created_by: req.user._id
     });
@@ -304,21 +410,58 @@ exports.createSale = async (req, res) => {
     sale.invoice_id = invoice._id;
     await sale.save();
 
+    // Populate sale with related data
     const populatedSale = await Sale.findById(sale._id)
-      .populate('patient_id', 'first_name last_name')
-      .populate('items.medicine_id', 'name')
-      .populate('items.batch_id', 'batch_number')
-      .populate('created_by', 'name');
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('items.medicine_id', 'name mrp')
+      .populate('items.batch_id', 'batch_number expiry_date')
+      // .populate('prescription_id', 'prescription_number')
+      // .populate('created_by', 'name')
+      .lean();
 
     res.status(201).json({
       message: 'Sale created successfully',
-      sale: populatedSale,
-      invoice: invoice
+      sale: {
+        ...populatedSale,
+        invoice_id: invoice._id,
+        invoice_number: invoiceNumber
+      },
+      invoice: {
+        _id: invoice._id,
+        invoice_number: invoiceNumber,
+        total: invoice.total,
+        status: invoice.status
+      }
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    console.error('Error creating sale:', err);
+    res.status(400).json({ 
+      error: 'Failed to create sale',
+      message: err.message 
+    });
   }
 };
+
+// Helper function to generate invoice number
+async function generateInvoiceNumber() {
+  const year = new Date().getFullYear();
+  const month = String(new Date().getMonth() + 1).padStart(2, '0');
+  
+  // Get the last invoice number for this month
+  const lastInvoice = await Invoice.findOne({
+    invoice_number: new RegExp(`^INV-${year}${month}`)
+  }).sort({ createdAt: -1 });
+  
+  let sequence = 1;
+  if (lastInvoice && lastInvoice.invoice_number) {
+    const lastSeq = parseInt(lastInvoice.invoice_number.split('-').pop());
+    if (!isNaN(lastSeq)) {
+      sequence = lastSeq + 1;
+    }
+  }
+  
+  return `INV-${year}${month}-${String(sequence).padStart(4, '0')}`;
+}
 
 exports.getAllSales = async (req, res) => {
   try {
