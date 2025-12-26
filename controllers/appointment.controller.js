@@ -57,6 +57,35 @@ function hasTimeConflict(appointments, startTime, endTime, breaks = []) {
   return false;
 }
 
+exports.getAppointmentsByPatientId = async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    const filter = { patient_id: patientId };
+    if (status) filter.status = status;
+
+    const appointments = await Appointment.find(filter)
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('department_id', 'name')
+      .populate('hospital_id', 'name')
+      .sort({ appointment_date: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Appointment.countDocuments(filter);
+
+    res.json({
+      appointments,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      total
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // ✅ Create Appointment
 exports.createAppointment = async (req, res) => {
   try {
