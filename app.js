@@ -169,6 +169,7 @@ const invoiceRoutes = require('./routes/invoice.routes');
 const salaryRoutes = require('./routes/salary.routes');
 const revenueRoutes = require('./routes/revenue.routes');
 const cronJobs = require('./jobs/jobs');
+const { updateCalendar } = require('./jobs/calendarJob.js');
 
 app.use('/api/salaries', salaryRoutes);
 app.use('/api/revenue', revenueRoutes);
@@ -181,7 +182,6 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/pharmacy', pharmacyRoutes);
 app.use('/api/invoices', invoiceRoutes);
 
-const updateCalendar = require('./jobs/calendarJob');
 updateCalendar();
 
 // Error Handlers

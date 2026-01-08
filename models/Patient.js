@@ -1,23 +1,66 @@
 const mongoose = require('mongoose');
 
-
 const patientSchema = new mongoose.Schema({
-  patientId: { type: String, unique: true },
-  first_name: { type: String, required: true },
-  last_name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  phone: { type: String, required: true },
-  gender: { type: String, enum: ['male', 'female', 'other'], required: true },
-  dob: { type: Date, required: true },
-  address: { type: String },
-  city: { type: String },
-  state: { type: String },
-  zipCode: { type: String },
-  emergency_contact: { type: String },
-  emergency_phone: { type: String },
-  medical_history: { type: String },
-  allergies: { type: String },
-  medications: { type: String },
+  patientId: { 
+    type: String, 
+    unique: true 
+  },
+  salutation: {
+    type: String,
+    enum: ['Mr.', 'Mrs.', 'Ms.', 'Miss', 'Dr.', 'Prof.', 'Baby', 'Master'],
+  },
+  first_name: { 
+    type: String, 
+    required: true 
+  },
+  last_name: { 
+    type: String, 
+    required: true 
+  },
+  email: { 
+    type: String,
+    unique: true 
+  },
+  phone: { 
+    type: String, 
+    required: true 
+  },
+  gender: { 
+    type: String, 
+    enum: ['male', 'female', 'other'], 
+    required: true 
+  },
+  dob: { 
+    type: Date, 
+    required: true 
+  },
+  address: { 
+    type: String 
+  },
+  city: { 
+    type: String 
+  },
+  state: { 
+    type: String 
+  },
+  zipCode: { 
+    type: String 
+  },
+  emergency_contact: { 
+    type: String 
+  },
+  emergency_phone: { 
+    type: String 
+  },
+  medical_history: { 
+    type: String 
+  },
+  allergies: { 
+    type: String 
+  },
+  medications: { 
+    type: String 
+  },
   blood_group: {
     type: String,
     enum: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'],
@@ -27,18 +70,29 @@ const patientSchema = new mongoose.Schema({
     enum: ['opd', 'ipd'],
     default: 'ipd',
   },
-  registered_at: { type: Date, default: Date.now },
+  registered_at: { 
+    type: Date, 
+    default: Date.now 
+  },
 });
 
-const Hospital = require('./Hospital'); // import hospital model
+const Hospital = require('./Hospital');
 
-function generateRandomCode(length = 8) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let code = '';
-  for (let i = 0; i < length; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
+// Helper function to generate structured patient ID
+function generateStructuredPatientId(firstName, lastName, phone, hospitalCode) {
+  // Format: HOSPITALCODE-NAMEPHONE-DATE-RANDOM
+  const date = new Date();
+  const year = date.getFullYear().toString().slice(-2);
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  
+  // Get first 3 letters of first name (uppercase)
+  const namePart = (firstName.substring(0, 3) + lastName.substring(0, 1)).toUpperCase();
+  
+  // Get last 4 digits of phone
+  const phonePart = phone.slice(-4);
+  
+  // Format: HOSP-NAME-YYYYMM
+  return `${hospitalCode}-${namePart}${phonePart}-${year}${month}`;
 }
 
 patientSchema.pre('save', async function (next) {
@@ -49,8 +103,16 @@ patientSchema.pre('save', async function (next) {
         throw new Error('Hospital ID not found');
       }
 
+      // Use structured patient ID
+      this.patientId = generateStructuredPatientId(
+        this.first_name,
+        this.last_name,
+        this.phone,
+        hospital.hospitalID
+      );
+      
+      // Store hospital ID for reference
       this.hospitalId = hospital.hospitalID;
-      this.patientId = `${hospital.hospitalID}-${generateRandomCode(8)}`;
     }
 
     next();
@@ -59,6 +121,4 @@ patientSchema.pre('save', async function (next) {
   }
 });
 
-
 module.exports = mongoose.model('Patient', patientSchema);
-

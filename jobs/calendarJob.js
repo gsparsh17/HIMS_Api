@@ -1,74 +1,3 @@
-// jobs/calendarJob.js
-// const cron = require('node-cron');
-// const Calendar = require('../models/Calendar');
-// const Doctor = require('../models/Doctor');
-// const Hospital = require('../models/Hospital');
-// const { getShiftSlots, getPartTimeSlots } = require('../utils/calendarUtils');
-
-// async function updateCalendar() {
-//   console.log('🕒 Running calendar update...');
-
-//   const today = new Date();
-//   const dayName = today.toLocaleDateString('en-US', { weekday: 'long' });
-//   const hospitals = await Hospital.find();
-
-//   for (const hospital of hospitals) {
-//     let calendar = await Calendar.findOne({ hospitalId: hospital._id });
-//     if (!calendar) {
-//       calendar = new Calendar({ hospitalId: hospital._id, days: [] });
-//     }
-
-//     const dayExists = calendar.days.some(
-//       d => new Date(d.date).setHours(0, 0, 0, 0) === today.getTime()
-//     );
-
-//     if (dayExists) {
-//       console.log(`⚠️ Skipping ${hospital.name} — today's entry already exists`);
-//       continue; // move to next hospital
-//     }
-
-//     // Keep only latest 30 days
-//     if (calendar.days.length >= 30) {
-//       calendar.days.shift();
-//     }
-
-//     const doctors = await Doctor.find();
-//     const dayIndex = calendar.days.length;
-
-//     const doctorSlots = doctors
-//       .filter(doc => {
-//         if (doc.isFullTime === true) return true;
-//         if (doc.isFullTime === false) {
-//           return today >= new Date(doc.contractStartDate) && today <= new Date(doc.contractEndDate);
-//         }
-//         return false;
-//       })
-//       .map(doc => ({
-//         doctorId: doc._id,
-//         availableSlots:
-//           doc.isFullTime === true
-//             ? getShiftSlots(doc.shift, dayIndex)
-//             : getPartTimeSlots(doc.timeSlots),
-//         bookedSlots: []
-//       }));
-
-//     calendar.days.push({
-//       date: today,
-//       dayName,
-//       doctors: doctorSlots
-//     });
-
-//     await calendar.save();
-//   }
-
-//   console.log('✅ Calendar updated successfully!');
-// }
-
-// // Schedule the update to run every day at midnight
-// cron.schedule('0 0 * * *', updateCalendar);
-
-// module.exports = updateCalendar;
-
 const cron = require('node-cron');
 const Calendar = require('../models/Calendar');
 const Doctor = require('../models/Doctor');
@@ -121,54 +50,70 @@ async function updateCalendar() {
         );
 
         if (existingDayIndex !== -1) {
-          // Case 1: Day exists, check for new doctors
+          // Case 1: Day exists, check for new doctors and remove outdated ones
           const existingDay = calendar.days[existingDayIndex];
           const existingDoctorIds = new Set(existingDay.doctors.map(d => d.doctorId.toString()));
           let dayNeedsUpdate = false;
 
+          // Add new doctors
           for (const doc of allDoctors) {
             const docIdStr = doc._id.toString();
-            // Check if the doctor is new to this day's entry
+            
             if (!existingDoctorIds.has(docIdStr)) {
-              console.log(`➕ ${hospital.name} — Adding new doctor ${doc.name} to ${dateStr}`);
-              needsUpdate = true;
-              dayNeedsUpdate = true;
+              // Check if doctor should be available on this date
+              if (shouldDoctorBeAvailable(doc, targetDate)) {
+                console.log(`➕ ${hospital.name} — Adding new doctor ${doc.firstName} ${doc.lastName} to ${dateStr}`);
+                needsUpdate = true;
+                dayNeedsUpdate = true;
 
-              const shifts = doc.isFullTime
-                ? [getShiftTimeRange(doc.shift, existingDayIndex, targetDate)].filter(Boolean)
-                : getPartTimeRanges(doc.timeSlots, targetDate);
-
-              existingDay.doctors.push({
-                doctorId: doc._id,
-                bookedAppointments: [],
-                bookedPatients: [],
-                breaks: []
-              });
+                existingDay.doctors.push({
+                  doctorId: doc._id,
+                  bookedAppointments: [],
+                  bookedPatients: [],
+                  breaks: [],
+                  workingHours: doc.isFullTime ? [] : doc.timeSlots || []
+                });
+              }
             }
           }
+
+          // Remove doctors who are no longer available (for part-time doctors with expired contracts)
+          for (let i = existingDay.doctors.length - 1; i >= 0; i--) {
+            const doctorEntry = existingDay.doctors[i];
+            const doctor = allDoctors.find(d => d._id.toString() === doctorEntry.doctorId.toString());
+            
+            if (!doctor) {
+              // Doctor no longer exists in database, remove from calendar
+              console.log(`➖ ${hospital.name} — Removing deleted doctor from ${dateStr}`);
+              existingDay.doctors.splice(i, 1);
+              needsUpdate = true;
+              dayNeedsUpdate = true;
+            } else if (!shouldDoctorBeAvailable(doctor, targetDate)) {
+              // Doctor exists but shouldn't be available on this date
+              console.log(`➖ ${hospital.name} — Removing ${doctor.firstName} ${doctor.lastName} from ${dateStr} (outside availability)`);
+              existingDay.doctors.splice(i, 1);
+              needsUpdate = true;
+              dayNeedsUpdate = true;
+            }
+          }
+
           if (dayNeedsUpdate) {
-            console.log(`✅ ${hospital.name} — ${dateStr} updated with new doctors.`);
+            console.log(`✅ ${hospital.name} — ${dateStr} updated with current doctor list.`);
           }
         } else {
-          // Case 2: New day, add it with all doctors
+          // Case 2: New day, add it with all doctors who should be available
           console.log(`➕ ${hospital.name} — Adding new day ${dateStr} to calendar`);
           needsUpdate = true;
           
           const doctorEntries = allDoctors
-            .filter(doc => {
-              // Ensure doc meets part-time contract dates if applicable
-              if (doc.isFullTime) return true;
-              return targetDate >= new Date(doc.contractStartDate) && targetDate <= new Date(doc.contractEndDate);
-            })
-            .map(doc => {
-              // Shifts are not initialized here since you commented out the logic
-              return {
-                doctorId: doc._id,
-                bookedAppointments: [],
-                bookedPatients: [],
-                breaks: []
-              };
-            });
+            .filter(doc => shouldDoctorBeAvailable(doc, targetDate))
+            .map(doc => ({
+              doctorId: doc._id,
+              bookedAppointments: [],
+              bookedPatients: [],
+              breaks: [],
+              workingHours: doc.isFullTime ? [] : doc.timeSlots || []
+            }));
 
           calendar.days.push({
             date: targetDate,
@@ -205,6 +150,25 @@ async function updateCalendar() {
   }
 }
 
+// Helper function to check if doctor should be available on a specific date
+function shouldDoctorBeAvailable(doctor, targetDate) {
+  // Full-time doctors are always available
+  if (doctor.isFullTime) return true;
+  
+  // Part-time doctors: check contract dates
+  const contractStart = doctor.contractStartDate ? new Date(doctor.contractStartDate) : null;
+  const contractEnd = doctor.contractEndDate ? new Date(doctor.contractEndDate) : null;
+  
+  // If no contract dates are set, assume available
+  if (!contractStart && !contractEnd) return true;
+  
+  // Check if target date is within contract period
+  if (contractStart && targetDate < contractStart) return false;
+  if (contractEnd && targetDate > contractEnd) return false;
+  
+  return true;
+}
+
 // Schedule the update to run every day at midnight
 cron.schedule('0 0 * * *', updateCalendar);
 
@@ -213,4 +177,8 @@ setTimeout(() => {
   updateCalendar().catch(console.error);
 }, 5000);
 
-module.exports = updateCalendar;
+// Export the function for manual triggering if needed
+module.exports = {
+  updateCalendar,
+  shouldDoctorBeAvailable
+};
