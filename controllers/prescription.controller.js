@@ -1,4 +1,5 @@
 const Prescription = require('../models/Prescription');
+const Vital = require('../models/Vital');
 const multer = require('multer');
 const path = require('path');
 const cloudinary = require('cloudinary').v2;
@@ -188,10 +189,19 @@ exports.getAllPrescriptions = async (req, res) => {
       .limit(limit * 1)
       .skip((page - 1) * limit);
 
+    // Fetch vitals for each prescription
+    const prescriptionsWithVitals = await Promise.all(prescriptions.map(async (p) => {
+      const vital = await Vital.findOne({ prescription_id: p._id });
+      return {
+        ...p.toObject(),
+        vitals: vital || null
+      };
+    }));
+
     const total = await Prescription.countDocuments(filter);
 
     res.json({
-      prescriptions,
+      prescriptions: prescriptionsWithVitals,
       totalPages: Math.ceil(total / limit),
       currentPage: page,
       total
@@ -219,7 +229,14 @@ exports.getPrescriptionById = async (req, res) => {
       return res.status(404).json({ error: 'Prescription not found' });
     }
 
-    res.json(prescription);
+    // Fetch associated vitals
+    const vitals = await Vital.findOne({ prescription_id: prescription._id });
+
+    // Return prescription converted to object with vitals attached
+    res.json({
+      ...prescription.toObject(),
+      vitals: vitals || null
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -290,11 +307,45 @@ exports.updatePrescription = async (req, res) => {
       return res.status(404).json({ error: 'Prescription not found' });
     }
 
+    // --- HANDLE VITALS UPDATE ---
+    let savedVitals = null;
+    if (req.body.vitals) {
+      const { bp, weight, pulse, spo2, temperature } = req.body.vitals;
+      
+      // Check if vitals already exist for this prescription
+      let vitalRecord = await Vital.findOne({ prescription_id: prescription._id });
+
+      if (vitalRecord) {
+        // Update existing
+        vitalRecord.bp = bp || vitalRecord.bp;
+        vitalRecord.weight = weight || vitalRecord.weight;
+        vitalRecord.pulse = pulse || vitalRecord.pulse;
+        vitalRecord.spo2 = spo2 || vitalRecord.spo2;
+        vitalRecord.temperature = temperature || vitalRecord.temperature;
+        vitalRecord.recorded_at = new Date(); // Update timestamp
+        savedVitals = await vitalRecord.save();
+      } else {
+        // Create new
+        savedVitals = await Vital.create({
+          patient_id: prescription.patient_id._id || prescription.patient_id, // Handle populated vs unpopulated
+          prescription_id: prescription._id,
+          recorded_by: req.user ? req.user._id : null, 
+          bp,
+          weight,
+          pulse,
+          spo2,
+          temperature
+        });
+      }
+    }
+
     res.json({ 
       prescription,
+      vitals: savedVitals, // Return vitals too
       message: 'Prescription updated successfully' 
     });
   } catch (err) {
+    console.error('Error updating prescription:', err);
     res.status(400).json({ error: err.message });
   }
 };

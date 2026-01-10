@@ -13,6 +13,8 @@ router.get('/:id', appointmentController.getAppointmentById);
 router.put('/:id/complete', appointmentController.completeAppointment)
 // Update
 router.put('/:id', appointmentController.updateAppointment);
+router.put('/:id/vitals', appointmentController.updateVitals); 
+router.get('/:id/vitals', appointmentController.getVitalsByAppointmentId); // New separate fetch route
 router.patch('/:id/status', calendarController.updateAppointmentStatus);
 
 // Delete

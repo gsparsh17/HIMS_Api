@@ -1,5 +1,7 @@
 const Appointment = require('../models/Appointment');
 const Calendar = require('../models/Calendar');
+const Prescription = require('../models/Prescription');
+const Vital = require('../models/Vital');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 
 // In your appointment completion function
@@ -162,8 +164,19 @@ exports.getAllAppointments = async (req, res) => {
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
-      .populate('hospital_id');
-    res.json(appointments);
+      .populate('hospital_id')
+      .sort({ appointment_date: -1 }); // Sort by date
+
+    // Fetch vitals for each appointment
+    const appointmentsWithVitals = await Promise.all(appointments.map(async (appt) => {
+      const vital = await Vital.findOne({ appointment_id: appt._id });
+      return {
+        ...appt.toObject(),
+        vitals: vital || null
+      };
+    }));
+
+    res.json(appointmentsWithVitals);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -178,7 +191,22 @@ exports.getAppointmentById = async (req, res) => {
       .populate('department_id')
       .populate('hospital_id');
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
-    res.json(appointment);
+
+    console.log(`[DEBUG] Fetching appointment ${req.params.id}`);
+
+    // Fetch associated vitals (linked primarily to appointment now)
+    const vitals = await Vital.findOne({ appointment_id: appointment._id }); 
+    console.log(`[DEBUG] Vitals via AppointmentID (${appointment._id}): ${vitals ? 'Found' : 'Not Found'}`);
+    
+    // Fetch associated prescription (independent of vitals now)
+    const prescription = await Prescription.findOne({ appointment_id: appointment._id });
+    console.log(`[DEBUG] Prescription via AppointmentID: ${prescription ? 'Found' : 'Not Found'}`);
+
+    res.json({
+      ...appointment.toObject(),
+      prescription: prescription || null,
+      vitals: vitals || null
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -440,25 +468,98 @@ exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
 
 // // Add this new function to appointment.controller.js
 
-// exports.updateAppointmentStatus = async (req, res) => {
-//   try {
-//     const { status } = req.body; // Gets the new status from the request
+// Update appointment status
+exports.updateAppointmentStatus = async (req, res) => {
+  try {
+    const { status } = req.body; 
 
-//     // Find the appointment by its ID from the URL and update it
-//     const appointment = await Appointment.findByIdAndUpdate(
-//       req.params.id,
-//       { status: status },
-//       { new: true, runValidators: true }
-//     );
+    const appointment = await Appointment.findByIdAndUpdate(
+      req.params.id,
+      { status: status },
+      { new: true, runValidators: true }
+    );
 
-//     if (!appointment) {
-//       // This handles the 404 error correctly
-//       return res.status(404).json({ error: 'Appointment not found' });
-//     }
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
 
-//     res.json(appointment);
-//   } catch (err) {
-//     console.error("Error updating appointment status:", err);
-//     res.status(500).json({ error: 'Server error while updating status' });
-//   }
-// };
+    res.json(appointment);
+  } catch (err) {
+    console.error("Error updating appointment status:", err);
+    res.status(500).json({ error: 'Server error while updating status' });
+  }
+};
+
+// Update Vitals for an Appointment
+exports.updateVitals = async (req, res) => {
+  try {
+    const { bp, weight, pulse, spo2, temperature } = req.body;
+    const appointmentId = req.params.id;
+
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    // Check if vitals already exist for this appointment
+    let vitalRecord = await Vital.findOne({ appointment_id: appointmentId });
+
+    if (vitalRecord) {
+      // Update existing
+      vitalRecord.bp = bp || vitalRecord.bp;
+      vitalRecord.weight = weight || vitalRecord.weight;
+      vitalRecord.pulse = pulse || vitalRecord.pulse;
+      vitalRecord.spo2 = spo2 || vitalRecord.spo2;
+      vitalRecord.temperature = temperature || vitalRecord.temperature;
+      vitalRecord.recorded_at = new Date();
+      vitalRecord.recorded_by = req.user ? req.user._id : vitalRecord.recorded_by;
+      await vitalRecord.save();
+    } else {
+      // Create new
+      vitalRecord = await Vital.create({
+        patient_id: appointment.patient_id,
+        appointment_id: appointmentId,
+        recorded_by: req.user ? req.user._id : null,
+        bp,
+        weight,
+        pulse,
+        spo2,
+        temperature
+      });
+    }
+
+    // Update appointment document to store a reference if needed, or just return success
+    // Optional: could mark appointment status as 'Checked In' or 'Vitals Taken' if you have such a status
+
+    res.json({
+      message: 'Vitals updated successfully',
+      vitals: vitalRecord
+    });
+
+  } catch (err) {
+    console.error("Error updating vitals:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get Vitals by Appointment ID
+exports.getVitalsByAppointmentId = async (req, res) => {
+  try {
+    const appointmentId = req.params.id;
+    console.log(`[DEBUG] Fetching vitals separately for Appointment ID: ${appointmentId}`);
+    
+    const vitals = await Vital.findOne({ appointment_id: appointmentId });
+    
+    if (!vitals) {
+      console.log(`[DEBUG] Vitals NOT found for Appointment ID: ${appointmentId}`);
+      // Return 200 with null or empty object so frontend doesn't error out
+      return res.json(null); 
+    }
+
+    console.log(`[DEBUG] Vitals FOUND:`, vitals);
+    res.json(vitals);
+  } catch (err) {
+    console.error("Error fetching vitals:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
