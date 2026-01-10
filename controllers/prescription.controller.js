@@ -10,6 +10,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+
 // Configure Multer for disk storage
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -49,6 +50,7 @@ exports.createPrescription = async (req, res) => {
       diagnosis, 
       symptoms, 
       notes, 
+      investigation,
       items, 
       prescription_image,
       validity_days,
@@ -57,16 +59,23 @@ exports.createPrescription = async (req, res) => {
       repeat_count 
     } = req.body;
 
-    // Filter out empty items
-    // const validItems = items && Array.isArray(items) 
-    //   ? items.filter(item => 
-    //       item.medicine_name && item.medicine_name.trim() !== '' &&
-    //       item.dosage && item.dosage.trim() !== '' &&
-    //       item.duration && item.duration.trim() !== '' &&
-    //       item.frequency && item.frequency.trim() !== '' &&
-    //       item.quantity && item.quantity > 0
-    //     )
-    //   : [];
+    // Process items to ensure all fields are included
+    const processedItems = items && Array.isArray(items) 
+      ? items.map(item => ({
+          medicine_name: item.medicine_name || '',
+          dosage: item.dosage || '',
+          medicine_type: item.medicine_type || '',
+          route_of_administration: item.route_of_administration || '',
+          frequency: item.frequency || '',
+          duration: item.duration || '',
+          quantity: item.quantity || 0,
+          instructions: item.instructions || '',
+          generic_name: item.generic_name || '',
+          timing: item.timing || undefined,
+          is_dispensed: item.is_dispensed || false,
+          dispensed_quantity: item.dispensed_quantity || 0
+        }))
+      : [];
 
     // Create prescription
     const prescription = new Prescription({ 
@@ -75,8 +84,9 @@ exports.createPrescription = async (req, res) => {
       appointment_id,
       diagnosis, 
       symptoms,
+      investigation: investigation || null,
       notes,
-      items,
+      items: processedItems,
       prescription_image: prescription_image || null,
       validity_days: validity_days || 30,
       follow_up_date: follow_up_date ? new Date(follow_up_date) : null,
@@ -151,6 +161,7 @@ exports.getAllPrescriptions = async (req, res) => {
       limit = 10, 
       patient_id, 
       doctor_id, 
+      appointment_id,
       status, 
       startDate, 
       endDate 
@@ -159,6 +170,7 @@ exports.getAllPrescriptions = async (req, res) => {
     const filter = {};
     if (patient_id) filter.patient_id = patient_id;
     if (doctor_id) filter.doctor_id = doctor_id;
+    if (appointment_id) filter.appointment_id = appointment_id;
     if (status) filter.status = status;
     
     if (startDate && endDate) {
@@ -220,6 +232,7 @@ exports.updatePrescription = async (req, res) => {
       diagnosis, 
       symptoms, 
       notes, 
+      investigation,
       items, 
       status,
       validity_days,
@@ -228,21 +241,29 @@ exports.updatePrescription = async (req, res) => {
       repeat_count 
     } = req.body;
 
-    // Filter out empty items if provided
-    let validItems;
+    // Process items to ensure all fields are included
+    let processedItems;
     if (items && Array.isArray(items)) {
-      validItems = items.filter(item => 
-        item.medicine_name && item.medicine_name.trim() !== '' &&
-        item.dosage && item.dosage.trim() !== '' &&
-        item.duration && item.duration.trim() !== '' &&
-        item.frequency && item.frequency.trim() !== '' &&
-        item.quantity && item.quantity > 0
-      );
+      processedItems = items.map(item => ({
+        medicine_name: item.medicine_name || '',
+        dosage: item.dosage || '',
+        medicine_type: item.medicine_type || '',
+        route_of_administration: item.route_of_administration || '',
+        frequency: item.frequency || '',
+        duration: item.duration || '',
+        quantity: item.quantity || 0,
+        instructions: item.instructions || '',
+        generic_name: item.generic_name || '',
+        timing: item.timing || undefined,
+        is_dispensed: item.is_dispensed || false,
+        dispensed_quantity: item.dispensed_quantity || 0
+      }));
     }
 
     const updateData = {
       diagnosis,
       symptoms,
+      investigation,
       notes,
       status,
       validity_days,
@@ -252,8 +273,8 @@ exports.updatePrescription = async (req, res) => {
     };
 
     // Only update items if provided
-    if (validItems) {
-      updateData.items = validItems;
+    if (processedItems) {
+      updateData.items = processedItems;
     }
 
     const prescription = await Prescription.findByIdAndUpdate(

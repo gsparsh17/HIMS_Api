@@ -10,6 +10,24 @@ const prescriptionItemSchema = new mongoose.Schema({
     type: String, 
     trim: true 
   },
+  medicine_type: { 
+    type: String, 
+    enum: {
+      values: ['Tablet', 'Capsule', 'Syrup', 'Injection', 'Ointment', 'Drops', 'Inhaler', 'Other', ''],
+      message: 'Please select a valid medicine type'
+    },
+    trim: true,
+    default: ''
+  }, // e.g., "Tablet", "Capsule", "Syrup"
+  route_of_administration: { 
+    type: String, 
+    enum: {
+      values: ['Tablet', 'Capsule', 'Syrup', 'Injection', 'Ointment', 'Drops', 'Inhaler', 'Other', ''],
+      message: 'Please select a valid route of administration'
+    },
+    trim: true,
+    default: ''
+  }, // Route through which patient will intake
   dosage: { 
     type: String, 
     required: false 
@@ -74,6 +92,10 @@ const prescriptionSchema = new mongoose.Schema({
   symptoms: { 
     type: String, 
     trim: true 
+  },
+  investigation: {
+    type: String,
+    trim: true
   },
   items: [prescriptionItemSchema],
   notes: { 
