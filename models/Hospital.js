@@ -15,6 +15,7 @@ const hospitalSchema = new mongoose.Schema({
   policyDetails: { type: String }, // Optional
   healthBima: { type: String }, // Optional
   additionalInfo: { type: String }, // Optional
+  vitalsEnabled: { type: Boolean, default: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
 
