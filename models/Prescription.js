@@ -22,7 +22,20 @@ const prescriptionItemSchema = new mongoose.Schema({
   route_of_administration: { 
     type: String, 
     enum: {
-      values: ['Tablet', 'Capsule', 'Syrup', 'Injection', 'Ointment', 'Drops', 'Inhaler', 'Other', ''],
+      values: [
+                                              "Oral",
+                                              "Sublingual",
+                                              "Intramuscular Injection",
+                                              "Intravenous Injection",
+                                              "Subcutaneous Injection",
+                                              "Topical Application",
+                                              "Inhalation",
+                                              "Nasal",
+                                              "Eye Drops",
+                                              "Ear Drops",
+                                              "Rectal",
+                                              "Other"
+                                            ],
       message: 'Please select a valid route of administration'
     },
     trim: true,
