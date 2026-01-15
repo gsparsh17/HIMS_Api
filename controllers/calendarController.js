@@ -454,7 +454,7 @@ exports.getDoctorCalendar = async (req, res) => {
       calendar.days.forEach(day => {
         const doctorDay = day.doctors.find(doc => {
           const id = doc.doctorId?._id || doc.doctorId;
-          return id.toString() === doctorId;
+          return id ? id.toString() === doctorId : false;
         });
         
         if (doctorDay) {
