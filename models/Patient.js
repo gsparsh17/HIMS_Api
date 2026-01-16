@@ -13,6 +13,9 @@ const patientSchema = new mongoose.Schema({
     type: String, 
     required: true 
   },
+  middle_name: {
+    type: String
+  },
   last_name: { 
     type: String, 
     required: true 
@@ -45,6 +48,15 @@ const patientSchema = new mongoose.Schema({
   },
   zipCode: { 
     type: String 
+  },
+  village: {
+    type: String
+  },
+  district: {
+    type: String
+  },
+  tehsil: {
+    type: String
   },
   emergency_contact: { 
     type: String 
