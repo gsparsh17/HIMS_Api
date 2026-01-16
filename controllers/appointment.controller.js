@@ -493,7 +493,7 @@ exports.updateAppointmentStatus = async (req, res) => {
 // Update Vitals for an Appointment
 exports.updateVitals = async (req, res) => {
   try {
-    const { bp, weight, pulse, spo2, temperature } = req.body;
+    const { bp, weight, pulse, spo2, temperature, respiratory_rate, random_blood_sugar, height } = req.body;
     const appointmentId = req.params.id;
 
     const appointment = await Appointment.findById(appointmentId);
@@ -511,6 +511,9 @@ exports.updateVitals = async (req, res) => {
       vitalRecord.pulse = pulse || vitalRecord.pulse;
       vitalRecord.spo2 = spo2 || vitalRecord.spo2;
       vitalRecord.temperature = temperature || vitalRecord.temperature;
+      vitalRecord.respiratory_rate = respiratory_rate || vitalRecord.respiratory_rate;
+      vitalRecord.random_blood_sugar = random_blood_sugar || vitalRecord.random_blood_sugar;
+      vitalRecord.height = height || vitalRecord.height;
       vitalRecord.recorded_at = new Date();
       vitalRecord.recorded_by = req.user ? req.user._id : vitalRecord.recorded_by;
       await vitalRecord.save();
@@ -524,7 +527,10 @@ exports.updateVitals = async (req, res) => {
         weight,
         pulse,
         spo2,
-        temperature
+        temperature,
+        respiratory_rate,
+        random_blood_sugar,
+        height
       });
     }
 

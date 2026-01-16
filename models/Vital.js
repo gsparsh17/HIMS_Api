@@ -39,6 +39,18 @@ const vitalSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  respiratory_rate: {
+    type: String,
+    trim: true
+  },
+  random_blood_sugar: {
+    type: String,
+    trim: true
+  },
+  height: {
+    type: String,
+    trim: true
+  },
   recorded_at: {
     type: Date,
     default: Date.now
