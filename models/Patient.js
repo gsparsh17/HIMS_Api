@@ -58,6 +58,9 @@ const patientSchema = new mongoose.Schema({
   tehsil: {
     type: String
   },
+  patient_image: {
+    type: String
+  },
   emergency_contact: { 
     type: String 
   },

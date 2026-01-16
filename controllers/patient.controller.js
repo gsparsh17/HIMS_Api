@@ -1,4 +1,43 @@
 const Patient = require('../models/Patient');
+const multer = require('multer');
+const path = require('path');
+const cloudinary = require('cloudinary').v2;
+const fs = require('fs');
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+// Configure Multer for disk storage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); 
+  }
+});
+
+// The upload endpoint with Multer middleware
+exports.uploadPatientImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+    const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: 'patients', // Separate folder for patients
+        resource_type: 'image'
+    });
+    const fs = require('fs');
+    fs.unlinkSync(req.file.path);
+
+    res.json({ imageUrl: result.secure_url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
 
 // Create a new patient
 exports.createPatient = async (req, res) => {
@@ -12,9 +51,9 @@ exports.createPatient = async (req, res) => {
 };
 
 // Get all patients
-exports.getAllPatients = async (req, res) => {
+  exports.getAllPatients = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search, gender, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
+    const { page = 1, limit = 10, search, gender, sortBy = 'registered_at', sortOrder = 'desc' } = req.query;
 
     const filter = {};
     if (search) {
