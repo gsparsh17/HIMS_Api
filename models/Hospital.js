@@ -5,6 +5,7 @@ const hospitalSchema = new mongoose.Schema({
   hospitalID: { type: String, required: true, unique: true }, // e.g., AB1234
   registryNo: { type: String, required: true },
   hospitalName: { type: String, required: true }, // Changed from name
+  logo: { type: String }, // URL from Cloudinary
   companyName: { type: String }, // Optional
   companyNumber: { type: String }, // Optional
   name: { type: String, required: true }, // Contact person name

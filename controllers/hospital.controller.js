@@ -81,6 +81,14 @@
 
 
 const Hospital = require('../models/Hospital.js');
+const cloudinary = require('cloudinary').v2;
+const fs = require('fs');
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 // Fetches details for all hospitals
 const getHospitalDetails = async (req, res) => {
@@ -125,6 +133,20 @@ const updateHospitalDetails = async (req, res) => {
   try {
     const { hospitalId } = req.params;
     const updateData = req.body; // Accept any fields from the request body
+
+    if (req.file) {
+      try {
+        const result = await cloudinary.uploader.upload(req.file.path, {
+          folder: 'hospital_logos',
+          resource_type: 'image'
+        });
+        updateData.logo = result.secure_url;
+        fs.unlinkSync(req.file.path); // Clean up local file
+      } catch (uploadErr) {
+        console.error('Logo Upload Error:', uploadErr);
+        // Continue but maybe warn?
+      }
+    }
 
     const hospital = await Hospital.findById(hospitalId);
     if (!hospital) {

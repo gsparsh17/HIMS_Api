@@ -30,6 +30,14 @@ const Doctor = require('../models/Doctor');
 const Staff = require('../models/Staff');
 const Pharmacy = require('../models/Pharmacy');
 const Department = require('../models/Department');
+const cloudinary = require('cloudinary').v2;
+const fs = require('fs');
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 exports.forgotPassword = async (req, res) => {
   const { email } = req.body;
@@ -100,6 +108,22 @@ exports.registerUser = async (req, res) => {
       fireNOC, hospitalName, companyName, companyNumber
     } = req.body;
 
+    let logoUrl = null;
+    if (req.file) {
+      try {
+        const result = await cloudinary.uploader.upload(req.file.path, {
+          folder: 'hospital_logos',
+          resource_type: 'image'
+        });
+        logoUrl = result.secure_url;
+        fs.unlinkSync(req.file.path); // Clean up local file
+      } catch (uploadErr) {
+        console.error('Logo Upload Error:', uploadErr);
+        // Continue without logo or handle error? For now, continue but maybe warn?
+        // If strict, return error. Let's just log it and proceed for better UX if upload fails slightly.
+      }
+    }
+
     const userExists = await User.findOne({ email });
     if (userExists) return res.status(400).json({ message: 'User already exists' });
 
@@ -122,6 +146,8 @@ exports.registerUser = async (req, res) => {
       policyDetails,
       healthBima,
       additionalInfo,
+      additionalInfo,
+      logo: logoUrl,
       createdBy: user._id
     });
 
