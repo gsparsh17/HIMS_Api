@@ -165,16 +165,52 @@ exports.getBillById = async (req, res) => {
 };
 
 // Update bill status
+// Update bill status
 exports.updateBillStatus = async (req, res) => {
   try {
+    const { status } = req.body;
+    
+    // 1. Update the Bill
     const bill = await Bill.findByIdAndUpdate(
       req.params.id,
-      { status: req.body.status },
+      { status: status },
       { new: true }
     );
     if (!bill) return res.status(404).json({ error: 'Bill not found' });
+
+    // 2. Sync with Invoice if it exists
+    if (status === 'Paid') {
+      // Find invoice by bill_id (using the bill we just found)
+      // Note: bill.invoice_id might not be populated in older records, so search by bill_id field in Invoice
+      const invoice = await Invoice.findOne({ bill_id: bill._id });
+      
+      if (invoice) {
+        invoice.status = 'Paid';
+        invoice.amount_paid = invoice.total;
+        invoice.balance_due = 0;
+        // Update payment history if needed, but for now just updating status/amounts
+        invoice.payment_history.push({
+          amount: invoice.total,
+          method: bill.payment_method || 'Cash',
+          date: new Date(),
+          status: 'Completed'
+        });
+        await invoice.save();
+      }
+    } else if (status === 'Pending') {
+       // If reverting to pending (unlikely helper, but good for completeness)
+       const invoice = await Invoice.findOne({ bill_id: bill._id });
+       if (invoice) {
+         invoice.status = 'Issued'; // or Overdue depending on date, but Issued is safe
+         invoice.amount_paid = 0;
+         invoice.balance_due = invoice.total;
+         await invoice.save();
+       }
+    }
+
     res.json(bill);
   } catch (err) {
+    console.error("Error updating bill status:", err);
     res.status(400).json({ error: err.message });
   }
 };
