@@ -356,6 +356,10 @@ exports.generateAppointmentInvoice = async (req, res) => {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
+    if (!appointment.patient_id) {
+      return res.status(400).json({ error: 'Appointment has no associated patient. Please check the appointment record.' });
+    }
+
     const subtotal = items.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
     const tax = items.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
     const total = subtotal + tax - discount;
@@ -376,7 +380,7 @@ exports.generateAppointmentInvoice = async (req, res) => {
       total: total,
       status: 'Issued',
       notes: notes,
-      created_by: req.user._id
+      created_by: req.user ? req.user._id : null
     });
 
     await invoice.save();
