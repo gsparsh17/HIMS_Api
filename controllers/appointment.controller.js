@@ -483,6 +483,22 @@ exports.updateAppointmentStatus = async (req, res) => {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
+    // Trigger salary calculation if status is completed
+    if (status === 'Completed') {
+      try {
+        await calculatePartTimeSalary(appointment._id);
+        
+        // Also ensure actual_end_time is set if not already
+        if (!appointment.actual_end_time) {
+          appointment.actual_end_time = new Date();
+          await appointment.save();
+        }
+
+      } catch (salaryError) {
+        console.error('Error calculating part-time salary during status update:', salaryError);
+      }
+    }
+
     res.json(appointment);
   } catch (err) {
     console.error("Error updating appointment status:", err);

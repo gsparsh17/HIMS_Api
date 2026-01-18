@@ -16,9 +16,9 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
 
     const doctor = appointment.doctor_id;
     
-    // Check if doctor is part-time
-    if (doctor.isFullTime) {
-      console.log('Doctor is full-time, no salary calculation needed');
+    // Check payment type instead of just isFullTime flag for more robustness
+    if (['Salary', 'Contractual Salary'].includes(doctor.paymentType)) {
+      console.log('Doctor is on fixed salary, no per-visit calculation needed');
       return null;
     }
 
@@ -182,6 +182,41 @@ exports.getDoctorSalaryHistory = async (req, res) => {
   try {
     const { doctorId } = req.params;
     const { period, startDate, endDate, page = 1, limit = 10 } = req.query;
+
+    // --- AUTO-GENERATE CHECK FOR FULL TIME DOCTORS ---
+    // If querying for a full-time doctor, ensure current month's pending salary exists
+    try {
+      const doctor = await Doctor.findById(doctorId);
+      if (doctor && ['Salary', 'Contractual Salary'].includes(doctor.paymentType)) {
+        const now = new Date();
+        const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        
+        const exists = await Salary.findOne({
+          doctor_id: doctorId,
+          period_type: 'monthly',
+          period_start: { $gte: firstDayOfMonth, $lte: lastDayOfMonth }
+        });
+
+        if (!exists) {
+           await new Salary({
+             doctor_id: doctorId,
+             period_type: 'monthly',
+             period_start: firstDayOfMonth,
+             period_end: lastDayOfMonth,
+             amount: doctor.amount,
+             base_salary: doctor.amount,
+             net_amount: doctor.amount,
+             status: 'pending',
+             notes: `Auto-generated monthly salary for ${now.toLocaleString('default', { month: 'long' })}`
+           }).save();
+        }
+      }
+    } catch (err) {
+      console.error("Auto-generate salary error:", err);
+      // Continue anyway, don't block the read
+    }
+    // --------------------------------------------------
 
     const filter = { doctor_id: doctorId };
     
