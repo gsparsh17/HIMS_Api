@@ -131,16 +131,44 @@ patientSchema.pre('save', async function (next) {
         throw new Error('Hospital ID not found');
       }
 
-      // Use structured patient ID
-      this.patientId = generateStructuredPatientId(
-        this.first_name,
-        this.last_name,
-        this.phone,
-        hospital.hospitalID
-      );
-      
-      // Store hospital ID for reference
-      this.hospitalId = hospital.hospitalID;
+      // Try to find existing patient with same name and phone
+      const existingPatient = await mongoose.model('Patient').findOne({
+        first_name: this.first_name,
+        last_name: this.last_name,
+        phone: this.phone
+      });
+
+      if (existingPatient) {
+        // Use existing patient ID instead of creating new
+        this.patientId = existingPatient.patientId;
+        this.hospitalId = existingPatient.hospitalId;
+      } else {
+        // Generate new ID with retry logic
+        let patientId;
+        let attempts = 0;
+        const maxAttempts = 5;
+
+        do {
+          patientId = generateStructuredPatientId(
+            this.first_name,
+            this.last_name,
+            this.phone,
+            hospital.hospitalID,
+          );
+          attempts++;
+          
+          // Check if this ID already exists
+          const exists = await mongoose.model('Patient').findOne({ patientId });
+          if (!exists) break;
+          
+          if (attempts >= maxAttempts) {
+            throw new Error('Could not generate unique patient ID');
+          }
+        } while (true);
+
+        this.patientId = patientId;
+        this.hospitalId = hospital.hospitalID;
+      }
     }
 
     next();
