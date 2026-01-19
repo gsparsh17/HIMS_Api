@@ -85,6 +85,18 @@ const patientSchema = new mongoose.Schema({
     enum: ['opd', 'ipd'],
     default: 'ipd',
   },
+  aadhaar_number: {  // Added Aadhaar number field
+    type: String,
+    trim: true,
+    validate: {
+      validator: function(v) {
+        // Validate 12-digit Aadhaar number (optional)
+        if (!v) return true; // Allow empty
+        return /^\d{12}$/.test(v);
+      },
+      message: 'Aadhaar number must be 12 digits'
+    }
+  },
   registered_at: { 
     type: Date, 
     default: Date.now 
