@@ -16,9 +16,6 @@ router.get('/', doctorController.getAllDoctors);
 // Get doctors by department (also more specific than just /:id)
 router.get('/department/:departmentId', doctorController.getDoctorsByDepartmentId);
 
-
-// --- General, parameterized routes last ---
-
 // Get a single doctor by ID
 router.get('/:id', doctorController.getDoctorById);
 

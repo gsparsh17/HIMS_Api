@@ -387,11 +387,19 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
       .populate('department_id')
       .populate('hospital_id');
 
-    if (appointments.length === 0) {
+    const appointmentsWithVitals = await Promise.all(appointments.map(async (appt) => {
+      const vital = await Vital.findOne({ appointment_id: appt._id });
+      return {
+        ...appt.toObject(),
+        vitals: vital || null
+      };
+    }));
+
+    if (appointmentsWithVitals.length === 0) {
       return res.status(404).json({ error: 'No appointments found for this doctor' });
     }
 
-    res.json(appointments);
+    res.json(appointmentsWithVitals);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
