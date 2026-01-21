@@ -22,7 +22,6 @@ const patientSchema = new mongoose.Schema({
   },
   email: { 
   type: String,
-  sparse: true  // This allows multiple empty/null values
 },
   phone: { 
     type: String, 
