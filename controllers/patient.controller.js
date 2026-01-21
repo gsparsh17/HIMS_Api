@@ -53,7 +53,7 @@ exports.createPatient = async (req, res) => {
 // Get all patients
   exports.getAllPatients = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search, gender, sortBy = 'registered_at', sortOrder = 'desc' } = req.query;
+    const { page = 1, limit = 1000, search, gender, sortBy = 'registered_at', sortOrder = 'desc' } = req.query;
 
     const filter = {};
     if (search) {
