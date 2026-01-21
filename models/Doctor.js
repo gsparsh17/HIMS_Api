@@ -85,7 +85,7 @@ const doctorSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   phone: { type: String, required: true },
   dateOfBirth: { type: Date },
-  gender: { type: String, enum: ['male', 'female', 'other'] },
+  gender: { type: String },
   address: { type: String },
   city: { type: String },
   state: { type: String },
