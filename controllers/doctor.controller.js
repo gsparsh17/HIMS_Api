@@ -8,26 +8,14 @@ const Calendar = require('../models/Calendar');
 exports.createDoctor = async (req, res) => {
   try {
     const {
-      firstName, lastName, email, password,
+      firstName, lastName, email,
       isFullTime, contractStartDate, contractEndDate, aadharNumber, panNumber,
       timeSlots, workingDaysPerWeek, visitsPerWeek, hospitalId
     } = req.body;
 
-    // ✅ Check if user already exists
-    const userExists = await User.findOne({ email });
-    if (userExists) return res.status(400).json({ error: 'User with this email already exists' });
-
-    // ✅ Create User
-    const newUser = await User.create({
-      name: `${firstName} ${lastName}`,
-      email,
-      password,
-      role: 'doctor'
-    });
-
-    // ✅ Create Doctor
+    // ✅ Create Doctor (User creation decoupled)
     const newDoctor = await Doctor.create({
-      user_id: newUser._id,
+      // user_id: newUser._id, // User created separately via Staff Login
       firstName,
       lastName,
       email,
@@ -88,9 +76,8 @@ exports.createDoctor = async (req, res) => {
     }
 
     res.status(201).json({
-      message: 'Doctor and user created successfully',
-      doctor: newDoctor,
-      userId: newUser._id
+      message: 'Doctor created successfully (Please set login credentials in Staff Login)',
+      doctor: newDoctor
     });
   } catch (err) {
     console.error('Doctor creation error:', err.message);
@@ -221,6 +208,43 @@ exports.updateDoctor = async (req, res) => {
     const doctor = await Doctor.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
     
+    // Check if password update is requested
+    if (req.body.password) {
+      const { password } = req.body;
+      // Find associated user by user_id
+      let user = await User.findById(doctor.user_id);
+      
+      if (user) {
+        // Update existing user
+        user.password = password;
+        // Also update details if they changed
+        user.name = `${doctor.firstName} ${doctor.lastName}`;
+        user.email = doctor.email; 
+        await user.save();
+        console.log(`✅ Password updated for user associated with Doctor ${doctor._id}`);
+      } else {
+        // If for some reason user doesn't exist (legacy data?), create one
+        // Try finding by email first to avoid duplicate email error
+        user = await User.findOne({ email: doctor.email });
+        if (user) {
+           user.password = password;
+           user.role = 'doctor'; // Ensure role is doctor
+           await user.save();
+        } else {
+           user = await User.create({
+            name: `${doctor.firstName} ${doctor.lastName}`,
+            email: doctor.email,
+            password: password,
+            role: 'doctor'
+          });
+          // Update doctor with new user_id
+          doctor.user_id = user._id;
+          await doctor.save();
+        }
+        console.log(`✅ Created/Linked User for Doctor ${doctor._id}`);
+      }
+    }
+
     // Also update calendar if doctor's availability changed
     if (req.body.timeSlots || req.body.isFullTime || req.body.contractStartDate || req.body.contractEndDate) {
       try {

@@ -17,8 +17,7 @@ const patientSchema = new mongoose.Schema({
     type: String
   },
   last_name: { 
-    type: String, 
-    required: true 
+    type: String
   },
   email: { 
   type: String,

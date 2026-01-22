@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 
 const staffSchema = new mongoose.Schema({
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   staffId: { type: String, unique: true },
   first_name: { type: String, required: true },
   last_name: { type: String, required: true },
@@ -17,7 +18,7 @@ const staffSchema = new mongoose.Schema({
   joined_at: { type: Date, default: Date.now }
 });
 
-const Hospital = require('./Hospital'); // import the Hospital model
+const Hospital = require('./Hospital'); 
 
 function generateRandomCode(length = 4) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';

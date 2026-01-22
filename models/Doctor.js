@@ -78,7 +78,7 @@ const mongoose = require('mongoose');
 // module.exports = mongoose.model('Doctor', doctorSchema);
 
 const doctorSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Made optional to separate credential creation
   doctorId: { type: String, unique: true },
   firstName: { type: String, required: true },
   lastName: { type: String, required: true },

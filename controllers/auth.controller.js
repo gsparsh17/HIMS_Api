@@ -154,6 +154,9 @@ exports.registerUser = async (req, res) => {
     await Department.create({
       name: "Administration"
     })
+    await Department.create({
+      name: "Emergency Department (ED/ER)"
+    })
 
     }
   catch (hospitalErr) {

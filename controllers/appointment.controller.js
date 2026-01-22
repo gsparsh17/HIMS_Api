@@ -395,10 +395,6 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
       };
     }));
 
-    if (appointmentsWithVitals.length === 0) {
-      return res.status(404).json({ error: 'No appointments found for this doctor' });
-    }
-
     res.json(appointmentsWithVitals);
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -98,16 +98,41 @@ exports.updateStaff = async (req, res) => {
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
 
     const { fullName, email, phone, password } = req.body;
+    const validRoles = [
+    'nurse',
+    'wardboy', 
+    'registrar',
+    'lab technician',
+    'radiologist',
+    'surgeon',
+    'anesthesiologist',
+    'accountant',
+    'cleaner',
+    'security',
+    'ambulance driver',
+    'hr',
+    'it support',
+    'others',
+];
 
     // If password is provided, attempt to create or update the User account
     if (password) {
       const existingUser = await User.findOne({ email });
+      let targetRole = 'staff';
+      if (staff.role) {
+        const lowerRole = staff.role.toLowerCase();
+        if (validRoles.includes(lowerRole)) {
+            targetRole = lowerRole;
+        } else {
+            targetRole = 'staff'; 
+        }
+      }
 
       if (existingUser) {
-        // Update existing user password or details if necessary
         existingUser.password = password; // (Assumes pre-save hook hashes the password)
         existingUser.name = fullName || `${staff.first_name} ${staff.last_name}`;
         existingUser.phone = phone;
+        existingUser.role = targetRole; // Update role as well just in case
         await existingUser.save();
       } else {
         // Create new user
@@ -115,11 +140,14 @@ exports.updateStaff = async (req, res) => {
           name: fullName || `${staff.first_name} ${staff.last_name}`,
           email,
           phone,
-          role: 'staff',
+          role: targetRole,
           password
         });
         await newUser.save();
       }
+
+      staff.user_id = existingUser ? existingUser._id : newUser._id;
+      await staff.save();
     }
 
     res.json({ message: 'Staff updated successfully', staff });
