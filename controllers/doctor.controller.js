@@ -315,9 +315,6 @@ exports.getDoctorsByDepartmentId = async (req, res) => {
 
     const doctors = await Doctor.find({ department: departmentId }).populate('department').populate('user_id', 'name email role');
 
-    if (!doctors.length) {
-      return res.status(404).json({ error: 'No doctors found for this department' });
-    }
 
     res.json(doctors);
   } catch (err) {
