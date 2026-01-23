@@ -5,7 +5,7 @@ const staffSchema = new mongoose.Schema({
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   staffId: { type: String, unique: true },
   first_name: { type: String, required: true },
-  last_name: { type: String, required: true },
+  last_name: { type: String },
   email: { type: String, required: true, unique: true },
   phone: { type: String, required: true },
   role: { type: String, required: true }, // e.g., Doctor, Nurse, Admin

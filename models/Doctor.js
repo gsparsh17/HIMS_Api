@@ -81,7 +81,7 @@ const doctorSchema = new mongoose.Schema({
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Made optional to separate credential creation
   doctorId: { type: String, unique: true },
   firstName: { type: String, required: true },
-  lastName: { type: String, required: true },
+  lastName: { type: String },
   email: { type: String, required: true, unique: true },
   phone: { type: String, required: true },
   dateOfBirth: { type: Date },
