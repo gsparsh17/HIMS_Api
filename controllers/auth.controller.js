@@ -105,7 +105,7 @@ exports.registerUser = async (req, res) => {
       name, email, password, role,
       hospitalID, registryNo, address, contact,
       policyDetails, healthBima, additionalInfo,
-      fireNOC, hospitalName, companyName, companyNumber
+      fireNOC, hospitalName, companyName, companyNumber, state, city, pincode
     } = req.body;
 
     let logoUrl = null;
@@ -119,8 +119,6 @@ exports.registerUser = async (req, res) => {
         fs.unlinkSync(req.file.path); // Clean up local file
       } catch (uploadErr) {
         console.error('Logo Upload Error:', uploadErr);
-        // Continue without logo or handle error? For now, continue but maybe warn?
-        // If strict, return error. Let's just log it and proceed for better UX if upload fails slightly.
       }
     }
 
@@ -138,6 +136,9 @@ exports.registerUser = async (req, res) => {
       hospitalName, // ✅ Updated
       companyName,
       companyNumber,
+      state,
+      city,
+      pincode,
       name, // Contact person name
       address,
       contact,
