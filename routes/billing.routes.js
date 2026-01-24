@@ -3,18 +3,14 @@ const router = express.Router();
 const billingController = require('../controllers/billing.controller');
 
 // Create bill
-router.post('/', billingController.createBill);
+router.post('/procedure', billingController.generateProcedureBill);
 
-// Read bills
+// Existing routes
+router.post('/', billingController.createBill);
 router.get('/', billingController.getAllBills);
 router.get('/:id', billingController.getBillById);
-
-// Update bill status
 router.put('/:id', billingController.updateBillStatus);
-
-// Delete bill
 router.delete('/:id', billingController.deleteBill);
-
 router.get('/appointment/:appointmentId', billingController.getBillByAppointmentId);
 
 

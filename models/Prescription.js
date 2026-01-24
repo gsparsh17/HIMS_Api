@@ -18,50 +18,50 @@ const prescriptionItemSchema = new mongoose.Schema({
     },
     trim: true,
     default: ''
-  }, // e.g., "Tablet", "Capsule", "Syrup"
+  },
   route_of_administration: { 
     type: String, 
     enum: {
       values: [
-                                              "Oral",
-                                              "Sublingual",
-                                              "Intramuscular Injection",
-                                              "Intravenous Injection",
-                                              "Subcutaneous Injection",
-                                              "Topical Application",
-                                              "Inhalation",
-                                              "Nasal",
-                                              "Eye Drops",
-                                              "Ear Drops",
-                                              "Rectal",
-                                              "Other"
-                                            ],
+        "Oral",
+        "Sublingual",
+        "Intramuscular Injection",
+        "Intravenous Injection",
+        "Subcutaneous Injection",
+        "Topical Application",
+        "Inhalation",
+        "Nasal",
+        "Eye Drops",
+        "Ear Drops",
+        "Rectal",
+        "Other"
+      ],
       message: 'Please select a valid route of administration'
     },
     trim: true,
     default: ''
-  }, // Route through which patient will intake
+  },
   dosage: { 
     type: String, 
     required: false 
-  }, // e.g., "500mg", "10ml"
+  },
   frequency: { 
     type: String, 
     required: true 
-  }, // e.g., "Twice daily", "Once at night"
+  },
   duration: { 
     type: String, 
     required: true 
-  }, // e.g., "7 days", "30 days"
+  },
   quantity: { 
     type: Number, 
     required: false, 
     min: 1 
-  }, // Number of units to dispense
+  },
   instructions: { 
     type: String, 
     trim: true 
-  }, // Additional instructions
+  },
   timing: { 
     type: String, 
     enum: ['Before food', 'After food', 'With food', 'Anytime'] 
@@ -76,6 +76,50 @@ const prescriptionItemSchema = new mongoose.Schema({
   },
   dispensed_date: { 
     type: Date 
+  }
+});
+
+const recommendedProcedureSchema = new mongoose.Schema({
+  procedure_code: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  procedure_name: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  notes: {
+    type: String,
+    trim: true
+  },
+  status: {
+    type: String,
+    enum: ['Pending', 'Scheduled', 'In Progress', 'Completed', 'Cancelled'],
+    default: 'Pending'
+  },
+  scheduled_date: {
+    type: Date
+  },
+  completed_date: {
+    type: Date
+  },
+  performed_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Doctor'
+  },
+  cost: {
+    type: Number,
+    default: 0
+  },
+  is_billed: {
+    type: Boolean,
+    default: false
+  },
+  invoice_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Invoice'
   }
 });
 
@@ -111,13 +155,14 @@ const prescriptionSchema = new mongoose.Schema({
     trim: true
   },
   items: [prescriptionItemSchema],
+  recommendedProcedures: [recommendedProcedureSchema],
   notes: { 
     type: String, 
     trim: true 
   },
   prescription_image: { 
     type: String 
-  }, // Cloudinary URL or file path
+  },
   status: { 
     type: String, 
     enum: ['Active', 'Completed', 'Cancelled', 'Expired'], 
@@ -130,7 +175,7 @@ const prescriptionSchema = new mongoose.Schema({
   validity_days: { 
     type: Number, 
     default: 30 
-  }, // Prescription validity period
+  },
   follow_up_date: { 
     type: Date 
   },
@@ -141,10 +186,19 @@ const prescriptionSchema = new mongoose.Schema({
   repeat_count: { 
     type: Number, 
     default: 0 
-  }, // Number of times prescription can be repeated
+  },
   created_by: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'User' 
+  },
+  has_procedures: {
+    type: Boolean,
+    default: false
+  },
+  procedures_status: {
+    type: String,
+    enum: ['None', 'Pending', 'Partial', 'Completed'],
+    default: 'None'
   }
 }, { 
   timestamps: true 
@@ -159,6 +213,27 @@ prescriptionSchema.pre('save', async function(next) {
     const month = (date.getMonth() + 1).toString().padStart(2, '0');
     this.prescription_number = `RX${year}${month}${(count + 1).toString().padStart(4, '0')}`;
   }
+  
+  // Update procedures related fields
+  if (this.recommendedProcedures && this.recommendedProcedures.length > 0) {
+    this.has_procedures = true;
+    
+    // Calculate procedures status
+    const totalProcedures = this.recommendedProcedures.length;
+    const completedProcedures = this.recommendedProcedures.filter(p => p.status === 'Completed').length;
+    
+    if (completedProcedures === 0) {
+      this.procedures_status = 'Pending';
+    } else if (completedProcedures === totalProcedures) {
+      this.procedures_status = 'Completed';
+    } else {
+      this.procedures_status = 'Partial';
+    }
+  } else {
+    this.has_procedures = false;
+    this.procedures_status = 'None';
+  }
+  
   next();
 });
 
@@ -179,10 +254,37 @@ prescriptionSchema.virtual('is_fully_dispensed').get(function() {
   return this.items.every(item => item.is_dispensed);
 });
 
+// Check if all procedures are completed
+prescriptionSchema.virtual('are_procedures_completed').get(function() {
+  if (!this.has_procedures) return true;
+  return this.recommendedProcedures.every(proc => proc.status === 'Completed');
+});
+
+// Virtual for pending procedures count
+prescriptionSchema.virtual('pending_procedures_count').get(function() {
+  if (!this.has_procedures) return 0;
+  return this.recommendedProcedures.filter(p => p.status === 'Pending').length;
+});
+
+// Virtual for today's procedures
+prescriptionSchema.virtual('todays_procedures').get(function() {
+  if (!this.has_procedures) return [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return this.recommendedProcedures.filter(p => {
+    if (!p.scheduled_date) return false;
+    const scheduledDate = new Date(p.scheduled_date);
+    scheduledDate.setHours(0, 0, 0, 0);
+    return scheduledDate.getTime() === today.getTime() && p.status !== 'Completed';
+  });
+});
+
 // Index for better query performance
 prescriptionSchema.index({ patient_id: 1, issue_date: -1 });
 prescriptionSchema.index({ doctor_id: 1, issue_date: -1 });
 prescriptionSchema.index({ prescription_number: 1 });
 prescriptionSchema.index({ status: 1 });
+prescriptionSchema.index({ 'recommendedProcedures.status': 1 });
+prescriptionSchema.index({ 'recommendedProcedures.scheduled_date': 1 });
 
 module.exports = mongoose.model('Prescription', prescriptionSchema);

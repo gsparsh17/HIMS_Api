@@ -1,9 +1,9 @@
 const Prescription = require('../models/Prescription');
 const Vital = require('../models/Vital');
+const Procedure = require('../models/Procedure'); // Make sure to import Procedure model
 const multer = require('multer');
 const path = require('path');
 const cloudinary = require('cloudinary').v2;
-const fs = require('fs');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -11,23 +11,390 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-
 // Configure Multer for disk storage
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); 
-  }
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); 
+  }
 });
+
+// Helper function to extract procedure code from various formats
+function extractProcedureCode(input) {
+  if (!input) return '';
+  
+  // If it matches a procedure code pattern (like D2161)
+  const codePattern = /^[A-Z]\d+$/i;
+  if (codePattern.test(input)) {
+    return input.toUpperCase();
+  }
+  
+  // Try to extract from formatted string like "D2161 - Amalgam – four surfaces (₹2290)"
+  const match = input.match(/^([A-Z]\d+)/i);
+  if (match) {
+    return match[1].toUpperCase();
+  }
+  
+  return input.toUpperCase();
+}
+
+// Get prescriptions with recommended procedures
+exports.getPrescriptionsWithProcedures = async (req, res) => {
+  try {
+    const { status, date, patient_id } = req.query;
+    
+    const filter = {
+      'recommendedProcedures.0': { $exists: true }, // Has at least one procedure
+      'has_procedures': true
+    };
+    
+    if (status) {
+      filter['recommendedProcedures.status'] = status;
+    }
+    
+    if (date) {
+      const targetDate = new Date(date);
+      targetDate.setHours(0, 0, 0, 0);
+      const nextDate = new Date(targetDate);
+      nextDate.setDate(targetDate.getDate() + 1);
+      
+      filter['recommendedProcedures.scheduled_date'] = {
+        $gte: targetDate,
+        $lt: nextDate
+      };
+    }
+    
+    if (patient_id) {
+      filter.patient_id = patient_id;
+    }
+    
+    const prescriptions = await Prescription.find(filter)
+      .populate('patient_id', 'first_name last_name patientId phone')
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('appointment_id', 'appointment_date type')
+      .sort({ issue_date: -1 });
+    
+    // Extract procedures for easier access
+    const procedures = [];
+    prescriptions.forEach(prescription => {
+      prescription.recommendedProcedures.forEach(proc => {
+        if ((!status || proc.status === status) && 
+            (!date || (proc.scheduled_date && 
+              new Date(proc.scheduled_date).toDateString() === new Date(date).toDateString()))) {
+          procedures.push({
+            prescription_id: prescription._id,
+            prescription_number: prescription.prescription_number,
+            patient: prescription.patient_id,
+            doctor: prescription.doctor_id,
+            appointment: prescription.appointment_id,
+            diagnosis: prescription.diagnosis,
+            ...proc.toObject()
+          });
+        }
+      });
+    });
+    
+    res.json({
+      success: true,
+      count: procedures.length,
+      procedures
+    });
+  } catch (err) {
+    console.error('Error fetching prescriptions with procedures:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get today's procedures
+exports.getTodaysProcedures = async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+    
+    const prescriptions = await Prescription.find({
+      'recommendedProcedures.scheduled_date': {
+        $gte: today,
+        $lt: tomorrow
+      },
+      'recommendedProcedures.status': { $in: ['Pending', 'Scheduled'] }
+    })
+    .populate('patient_id', 'first_name last_name patientId phone age gender')
+    .populate('doctor_id', 'firstName lastName')
+    .populate('appointment_id', 'appointment_date type')
+    .sort({ 'recommendedProcedures.scheduled_date': 1 });
+    
+    // Extract today's procedures
+    const todaysProcedures = [];
+    prescriptions.forEach(prescription => {
+      prescription.recommendedProcedures.forEach(proc => {
+        if (proc.scheduled_date && 
+            new Date(proc.scheduled_date) >= today && 
+            new Date(proc.scheduled_date) < tomorrow &&
+            ['Pending', 'Scheduled'].includes(proc.status)) {
+          todaysProcedures.push({
+            _id: proc._id,
+            prescription_id: prescription._id,
+            prescription_number: prescription.prescription_number,
+            patient: prescription.patient_id,
+            doctor: prescription.doctor_id,
+            appointment: prescription.appointment_id,
+            diagnosis: prescription.diagnosis,
+            procedure_code: proc.procedure_code,
+            procedure_name: proc.procedure_name,
+            notes: proc.notes,
+            status: proc.status,
+            scheduled_date: proc.scheduled_date,
+            performed_by: proc.performed_by,
+            cost: proc.cost,
+            is_billed: proc.is_billed
+          });
+        }
+      });
+    });
+    
+    // Group by status
+    const pendingProcedures = todaysProcedures.filter(p => p.status === 'Pending');
+    const scheduledProcedures = todaysProcedures.filter(p => p.status === 'Scheduled');
+    
+    res.json({
+      success: true,
+      count: todaysProcedures.length,
+      todaysProcedures,
+      pendingProcedures,
+      scheduledProcedures,
+      summary: {
+        pending: pendingProcedures.length,
+        scheduled: scheduledProcedures.length,
+        total: todaysProcedures.length
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching today\'s procedures:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Update procedure status
+exports.updateProcedureStatus = async (req, res) => {
+  try {
+    const { prescription_id, procedure_id } = req.params;
+    const { status, performed_by, completed_date, notes, scheduled_date } = req.body;
+    
+    const prescription = await Prescription.findById(prescription_id);
+    if (!prescription) {
+      return res.status(404).json({ error: 'Prescription not found' });
+    }
+    
+    const procedureIndex = prescription.recommendedProcedures.findIndex(
+      p => p._id.toString() === procedure_id
+    );
+    
+    if (procedureIndex === -1) {
+      return res.status(404).json({ error: 'Procedure not found in this prescription' });
+    }
+    
+    // Update procedure
+    if (status) {
+      prescription.recommendedProcedures[procedureIndex].status = status;
+      
+      if (status === 'Completed') {
+        prescription.recommendedProcedures[procedureIndex].completed_date = completed_date || new Date();
+      }
+    }
+    
+    if (performed_by) {
+      prescription.recommendedProcedures[procedureIndex].performed_by = performed_by;
+    }
+    
+    if (scheduled_date) {
+      prescription.recommendedProcedures[procedureIndex].scheduled_date = scheduled_date;
+      if (prescription.recommendedProcedures[procedureIndex].status === 'Pending') {
+        prescription.recommendedProcedures[procedureIndex].status = 'Scheduled';
+      }
+    }
+    
+    if (notes) {
+      prescription.recommendedProcedures[procedureIndex].notes = 
+        prescription.recommendedProcedures[procedureIndex].notes ? 
+        `${prescription.recommendedProcedures[procedureIndex].notes}\n${notes}` : 
+        notes;
+    }
+    
+    await prescription.save();
+    
+    // Return updated prescription
+    const updatedPrescription = await Prescription.findById(prescription_id)
+      .populate('patient_id', 'first_name last_name')
+      .populate('doctor_id', 'firstName lastName')
+      .populate('recommendedProcedures.performed_by', 'firstName lastName');
+    
+    res.json({
+      success: true,
+      message: 'Procedure status updated successfully',
+      prescription: updatedPrescription,
+      updatedProcedure: updatedPrescription.recommendedProcedures[procedureIndex]
+    });
+  } catch (err) {
+    console.error('Error updating procedure status:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get procedures by status
+exports.getProceduresByStatus = async (req, res) => {
+  try {
+    const { status } = req.params;
+    const { patient_id, doctor_id, start_date, end_date } = req.query;
+    
+    const filter = {
+      'recommendedProcedures.status': status,
+      'has_procedures': true
+    };
+    
+    if (patient_id) {
+      filter.patient_id = patient_id;
+    }
+    
+    if (doctor_id) {
+      filter.doctor_id = doctor_id;
+    }
+    
+    if (start_date && end_date) {
+      filter['recommendedProcedures.scheduled_date'] = {
+        $gte: new Date(start_date),
+        $lte: new Date(end_date)
+      };
+    }
+    
+    const prescriptions = await Prescription.find(filter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('doctor_id', 'firstName lastName')
+      .populate('appointment_id')
+      .sort({ issue_date: -1 });
+    
+    // Extract procedures with the specific status
+    const procedures = [];
+    prescriptions.forEach(prescription => {
+      prescription.recommendedProcedures.forEach(proc => {
+        if (proc.status === status) {
+          procedures.push({
+            _id: proc._id,
+            prescription_id: prescription._id,
+            prescription_number: prescription.prescription_number,
+            patient: prescription.patient_id,
+            doctor: prescription.doctor_id,
+            appointment: prescription.appointment_id,
+            diagnosis: prescription.diagnosis,
+            ...proc.toObject()
+          });
+        }
+      });
+    });
+    
+    res.json({
+      success: true,
+      count: procedures.length,
+      status,
+      procedures
+    });
+  } catch (err) {
+    console.error('Error fetching procedures by status:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Mark procedure as billed
+exports.markProcedureAsBilled = async (req, res) => {
+  try {
+    const { prescription_id, procedure_id } = req.params;
+    const { invoice_id, cost } = req.body;
+    
+    const prescription = await Prescription.findById(prescription_id);
+    if (!prescription) {
+      return res.status(404).json({ error: 'Prescription not found' });
+    }
+    
+    const procedureIndex = prescription.recommendedProcedures.findIndex(
+      p => p._id.toString() === procedure_id
+    );
+    
+    if (procedureIndex === -1) {
+      return res.status(404).json({ error: 'Procedure not found' });
+    }
+    
+    // Update procedure billing info
+    prescription.recommendedProcedures[procedureIndex].is_billed = true;
+    prescription.recommendedProcedures[procedureIndex].invoice_id = invoice_id;
+    
+    if (cost) {
+      prescription.recommendedProcedures[procedureIndex].cost = cost;
+    }
+    
+    await prescription.save();
+    
+    res.json({
+      success: true,
+      message: 'Procedure marked as billed',
+      procedure: prescription.recommendedProcedures[procedureIndex]
+    });
+  } catch (err) {
+    console.error('Error marking procedure as billed:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get patient's pending procedures
+exports.getPatientPendingProcedures = async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    
+    const prescriptions = await Prescription.find({
+      patient_id: patientId,
+      'recommendedProcedures.status': { $in: ['Pending', 'Scheduled'] },
+      'has_procedures': true
+    })
+    .populate('doctor_id', 'firstName lastName specialization')
+    .populate('appointment_id', 'appointment_date type')
+    .sort({ issue_date: -1 });
+    
+    const pendingProcedures = [];
+    prescriptions.forEach(prescription => {
+      prescription.recommendedProcedures.forEach(proc => {
+        if (['Pending', 'Scheduled'].includes(proc.status)) {
+          pendingProcedures.push({
+            prescription_id: prescription._id,
+            prescription_number: prescription.prescription_number,
+            doctor: prescription.doctor_id,
+            appointment: prescription.appointment_id,
+            diagnosis: prescription.diagnosis,
+            issue_date: prescription.issue_date,
+            ...proc.toObject()
+          });
+        }
+      });
+    });
+    
+    res.json({
+      success: true,
+      count: pendingProcedures.length,
+      pendingProcedures
+    });
+  } catch (err) {
+    console.error('Error fetching patient pending procedures:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
 
 // The upload endpoint with Multer middleware
 exports.uploadPrescriptionImage = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image file provided' });
-    }
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
     const result = await cloudinary.uploader.upload(req.file.path, {
         folder: 'prescriptions',
         resource_type: 'image'
@@ -35,13 +402,13 @@ exports.uploadPrescriptionImage = async (req, res) => {
     const fs = require('fs');
     fs.unlinkSync(req.file.path);
 
-    res.json({ imageUrl: result.secure_url });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json({ imageUrl: result.secure_url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
-// Create prescription
+// Create prescription (UPDATED TO HANDLE PROCEDURES PROPERLY)
 exports.createPrescription = async (req, res) => {
   try {
     const { 
@@ -57,8 +424,11 @@ exports.createPrescription = async (req, res) => {
       validity_days,
       follow_up_date,
       is_repeatable,
-      repeat_count 
+      repeat_count,
+      recommendedProcedures = []
     } = req.body;
+
+    console.log('Creating prescription with procedures:', recommendedProcedures);
 
     // Process items to ensure all fields are included
     const processedItems = items && Array.isArray(items) 
@@ -78,22 +448,96 @@ exports.createPrescription = async (req, res) => {
         }))
       : [];
 
+    // Process procedures with their costs
+    const processedProcedures = await Promise.all(
+      recommendedProcedures
+        .filter(proc => proc.procedure_code && proc.procedure_name)
+        .map(async (proc) => {
+          try {
+            const procedureCode = extractProcedureCode(proc.procedure_code);
+            
+            // Find procedure in database to get the correct cost
+            const procedure = await Procedure.findOne({ 
+              code: procedureCode,
+              is_active: true 
+            });
+            
+            if (procedure) {
+              // Increment usage count
+              await Procedure.findByIdAndUpdate(procedure._id, {
+                $inc: { usage_count: 1 },
+                last_used: new Date()
+              });
+              
+              return {
+                procedure_code: procedureCode,
+                procedure_name: proc.procedure_name,
+                notes: proc.notes?.trim() || '',
+                status: 'Pending',
+                cost: procedure.base_price || 0,
+                base_price: procedure.base_price || 0,
+                category: procedure.category || 'Other',
+                duration_minutes: procedure.duration_minutes || 30,
+                insurance_coverage: procedure.insurance_coverage || 'Partial',
+                is_billed: false
+              };
+            } else {
+              // Procedure not found in database, use provided data
+              console.warn(`Procedure ${procedureCode} not found in database`);
+              return {
+                procedure_code: procedureCode,
+                procedure_name: proc.procedure_name,
+                notes: proc.notes?.trim() || '',
+                status: 'Pending',
+                cost: proc.cost || 0,
+                base_price: proc.base_price || 0,
+                category: proc.category || 'Other',
+                duration_minutes: proc.duration_minutes || 30,
+                insurance_coverage: proc.insurance_coverage || 'Partial',
+                is_billed: false
+              };
+            }
+          } catch (error) {
+            console.error(`Error processing procedure ${proc.procedure_code}:`, error);
+            return {
+              procedure_code: extractProcedureCode(proc.procedure_code),
+              procedure_name: proc.procedure_name,
+              notes: proc.notes?.trim() || '',
+              status: 'Pending',
+              cost: proc.cost || 0,
+              base_price: proc.base_price || 0,
+              category: proc.category || 'Other',
+              duration_minutes: proc.duration_minutes || 30,
+              insurance_coverage: proc.insurance_coverage || 'Partial',
+              is_billed: false
+            };
+          }
+        })
+    );
+
+    // Calculate total procedure cost
+    const totalProcedureCost = processedProcedures.reduce((sum, proc) => sum + (proc.cost || 0), 0);
+
     // Create prescription
     const prescription = new Prescription({ 
       patient_id, 
       doctor_id, 
       appointment_id,
-      diagnosis, 
-      symptoms,
+      diagnosis: diagnosis || '',
+      symptoms: symptoms || '',
       investigation: investigation || null,
-      notes,
+      notes: notes || '',
       items: processedItems,
+      recommendedProcedures: processedProcedures,
       prescription_image: prescription_image || null,
       validity_days: validity_days || 30,
       follow_up_date: follow_up_date ? new Date(follow_up_date) : null,
       is_repeatable: is_repeatable || false,
       repeat_count: repeat_count || 0,
-      created_by: req.user?._id
+      created_by: req.user?._id,
+      has_procedures: processedProcedures.length > 0,
+      total_procedure_cost: totalProcedureCost,
+      procedures_status: processedProcedures.length > 0 ? 'Pending' : 'None'
     });
     
     await prescription.save();
@@ -106,52 +550,23 @@ exports.createPrescription = async (req, res) => {
       .populate('created_by', 'name');
 
     res.status(201).json({ 
+      success: true,
       prescription: populatedPrescription,
-      message: 'Prescription created successfully' 
+      message: 'Prescription created successfully',
+      procedures: {
+        count: processedProcedures.length,
+        totalCost: totalProcedureCost,
+        list: processedProcedures
+      }
     });
   } catch (err) {
     console.error('Error creating prescription:', err);
-    res.status(400).json({ error: err.message });
+    res.status(400).json({ 
+      success: false,
+      error: err.message 
+    });
   }
 };
-
-// // Get all prescriptions (with fix and logging)
-// exports.getAllPrescriptions = async (req, res) => {
-//   try {
-//     let prescriptions = await Prescription.aggregate([
-//       {
-//         $lookup: {
-//           from: 'prescriptionitems', // Collection name for PrescriptionItem model
-//           localField: '_id',
-//           foreignField: 'prescription_id',
-//           as: 'medicines' 
-//         }
-//       },
-//       {
-//         // CORRECTED: Sort by 'created_at' to match your schema
-//         $sort: { created_at: -1 }
-//       }
-//     ]);
-
-//     prescriptions = await Prescription.populate(prescriptions, [
-//         { path: 'patient_id' },
-//         { path: 'doctor_id', model: 'Doctor' }
-//     ]);
-    
-//     // --- DEBUGGING LOG ---
-//     console.log('Final data being sent to frontend:', JSON.stringify(prescriptions, null, 2));
-
-//     res.json(prescriptions);
-//   } catch (err) {
-//     // --- ADDED ERROR LOG ---
-//     console.error("Error in getAllPrescriptions:", err);
-//     res.status(500).json({ error: err.message });
-//   }
-// };
-
-
-
-
 
 // In HIMS_Api/controllers/prescription.controller.js
 
@@ -211,10 +626,6 @@ exports.getAllPrescriptions = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
-
-
-
 
 // Get a prescription by ID
 exports.getPrescriptionById = async (req, res) => {
@@ -529,5 +940,47 @@ exports.checkPrescriptionExpiry = async () => {
   } catch (err) {
     console.error('Error checking prescription expiry:', err);
     throw err;
+  }
+};
+
+// Get procedure statistics from prescriptions
+exports.getProcedureStats = async (req, res) => {
+  try {
+    const stats = await Prescription.aggregate([
+      { $unwind: '$recommendedProcedures' },
+      {
+        $group: {
+          _id: '$recommendedProcedures.procedure_code',
+          procedure_name: { $first: '$recommendedProcedures.procedure_name' },
+          count: { $sum: 1 },
+          total_revenue: { $sum: '$recommendedProcedures.cost' },
+          avg_cost: { $avg: '$recommendedProcedures.cost' },
+          completed: {
+            $sum: {
+              $cond: [{ $eq: ['$recommendedProcedures.status', 'Completed'] }, 1, 0]
+            }
+          },
+          pending: {
+            $sum: {
+              $cond: [{ $eq: ['$recommendedProcedures.status', 'Pending'] }, 1, 0]
+            }
+          },
+          scheduled: {
+            $sum: {
+              $cond: [{ $eq: ['$recommendedProcedures.status', 'Scheduled'] }, 1, 0]
+            }
+          }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]);
+
+    res.json({
+      success: true,
+      stats
+    });
+  } catch (err) {
+    console.error('Error fetching procedure stats:', err);
+    res.status(500).json({ error: err.message });
   }
 };

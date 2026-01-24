@@ -14,8 +14,12 @@ const {
   getPharmacyInvoices,
   getPharmacyMonthlyRevenue
 } = require('../controllers/invoice.controller');
+const invoiceController  = require('../controllers/invoice.controller');
 
-// Invoice routes
+router.post('/procedure', invoiceController.generateProcedureInvoice);
+router.get('/procedures', invoiceController.getProcedureInvoices);
+router.get('/with-procedures', invoiceController.getInvoicesWithProcedures);
+router.put('/:invoiceId/procedures/:procedureIndex/status', invoiceController.updateInvoiceProcedureStatus);
 router.post('/appointment', generateAppointmentInvoice);
 router.post('/pharmacy', generatePharmacyInvoice);
 router.post('/purchase', generatePurchaseInvoice);
