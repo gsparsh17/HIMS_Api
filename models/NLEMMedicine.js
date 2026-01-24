@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 const nlemMedicineSchema = new mongoose.Schema({
   // Basic Medicine Information
@@ -301,4 +301,4 @@ nlemMedicineSchema.statics.getStats = async function() {
 
 const NLEMMedicine = mongoose.model('NLEMMedicine', nlemMedicineSchema);
 
-export default NLEMMedicine;
+module.exports = NLEMMedicine;

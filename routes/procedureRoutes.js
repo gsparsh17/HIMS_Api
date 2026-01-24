@@ -1,66 +1,97 @@
-import express from 'express';
-import Procedure from '../models/Procedure.js';
-import { authenticate, authorize } from '../middleware/auth.js';
-import { validateRequest } from '../middleware/validation.js';
-import { z } from 'zod';
-
+const express = require('express');
 const router = express.Router();
 
-// Validation schemas
-const searchSchema = z.object({
-  q: z.string().min(1).max(100).optional(),
-  limit: z.string().regex(/^\d+$/).transform(Number).default('20'),
-  page: z.string().regex(/^\d+$/).transform(Number).default('1'),
-  category: z.string().optional(),
-  department_id: z.string().optional(),
-  specialty_id: z.string().optional(),
-  facility_level: z.string().optional(),
-  min_price: z.string().optional(),
-  max_price: z.string().optional()
-});
-
-const createSchema = z.object({
-  code: z.string().min(2).max(20),
-  name: z.string().min(3).max(200),
-  category: z.string(),
-  subcategory: z.string().optional(),
-  description: z.string().optional(),
-  duration_minutes: z.number().min(1).default(30),
-  base_price: z.number().min(0).default(0),
-  insurance_coverage: z.string().optional(),
-  cpt_code: z.string().optional(),
-  equipment_required: z.array(z.string()).optional(),
-  facility_level: z.array(z.string()).optional(),
-  consent_required: z.boolean().default(true),
-  department_id: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  notes: z.string().optional()
-});
-
-const updateSchema = createSchema.partial();
+// Load model
+const NLEMMedicine = require('../models/NLEMMedicine');
+const Procedure = require('../models/Procedure');
 
 // Search procedures
-router.get('/search', validateRequest(searchSchema, 'query'), async (req, res) => {
+router.get('/search', async (req, res) => {
   try {
-    const { q = '', ...options } = req.query;
+    console.log('Procedure search called:', req.query);
     
-    const result = await Procedure.searchProcedures(q, options);
+    if (!Procedure) {
+      return res.status(500).json({
+        success: false,
+        message: 'Procedure model not loaded'
+      });
+    }
+
+    const { q = '', limit = 20, page = 1 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    let query = { is_active: true };
     
+    if (q && q.trim() !== '') {
+      query.$or = [
+        { name: { $regex: q, $options: 'i' } },
+        { code: { $regex: q, $options: 'i' } },
+        { category: { $regex: q, $options: 'i' } },
+        { description: { $regex: q, $options: 'i' } }
+      ];
+    }
+
+    console.log('Query:', query);
+
+    const procedures = await Procedure.find(query)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ name: 1 })
+      .select('code name category description duration_minutes base_price')
+      .lean();
+
+    const total = await Procedure.countDocuments(query);
+
+    console.log(`Found ${procedures.length} procedures out of ${total}`);
+
     res.json({
       success: true,
-      data: result.procedures,
-      meta: {
-        total: result.total,
-        page: result.page,
-        totalPages: result.totalPages,
-        hasMore: result.hasMore
+      data: {
+        procedures,
+        total,
+        page: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        hasMore: total > (page * limit)
       }
     });
+
   } catch (error) {
     console.error('Procedure search error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to search procedures',
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// Get all procedures (for initial load)
+router.get('/', async (req, res) => {
+  try {
+    if (!Procedure) {
+      return res.status(500).json({
+        success: false,
+        message: 'Procedure model not loaded'
+      });
+    }
+
+    const procedures = await Procedure.find({ is_active: true })
+      .limit(50)
+      .sort({ name: 1 })
+      .select('code name category base_price')
+      .lean();
+
+    res.json({
+      success: true,
+      data: procedures
+    });
+
+  } catch (error) {
+    console.error('Get procedures error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get procedures',
       error: error.message
     });
   }
@@ -69,17 +100,29 @@ router.get('/search', validateRequest(searchSchema, 'query'), async (req, res) =
 // Get popular procedures
 router.get('/popular', async (req, res) => {
   try {
-    const { limit = 10, department_id } = req.query;
+    if (!Procedure) {
+      return res.status(500).json({
+        success: false,
+        message: 'Procedure model not loaded'
+      });
+    }
+
+    const { limit = 10 } = req.query;
     
-    const procedures = await Procedure.getPopularProcedures(
-      parseInt(limit),
-      department_id
-    );
-    
+    const procedures = await Procedure.find({ 
+      is_active: true,
+      usage_count: { $gt: 0 }
+    })
+      .sort({ usage_count: -1, name: 1 })
+      .limit(parseInt(limit))
+      .select('code name category usage_count duration_minutes base_price')
+      .lean();
+
     res.json({
       success: true,
       data: procedures
     });
+
   } catch (error) {
     console.error('Get popular procedures error:', error);
     res.status(500).json({
@@ -91,8 +134,15 @@ router.get('/popular', async (req, res) => {
 });
 
 // Get procedure by ID
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
+    if (!Procedure) {
+      return res.status(500).json({
+        success: false,
+        message: 'Procedure model not loaded'
+      });
+    }
+
     const procedure = await Procedure.findById(req.params.id);
     
     if (!procedure) {
@@ -116,223 +166,14 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 });
 
-// Create new procedure (Admin/Doctor only)
-router.post('/', authenticate, authorize(['admin', 'doctor']), validateRequest(createSchema), async (req, res) => {
-  try {
-    const procedureData = {
-      ...req.body,
-      created_by: req.user._id,
-      last_updated_by: req.user._id
-    };
-    
-    const procedure = await Procedure.create(procedureData);
-    
-    res.status(201).json({
-      success: true,
-      message: 'Procedure created successfully',
-      data: procedure
-    });
-  } catch (error) {
-    console.error('Create procedure error:', error);
-    if (error.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        message: 'Procedure with this code already exists'
-      });
-    }
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create procedure',
-      error: error.message
-    });
-  }
+// Health check
+router.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Procedures API is running',
+    modelLoaded: !!Procedure,
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Update procedure (Admin/Doctor only)
-router.put('/:id', authenticate, authorize(['admin', 'doctor']), validateRequest(updateSchema), async (req, res) => {
-  try {
-    const procedure = await Procedure.findById(req.params.id);
-    
-    if (!procedure) {
-      return res.status(404).json({
-        success: false,
-        message: 'Procedure not found'
-      });
-    }
-    
-    // Update fields
-    Object.assign(procedure, req.body);
-    procedure.last_updated_by = req.user._id;
-    
-    await procedure.save();
-    
-    res.json({
-      success: true,
-      message: 'Procedure updated successfully',
-      data: procedure
-    });
-  } catch (error) {
-    console.error('Update procedure error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update procedure',
-      error: error.message
-    });
-  }
-});
-
-// Delete/Deactivate procedure (Admin only)
-router.delete('/:id', authenticate, authorize(['admin']), async (req, res) => {
-  try {
-    const procedure = await Procedure.findById(req.params.id);
-    
-    if (!procedure) {
-      return res.status(404).json({
-        success: false,
-        message: 'Procedure not found'
-      });
-    }
-    
-    // Soft delete by deactivating
-    procedure.is_active = false;
-    procedure.last_updated_by = req.user._id;
-    await procedure.save();
-    
-    res.json({
-      success: true,
-      message: 'Procedure deactivated successfully'
-    });
-  } catch (error) {
-    console.error('Delete procedure error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to deactivate procedure',
-      error: error.message
-    });
-  }
-});
-
-// Increment usage count (when procedure is prescribed)
-router.post('/:id/increment-usage', authenticate, authorize(['doctor']), async (req, res) => {
-  try {
-    const procedure = await Procedure.findById(req.params.id);
-    
-    if (!procedure) {
-      return res.status(404).json({
-        success: false,
-        message: 'Procedure not found'
-      });
-    }
-    
-    await procedure.incrementUsage();
-    
-    res.json({
-      success: true,
-      message: 'Usage count incremented',
-      data: { usage_count: procedure.usage_count }
-    });
-  } catch (error) {
-    console.error('Increment usage error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to increment usage count',
-      error: error.message
-    });
-  }
-});
-
-// Bulk upload procedures from CSV/JSON (Admin only)
-router.post('/bulk-upload', authenticate, authorize(['admin']), async (req, res) => {
-  try {
-    const proceduresData = req.body;
-    
-    if (!Array.isArray(proceduresData) || proceduresData.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid data format. Expected an array of procedures'
-      });
-    }
-    
-    const result = await Procedure.bulkUpload(proceduresData);
-    
-    res.json({
-      success: true,
-      message: `Bulk upload completed`,
-      data: result
-    });
-  } catch (error) {
-    console.error('Bulk upload error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to bulk upload procedures',
-      error: error.message
-    });
-  }
-});
-
-// Get procedure statistics
-router.get('/stats/summary', authenticate, async (req, res) => {
-  try {
-    const stats = await Procedure.getProcedureStats();
-    
-    res.json({
-      success: true,
-      data: stats
-    });
-  } catch (error) {
-    console.error('Get stats error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get procedure statistics',
-      error: error.message
-    });
-  }
-});
-
-// Get procedures by category
-router.get('/category/:category', async (req, res) => {
-  try {
-    const procedures = await Procedure.find({
-      category: req.params.category,
-      is_active: true
-    }).select('code name description duration_minutes base_price')
-      .sort({ name: 1 });
-    
-    res.json({
-      success: true,
-      data: procedures
-    });
-  } catch (error) {
-    console.error('Get by category error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get procedures by category',
-      error: error.message
-    });
-  }
-});
-
-// Get procedures by department
-router.get('/department/:departmentId', async (req, res) => {
-  try {
-    const procedures = await Procedure.find({
-      department_id: req.params.departmentId,
-      is_active: true
-    }).select('code name category duration_minutes base_price usage_count')
-      .sort({ usage_count: -1 });
-    
-    res.json({
-      success: true,
-      data: procedures
-    });
-  } catch (error) {
-    console.error('Get by department error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get procedures by department',
-      error: error.message
-    });
-  }
-});
-
-export default router;
+module.exports = router;

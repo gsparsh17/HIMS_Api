@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 const procedureSchema = new mongoose.Schema({
   // Identification
@@ -342,4 +342,4 @@ procedureSchema.methods.incrementUsage = async function() {
 
 const Procedure = mongoose.model('Procedure', procedureSchema);
 
-export default Procedure;
+module.exports = Procedure;
