@@ -111,6 +111,8 @@ exports.updateStaff = async (req, res) => {
     'security',
     'ambulance driver',
     'hr',
+    'staff',
+    'receptionist',
     'it support',
     'others',
 ];
