@@ -1,101 +1,77 @@
-const Appointment = require('../models/Appointment');
+// controllers/revenue.controller.js
 const Salary = require('../models/Salary');
 const Invoice = require('../models/Invoice');
 const Doctor = require('../models/Doctor');
 const Patient = require('../models/Patient');
 const mongoose = require('mongoose');
 
-// Enhanced revenue calculation with detailed bifurcation
-exports.calculateHospitalRevenue = async (req, res) => {
+const toObjectId = (id) => {
   try {
-    const { 
-      startDate, 
-      endDate,
-      doctorId,
-      department,
-      patientType,
-      invoiceType,
-      paymentMethod,
-      invoiceStatus,
-      minAmount,
-      maxAmount
-    } = req.query;
-    
-    // Build date filter
-    let dateFilter = {};
-    if (startDate && endDate) {
-      dateFilter.createdAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    } else {
-      // Default to last 30 days if no dates provided
-      const now = new Date();
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(now.getDate() - 30);
-      dateFilter.createdAt = {
-        $gte: thirtyDaysAgo,
-        $lte: now
-      };
-    }
+    if (!id) return null;
+    return new mongoose.Types.ObjectId(id);
+  } catch {
+    return null;
+  }
+};
 
-    // Build base filter
-    const baseFilter = { ...dateFilter };
-    
-    // Apply additional filters
-    if (doctorId && doctorId !== 'all') {
-      // For invoices with doctor information, we need to check multiple fields
-      baseFilter.$or = [
-        { 'appointment_id.doctor_id': doctorId },
-        { doctor_id: doctorId }
-      ];
-    }
-    
-    if (department && department !== 'all') {
-      baseFilter.department = department;
-    }
-    
-    if (patientType && patientType !== 'all') {
-      baseFilter['patient_id.patient_type'] = patientType;
-    }
-    
-    if (invoiceType && invoiceType !== 'all') {
-      baseFilter.invoice_type = invoiceType;
-    }
-    
-    if (paymentMethod && paymentMethod !== 'all') {
-      baseFilter['payment_history.method'] = paymentMethod;
-    }
-    
-    if (invoiceStatus && invoiceStatus !== 'all') {
-      baseFilter.status = invoiceStatus;
-    }
+/**
+ * Build invoice aggregation pipeline with correct joins + filters.
+ * Fixes:
+ * - doctor filter via appointment lookup
+ * - department filter via doctor lookup
+ * - patientType filter via patient lookup
+ * - avoids matching on non-existent invoice.doctor_id / appointment_id.doctor_id / invoice.department
+ */
+function buildInvoicePipeline(query, opts = {}) {
+  const {
+    startDate,
+    endDate,
+    doctorId,
+    department,
+    patientType,
+    invoiceType,
+    paymentMethod,
+    invoiceStatus,
+    minAmount,
+    maxAmount
+  } = query;
 
-    // Amount range filter
-    const amountFilter = {};
-    if (minAmount) {
-      amountFilter.total = { $gte: parseFloat(minAmount) };
-    }
-    if (maxAmount) {
-      amountFilter.total = { ...amountFilter.total, $lte: parseFloat(maxAmount) };
-    }
+  const { requireDoctorJoin = false, requirePatientJoin = false } = opts;
 
-    // Fetch invoices with detailed breakdown
-    const invoices = await Invoice.aggregate([
-      {
-        $match: {
-          ...baseFilter,
-          ...(Object.keys(amountFilter).length > 0 ? amountFilter : {})
-        }
-      },
-      {
-        $lookup: {
-          from: 'patients',
-          localField: 'patient_id',
-          foreignField: '_id',
-          as: 'patient_info'
-        }
-      },
+  const pipeline = [];
+
+  // Date range (default last 30 days if not provided)
+  const dateMatch = {};
+  if (startDate && endDate) {
+    dateMatch.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
+  } else {
+    const now = new Date();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(now.getDate() - 30);
+    dateMatch.createdAt = { $gte: thirtyDaysAgo, $lte: now };
+  }
+
+  // Base invoice match (only invoice fields here)
+  const match = { ...dateMatch };
+
+  if (invoiceType && invoiceType !== 'all') match.invoice_type = invoiceType;
+  if (invoiceStatus && invoiceStatus !== 'all') match.status = invoiceStatus;
+  if (paymentMethod && paymentMethod !== 'all') match['payment_history.method'] = paymentMethod;
+
+  if (minAmount || maxAmount) {
+    match.total = {};
+    if (minAmount) match.total.$gte = parseFloat(minAmount);
+    if (maxAmount) match.total.$lte = parseFloat(maxAmount);
+  }
+
+  pipeline.push({ $match: match });
+
+  const doctorObjId = doctorId && doctorId !== 'all' ? toObjectId(doctorId) : null;
+  const deptObjId = department && department !== 'all' ? toObjectId(department) : null;
+  const needsAppointmentJoin = Boolean(doctorObjId || deptObjId || requireDoctorJoin);
+
+  if (needsAppointmentJoin) {
+    pipeline.push(
       {
         $lookup: {
           from: 'appointments',
@@ -106,112 +82,218 @@ exports.calculateHospitalRevenue = async (req, res) => {
       },
       {
         $unwind: {
-          path: '$patient_info',
+          path: '$appointment_info',
           preserveNullAndEmptyArrays: true
+        }
+      }
+    );
+
+    if (doctorObjId) {
+      pipeline.push({ $match: { 'appointment_info.doctor_id': doctorObjId } });
+    }
+
+    if (deptObjId) {
+      pipeline.push(
+        {
+          $lookup: {
+            from: 'doctors',
+            localField: 'appointment_info.doctor_id',
+            foreignField: '_id',
+            as: 'doctor_info'
+          }
+        },
+        {
+          $unwind: {
+            path: '$doctor_info',
+            preserveNullAndEmptyArrays: true
+          }
+        },
+        { $match: { 'doctor_info.department': deptObjId } }
+      );
+    }
+  }
+
+  const needsPatientJoin = Boolean((patientType && patientType !== 'all') || requirePatientJoin);
+
+  if (needsPatientJoin) {
+    pipeline.push(
+      {
+        $lookup: {
+          from: 'patients',
+          localField: 'patient_id',
+          foreignField: '_id',
+          as: 'patient_info'
         }
       },
       {
         $unwind: {
-          path: '$appointment_info',
+          path: '$patient_info',
           preserveNullAndEmptyArrays: true
         }
-      },
-      {
-        $addFields: {
-          patient_type: '$patient_info.patient_type',
-          doctor_id: '$appointment_info.doctor_id'
-        }
       }
-    ]);
+    );
 
-    // Calculate detailed statistics
+    if (patientType && patientType !== 'all') {
+      pipeline.push({ $match: { 'patient_info.patient_type': patientType } });
+    }
+  }
+
+  return {
+    pipeline,
+    // expose computed period start/end for response
+    period: {
+      start: dateMatch.createdAt.$gte,
+      end: dateMatch.createdAt.$lte
+    }
+  };
+}
+
+/**
+ * Enhanced revenue calculation with detailed bifurcation
+ */
+exports.calculateHospitalRevenue = async (req, res) => {
+  try {
+    const { pipeline, period } = buildInvoicePipeline(req.query, {
+      requireDoctorJoin: true,
+      requirePatientJoin: true
+    });
+
+    // Ensure we have doctor_info even if no department filter (for departmentRevenue, doctor stats)
+    const hasDoctorInfoStage = pipeline.some(
+      (s) => s.$lookup && s.$lookup.from === 'doctors'
+    );
+    if (!hasDoctorInfoStage) {
+      pipeline.push(
+        {
+          $lookup: {
+            from: 'doctors',
+            localField: 'appointment_info.doctor_id',
+            foreignField: '_id',
+            as: 'doctor_info'
+          }
+        },
+        {
+          $unwind: {
+            path: '$doctor_info',
+            preserveNullAndEmptyArrays: true
+          }
+        }
+      );
+    }
+
+    // Add computed fields
+    pipeline.push({
+      $addFields: {
+        doctor_id: '$appointment_info.doctor_id',
+        patient_type: '$patient_info.patient_type',
+        department_id: '$doctor_info.department'
+      }
+    });
+
+    const invoices = await Invoice.aggregate(pipeline);
+
+    // Stats accumulators
     let totalRevenue = 0;
     let appointmentRevenue = 0;
     let pharmacyRevenue = 0;
     let procedureRevenue = 0;
     let otherRevenue = 0;
-    
-    const doctorRevenue = {};
-    const departmentRevenue = {};
-    const patientRevenue = {};
-    const dailyRevenue = {};
-    
+
     let totalInvoices = 0;
     let appointmentCount = 0;
     let pharmacyCount = 0;
     let procedureCount = 0;
+
     let paidAmount = 0;
     let pendingAmount = 0;
-    
+
     const uniquePatients = new Set();
     const uniqueDoctors = new Set();
-    const paymentMethods = {};
-    
-    invoices.forEach(invoice => {
-      const amount = invoice.total || 0;
-      const amountPaid = invoice.amount_paid || 0;
-      const balanceDue = invoice.balance_due || 0;
-      
+
+    const doctorRevenue = {};      // doctorId -> revenue
+    const patientRevenue = {};     // patientId -> revenue
+    const departmentRevenue = {};  // departmentId/Unknown -> revenue
+
+    const paymentMethods = {};     // method -> collected amount
+    const dailyStats = {};         // date -> {date, revenue, appointments, pharmacy, procedures}
+
+    invoices.forEach((inv) => {
+      const amount = inv.total || 0;
+      const amountPaid = inv.amount_paid || 0;
+      const balanceDue = inv.balance_due || 0;
+
       totalRevenue += amount;
-      totalInvoices++;
-      
-      // Categorize by invoice type
-      switch (invoice.invoice_type) {
+      totalInvoices += 1;
+      paidAmount += amountPaid;
+      pendingAmount += balanceDue;
+
+      // By source
+      switch (inv.invoice_type) {
         case 'Appointment':
           appointmentRevenue += amount;
-          appointmentCount++;
+          appointmentCount += 1;
           break;
         case 'Pharmacy':
           pharmacyRevenue += amount;
-          pharmacyCount++;
+          pharmacyCount += 1;
           break;
         case 'Procedure':
           procedureRevenue += amount;
-          procedureCount++;
+          procedureCount += 1;
           break;
         default:
           otherRevenue += amount;
       }
-      
-      // Track payment status
-      paidAmount += amountPaid;
-      pendingAmount += balanceDue;
-      
-      // Track by doctor
-      if (invoice.doctor_id) {
-        const doctorId = invoice.doctor_id.toString();
-        uniqueDoctors.add(doctorId);
-        doctorRevenue[doctorId] = (doctorRevenue[doctorId] || 0) + amount;
+
+      // Doctor revenue (from lookup)
+      if (inv.doctor_id) {
+        const dId = String(inv.doctor_id);
+        uniqueDoctors.add(dId);
+        doctorRevenue[dId] = (doctorRevenue[dId] || 0) + amount;
+
+        const deptId = inv.department_id ? String(inv.department_id) : 'Unknown';
+        departmentRevenue[deptId] = (departmentRevenue[deptId] || 0) + amount;
+      } else {
+        departmentRevenue['Unknown'] = (departmentRevenue['Unknown'] || 0) + amount;
       }
-      
-      // Track by patient
-      if (invoice.patient_id) {
-        const patientId = invoice.patient_id.toString();
-        uniquePatients.add(patientId);
-        patientRevenue[patientId] = (patientRevenue[patientId] || 0) + amount;
+
+      // Patient revenue
+      if (inv.patient_id) {
+        const pId = String(inv.patient_id);
+        uniquePatients.add(pId);
+        patientRevenue[pId] = (patientRevenue[pId] || 0) + amount;
       }
-      
-      // Track daily revenue
-      const date = new Date(invoice.createdAt).toISOString().split('T')[0];
-      dailyRevenue[date] = (dailyRevenue[date] || 0) + amount;
-      
-      // Track payment methods
-      if (invoice.payment_history && invoice.payment_history.length > 0) {
-        invoice.payment_history.forEach(payment => {
-          const method = payment.method || 'Unknown';
-          paymentMethods[method] = (paymentMethods[method] || 0) + payment.amount;
+
+      // Daily stats (O(N), no invoice re-filter loops)
+      const dateKey = new Date(inv.createdAt).toISOString().split('T')[0];
+      if (!dailyStats[dateKey]) {
+        dailyStats[dateKey] = {
+          date: dateKey,
+          revenue: 0,
+          appointments: 0,
+          pharmacy: 0,
+          procedures: 0
+        };
+      }
+      dailyStats[dateKey].revenue += amount;
+      if (inv.invoice_type === 'Appointment') dailyStats[dateKey].appointments += 1;
+      if (inv.invoice_type === 'Pharmacy') dailyStats[dateKey].pharmacy += 1;
+      if (inv.invoice_type === 'Procedure') dailyStats[dateKey].procedures += 1;
+
+      // Payment methods (collections). This sums actual payments, not invoice totals.
+      if (Array.isArray(inv.payment_history) && inv.payment_history.length) {
+        inv.payment_history.forEach((p) => {
+          const method = p.method || 'Unknown';
+          paymentMethods[method] = (paymentMethods[method] || 0) + (p.amount || 0);
         });
       }
     });
 
-    // Calculate salary expenses for the period
+    // Salary expenses (consistent: paid_date within period)
     const salaryExpenses = await Salary.aggregate([
       {
         $match: {
-          paid_date: dateFilter.createdAt || {
-            $gte: new Date(),
-            $lte: new Date()
-          },
+          paid_date: { $gte: period.start, $lte: period.end },
           status: 'paid'
         }
       },
@@ -219,83 +301,103 @@ exports.calculateHospitalRevenue = async (req, res) => {
         $group: {
           _id: null,
           totalExpenses: { $sum: '$net_amount' },
-          salaryCount: { $sum: 1 },
-          byDoctor: {
-            $push: {
-              doctor_id: '$doctor_id',
-              amount: '$net_amount'
-            }
-          }
+          salaryCount: { $sum: 1 }
         }
       }
     ]);
 
     const totalSalaryExpenses = salaryExpenses[0]?.totalExpenses || 0;
     const netRevenue = totalRevenue - totalSalaryExpenses;
-    
-    // Get top performing doctors
-    const topDoctors = await Promise.all(
-      Object.entries(doctorRevenue)
-        .sort(([,a], [,b]) => b - a)
-        .slice(0, 5)
-        .map(async ([doctorId, revenue]) => {
-          const doctor = await Doctor.findById(doctorId);
-          return {
-            doctorId,
-            name: doctor ? `${doctor.firstName} ${doctor.lastName}` : 'Unknown',
-            revenue,
-            department: doctor?.department || 'Unknown',
-            specialization: doctor?.specialization || 'N/A'
-          };
-        })
-    );
 
-    // Get top patients
-    const topPatients = await Promise.all(
-      Object.entries(patientRevenue)
-        .sort(([,a], [,b]) => b - a)
-        .slice(0, 5)
-        .map(async ([patientId, revenue]) => {
-          const patient = await Patient.findById(patientId);
-          return {
-            patientId,
-            name: patient ? `${patient.first_name} ${patient.last_name}` : 'Unknown',
-            revenue,
-            type: patient?.patient_type || 'Unknown',
-            visits: invoices.filter(inv => inv.patient_id?.toString() === patientId).length
-          };
-        })
-    );
+    // Top doctors (no N+1)
+    const topDoctorIds = Object.entries(doctorRevenue)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([id]) => toObjectId(id))
+      .filter(Boolean);
 
-    // Calculate daily breakdown for chart
-    const dailyBreakdown = Object.entries(dailyRevenue)
-      .sort(([dateA], [dateB]) => new Date(dateA) - new Date(dateB))
-      .map(([date, revenue]) => ({
-        date,
+    const doctorDocs = topDoctorIds.length
+      ? await Doctor.find({ _id: { $in: topDoctorIds } }).select('firstName lastName department specialization')
+      : [];
+    const doctorMap = new Map(doctorDocs.map((d) => [String(d._id), d]));
+
+    const topDoctors = topDoctorIds.map((id) => {
+      const d = doctorMap.get(String(id));
+      const revenue = doctorRevenue[String(id)] || 0;
+      return {
+        doctorId: String(id),
+        name: d ? `${d.firstName} ${d.lastName || ''}`.trim() : 'Unknown',
         revenue,
-        appointments: invoices
-          .filter(inv => 
-            new Date(inv.createdAt).toISOString().split('T')[0] === date && 
-            inv.invoice_type === 'Appointment'
-          ).length,
-        pharmacy: invoices
-          .filter(inv => 
-            new Date(inv.createdAt).toISOString().split('T')[0] === date && 
-            inv.invoice_type === 'Pharmacy'
-          ).length
-      }));
+        department: d?.department || 'Unknown',
+        specialization: d?.specialization || 'N/A'
+      };
+    });
 
-    // Calculate payment method breakdown
-    const paymentMethodBreakdown = Object.entries(paymentMethods).map(([method, amount]) => ({
-      method,
-      amount,
-      percentage: totalRevenue > 0 ? (amount / totalRevenue * 100).toFixed(2) : 0
-    }));
+    // Top patients (no N+1)
+    const topPatientIds = Object.entries(patientRevenue)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([id]) => toObjectId(id))
+      .filter(Boolean);
+
+    const patientDocs = topPatientIds.length
+      ? await Patient.find({ _id: { $in: topPatientIds } }).select('first_name last_name patient_type')
+      : [];
+    const patientMap = new Map(patientDocs.map((p) => [String(p._id), p]));
+
+    // visits count: compute once
+    const patientVisitCount = {};
+    invoices.forEach((inv) => {
+      if (!inv.patient_id) return;
+      const pId = String(inv.patient_id);
+      patientVisitCount[pId] = (patientVisitCount[pId] || 0) + 1;
+    });
+
+    const topPatients = topPatientIds.map((id) => {
+      const p = patientMap.get(String(id));
+      const revenue = patientRevenue[String(id)] || 0;
+      return {
+        patientId: String(id),
+        name: p ? `${p.first_name} ${p.last_name || ''}`.trim() : 'Unknown',
+        revenue,
+        type: p?.patient_type || 'Unknown',
+        visits: patientVisitCount[String(id)] || 0
+      };
+    });
+
+    const dailyBreakdown = Object.values(dailyStats).sort(
+      (a, b) => new Date(a.date) - new Date(b.date)
+    );
+
+    // Payment method breakdown: % of collections (paidAmount) is more meaningful
+    const paymentMethodBreakdown = Object.entries(paymentMethods)
+      .map(([method, amount]) => ({
+        method,
+        amount,
+        percentage: paidAmount > 0 ? Number(((amount / paidAmount) * 100).toFixed(2)) : 0
+      }))
+      .sort((a, b) => b.amount - a.amount);
+
+    // Better status buckets
+    const receivableStatuses = ['Issued', 'Partial', 'Overdue'];
+    const excludedStatuses = ['Cancelled', 'Refunded', 'Draft'];
+
+    const statusCounts = invoices.reduce(
+      (acc, inv) => {
+        const st = inv.status;
+        if (st === 'Paid') acc.paidCount += 1;
+        else if (receivableStatuses.includes(st)) acc.receivableCount += 1;
+        else if (excludedStatuses.includes(st)) acc.excludedCount += 1;
+        else acc.otherCount += 1;
+        return acc;
+      },
+      { paidCount: 0, receivableCount: 0, excludedCount: 0, otherCount: 0 }
+    );
 
     res.json({
       period: {
-        start: dateFilter.createdAt?.$gte || new Date(),
-        end: dateFilter.createdAt?.$lte || new Date()
+        start: period.start,
+        end: period.end
       },
       summary: {
         totalRevenue,
@@ -305,8 +407,9 @@ exports.calculateHospitalRevenue = async (req, res) => {
         otherRevenue,
         totalSalaryExpenses,
         netRevenue,
-        collectionRate: totalRevenue > 0 ? (paidAmount / totalRevenue * 100) : 0,
-        pendingRate: totalRevenue > 0 ? (pendingAmount / totalRevenue * 100) : 0
+        // collection/pending are based on invoice fields (amount_paid / balance_due)
+        collectionRate: totalRevenue > 0 ? (paidAmount / totalRevenue) * 100 : 0,
+        pendingRate: totalRevenue > 0 ? (pendingAmount / totalRevenue) * 100 : 0
       },
       counts: {
         totalInvoices,
@@ -321,33 +424,43 @@ exports.calculateHospitalRevenue = async (req, res) => {
         bySource: {
           appointments: {
             amount: appointmentRevenue,
-            percentage: totalRevenue > 0 ? (appointmentRevenue / totalRevenue * 100).toFixed(2) : 0,
+            percentage: totalRevenue > 0 ? Number(((appointmentRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: appointmentCount,
-            average: appointmentCount > 0 ? (appointmentRevenue / appointmentCount).toFixed(2) : 0
+            average: appointmentCount > 0 ? Number((appointmentRevenue / appointmentCount).toFixed(2)) : 0
           },
           pharmacy: {
             amount: pharmacyRevenue,
-            percentage: totalRevenue > 0 ? (pharmacyRevenue / totalRevenue * 100).toFixed(2) : 0,
+            percentage: totalRevenue > 0 ? Number(((pharmacyRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: pharmacyCount,
-            average: pharmacyCount > 0 ? (pharmacyRevenue / pharmacyCount).toFixed(2) : 0
+            average: pharmacyCount > 0 ? Number((pharmacyRevenue / pharmacyCount).toFixed(2)) : 0
           },
           procedures: {
             amount: procedureRevenue,
-            percentage: totalRevenue > 0 ? (procedureRevenue / totalRevenue * 100).toFixed(2) : 0,
+            percentage: totalRevenue > 0 ? Number(((procedureRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: procedureCount,
-            average: procedureCount > 0 ? (procedureRevenue / procedureCount).toFixed(2) : 0
+            average: procedureCount > 0 ? Number((procedureRevenue / procedureCount).toFixed(2)) : 0
           }
         },
         byStatus: {
           paid: {
             amount: paidAmount,
-            invoices: invoices.filter(inv => inv.status === 'Paid').length
+            invoices: statusCounts.paidCount
           },
-          pending: {
+          receivable: {
             amount: pendingAmount,
-            invoices: invoices.filter(inv => inv.status !== 'Paid').length
+            invoices: statusCounts.receivableCount
+          },
+          excluded: {
+            invoices: statusCounts.excludedCount
           }
         },
+        byDepartment: Object.entries(departmentRevenue)
+          .map(([departmentId, amount]) => ({
+            departmentId,
+            amount,
+            percentage: totalRevenue > 0 ? Number(((amount / totalRevenue) * 100).toFixed(2)) : 0
+          }))
+          .sort((a, b) => b.amount - a.amount),
         byPaymentMethod: paymentMethodBreakdown,
         daily: dailyBreakdown
       },
@@ -356,14 +469,13 @@ exports.calculateHospitalRevenue = async (req, res) => {
         patients: topPatients
       },
       metrics: {
-        profitMargin: totalRevenue > 0 ? (netRevenue / totalRevenue * 100).toFixed(2) : 0,
-        expenseRatio: totalRevenue > 0 ? (totalSalaryExpenses / totalRevenue * 100).toFixed(2) : 0,
-        averageInvoiceValue: totalInvoices > 0 ? (totalRevenue / totalInvoices).toFixed(2) : 0,
-        averageDailyRevenue: dailyBreakdown.length > 0 ? 
-          (totalRevenue / dailyBreakdown.length).toFixed(2) : 0,
-        busiestDay: dailyBreakdown.reduce((max, day) => 
-          day.revenue > max.revenue ? day : max, { revenue: 0 }
-        )
+        profitMargin: totalRevenue > 0 ? Number(((netRevenue / totalRevenue) * 100).toFixed(2)) : 0,
+        expenseRatio: totalRevenue > 0 ? Number(((totalSalaryExpenses / totalRevenue) * 100).toFixed(2)) : 0,
+        averageInvoiceValue: totalInvoices > 0 ? Number((totalRevenue / totalInvoices).toFixed(2)) : 0,
+        averageDailyRevenue: dailyBreakdown.length > 0 ? Number((totalRevenue / dailyBreakdown.length).toFixed(2)) : 0,
+        busiestDay: dailyBreakdown.reduce((max, day) => (day.revenue > max.revenue ? day : max), {
+          revenue: 0
+        })
       }
     });
   } catch (error) {
@@ -372,174 +484,128 @@ exports.calculateHospitalRevenue = async (req, res) => {
   }
 };
 
-// Enhanced daily revenue report
+/**
+ * Daily revenue report
+ * Fixes:
+ * - correct doctor filter via appointment lookup
+ * - correct department filter via doctor lookup
+ * - no invalid invoice.department match
+ */
 exports.getDailyRevenueReport = async (req, res) => {
   try {
-    const { 
-      date, 
+    const { date, doctorId, department, invoiceType, paymentMethod } = req.query;
+
+    // Build day boundaries in UTC from provided YYYY-MM-DD (keeps your previous behavior)
+    // If you want IST day boundaries, tell me and I'll switch to Luxon approach.
+    const target = date ? new Date(`${date}T00:00:00.000Z`) : new Date();
+    const startOfDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate()));
+    const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000 - 1);
+
+    const baseQuery = {
+      startDate: startOfDay.toISOString(),
+      endDate: endOfDay.toISOString(),
       doctorId,
       department,
       invoiceType,
-      paymentMethod 
-    } = req.query;
-    
-    let targetDate;
-    if (date) {
-      targetDate = new Date(`${date}T00:00:00.000Z`);
-    } else {
-      const now = new Date();
-      targetDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    }
-
-    const startOfDay = targetDate;
-    const endOfDay = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000 - 1);
-
-    // Build filter
-    const filter = {
-      createdAt: { $gte: startOfDay, $lte: endOfDay }
+      paymentMethod
     };
 
-    if (doctorId && doctorId !== 'all') {
-      filter.$or = [
-        { 'appointment_id.doctor_id': doctorId },
-        { doctor_id: doctorId }
-      ];
+    const { pipeline } = buildInvoicePipeline(baseQuery, {
+      requireDoctorJoin: true,
+      requirePatientJoin: true
+    });
+
+    // Ensure doctor_info for department breakdown + names
+    const hasDoctorInfoStage = pipeline.some((s) => s.$lookup && s.$lookup.from === 'doctors');
+    if (!hasDoctorInfoStage) {
+      pipeline.push(
+        {
+          $lookup: {
+            from: 'doctors',
+            localField: 'appointment_info.doctor_id',
+            foreignField: '_id',
+            as: 'doctor_info'
+          }
+        },
+        { $unwind: { path: '$doctor_info', preserveNullAndEmptyArrays: true } }
+      );
     }
 
-    if (department && department !== 'all') {
-      filter.department = department;
-    }
+    const invoices = await Invoice.aggregate(pipeline);
 
-    if (invoiceType && invoiceType !== 'all') {
-      filter.invoice_type = invoiceType;
-    }
-
-    if (paymentMethod && paymentMethod !== 'all') {
-      filter['payment_history.method'] = paymentMethod;
-    }
-
-    // Get detailed invoice data for the day
-    const invoices = await Invoice.aggregate([
-      {
-        $match: filter
-      },
-      {
-        $lookup: {
-          from: 'patients',
-          localField: 'patient_id',
-          foreignField: '_id',
-          as: 'patient_info'
-        }
-      },
-      {
-        $lookup: {
-          from: 'appointments',
-          localField: 'appointment_id',
-          foreignField: '_id',
-          as: 'appointment_info'
-        }
-      },
-      {
-        $unwind: {
-          path: '$patient_info',
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $unwind: {
-          path: '$appointment_info',
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $lookup: {
-          from: 'doctors',
-          localField: 'appointment_info.doctor_id',
-          foreignField: '_id',
-          as: 'doctor_info'
-        }
-      },
-      {
-        $unwind: {
-          path: '$doctor_info',
-          preserveNullAndEmptyArrays: true
-        }
-      }
-    ]);
-
-    // Calculate daily statistics
     let totalRevenue = 0;
     let appointmentRevenue = 0;
     let pharmacyRevenue = 0;
     let procedureRevenue = 0;
-    
+
     let appointmentCount = 0;
     let pharmacyCount = 0;
     let procedureCount = 0;
-    
+
     const doctorBreakdown = {};
     const departmentBreakdown = {};
     const hourlyRevenue = Array(24).fill(0);
     const paymentMethodBreakdown = {};
 
-    invoices.forEach(invoice => {
-      const amount = invoice.total || 0;
-      const hour = new Date(invoice.createdAt).getHours();
-      
+    invoices.forEach((inv) => {
+      const amount = inv.total || 0;
+      const hour = new Date(inv.createdAt).getHours();
+
       totalRevenue += amount;
-      
-      // Categorize by invoice type
-      switch (invoice.invoice_type) {
+      hourlyRevenue[hour] += amount;
+
+      switch (inv.invoice_type) {
         case 'Appointment':
           appointmentRevenue += amount;
-          appointmentCount++;
+          appointmentCount += 1;
           break;
         case 'Pharmacy':
           pharmacyRevenue += amount;
-          pharmacyCount++;
+          pharmacyCount += 1;
           break;
         case 'Procedure':
           procedureRevenue += amount;
-          procedureCount++;
+          procedureCount += 1;
+          break;
+        default:
           break;
       }
-      
-      // Track by doctor
-      if (invoice.appointment_info?.doctor_id) {
-        const doctorId = invoice.appointment_info.doctor_id.toString();
-        const doctorName = invoice.doctor_info ? 
-          `${invoice.doctor_info.firstName} ${invoice.doctor_info.lastName}` : 'Unknown';
-        
-        if (!doctorBreakdown[doctorId]) {
-          doctorBreakdown[doctorId] = {
-            name: doctorName,
+
+      // Doctor breakdown via appointment_info + doctor_info
+      const docId = inv.appointment_info?.doctor_id ? String(inv.appointment_info.doctor_id) : null;
+      if (docId) {
+        const docName = inv.doctor_info
+          ? `${inv.doctor_info.firstName} ${inv.doctor_info.lastName || ''}`.trim()
+          : 'Unknown';
+
+        if (!doctorBreakdown[docId]) {
+          doctorBreakdown[docId] = {
+            doctorId: docId,
+            name: docName,
             revenue: 0,
-            appointments: 0,
-            department: invoice.doctor_info?.department || 'Unknown'
+            invoices: 0,
+            department: inv.doctor_info?.department || 'Unknown'
           };
         }
-        
-        doctorBreakdown[doctorId].revenue += amount;
-        doctorBreakdown[doctorId].appointments++;
+        doctorBreakdown[docId].revenue += amount;
+        doctorBreakdown[docId].invoices += 1;
+
+        const deptKey = inv.doctor_info?.department ? String(inv.doctor_info.department) : 'Unknown';
+        departmentBreakdown[deptKey] = (departmentBreakdown[deptKey] || 0) + amount;
+      } else {
+        departmentBreakdown['Unknown'] = (departmentBreakdown['Unknown'] || 0) + amount;
       }
-      
-      // Track by department
-      const department = invoice.doctor_info?.department || 'Unknown';
-      departmentBreakdown[department] = (departmentBreakdown[department] || 0) + amount;
-      
-      // Track hourly revenue
-      hourlyRevenue[hour] += amount;
-      
-      // Track payment methods
-      if (invoice.payment_history && invoice.payment_history.length > 0) {
-        invoice.payment_history.forEach(payment => {
-          const method = payment.method || 'Unknown';
-          paymentMethodBreakdown[method] = (paymentMethodBreakdown[method] || 0) + payment.amount;
+
+      // Payment methods (collections)
+      if (Array.isArray(inv.payment_history) && inv.payment_history.length) {
+        inv.payment_history.forEach((p) => {
+          const method = p.method || 'Unknown';
+          paymentMethodBreakdown[method] = (paymentMethodBreakdown[method] || 0) + (p.amount || 0);
         });
       }
     });
 
-    // Get salary expenses for the day
+    // Salary expenses for day
     const salaryExpenses = await Salary.aggregate([
       {
         $match: {
@@ -550,41 +616,36 @@ exports.getDailyRevenueReport = async (req, res) => {
       {
         $group: {
           _id: null,
-          totalExpenses: { $sum: '$net_amount' },
-          byDoctor: {
-            $push: {
-              doctor_id: '$doctor_id',
-              amount: '$net_amount'
-            }
-          }
+          totalExpenses: { $sum: '$net_amount' }
         }
       }
     ]);
-
     const totalSalaryExpenses = salaryExpenses[0]?.totalExpenses || 0;
     const netRevenue = totalRevenue - totalSalaryExpenses;
 
-    // Convert doctor breakdown to array
-    const doctorBreakdownArray = Object.values(doctorBreakdown)
-      .sort((a, b) => b.revenue - a.revenue);
+    const doctorBreakdownArray = Object.values(doctorBreakdown).sort((a, b) => b.revenue - a.revenue);
 
-    // Convert department breakdown to array
     const departmentBreakdownArray = Object.entries(departmentBreakdown)
-      .map(([name, revenue]) => ({
-        name,
+      .map(([deptId, revenue]) => ({
+        departmentId: deptId,
         revenue,
-        percentage: totalRevenue > 0 ? (revenue / totalRevenue * 100).toFixed(2) : 0
+        percentage: totalRevenue > 0 ? Number(((revenue / totalRevenue) * 100).toFixed(2)) : 0
       }))
       .sort((a, b) => b.revenue - a.revenue);
 
-    // Convert payment method breakdown to array
+    const totalCollected = Object.values(paymentMethodBreakdown).reduce((s, v) => s + v, 0);
     const paymentMethodArray = Object.entries(paymentMethodBreakdown)
       .map(([method, amount]) => ({
         method,
         amount,
-        percentage: totalRevenue > 0 ? (amount / totalRevenue * 100).toFixed(2) : 0
+        percentage: totalCollected > 0 ? Number(((amount / totalCollected) * 100).toFixed(2)) : 0
       }))
       .sort((a, b) => b.amount - a.amount);
+
+    const busiestHour = hourlyRevenue.reduce(
+      (maxIdx, v, idx) => (v > hourlyRevenue[maxIdx] ? idx : maxIdx),
+      0
+    );
 
     res.json({
       date: startOfDay.toISOString().split('T')[0],
@@ -595,7 +656,7 @@ exports.getDailyRevenueReport = async (req, res) => {
         procedureRevenue,
         totalSalaryExpenses,
         netRevenue,
-        profitMargin: totalRevenue > 0 ? (netRevenue / totalRevenue * 100).toFixed(2) : 0
+        profitMargin: totalRevenue > 0 ? Number(((netRevenue / totalRevenue) * 100).toFixed(2)) : 0
       },
       counts: {
         totalInvoices: invoices.length,
@@ -607,52 +668,52 @@ exports.getDailyRevenueReport = async (req, res) => {
         bySource: {
           appointments: {
             amount: appointmentRevenue,
-            percentage: totalRevenue > 0 ? (appointmentRevenue / totalRevenue * 100).toFixed(2) : 0,
-            average: appointmentCount > 0 ? (appointmentRevenue / appointmentCount).toFixed(2) : 0
+            percentage: totalRevenue > 0 ? Number(((appointmentRevenue / totalRevenue) * 100).toFixed(2)) : 0,
+            average: appointmentCount > 0 ? Number((appointmentRevenue / appointmentCount).toFixed(2)) : 0
           },
           pharmacy: {
             amount: pharmacyRevenue,
-            percentage: totalRevenue > 0 ? (pharmacyRevenue / totalRevenue * 100).toFixed(2) : 0,
-            average: pharmacyCount > 0 ? (pharmacyRevenue / pharmacyCount).toFixed(2) : 0
+            percentage: totalRevenue > 0 ? Number(((pharmacyRevenue / totalRevenue) * 100).toFixed(2)) : 0,
+            average: pharmacyCount > 0 ? Number((pharmacyRevenue / pharmacyCount).toFixed(2)) : 0
           },
           procedures: {
             amount: procedureRevenue,
-            percentage: totalRevenue > 0 ? (procedureRevenue / totalRevenue * 100).toFixed(2) : 0,
-            average: procedureCount > 0 ? (procedureRevenue / procedureCount).toFixed(2) : 0
+            percentage: totalRevenue > 0 ? Number(((procedureRevenue / totalRevenue) * 100).toFixed(2)) : 0,
+            average: procedureCount > 0 ? Number((procedureRevenue / procedureCount).toFixed(2)) : 0
           }
         },
         byDoctor: doctorBreakdownArray,
         byDepartment: departmentBreakdownArray,
         byHour: hourlyRevenue.map((revenue, hour) => ({
-          hour: `${hour.toString().padStart(2, '0')}:00`,
+          hour: `${String(hour).padStart(2, '0')}:00`,
           revenue,
-          percentage: totalRevenue > 0 ? (revenue / totalRevenue * 100).toFixed(2) : 0
+          percentage: totalRevenue > 0 ? Number(((revenue / totalRevenue) * 100).toFixed(2)) : 0
         })),
         byPaymentMethod: paymentMethodArray
       },
       metrics: {
-        busiestHour: hourlyRevenue.reduce((maxIdx, revenue, idx) => 
-          revenue > hourlyRevenue[maxIdx] ? idx : maxIdx, 0
-        ),
-        averageInvoiceValue: invoices.length > 0 ? (totalRevenue / invoices.length).toFixed(2) : 0,
+        busiestHour,
+        averageInvoiceValue: invoices.length > 0 ? Number((totalRevenue / invoices.length).toFixed(2)) : 0,
         peakRevenueHour: {
-          hour: hourlyRevenue.reduce((maxIdx, revenue, idx) => 
-            revenue > hourlyRevenue[maxIdx] ? idx : maxIdx, 0
-          ),
+          hour: busiestHour,
           revenue: Math.max(...hourlyRevenue)
         }
       },
-      invoices: invoices.map(inv => ({
+      invoices: invoices.map((inv) => ({
         invoice_number: inv.invoice_number,
         type: inv.invoice_type,
-        patient: inv.patient_info ? 
-          `${inv.patient_info.first_name} ${inv.patient_info.last_name}` : 'Unknown',
-        doctor: inv.doctor_info ? 
-          `${inv.doctor_info.firstName} ${inv.doctor_info.lastName}` : 'Unknown',
+        patient: inv.patient_info
+          ? `${inv.patient_info.first_name} ${inv.patient_info.last_name || ''}`.trim()
+          : 'Unknown',
+        doctor: inv.doctor_info
+          ? `${inv.doctor_info.firstName} ${inv.doctor_info.lastName || ''}`.trim()
+          : 'Unknown',
         amount: inv.total,
         status: inv.status,
-        payment_method: inv.payment_history && inv.payment_history.length > 0 ? 
-          inv.payment_history[inv.payment_history.length - 1].method : 'Unknown',
+        payment_method:
+          Array.isArray(inv.payment_history) && inv.payment_history.length
+            ? inv.payment_history[inv.payment_history.length - 1].method
+            : 'Unknown',
         time: new Date(inv.createdAt).toLocaleTimeString()
       }))
     });
@@ -662,139 +723,105 @@ exports.getDailyRevenueReport = async (req, res) => {
   }
 };
 
-// Enhanced monthly revenue report
+/**
+ * Monthly revenue report
+ * Fixes:
+ * - correct doctor filter via appointment lookup
+ * - correct department filter via doctor lookup
+ * - correct patientType via patient lookup (no JS post-filtering)
+ * - no N+1 for doctor/patient details
+ */
 exports.getMonthlyRevenueReport = async (req, res) => {
   try {
-    const { 
-      year, 
-      month,
+    const { year, month, doctorId, department, invoiceType, paymentMethod, patientType } = req.query;
+
+    const targetYear = parseInt(year, 10) || new Date().getFullYear();
+    const targetMonth = parseInt(month, 10) || new Date().getMonth() + 1;
+
+    const startOfMonth = new Date(Date.UTC(targetYear, targetMonth - 1, 1, 0, 0, 0, 0));
+    const endOfMonth = new Date(Date.UTC(targetYear, targetMonth, 0, 23, 59, 59, 999));
+
+    const baseQuery = {
+      startDate: startOfMonth.toISOString(),
+      endDate: endOfMonth.toISOString(),
       doctorId,
       department,
+      patientType,
       invoiceType,
-      paymentMethod,
-      patientType 
-    } = req.query;
-    
-    const targetYear = parseInt(year) || new Date().getFullYear();
-    const targetMonth = parseInt(month) || new Date().getMonth() + 1;
-
-    const startOfMonth = new Date(targetYear, targetMonth - 1, 1);
-    const endOfMonth = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999);
-
-    // Build filter
-    const filter = {
-      createdAt: { $gte: startOfMonth, $lte: endOfMonth }
+      paymentMethod
     };
 
-    if (doctorId && doctorId !== 'all') {
-      filter.$or = [
-        { 'appointment_id.doctor_id': doctorId },
-        { doctor_id: doctorId }
-      ];
+    const { pipeline } = buildInvoicePipeline(baseQuery, {
+      requireDoctorJoin: true,
+      requirePatientJoin: true
+    });
+
+    // Ensure doctor_info for later breakdown + details
+    const hasDoctorInfoStage = pipeline.some((s) => s.$lookup && s.$lookup.from === 'doctors');
+    if (!hasDoctorInfoStage) {
+      pipeline.push(
+        {
+          $lookup: {
+            from: 'doctors',
+            localField: 'appointment_info.doctor_id',
+            foreignField: '_id',
+            as: 'doctor_info'
+          }
+        },
+        { $unwind: { path: '$doctor_info', preserveNullAndEmptyArrays: true } }
+      );
     }
 
-    if (department && department !== 'all') {
-      filter.department = department;
-    }
-
-    if (invoiceType && invoiceType !== 'all') {
-      filter.invoice_type = invoiceType;
-    }
-
-    if (paymentMethod && paymentMethod !== 'all') {
-      filter['payment_history.method'] = paymentMethod;
-    }
-
-    // Get invoices for the month
-    const invoices = await Invoice.aggregate([
-      {
-        $match: filter
-      },
-      {
-        $lookup: {
-          from: 'patients',
-          localField: 'patient_id',
-          foreignField: '_id',
-          as: 'patient_info'
-        }
-      },
-      {
-        $lookup: {
-          from: 'appointments',
-          localField: 'appointment_id',
-          foreignField: '_id',
-          as: 'appointment_info'
-        }
-      },
-      {
-        $unwind: {
-          path: '$patient_info',
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $unwind: {
-          path: '$appointment_info',
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $addFields: {
-          dayOfMonth: { $dayOfMonth: '$createdAt' },
-          patient_type: '$patient_info.patient_type'
-        }
+    pipeline.push({
+      $addFields: {
+        dayOfMonth: { $dayOfMonth: '$createdAt' }
       }
-    ]);
+    });
 
-    // Apply patient type filter if specified
-    let filteredInvoices = invoices;
-    if (patientType && patientType !== 'all') {
-      filteredInvoices = invoices.filter(inv => inv.patient_type === patientType);
-    }
+    const invoices = await Invoice.aggregate(pipeline);
 
-    // Calculate monthly statistics
     let totalRevenue = 0;
     let appointmentRevenue = 0;
     let pharmacyRevenue = 0;
     let procedureRevenue = 0;
-    
+
     let appointmentCount = 0;
     let pharmacyCount = 0;
     let procedureCount = 0;
-    
-    const dailyBreakdown = {};
-    const weeklyBreakdown = {};
-    const doctorBreakdown = {};
-    const patientBreakdown = {};
-    const paymentMethodBreakdown = {};
 
-    filteredInvoices.forEach(invoice => {
-      const amount = invoice.total || 0;
-      const day = invoice.dayOfMonth;
+    const dailyBreakdown = {};  // day -> stats
+    const weeklyBreakdown = {}; // week -> stats
+    const doctorBreakdown = {}; // doctorId -> revenue
+    const patientBreakdown = {}; // patientId -> revenue
+    const paymentMethodBreakdown = {}; // method -> collected
+
+    invoices.forEach((inv) => {
+      const amount = inv.total || 0;
+      const day = inv.dayOfMonth;
       const week = Math.ceil(day / 7);
-      
+
       totalRevenue += amount;
-      
-      // Categorize by invoice type
-      switch (invoice.invoice_type) {
+
+      switch (inv.invoice_type) {
         case 'Appointment':
           appointmentRevenue += amount;
-          appointmentCount++;
+          appointmentCount += 1;
           break;
         case 'Pharmacy':
           pharmacyRevenue += amount;
-          pharmacyCount++;
+          pharmacyCount += 1;
           break;
         case 'Procedure':
           procedureRevenue += amount;
-          procedureCount++;
+          procedureCount += 1;
+          break;
+        default:
           break;
       }
-      
-      // Track daily breakdown
+
       if (!dailyBreakdown[day]) {
         dailyBreakdown[day] = {
-          date: new Date(targetYear, targetMonth - 1, day).toISOString().split('T')[0],
+          date: new Date(Date.UTC(targetYear, targetMonth - 1, day)).toISOString().split('T')[0],
           revenue: 0,
           appointments: 0,
           pharmacy: 0,
@@ -802,58 +829,47 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         };
       }
       dailyBreakdown[day].revenue += amount;
-      
-      switch (invoice.invoice_type) {
-        case 'Appointment':
-          dailyBreakdown[day].appointments++;
-          break;
-        case 'Pharmacy':
-          dailyBreakdown[day].pharmacy++;
-          break;
-        case 'Procedure':
-          dailyBreakdown[day].procedures++;
-          break;
-      }
-      
-      // Track weekly breakdown
+      if (inv.invoice_type === 'Appointment') dailyBreakdown[day].appointments += 1;
+      if (inv.invoice_type === 'Pharmacy') dailyBreakdown[day].pharmacy += 1;
+      if (inv.invoice_type === 'Procedure') dailyBreakdown[day].procedures += 1;
+
       if (!weeklyBreakdown[week]) {
         weeklyBreakdown[week] = {
           week,
           startDay: (week - 1) * 7 + 1,
-          endDay: Math.min(week * 7, endOfMonth.getDate()),
+          endDay: Math.min(week * 7, new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate()),
           revenue: 0,
           appointments: 0,
-          pharmacy: 0
+          pharmacy: 0,
+          procedures: 0
         };
       }
       weeklyBreakdown[week].revenue += amount;
-      
-      // Track by doctor
-      if (invoice.appointment_info?.doctor_id) {
-        const doctorId = invoice.appointment_info.doctor_id.toString();
-        doctorBreakdown[doctorId] = (doctorBreakdown[doctorId] || 0) + amount;
+      if (inv.invoice_type === 'Appointment') weeklyBreakdown[week].appointments += 1;
+      if (inv.invoice_type === 'Pharmacy') weeklyBreakdown[week].pharmacy += 1;
+      if (inv.invoice_type === 'Procedure') weeklyBreakdown[week].procedures += 1;
+
+      const docId = inv.appointment_info?.doctor_id ? String(inv.appointment_info.doctor_id) : null;
+      if (docId) doctorBreakdown[docId] = (doctorBreakdown[docId] || 0) + amount;
+
+      if (inv.patient_id) {
+        const pId = String(inv.patient_id);
+        patientBreakdown[pId] = (patientBreakdown[pId] || 0) + amount;
       }
-      
-      // Track by patient
-      if (invoice.patient_id) {
-        const patientId = invoice.patient_id.toString();
-        patientBreakdown[patientId] = (patientBreakdown[patientId] || 0) + amount;
-      }
-      
-      // Track payment methods
-      if (invoice.payment_history && invoice.payment_history.length > 0) {
-        invoice.payment_history.forEach(payment => {
-          const method = payment.method || 'Unknown';
-          paymentMethodBreakdown[method] = (paymentMethodBreakdown[method] || 0) + payment.amount;
+
+      if (Array.isArray(inv.payment_history) && inv.payment_history.length) {
+        inv.payment_history.forEach((p) => {
+          const method = p.method || 'Unknown';
+          paymentMethodBreakdown[method] = (paymentMethodBreakdown[method] || 0) + (p.amount || 0);
         });
       }
     });
 
-    // Get salary expenses for the month
+    // Salary expenses for month: consistent paid_date
     const salaryExpenses = await Salary.aggregate([
       {
         $match: {
-          period_start: { $gte: startOfMonth, $lte: endOfMonth },
+          paid_date: { $gte: startOfMonth, $lte: endOfMonth },
           status: 'paid'
         }
       },
@@ -861,89 +877,92 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         $group: {
           _id: null,
           totalExpenses: { $sum: '$net_amount' },
-          salaryCount: { $sum: 1 },
-          byDoctor: {
-            $push: {
-              doctor_id: '$doctor_id',
-              amount: '$net_amount'
-            }
-          }
+          salaryCount: { $sum: 1 }
         }
       }
     ]);
-
     const totalSalaryExpenses = salaryExpenses[0]?.totalExpenses || 0;
     const netRevenue = totalRevenue - totalSalaryExpenses;
-    
-    // Get days with revenue (business days)
+
     const businessDays = Object.keys(dailyBreakdown).length;
-    
-    // Find highest revenue day
+
     let highestRevenueDay = { revenue: 0 };
-    Object.values(dailyBreakdown).forEach(day => {
-      if (day.revenue > highestRevenueDay.revenue) {
-        highestRevenueDay = day;
-      }
+    Object.values(dailyBreakdown).forEach((d) => {
+      if (d.revenue > highestRevenueDay.revenue) highestRevenueDay = d;
     });
 
-    // Convert doctor breakdown to array with details
-    const doctorDetails = await Promise.all(
-      Object.entries(doctorBreakdown)
-        .sort(([,a], [,b]) => b - a)
-        .slice(0, 10)
-        .map(async ([doctorId, revenue]) => {
-          const doctor = await Doctor.findById(doctorId);
-          return {
-            doctorId,
-            name: doctor ? `${doctor.firstName} ${doctor.lastName}` : 'Unknown',
-            revenue,
-            appointments: filteredInvoices.filter(inv => 
-              inv.appointment_info?.doctor_id?.toString() === doctorId && 
-              inv.invoice_type === 'Appointment'
-            ).length,
-            department: doctor?.department || 'Unknown',
-            specialization: doctor?.specialization || 'N/A'
-          };
-        })
-    );
+    // Doctor details (no N+1)
+    const topDoctorIds = Object.entries(doctorBreakdown)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([id]) => toObjectId(id))
+      .filter(Boolean);
 
-    // Convert patient breakdown to array with details
-    const patientDetails = await Promise.all(
-      Object.entries(patientBreakdown)
-        .sort(([,a], [,b]) => b - a)
-        .slice(0, 10)
-        .map(async ([patientId, revenue]) => {
-          const patient = await Patient.findById(patientId);
-          return {
-            patientId,
-            name: patient ? `${patient.first_name} ${patient.last_name}` : 'Unknown',
-            revenue,
-            visits: filteredInvoices.filter(inv => 
-              inv.patient_id?.toString() === patientId
-            ).length,
-            type: patient?.patient_type || 'Unknown',
-            lastVisit: filteredInvoices
-              .filter(inv => inv.patient_id?.toString() === patientId)
-              .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0]
-              ?.createdAt
-          };
-        })
-    );
+    const doctorDocs = topDoctorIds.length
+      ? await Doctor.find({ _id: { $in: topDoctorIds } }).select('firstName lastName department specialization')
+      : [];
+    const doctorMap = new Map(doctorDocs.map((d) => [String(d._id), d]));
 
-    // Convert daily breakdown to array
-    const dailyBreakdownArray = Object.values(dailyBreakdown).sort((a, b) => 
-      new Date(a.date) - new Date(b.date)
-    );
+    const doctorDetails = topDoctorIds.map((id) => {
+      const d = doctorMap.get(String(id));
+      return {
+        doctorId: String(id),
+        name: d ? `${d.firstName} ${d.lastName || ''}`.trim() : 'Unknown',
+        revenue: doctorBreakdown[String(id)] || 0,
+        appointments: invoices.filter(
+          (inv) => inv.invoice_type === 'Appointment' && String(inv.appointment_info?.doctor_id || '') === String(id)
+        ).length,
+        department: d?.department || 'Unknown',
+        specialization: d?.specialization || 'N/A'
+      };
+    });
 
-    // Convert weekly breakdown to array
+    // Patient details (no N+1)
+    const topPatientIds = Object.entries(patientBreakdown)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([id]) => toObjectId(id))
+      .filter(Boolean);
+
+    const patientDocs = topPatientIds.length
+      ? await Patient.find({ _id: { $in: topPatientIds } }).select('first_name last_name patient_type')
+      : [];
+    const patientMap = new Map(patientDocs.map((p) => [String(p._id), p]));
+
+    // visits and last visit computed once
+    const patientVisits = {};
+    const patientLastVisit = {};
+    invoices.forEach((inv) => {
+      if (!inv.patient_id) return;
+      const pId = String(inv.patient_id);
+      patientVisits[pId] = (patientVisits[pId] || 0) + 1;
+      const t = new Date(inv.createdAt).getTime();
+      if (!patientLastVisit[pId] || t > patientLastVisit[pId]) patientLastVisit[pId] = t;
+    });
+
+    const patientDetails = topPatientIds.map((id) => {
+      const p = patientMap.get(String(id));
+      return {
+        patientId: String(id),
+        name: p ? `${p.first_name} ${p.last_name || ''}`.trim() : 'Unknown',
+        revenue: patientBreakdown[String(id)] || 0,
+        visits: patientVisits[String(id)] || 0,
+        type: p?.patient_type || 'Unknown',
+        lastVisit: patientLastVisit[String(id)] ? new Date(patientLastVisit[String(id)]) : null
+      };
+    });
+
+    const dailyBreakdownArray = Object.values(dailyBreakdown).sort(
+      (a, b) => new Date(a.date) - new Date(b.date)
+    );
     const weeklyBreakdownArray = Object.values(weeklyBreakdown).sort((a, b) => a.week - b.week);
 
-    // Convert payment method breakdown to array
+    const totalCollected = Object.values(paymentMethodBreakdown).reduce((s, v) => s + v, 0);
     const paymentMethodArray = Object.entries(paymentMethodBreakdown)
       .map(([method, amount]) => ({
         method,
         amount,
-        percentage: totalRevenue > 0 ? (amount / totalRevenue * 100).toFixed(2) : 0
+        percentage: totalCollected > 0 ? Number(((amount / totalCollected) * 100).toFixed(2)) : 0
       }))
       .sort((a, b) => b.amount - a.amount);
 
@@ -951,7 +970,9 @@ exports.getMonthlyRevenueReport = async (req, res) => {
       period: {
         year: targetYear,
         month: targetMonth,
-        monthName: new Date(targetYear, targetMonth - 1).toLocaleString('default', { month: 'long' }),
+        monthName: new Date(Date.UTC(targetYear, targetMonth - 1, 1)).toLocaleString('default', {
+          month: 'long'
+        }),
         startDate: startOfMonth,
         endDate: endOfMonth
       },
@@ -962,11 +983,11 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         procedureRevenue,
         totalSalaryExpenses,
         netRevenue,
-        profitMargin: totalRevenue > 0 ? (netRevenue / totalRevenue * 100).toFixed(2) : 0,
-        expenseRatio: totalRevenue > 0 ? (totalSalaryExpenses / totalRevenue * 100).toFixed(2) : 0
+        profitMargin: totalRevenue > 0 ? Number(((netRevenue / totalRevenue) * 100).toFixed(2)) : 0,
+        expenseRatio: totalRevenue > 0 ? Number(((totalSalaryExpenses / totalRevenue) * 100).toFixed(2)) : 0
       },
       counts: {
-        totalInvoices: filteredInvoices.length,
+        totalInvoices: invoices.length,
         appointments: appointmentCount,
         pharmacySales: pharmacyCount,
         procedures: procedureCount,
@@ -979,21 +1000,21 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         bySource: {
           appointments: {
             amount: appointmentRevenue,
-            percentage: totalRevenue > 0 ? (appointmentRevenue / totalRevenue * 100).toFixed(2) : 0,
+            percentage: totalRevenue > 0 ? Number(((appointmentRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: appointmentCount,
-            average: appointmentCount > 0 ? (appointmentRevenue / appointmentCount).toFixed(2) : 0
+            average: appointmentCount > 0 ? Number((appointmentRevenue / appointmentCount).toFixed(2)) : 0
           },
           pharmacy: {
             amount: pharmacyRevenue,
-            percentage: totalRevenue > 0 ? (pharmacyRevenue / totalRevenue * 100).toFixed(2) : 0,
+            percentage: totalRevenue > 0 ? Number(((pharmacyRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: pharmacyCount,
-            average: pharmacyCount > 0 ? (pharmacyRevenue / pharmacyCount).toFixed(2) : 0
+            average: pharmacyCount > 0 ? Number((pharmacyRevenue / pharmacyCount).toFixed(2)) : 0
           },
           procedures: {
             amount: procedureRevenue,
-            percentage: totalRevenue > 0 ? (procedureRevenue / totalRevenue * 100).toFixed(2) : 0,
+            percentage: totalRevenue > 0 ? Number(((procedureRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: procedureCount,
-            average: procedureCount > 0 ? (procedureRevenue / procedureCount).toFixed(2) : 0
+            average: procedureCount > 0 ? Number((procedureRevenue / procedureCount).toFixed(2)) : 0
           }
         },
         daily: dailyBreakdownArray,
@@ -1003,20 +1024,21 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         byPaymentMethod: paymentMethodArray
       },
       metrics: {
-        averageDailyRevenue: businessDays > 0 ? (totalRevenue / businessDays).toFixed(2) : 0,
+        averageDailyRevenue: businessDays > 0 ? Number((totalRevenue / businessDays).toFixed(2)) : 0,
         highestRevenueDay,
-        averageInvoiceValue: filteredInvoices.length > 0 ? 
-          (totalRevenue / filteredInvoices.length).toFixed(2) : 0,
-        revenueGrowth: null, // Would need previous month data
-        patientVisitFrequency: Object.keys(patientBreakdown).length > 0 ? 
-          (appointmentCount / Object.keys(patientBreakdown).length).toFixed(2) : 0
+        averageInvoiceValue: invoices.length > 0 ? Number((totalRevenue / invoices.length).toFixed(2)) : 0,
+        revenueGrowth: null,
+        patientVisitFrequency:
+          Object.keys(patientBreakdown).length > 0
+            ? Number((appointmentCount / Object.keys(patientBreakdown).length).toFixed(2))
+            : 0
       },
       trends: {
-        weeklyTrend: weeklyBreakdownArray.map(week => week.revenue),
+        weeklyTrend: weeklyBreakdownArray.map((w) => w.revenue),
         sourceTrend: {
-          appointments: dailyBreakdownArray.map(day => day.appointments),
-          pharmacy: dailyBreakdownArray.map(day => day.pharmacy),
-          procedures: dailyBreakdownArray.map(day => day.procedures)
+          appointments: dailyBreakdownArray.map((d) => d.appointments),
+          pharmacy: dailyBreakdownArray.map((d) => d.pharmacy),
+          procedures: dailyBreakdownArray.map((d) => d.procedures)
         }
       }
     });
@@ -1026,49 +1048,40 @@ exports.getMonthlyRevenueReport = async (req, res) => {
   }
 };
 
-// Get revenue by doctor
+/**
+ * Doctor revenue report
+ * Fixes:
+ * - uses appointment lookup to filter by doctor
+ * - no invalid invoice.doctor_id match
+ */
 exports.getDoctorRevenue = async (req, res) => {
   try {
-    const { 
-      doctorId,
-      startDate,
-      endDate,
-      invoiceType 
-    } = req.query;
+    const { doctorId, startDate, endDate, invoiceType } = req.query;
 
-    const dateFilter = {};
-    if (startDate && endDate) {
-      dateFilter.createdAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    } else {
-      // Default to last 30 days
+    const doctorObjId = toObjectId(doctorId);
+    if (!doctorObjId) return res.status(400).json({ error: 'Invalid doctorId' });
+
+    // Default last 30 days if no dates
+    let start = startDate ? new Date(startDate) : null;
+    let end = endDate ? new Date(endDate) : null;
+
+    if (!start || !end) {
       const now = new Date();
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(now.getDate() - 30);
-      dateFilter.createdAt = {
-        $gte: thirtyDaysAgo,
-        $lte: now
-      };
+      start = thirtyDaysAgo;
+      end = now;
     }
 
-    const filter = {
-      ...dateFilter,
-      $or: [
-        { 'appointment_id.doctor_id': doctorId },
-        { doctor_id: doctorId }
-      ]
-    };
+    const pipeline = [];
 
-    if (invoiceType && invoiceType !== 'all') {
-      filter.invoice_type = invoiceType;
-    }
+    // invoice-only match first
+    const match = { createdAt: { $gte: start, $lte: end } };
+    if (invoiceType && invoiceType !== 'all') match.invoice_type = invoiceType;
+    pipeline.push({ $match: match });
 
-    const invoices = await Invoice.aggregate([
-      {
-        $match: filter
-      },
+    // join appointment and match doctor
+    pipeline.push(
       {
         $lookup: {
           from: 'appointments',
@@ -1077,12 +1090,12 @@ exports.getDoctorRevenue = async (req, res) => {
           as: 'appointment_info'
         }
       },
-      {
-        $unwind: {
-          path: '$appointment_info',
-          preserveNullAndEmptyArrays: true
-        }
-      },
+      { $unwind: { path: '$appointment_info', preserveNullAndEmptyArrays: true } },
+      { $match: { 'appointment_info.doctor_id': doctorObjId } }
+    );
+
+    // patient lookup for breakdown names
+    pipeline.push(
       {
         $lookup: {
           from: 'patients',
@@ -1091,105 +1104,90 @@ exports.getDoctorRevenue = async (req, res) => {
           as: 'patient_info'
         }
       },
-      {
-        $unwind: {
-          path: '$patient_info',
-          preserveNullAndEmptyArrays: true
-        }
-      }
-    ]);
+      { $unwind: { path: '$patient_info', preserveNullAndEmptyArrays: true } }
+    );
 
-    // Calculate doctor-specific statistics
+    const invoices = await Invoice.aggregate(pipeline);
+
     let totalRevenue = 0;
     let appointmentCount = 0;
     let procedureCount = 0;
+
     const dailyRevenue = {};
     const patientBreakdown = {};
     const serviceBreakdown = {};
 
-    invoices.forEach(invoice => {
-      const amount = invoice.total || 0;
-      const date = new Date(invoice.createdAt).toISOString().split('T')[0];
-      
+    invoices.forEach((inv) => {
+      const amount = inv.total || 0;
       totalRevenue += amount;
-      
-      if (invoice.invoice_type === 'Appointment') {
-        appointmentCount++;
-      } else if (invoice.invoice_type === 'Procedure') {
-        procedureCount++;
-      }
-      
-      // Track daily revenue
-      dailyRevenue[date] = (dailyRevenue[date] || 0) + amount;
-      
-      // Track patient breakdown
-      if (invoice.patient_id) {
-        const patientId = invoice.patient_id.toString();
-        if (!patientBreakdown[patientId]) {
-          patientBreakdown[patientId] = {
-            id: patientId,
-            name: `${invoice.patient_info.first_name} ${invoice.patient_info.last_name}`,
+
+      if (inv.invoice_type === 'Appointment') appointmentCount += 1;
+      if (inv.invoice_type === 'Procedure') procedureCount += 1;
+
+      const dateKey = new Date(inv.createdAt).toISOString().split('T')[0];
+      dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + amount;
+
+      if (inv.patient_id) {
+        const pId = String(inv.patient_id);
+        if (!patientBreakdown[pId]) {
+          patientBreakdown[pId] = {
+            id: pId,
+            name: inv.patient_info
+              ? `${inv.patient_info.first_name} ${inv.patient_info.last_name || ''}`.trim()
+              : 'Unknown',
             revenue: 0,
             visits: 0
           };
         }
-        patientBreakdown[patientId].revenue += amount;
-        patientBreakdown[patientId].visits++;
+        patientBreakdown[pId].revenue += amount;
+        patientBreakdown[pId].visits += 1;
       }
-      
-      // Track service breakdown
-      if (invoice.service_items && invoice.service_items.length > 0) {
-        invoice.service_items.forEach(item => {
+
+      if (Array.isArray(inv.service_items) && inv.service_items.length) {
+        inv.service_items.forEach((item) => {
           const serviceType = item.service_type || 'Other';
-          serviceBreakdown[serviceType] = (serviceBreakdown[serviceType] || 0) + item.total_price;
+          serviceBreakdown[serviceType] = (serviceBreakdown[serviceType] || 0) + (item.total_price || 0);
         });
       }
     });
 
-    // Get doctor details
-    const doctor = await Doctor.findById(doctorId);
-    if (!doctor) {
-      return res.status(404).json({ error: 'Doctor not found' });
-    }
+    const doctor = await Doctor.findById(doctorObjId);
+    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
 
-    // Convert breakdowns to arrays
     const dailyBreakdown = Object.entries(dailyRevenue)
-      .map(([date, revenue]) => ({ date, revenue }))
+      .map(([d, revenue]) => ({ date: d, revenue }))
       .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    const patientBreakdownArray = Object.values(patientBreakdown)
-      .sort((a, b) => b.revenue - a.revenue);
+    const patientBreakdownArray = Object.values(patientBreakdown).sort((a, b) => b.revenue - a.revenue);
 
     const serviceBreakdownArray = Object.entries(serviceBreakdown)
       .map(([service, revenue]) => ({
         service,
         revenue,
-        percentage: totalRevenue > 0 ? (revenue / totalRevenue * 100).toFixed(2) : 0
+        percentage: totalRevenue > 0 ? Number(((revenue / totalRevenue) * 100).toFixed(2)) : 0
       }))
       .sort((a, b) => b.revenue - a.revenue);
 
     res.json({
       doctor: {
         id: doctor._id,
-        name: `${doctor.firstName} ${doctor.lastName}`,
+        name: `${doctor.firstName} ${doctor.lastName || ''}`.trim(),
         department: doctor.department,
         specialization: doctor.specialization,
         licenseNumber: doctor.licenseNumber
       },
-      period: {
-        start: dateFilter.createdAt?.$gte || new Date(),
-        end: dateFilter.createdAt?.$lte || new Date()
-      },
+      period: { start, end },
       summary: {
         totalRevenue,
         totalInvoices: invoices.length,
         appointmentCount,
         procedureCount,
         uniquePatients: Object.keys(patientBreakdown).length,
-        averageRevenuePerPatient: Object.keys(patientBreakdown).length > 0 ?
-          (totalRevenue / Object.keys(patientBreakdown).length).toFixed(2) : 0,
-        averageRevenuePerVisit: invoices.length > 0 ?
-          (totalRevenue / invoices.length).toFixed(2) : 0
+        averageRevenuePerPatient:
+          Object.keys(patientBreakdown).length > 0
+            ? Number((totalRevenue / Object.keys(patientBreakdown).length).toFixed(2))
+            : 0,
+        averageRevenuePerVisit: invoices.length > 0 ? Number((totalRevenue / invoices.length).toFixed(2)) : 0
       },
       breakdown: {
         daily: dailyBreakdown,
@@ -1197,11 +1195,9 @@ exports.getDoctorRevenue = async (req, res) => {
         byService: serviceBreakdownArray
       },
       performance: {
-        busiestDay: dailyBreakdown.reduce((max, day) => 
-          day.revenue > max.revenue ? day : max, { revenue: 0 }
-        ),
-        topPatient: patientBreakdownArray.length > 0 ? patientBreakdownArray[0] : null,
-        mostPerformedService: serviceBreakdownArray.length > 0 ? serviceBreakdownArray[0] : null
+        busiestDay: dailyBreakdown.reduce((max, day) => (day.revenue > max.revenue ? day : max), { revenue: 0 }),
+        topPatient: patientBreakdownArray[0] || null,
+        mostPerformedService: serviceBreakdownArray[0] || null
       }
     });
   } catch (error) {
@@ -1210,35 +1206,31 @@ exports.getDoctorRevenue = async (req, res) => {
   }
 };
 
-// Get revenue by department
+/**
+ * Department revenue report
+ * Fixes:
+ * - invoice match uses appointment lookup then matches doctor_id in department
+ * - no invalid appointment_id.doctor_id match
+ */
 exports.getDepartmentRevenue = async (req, res) => {
   try {
-    const { 
-      department,
-      startDate,
-      endDate 
-    } = req.query;
+    const { department, startDate, endDate } = req.query;
 
-    const dateFilter = {};
+    const deptObjId = toObjectId(department);
+    if (!deptObjId) return res.status(400).json({ error: 'Invalid department' });
+
+    const dateMatch = {};
     if (startDate && endDate) {
-      dateFilter.createdAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
+      dateMatch.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
 
-    // First get all doctors in the department
-    const doctors = await Doctor.find({ department });
-    const doctorIds = doctors.map(doctor => doctor._id);
+    // Get doctors in department
+    const doctors = await Doctor.find({ department: deptObjId }).select('firstName lastName specialization department');
+    const doctorIds = doctors.map((d) => d._id);
 
-    // Get invoices for doctors in this department
-    const invoices = await Invoice.aggregate([
-      {
-        $match: {
-          ...dateFilter,
-          'appointment_id.doctor_id': { $in: doctorIds }
-        }
-      },
+    // Invoices pipeline
+    const pipeline = [
+      { $match: { ...dateMatch } },
       {
         $lookup: {
           from: 'appointments',
@@ -1247,12 +1239,8 @@ exports.getDepartmentRevenue = async (req, res) => {
           as: 'appointment_info'
         }
       },
-      {
-        $unwind: {
-          path: '$appointment_info',
-          preserveNullAndEmptyArrays: true
-        }
-      },
+      { $unwind: { path: '$appointment_info', preserveNullAndEmptyArrays: false } },
+      { $match: { 'appointment_info.doctor_id': { $in: doctorIds } } },
       {
         $lookup: {
           from: 'doctors',
@@ -1261,70 +1249,58 @@ exports.getDepartmentRevenue = async (req, res) => {
           as: 'doctor_info'
         }
       },
-      {
-        $unwind: {
-          path: '$doctor_info',
-          preserveNullAndEmptyArrays: true
-        }
-      }
-    ]);
+      { $unwind: { path: '$doctor_info', preserveNullAndEmptyArrays: true } }
+    ];
 
-    // Calculate department statistics
+    const invoices = await Invoice.aggregate(pipeline);
+
     let totalRevenue = 0;
     let appointmentCount = 0;
     let procedureCount = 0;
+
     const doctorBreakdown = {};
     const dailyRevenue = {};
 
-    invoices.forEach(invoice => {
-      const amount = invoice.total || 0;
-      const date = new Date(invoice.createdAt).toISOString().split('T')[0];
-      const doctorId = invoice.appointment_info?.doctor_id;
-      
+    invoices.forEach((inv) => {
+      const amount = inv.total || 0;
       totalRevenue += amount;
-      
-      if (invoice.invoice_type === 'Appointment') {
-        appointmentCount++;
-      } else if (invoice.invoice_type === 'Procedure') {
-        procedureCount++;
-      }
-      
-      // Track daily revenue
-      dailyRevenue[date] = (dailyRevenue[date] || 0) + amount;
-      
-      // Track doctor breakdown
-      if (doctorId) {
-        const doctor = invoice.doctor_info;
-        const doctorName = `${doctor.firstName} ${doctor.lastName}`;
-        
-        if (!doctorBreakdown[doctorId]) {
-          doctorBreakdown[doctorId] = {
-            id: doctorId,
-            name: doctorName,
+
+      if (inv.invoice_type === 'Appointment') appointmentCount += 1;
+      if (inv.invoice_type === 'Procedure') procedureCount += 1;
+
+      const dateKey = new Date(inv.createdAt).toISOString().split('T')[0];
+      dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + amount;
+
+      const docId = inv.appointment_info?.doctor_id ? String(inv.appointment_info.doctor_id) : null;
+      if (docId) {
+        const d = inv.doctor_info;
+        const name = d ? `${d.firstName} ${d.lastName || ''}`.trim() : 'Unknown';
+
+        if (!doctorBreakdown[docId]) {
+          doctorBreakdown[docId] = {
+            id: docId,
+            name,
             revenue: 0,
-            appointments: 0,
-            specialization: doctor.specialization
+            invoices: 0,
+            specialization: d?.specialization || 'N/A'
           };
         }
-        
-        doctorBreakdown[doctorId].revenue += amount;
-        doctorBreakdown[doctorId].appointments++;
+        doctorBreakdown[docId].revenue += amount;
+        doctorBreakdown[docId].invoices += 1;
       }
     });
 
-    // Convert breakdowns to arrays
     const dailyBreakdown = Object.entries(dailyRevenue)
-      .map(([date, revenue]) => ({ date, revenue }))
+      .map(([d, revenue]) => ({ date: d, revenue }))
       .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    const doctorBreakdownArray = Object.values(doctorBreakdown)
-      .sort((a, b) => b.revenue - a.revenue);
+    const doctorBreakdownArray = Object.values(doctorBreakdown).sort((a, b) => b.revenue - a.revenue);
 
     res.json({
-      department,
+      department: String(deptObjId),
       period: {
-        start: dateFilter.createdAt?.$gte || new Date(),
-        end: dateFilter.createdAt?.$lte || new Date()
+        start: dateMatch.createdAt?.$gte || null,
+        end: dateMatch.createdAt?.$lte || null
       },
       summary: {
         totalRevenue,
@@ -1333,19 +1309,21 @@ exports.getDepartmentRevenue = async (req, res) => {
         procedureCount,
         totalDoctors: doctorIds.length,
         activeDoctors: Object.keys(doctorBreakdown).length,
-        averageRevenuePerDoctor: Object.keys(doctorBreakdown).length > 0 ?
-          (totalRevenue / Object.keys(doctorBreakdown).length).toFixed(2) : 0
+        averageRevenuePerDoctor:
+          Object.keys(doctorBreakdown).length > 0
+            ? Number((totalRevenue / Object.keys(doctorBreakdown).length).toFixed(2))
+            : 0
       },
       breakdown: {
         daily: dailyBreakdown,
         byDoctor: doctorBreakdownArray
       },
-      doctors: doctors.map(doctor => ({
-        id: doctor._id,
-        name: `${doctor.firstName} ${doctor.lastName}`,
-        specialization: doctor.specialization,
-        revenue: doctorBreakdown[doctor._id]?.revenue || 0,
-        appointments: doctorBreakdown[doctor._id]?.appointments || 0
+      doctors: doctors.map((d) => ({
+        id: d._id,
+        name: `${d.firstName} ${d.lastName || ''}`.trim(),
+        specialization: d.specialization,
+        revenue: doctorBreakdown[String(d._id)]?.revenue || 0,
+        invoices: doctorBreakdown[String(d._id)]?.invoices || 0
       }))
     });
   } catch (error) {
@@ -1354,10 +1332,17 @@ exports.getDepartmentRevenue = async (req, res) => {
   }
 };
 
-// Get detailed transaction report
+/**
+ * Detailed transactions report (paginated)
+ * Fixes:
+ * - correct doctor filter via lookup/unwind
+ * - department filter implemented
+ * - doctor lookup stage order fixed (unwind appointment before doctor lookup)
+ * - count uses same base invoice-only filters (department/doctor filters require aggregate count)
+ */
 exports.getDetailedRevenueReport = async (req, res) => {
   try {
-    const { 
+    const {
       startDate,
       endDate,
       doctorId,
@@ -1370,72 +1355,29 @@ exports.getDetailedRevenueReport = async (req, res) => {
       limit = 50
     } = req.query;
 
-    const skip = (page - 1) * limit;
+    const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
-    // Build filter
-    const filter = {};
+    // Build pipeline with joins for doctor/department filters
+    const baseQuery = {
+      startDate,
+      endDate,
+      doctorId,
+      department,
+      invoiceType,
+      invoiceStatus: status,
+      minAmount,
+      maxAmount
+    };
 
-    if (startDate && endDate) {
-      filter.createdAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    }
+    const { pipeline, period } = buildInvoicePipeline(baseQuery, {
+      requireDoctorJoin: true,
+      requirePatientJoin: true
+    });
 
-    if (doctorId && doctorId !== 'all') {
-      filter.$or = [
-        { 'appointment_id.doctor_id': doctorId },
-        { doctor_id: doctorId }
-      ];
-    }
-
-    if (department && department !== 'all') {
-      // Need to join with doctors to filter by department
-      // This would require a more complex query
-    }
-
-    if (invoiceType && invoiceType !== 'all') {
-      filter.invoice_type = invoiceType;
-    }
-
-    if (status && status !== 'all') {
-      filter.status = status;
-    }
-
-    // Amount range filter
-    const amountFilter = {};
-    if (minAmount) {
-      amountFilter.total = { $gte: parseFloat(minAmount) };
-    }
-    if (maxAmount) {
-      amountFilter.total = { ...amountFilter.total, $lte: parseFloat(maxAmount) };
-    }
-
-    // Get invoices with populated data
-    const [invoices, total] = await Promise.all([
-      Invoice.aggregate([
-        {
-          $match: {
-            ...filter,
-            ...(Object.keys(amountFilter).length > 0 ? amountFilter : {})
-          }
-        },
-        {
-          $lookup: {
-            from: 'patients',
-            localField: 'patient_id',
-            foreignField: '_id',
-            as: 'patient_info'
-          }
-        },
-        {
-          $lookup: {
-            from: 'appointments',
-            localField: 'appointment_id',
-            foreignField: '_id',
-            as: 'appointment_info'
-          }
-        },
+    // Ensure doctor_info present for projection (if not already)
+    const hasDoctorInfoStage = pipeline.some((s) => s.$lookup && s.$lookup.from === 'doctors');
+    if (!hasDoctorInfoStage) {
+      pipeline.push(
         {
           $lookup: {
             from: 'doctors',
@@ -1444,104 +1386,91 @@ exports.getDetailedRevenueReport = async (req, res) => {
             as: 'doctor_info'
           }
         },
-        {
-          $unwind: {
-            path: '$patient_info',
-            preserveNullAndEmptyArrays: true
-          }
-        },
-        {
-          $unwind: {
-            path: '$appointment_info',
-            preserveNullAndEmptyArrays: true
-          }
-        },
-        {
-          $unwind: {
-            path: '$doctor_info',
-            preserveNullAndEmptyArrays: true
-          }
-        },
-        {
-          $sort: { createdAt: -1 }
-        },
-        {
-          $skip: skip
-        },
-        {
-          $limit: parseInt(limit)
-        },
-        {
-          $project: {
-            invoice_number: 1,
-            invoice_type: 1,
-            issue_date: 1,
-            total: 1,
-            amount_paid: 1,
-            balance_due: 1,
-            status: 1,
-            createdAt: 1,
-            patient: {
-              name: { 
-                $concat: [
-                  '$patient_info.first_name',
-                  ' ',
-                  { $ifNull: ['$patient_info.last_name', ''] }
-                ]
-              },
-              patientId: '$patient_info.patientId',
-              type: '$patient_info.patient_type'
-            },
-            doctor: {
-              name: {
-                $concat: [
-                  '$doctor_info.firstName',
-                  ' ',
-                  { $ifNull: ['$doctor_info.lastName', ''] }
-                ]
-              },
-              department: '$doctor_info.department'
-            },
-            appointment_date: '$appointment_info.appointment_date',
-            payment_method: {
-              $arrayElemAt: ['$payment_history.method', -1]
-            },
-            service_items: 1,
-            medicine_items: 1,
-            procedure_items: 1,
-            notes: 1
-          }
-        }
-      ]),
-      Invoice.countDocuments({
-        ...filter,
-        ...(Object.keys(amountFilter).length > 0 ? amountFilter : {})
-      })
-    ]);
+        { $unwind: { path: '$doctor_info', preserveNullAndEmptyArrays: true } }
+      );
+    }
 
-    // Calculate summary for the filtered data
+    // Total count with the same pipeline, but using $count
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const countResult = await Invoice.aggregate(countPipeline);
+    const total = countResult[0]?.total || 0;
+
+    // Data pipeline with pagination + projection
+    const dataPipeline = [
+      ...pipeline,
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: parseInt(limit, 10) },
+      {
+        $project: {
+          invoice_number: 1,
+          invoice_type: 1,
+          issue_date: 1,
+          total: 1,
+          amount_paid: 1,
+          balance_due: 1,
+          status: 1,
+          createdAt: 1,
+          patient: {
+            name: {
+              $trim: {
+                input: {
+                  $concat: [
+                    { $ifNull: ['$patient_info.first_name', ''] },
+                    ' ',
+                    { $ifNull: ['$patient_info.last_name', ''] }
+                  ]
+                }
+              }
+            },
+            patientId: '$patient_info.patientId',
+            type: '$patient_info.patient_type'
+          },
+          doctor: {
+            name: {
+              $trim: {
+                input: {
+                  $concat: [
+                    { $ifNull: ['$doctor_info.firstName', ''] },
+                    ' ',
+                    { $ifNull: ['$doctor_info.lastName', ''] }
+                  ]
+                }
+              }
+            },
+            department: '$doctor_info.department'
+          },
+          appointment_date: '$appointment_info.appointment_date',
+          payment_method: { $arrayElemAt: ['$payment_history.method', -1] },
+          service_items: 1,
+          medicine_items: 1,
+          procedure_items: 1,
+          notes: 1
+        }
+      }
+    ];
+
+    const invoices = await Invoice.aggregate(dataPipeline);
+
     const summary = {
       totalRevenue: invoices.reduce((sum, inv) => sum + (inv.total || 0), 0),
       totalPaid: invoices.reduce((sum, inv) => sum + (inv.amount_paid || 0), 0),
       totalPending: invoices.reduce((sum, inv) => sum + (inv.balance_due || 0), 0),
       totalInvoices: invoices.length,
-      appointmentCount: invoices.filter(inv => inv.invoice_type === 'Appointment').length,
-      pharmacyCount: invoices.filter(inv => inv.invoice_type === 'Pharmacy').length,
-      procedureCount: invoices.filter(inv => inv.invoice_type === 'Procedure').length
+      appointmentCount: invoices.filter((inv) => inv.invoice_type === 'Appointment').length,
+      pharmacyCount: invoices.filter((inv) => inv.invoice_type === 'Pharmacy').length,
+      procedureCount: invoices.filter((inv) => inv.invoice_type === 'Procedure').length
     };
 
     res.json({
-      period: {
-        start: filter.createdAt?.$gte || new Date(),
-        end: filter.createdAt?.$lte || new Date()
-      },
+      period: { start: period.start || null, end: period.end || null },
       summary,
       transactions: invoices,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: parseInt(page, 10),
+        limit: parseInt(limit, 10),
         total,
-        totalPages: Math.ceil(total / limit)
+        totalPages: Math.ceil(total / parseInt(limit, 10))
       }
     });
   } catch (error) {
@@ -1550,110 +1479,112 @@ exports.getDetailedRevenueReport = async (req, res) => {
   }
 };
 
-// Export revenue data to CSV/Excel
+/**
+ * Export revenue data
+ * Fixes:
+ * - uses populate safely
+ * - exportType=csv returns downloadable CSV
+ * - exportType=json returns data
+ * Note: true Excel needs exceljs; keeping your CSV export behavior but aligning flags.
+ */
 exports.exportRevenueData = async (req, res) => {
   try {
-    const { 
-      startDate,
-      endDate,
-      exportType = 'csv' // csv or excel
-    } = req.query;
+    const { startDate, endDate, exportType = 'csv' } = req.query;
 
     const filter = {};
     if (startDate && endDate) {
-      filter.createdAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
+      filter.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
 
-    // Get all invoices for the period
     const invoices = await Invoice.find(filter)
-      .populate('patient_id', 'first_name last_name patientId')
+      .populate('patient_id', 'first_name last_name patientId patient_type')
       .populate({
         path: 'appointment_id',
-        populate: {
-          path: 'doctor_id',
-          select: 'firstName lastName department'
-        }
+        populate: { path: 'doctor_id', select: 'firstName lastName department' }
       })
       .sort({ createdAt: -1 })
-      .limit(10000); // Limit for export
+      .limit(10000);
 
-    // Prepare data for export
-    const exportData = invoices.map(invoice => {
+    const exportData = invoices.map((invoice) => {
       const doctor = invoice.appointment_id?.doctor_id;
       const patient = invoice.patient_id;
-      
+
       return {
         'Invoice Number': invoice.invoice_number,
-        'Date': invoice.issue_date.toISOString().split('T')[0],
-        'Type': invoice.invoice_type,
-        'Patient Name': patient ? `${patient.first_name} ${patient.last_name}` : 'Unknown',
+        Date: invoice.issue_date ? invoice.issue_date.toISOString().split('T')[0] : '',
+        Type: invoice.invoice_type,
+        'Patient Name': patient ? `${patient.first_name} ${patient.last_name || ''}`.trim() : 'Unknown',
         'Patient ID': patient?.patientId || 'N/A',
-        'Doctor': doctor ? `${doctor.firstName} ${doctor.lastName}` : 'N/A',
-        'Department': doctor?.department || 'N/A',
-        'Total Amount': invoice.total,
-        'Amount Paid': invoice.amount_paid,
-        'Balance Due': invoice.balance_due,
-        'Status': invoice.status,
-        'Payment Method': invoice.payment_history && invoice.payment_history.length > 0 ? 
-          invoice.payment_history[invoice.payment_history.length - 1].method : 'N/A',
+        Doctor: doctor ? `${doctor.firstName} ${doctor.lastName || ''}`.trim() : 'N/A',
+        Department: doctor?.department || 'N/A',
+        'Total Amount': invoice.total || 0,
+        'Amount Paid': invoice.amount_paid || 0,
+        'Balance Due': invoice.balance_due || 0,
+        Status: invoice.status,
+        'Payment Method':
+          Array.isArray(invoice.payment_history) && invoice.payment_history.length
+            ? invoice.payment_history[invoice.payment_history.length - 1].method
+            : 'N/A',
         'Services Count': invoice.service_items?.length || 0,
         'Medicines Count': invoice.medicine_items?.length || 0,
         'Procedures Count': invoice.procedure_items?.length || 0,
-        'Notes': invoice.notes || ''
+        Notes: invoice.notes || ''
       };
     });
 
-    // Add summary row
-    const summary = {
+    const summaryRow = {
       'Invoice Number': 'SUMMARY',
-      'Date': '',
-      'Type': '',
+      Date: '',
+      Type: '',
       'Patient Name': '',
       'Patient ID': '',
-      'Doctor': '',
-      'Department': '',
+      Doctor: '',
+      Department: '',
       'Total Amount': invoices.reduce((sum, inv) => sum + (inv.total || 0), 0),
       'Amount Paid': invoices.reduce((sum, inv) => sum + (inv.amount_paid || 0), 0),
       'Balance Due': invoices.reduce((sum, inv) => sum + (inv.balance_due || 0), 0),
-      'Status': '',
+      Status: '',
       'Payment Method': '',
       'Services Count': invoices.reduce((sum, inv) => sum + (inv.service_items?.length || 0), 0),
       'Medicines Count': invoices.reduce((sum, inv) => sum + (inv.medicine_items?.length || 0), 0),
       'Procedures Count': invoices.reduce((sum, inv) => sum + (inv.procedure_items?.length || 0), 0),
-      'Notes': `Total Invoices: ${invoices.length} | Period: ${startDate || 'Start'} to ${endDate || 'End'}`
+      Notes: `Total Invoices: ${invoices.length} | Period: ${startDate || 'Start'} to ${endDate || 'End'}`
     };
 
-    exportData.unshift(summary);
+    exportData.unshift(summaryRow);
 
-    if (exportType === 'excel') {
-      // For Excel export, you would use a library like exceljs
-      // This is a simplified CSV response
-      const csvData = exportData.map(row => 
-        Object.values(row).map(value => 
-          typeof value === 'string' && value.includes(',') ? `"${value}"` : value
-        ).join(',')
-      );
-      
-      const csvHeaders = Object.keys(exportData[0]).join(',');
-      const csvContent = [csvHeaders, ...csvData].join('\n');
-      
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename=revenue_export_${new Date().getTime()}.csv`);
-      res.send(csvContent);
-    } else {
-      // Return JSON for frontend to handle
-      res.json({
+    if (exportType === 'json') {
+      return res.json({
         period: {
-          start: filter.createdAt?.$gte || new Date(),
-          end: filter.createdAt?.$lte || new Date()
+          start: filter.createdAt?.$gte || null,
+          end: filter.createdAt?.$lte || null
         },
         data: exportData,
         total: invoices.length
       });
     }
+
+    // Default: CSV download
+    const headers = Object.keys(exportData[0]);
+    const csvLines = [
+      headers.join(','),
+      ...exportData.map((row) =>
+        headers
+          .map((h) => {
+            const v = row[h] ?? '';
+            const s = String(v);
+            return s.includes(',') || s.includes('"') || s.includes('\n')
+              ? `"${s.replace(/"/g, '""')}"`
+              : s;
+          })
+          .join(',')
+      )
+    ];
+
+    const csvContent = csvLines.join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=revenue_export_${Date.now()}.csv`);
+    return res.send(csvContent);
   } catch (error) {
     console.error('Error exporting revenue data:', error);
     res.status(500).json({ error: error.message });
