@@ -1,130 +1,168 @@
+// controllers/salary.controller.js ✅ FULL UPDATED (drop-in replacement)
 const Salary = require('../models/Salary');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const mongoose = require('mongoose');
 
+// -------------------- helpers --------------------
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const toNumber = (v, def = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+};
+
+const parseDateOrNull = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+// Overlap filter: period overlaps [start,end]
+const addOverlapPeriodFilter = (filter, start, end) => {
+  if (!start || !end) return filter;
+  filter.period_start = { $lte: end };
+  filter.period_end = { $gte: start };
+  return filter;
+};
+
+const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+const endOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+
+const ALLOWED_SALARY_STATUSES = new Set(['pending', 'paid', 'cancelled', 'hold']);
+
+// -------------------- core: part-time salary calc --------------------
 exports.calculatePartTimeSalary = async (appointmentId) => {
   try {
+    if (!isValidObjectId(appointmentId)) return null;
+
     const appointment = await Appointment.findById(appointmentId)
       .populate('doctor_id')
       .populate('patient_id');
 
     if (!appointment || appointment.status !== 'Completed') {
-      console.log('Appointment not found or not completed');
       return null;
     }
 
     const doctor = appointment.doctor_id;
-    
-    // Check payment type instead of just isFullTime flag for more robustness
+    if (!doctor) return null;
+
+    // Fixed salary doctors -> no per-visit calc
     if (['Salary', 'Contractual Salary'].includes(doctor.paymentType)) {
-      console.log('Doctor is on fixed salary, no per-visit calculation needed');
       return null;
     }
 
+    const rate = toNumber(doctor.amount, 0);
     let amount = 0;
-    let notes = `Appointment: ${appointment._id}, Patient: ${appointment.patient_id?.first_name || 'Unknown'}`;
+
+    let notes = `Appointment: ${appointment._id}, Patient: ${
+      appointment.patient_id?.first_name || 'Unknown'
+    }`;
 
     switch (doctor.paymentType) {
       case 'Fee per Visit':
-        amount = doctor.amount || 0;
+        amount = rate;
         notes += `, Type: Per Visit`;
         break;
-      
-      case 'Per Hour':
-        if (appointment.duration) {
-          const hours = appointment.duration / 60; // Convert minutes to hours
-          amount = (doctor.amount || 0) * hours;
-          notes += `, Duration: ${appointment.duration}min, Rate: ₹${doctor.amount}/hr`;
+
+      case 'Per Hour': {
+        const durationMin = toNumber(appointment.duration, 0);
+        if (durationMin > 0) {
+          const hours = durationMin / 60;
+          amount = rate * hours;
+          notes += `, Duration: ${durationMin}min, Rate: ₹${rate}/hr`;
         }
         break;
-      
+      }
+
       default:
-        console.log('Unknown payment type:', doctor.paymentType);
         return null;
     }
 
-    if (amount <= 0) {
-      console.log('No amount calculated for salary');
-      return null;
-    }
+    amount = toNumber(amount, 0);
+    if (amount <= 0) return null;
 
-    const today = new Date();
-    const periodStart = new Date(today.setHours(0, 0, 0, 0));
-    const periodEnd = new Date(today.setHours(23, 59, 59, 999));
+    // ✅ FIX: book salary into the appointment's completion day, not "today"
+    const baseDate =
+      appointment.actual_end_time ||
+      appointment.updatedAt ||
+      appointment.appointment_date ||
+      new Date();
 
-    try {
-      // Check if salary entry already exists for today
-      let salary = await Salary.findOne({
-        doctor_id: doctor._id,
-        period_type: 'daily',
-        period_start: periodStart,
-        period_end: periodEnd
-      });
+    const periodStart = startOfDay(new Date(baseDate));
+    const periodEnd = endOfDay(new Date(baseDate));
 
-      if (salary) {
-        // Update existing entry
-        salary.amount += amount;
-        salary.appointment_count += 1;
-        salary.net_amount = salary.amount + (salary.bonus || 0) - (salary.deductions || 0);
-        salary.notes = salary.notes ? `${salary.notes} | ${notes}` : notes;
-        await salary.save();
-        console.log('Updated existing salary entry:', salary._id);
-      } else {
-        // Create new entry
-        salary = new Salary({
-          doctor_id: doctor._id,
-          period_type: 'daily',
-          period_start: periodStart,
-          period_end: periodEnd,
-          amount: amount,
-          appointment_count: 1,
-          net_amount: amount,
-          notes: notes,
-          status: 'pending'
-        });
-        await salary.save();
-        console.log('Created new salary entry:', salary._id);
-      }
+    // Find existing daily salary for that doctor/day
+    let salary = await Salary.findOne({
+      doctor_id: doctor._id,
+      period_type: 'daily',
+      period_start: periodStart,
+      period_end: periodEnd
+    });
 
+    if (salary) {
+      salary.amount = toNumber(salary.amount, 0) + amount;
+      salary.appointment_count = toNumber(salary.appointment_count, 0) + 1;
+      salary.net_amount =
+        toNumber(salary.amount, 0) +
+        toNumber(salary.bonus, 0) -
+        toNumber(salary.deductions, 0);
+
+      salary.notes = salary.notes ? `${salary.notes} | ${notes}` : notes;
+      await salary.save();
       return salary;
-    } catch (dbError) {
-      console.error('Database error in salary calculation:', dbError);
-      return null;
     }
 
+    salary = new Salary({
+      doctor_id: doctor._id,
+      period_type: 'daily',
+      period_start: periodStart,
+      period_end: periodEnd,
+      amount,
+      appointment_count: 1,
+      net_amount: amount,
+      notes,
+      status: 'pending'
+    });
+
+    await salary.save();
+    return salary;
   } catch (error) {
     console.error('Error calculating part-time salary:', error);
-    // Don't throw the error to prevent server crash
     return null;
   }
 };
 
-// Add this new function to handle individual appointment salary calculation
+// API wrapper for single appointment
 exports.calculateAppointmentSalary = async (req, res) => {
   try {
     const { appointmentId } = req.params;
-    const salary = await exports.calculatePartTimeSalary(appointmentId);
-    
-    if (salary) {
-      res.json(salary);
-    } else {
-      res.json({ message: 'No salary calculated (doctor may be full-time or appointment not completed)' });
+
+    if (!isValidObjectId(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointmentId' });
     }
+
+    const salary = await exports.calculatePartTimeSalary(appointmentId);
+
+    if (salary) return res.json(salary);
+
+    return res.json({
+      message: 'No salary calculated (doctor may be on fixed salary or appointment not completed)'
+    });
   } catch (error) {
     console.error('Error in calculateAppointmentSalary:', error);
     res.status(500).json({ error: 'Failed to calculate salary' });
   }
 };
 
-// Calculate monthly salary for full-time doctors (run via cron job)
+// -------------------- full-time monthly salary calc (cron) --------------------
 exports.calculateFullTimeSalaries = async () => {
   try {
     const now = new Date();
-    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
-    const fullTimeDoctors = await Doctor.find({ 
+    const fullTimeDoctors = await Doctor.find({
       isFullTime: true,
       paymentType: { $in: ['Salary', 'Contractual Salary'] }
     });
@@ -132,37 +170,33 @@ exports.calculateFullTimeSalaries = async () => {
     const results = [];
 
     for (const doctor of fullTimeDoctors) {
-      // Check if salary already calculated for this month
-      const existingSalary = await Salary.findOne({
+      // ✅ FIX: correct existence check for same month range
+      const existing = await Salary.findOne({
         doctor_id: doctor._id,
         period_type: 'monthly',
-        period_start: firstDayOfMonth,
-        period_end: lastDayOfMonth
+        period_start: firstDay,
+        period_end: lastDay
       });
 
-      if (existingSalary) {
-        results.push({ doctor: doctor._id, status: 'already_exists' });
+      if (existing) {
+        results.push({ doctor: doctor._id, status: 'already_exists', salary: existing._id });
         continue;
       }
 
-      let baseSalary = doctor.amount;
-      let notes = 'Monthly salary';
-
-      // For contractual doctors, you might want to add additional logic
-      if (doctor.paymentType === 'Contractual Salary') {
-        // Add contractual specific calculations if needed
-        notes = 'Contractual monthly salary';
-      }
+      const baseSalary = toNumber(doctor.amount, 0);
 
       const salary = new Salary({
         doctor_id: doctor._id,
         period_type: 'monthly',
-        period_start: firstDayOfMonth,
-        period_end: lastDayOfMonth,
+        period_start: firstDay,
+        period_end: lastDay,
         amount: baseSalary,
         base_salary: baseSalary,
         net_amount: baseSalary,
-        notes: notes,
+        notes:
+          doctor.paymentType === 'Contractual Salary'
+            ? 'Contractual monthly salary'
+            : 'Monthly salary',
         status: 'pending'
       });
 
@@ -177,70 +211,77 @@ exports.calculateFullTimeSalaries = async () => {
   }
 };
 
-// Get doctor's salary history
+// -------------------- GET: doctor salary history --------------------
 exports.getDoctorSalaryHistory = async (req, res) => {
   try {
     const { doctorId } = req.params;
     const { period, startDate, endDate, page = 1, limit = 10 } = req.query;
 
-    // --- AUTO-GENERATE CHECK FOR FULL TIME DOCTORS ---
-    // If querying for a full-time doctor, ensure current month's pending salary exists
+    if (!isValidObjectId(doctorId)) {
+      return res.status(400).json({ error: 'Invalid doctorId' });
+    }
+
+    // AUTO-GENERATE current month salary for fixed salary doctors (non-blocking)
     try {
       const doctor = await Doctor.findById(doctorId);
       if (doctor && ['Salary', 'Contractual Salary'].includes(doctor.paymentType)) {
         const now = new Date();
-        const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-        
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+        const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
         const exists = await Salary.findOne({
           doctor_id: doctorId,
           period_type: 'monthly',
-          period_start: { $gte: firstDayOfMonth, $lte: lastDayOfMonth }
+          period_start: firstDay,
+          period_end: lastDay
         });
 
         if (!exists) {
-           await new Salary({
-             doctor_id: doctorId,
-             period_type: 'monthly',
-             period_start: firstDayOfMonth,
-             period_end: lastDayOfMonth,
-             amount: doctor.amount,
-             base_salary: doctor.amount,
-             net_amount: doctor.amount,
-             status: 'pending',
-             notes: `Auto-generated monthly salary for ${now.toLocaleString('default', { month: 'long' })}`
-           }).save();
+          const amt = toNumber(doctor.amount, 0);
+          await new Salary({
+            doctor_id: doctorId,
+            period_type: 'monthly',
+            period_start: firstDay,
+            period_end: lastDay,
+            amount: amt,
+            base_salary: amt,
+            net_amount: amt,
+            status: 'pending',
+            notes: `Auto-generated monthly salary for ${now.toLocaleString('default', {
+              month: 'long'
+            })}`
+          }).save();
         }
       }
     } catch (err) {
-      console.error("Auto-generate salary error:", err);
-      // Continue anyway, don't block the read
+      console.error('Auto-generate salary error:', err);
     }
-    // --------------------------------------------------
 
     const filter = { doctor_id: doctorId };
-    
-    if (period) {
-      filter.period_type = period;
-    }
-    
-    if (startDate && endDate) {
-      filter.period_start = { $gte: new Date(startDate) };
-      filter.period_end = { $lte: new Date(endDate) };
-    }
+    if (period) filter.period_type = period;
 
-    const salaries = await Salary.find(filter)
-      .sort({ period_start: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .populate('created_by', 'name');
+    const start = parseDateOrNull(startDate);
+    const end = parseDateOrNull(endDate);
+    if (start && end) addOverlapPeriodFilter(filter, start, end);
 
-    const total = await Salary.countDocuments(filter);
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, Math.min(200, parseInt(limit, 10) || 10));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [salaries, total] = await Promise.all([
+      Salary.find(filter)
+        .sort({ period_start: -1 })
+        .limit(limitNum)
+        .skip(skip)
+        .populate('created_by', 'name')
+        .populate('doctor_id', 'firstName lastName paymentType amount'),
+      Salary.countDocuments(filter)
+    ]);
 
     res.json({
       salaries,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
+      totalPages: Math.ceil(total / limitNum),
+      currentPage: pageNum,
       total
     });
   } catch (error) {
@@ -248,33 +289,41 @@ exports.getDoctorSalaryHistory = async (req, res) => {
   }
 };
 
-// Get all salaries with filters
+// -------------------- GET: all salaries with filters --------------------
 exports.getAllSalaries = async (req, res) => {
   try {
     const { status, periodType, doctorId, startDate, endDate, page = 1, limit = 10 } = req.query;
 
     const filter = {};
-    if (status) filter.status = status;
-    if (periodType) filter.period_type = periodType;
-    if (doctorId) filter.doctor_id = doctorId;
-    
-    if (startDate && endDate) {
-      filter.period_start = { $gte: new Date(startDate) };
-      filter.period_end = { $lte: new Date(endDate) };
+
+    if (status && status !== 'all') filter.status = status;
+    if (periodType && periodType !== 'all') filter.period_type = periodType;
+    if (doctorId && doctorId !== 'all') {
+      if (!isValidObjectId(doctorId)) return res.status(400).json({ error: 'Invalid doctorId' });
+      filter.doctor_id = doctorId;
     }
 
-    const salaries = await Salary.find(filter)
-      .populate('doctor_id', 'firstName lastName paymentType amount')
-      .sort({ period_start: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    const start = parseDateOrNull(startDate);
+    const end = parseDateOrNull(endDate);
+    if (start && end) addOverlapPeriodFilter(filter, start, end);
 
-    const total = await Salary.countDocuments(filter);
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, Math.min(200, parseInt(limit, 10) || 10));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [salaries, total] = await Promise.all([
+      Salary.find(filter)
+        .populate('doctor_id', 'firstName lastName paymentType amount isFullTime')
+        .sort({ period_start: -1 })
+        .limit(limitNum)
+        .skip(skip),
+      Salary.countDocuments(filter)
+    ]);
 
     res.json({
       salaries,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
+      totalPages: Math.ceil(total / limitNum),
+      currentPage: pageNum,
       total
     });
   } catch (error) {
@@ -282,26 +331,36 @@ exports.getAllSalaries = async (req, res) => {
   }
 };
 
-// Update salary status (mark as paid, etc.)
+// -------------------- PUT: update salary status --------------------
 exports.updateSalaryStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, payment_method, paid_date, notes } = req.body;
 
-    const salary = await Salary.findByIdAndUpdate(
-      id,
-      {
-        status,
-        payment_method,
-        paid_date: paid_date ? new Date(paid_date) : new Date(),
-        notes
-      },
-      { new: true, runValidators: true }
-    ).populate('doctor_id', 'firstName lastName');
+    if (!isValidObjectId(id)) return res.status(400).json({ error: 'Invalid salary id' });
 
-    if (!salary) {
-      return res.status(404).json({ error: 'Salary record not found' });
+    if (status && !ALLOWED_SALARY_STATUSES.has(String(status).toLowerCase())) {
+      return res.status(400).json({ error: 'Invalid status' });
     }
+
+    const update = {};
+    if (status) update.status = String(status).toLowerCase();
+    if (payment_method) update.payment_method = payment_method;
+    if (notes !== undefined) update.notes = notes;
+
+    // Only set paid_date when marking paid, or if explicitly provided
+    if (update.status === 'paid') {
+      update.paid_date = paid_date ? new Date(paid_date) : new Date();
+    } else if (paid_date) {
+      update.paid_date = new Date(paid_date);
+    }
+
+    const salary = await Salary.findByIdAndUpdate(id, update, {
+      new: true,
+      runValidators: true
+    }).populate('doctor_id', 'firstName lastName paymentType amount');
+
+    if (!salary) return res.status(404).json({ error: 'Salary record not found' });
 
     res.json(salary);
   } catch (error) {
@@ -309,69 +368,68 @@ exports.updateSalaryStatus = async (req, res) => {
   }
 };
 
-// Get salary statistics
+// -------------------- GET: salary statistics --------------------
 exports.getSalaryStatistics = async (req, res) => {
   try {
     const { period, startDate, endDate } = req.query;
 
     const filter = {};
-    if (period) filter.period_type = period;
-    
-    if (startDate && endDate) {
-      filter.period_start = { $gte: new Date(startDate) };
-      filter.period_end = { $lte: new Date(endDate) };
-    }
+    if (period && period !== 'all') filter.period_type = period;
 
-    const stats = await Salary.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$net_amount' }
-        }
-      }
-    ]);
+    const start = parseDateOrNull(startDate);
+    const end = parseDateOrNull(endDate);
+    if (start && end) addOverlapPeriodFilter(filter, start, end);
 
-    const totalStats = await Salary.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: null,
-          totalRecords: { $sum: 1 },
-          totalAmount: { $sum: '$net_amount' },
-          averageSalary: { $avg: '$net_amount' }
+    const [byStatus, overallArr] = await Promise.all([
+      Salary.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            totalAmount: { $sum: '$net_amount' }
+          }
         }
-      }
+      ]),
+      Salary.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalRecords: { $sum: 1 },
+            totalAmount: { $sum: '$net_amount' },
+            averageSalary: { $avg: '$net_amount' }
+          }
+        }
+      ])
     ]);
 
     res.json({
-      byStatus: stats,
-      overall: totalStats[0] || { totalRecords: 0, totalAmount: 0, averageSalary: 0 }
+      byStatus,
+      overall: overallArr[0] || { totalRecords: 0, totalAmount: 0, averageSalary: 0 }
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
+// -------------------- POST: bulk calculate & pay part-time salaries --------------------
 exports.bulkCalculateAndPayPartTimeSalaries = async (req, res) => {
   try {
     const { periodType, startDate, endDate, payment_method, notes } = req.body;
-    
-    // Validate period type
+
     if (!['daily', 'weekly', 'monthly'].includes(periodType)) {
       return res.status(400).json({ error: 'Invalid period type. Use daily, weekly, or monthly.' });
     }
 
-    const periodStart = new Date(startDate);
-    const periodEnd = new Date(endDate);
-    
-    if (isNaN(periodStart.getTime()) || isNaN(periodEnd.getTime())) {
+    const periodStart = parseDateOrNull(startDate);
+    const periodEnd = parseDateOrNull(endDate);
+
+    if (!periodStart || !periodEnd) {
       return res.status(400).json({ error: 'Invalid date format.' });
     }
 
-    // Get all part-time doctors with pending salaries for the period
-    const partTimeDoctors = await Doctor.find({ 
+    const partTimeDoctors = await Doctor.find({
       isFullTime: false,
       paymentType: { $in: ['Fee per Visit', 'Per Hour'] }
     });
@@ -381,17 +439,14 @@ exports.bulkCalculateAndPayPartTimeSalaries = async (req, res) => {
     let totalAppointments = 0;
 
     for (const doctor of partTimeDoctors) {
-      // Find appointments for this doctor in the specified period
+      // ✅ use overlap on appointment completion time if available
       const appointments = await Appointment.find({
         doctor_id: doctor._id,
         status: 'Completed',
-        actual_end_time: {
-          $gte: periodStart,
-          $lte: periodEnd
-        }
+        actual_end_time: { $gte: periodStart, $lte: periodEnd }
       }).populate('patient_id');
 
-      if (appointments.length === 0) {
+      if (!appointments.length) {
         results.push({
           doctor: doctor._id,
           doctorName: `${doctor.firstName} ${doctor.lastName}`,
@@ -402,98 +457,29 @@ exports.bulkCalculateAndPayPartTimeSalaries = async (req, res) => {
         continue;
       }
 
+      const rate = toNumber(doctor.amount, 0);
       let totalDoctorAmount = 0;
+
       let doctorNotes = `Bulk payment for ${periodType} period: ${startDate} to ${endDate}. Appointments: `;
 
-      for (const appointment of appointments) {
-        let amount = 0;
+      for (const appt of appointments) {
+        let amt = 0;
 
-        switch (doctor.paymentType) {
-          case 'Fee per Visit':
-            amount = doctor.amount;
-            break;
-          
-          case 'Per Hour':
-            if (appointment.duration) {
-              const hours = appointment.duration / 60;
-              amount = doctor.amount * hours;
-            }
-            break;
+        if (doctor.paymentType === 'Fee per Visit') {
+          amt = rate;
+        } else if (doctor.paymentType === 'Per Hour') {
+          const mins = toNumber(appt.duration, 0);
+          if (mins > 0) amt = rate * (mins / 60);
         }
 
-        if (amount > 0) {
-          totalDoctorAmount += amount;
-          doctorNotes += `${appointment._id} (₹${amount}), `;
+        amt = toNumber(amt, 0);
+        if (amt > 0) {
+          totalDoctorAmount += amt;
+          doctorNotes += `${appt._id} (₹${amt.toFixed(2)}), `;
         }
       }
 
-      if (totalDoctorAmount > 0) {
-        // Check if salary already exists for this period
-        const existingSalary = await Salary.findOne({
-          doctor_id: doctor._id,
-          period_type: periodType,
-          period_start: periodStart,
-          period_end: periodEnd
-        });
-
-        if (existingSalary && existingSalary.status === 'paid') {
-          results.push({
-            doctor: doctor._id,
-            doctorName: `${doctor.firstName} ${doctor.lastName}`,
-            status: 'already_paid',
-            amount: existingSalary.net_amount,
-            appointments: appointments.length,
-            salaryId: existingSalary._id
-          });
-          continue;
-        }
-
-        let salary;
-        if (existingSalary) {
-          // Update existing pending salary
-          salary = await Salary.findByIdAndUpdate(
-            existingSalary._id,
-            {
-              amount: totalDoctorAmount,
-              appointment_count: appointments.length,
-              net_amount: totalDoctorAmount,
-              status: 'paid',
-              payment_method: payment_method || 'bank_transfer',
-              paid_date: new Date(),
-              notes: `${notes || ''} | ${doctorNotes}`
-            },
-            { new: true }
-          );
-        } else {
-          // Create new salary entry
-          salary = new Salary({
-            doctor_id: doctor._id,
-            period_type: periodType,
-            period_start: periodStart,
-            period_end: periodEnd,
-            amount: totalDoctorAmount,
-            appointment_count: appointments.length,
-            net_amount: totalDoctorAmount,
-            status: 'paid',
-            payment_method: payment_method || 'bank_transfer',
-            paid_date: new Date(),
-            notes: `${notes || ''} | ${doctorNotes}`
-          });
-          await salary.save();
-        }
-
-        totalAmount += totalDoctorAmount;
-        totalAppointments += appointments.length;
-
-        results.push({
-          doctor: doctor._id,
-          doctorName: `${doctor.firstName} ${doctor.lastName}`,
-          status: 'paid',
-          amount: totalDoctorAmount,
-          appointments: appointments.length,
-          salaryId: salary._id
-        });
-      } else {
+      if (totalDoctorAmount <= 0) {
         results.push({
           doctor: doctor._id,
           doctorName: `${doctor.firstName} ${doctor.lastName}`,
@@ -501,7 +487,71 @@ exports.bulkCalculateAndPayPartTimeSalaries = async (req, res) => {
           amount: 0,
           appointments: appointments.length
         });
+        continue;
       }
+
+      const existingSalary = await Salary.findOne({
+        doctor_id: doctor._id,
+        period_type: periodType,
+        period_start: periodStart,
+        period_end: periodEnd
+      });
+
+      if (existingSalary && existingSalary.status === 'paid') {
+        results.push({
+          doctor: doctor._id,
+          doctorName: `${doctor.firstName} ${doctor.lastName}`,
+          status: 'already_paid',
+          amount: existingSalary.net_amount,
+          appointments: appointments.length,
+          salaryId: existingSalary._id
+        });
+        continue;
+      }
+
+      let salaryDoc;
+      if (existingSalary) {
+        salaryDoc = await Salary.findByIdAndUpdate(
+          existingSalary._id,
+          {
+            amount: totalDoctorAmount,
+            appointment_count: appointments.length,
+            net_amount: totalDoctorAmount,
+            status: 'paid',
+            payment_method: payment_method || 'bank_transfer',
+            paid_date: new Date(),
+            notes: `${notes || ''} | ${doctorNotes}`.trim()
+          },
+          { new: true }
+        );
+      } else {
+        salaryDoc = new Salary({
+          doctor_id: doctor._id,
+          period_type: periodType,
+          period_start: periodStart,
+          period_end: periodEnd,
+          amount: totalDoctorAmount,
+          appointment_count: appointments.length,
+          net_amount: totalDoctorAmount,
+          status: 'paid',
+          payment_method: payment_method || 'bank_transfer',
+          paid_date: new Date(),
+          notes: `${notes || ''} | ${doctorNotes}`.trim()
+        });
+        await salaryDoc.save();
+      }
+
+      totalAmount += totalDoctorAmount;
+      totalAppointments += appointments.length;
+
+      results.push({
+        doctor: doctor._id,
+        doctorName: `${doctor.firstName} ${doctor.lastName}`,
+        status: 'paid',
+        amount: totalDoctorAmount,
+        appointments: appointments.length,
+        salaryId: salaryDoc._id
+      });
     }
 
     res.json({
@@ -514,14 +564,13 @@ exports.bulkCalculateAndPayPartTimeSalaries = async (req, res) => {
       processedDoctors: results.length,
       results
     });
-
   } catch (error) {
     console.error('Error in bulk salary calculation:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// Bulk pay multiple pending salaries at once
+// -------------------- POST: bulk pay existing salary records --------------------
 exports.bulkPaySalaries = async (req, res) => {
   try {
     const { salaryIds, payment_method, paid_date, notes } = req.body;
@@ -537,8 +586,14 @@ exports.bulkPaySalaries = async (req, res) => {
 
     for (const salaryId of salaryIds) {
       try {
+        if (!isValidObjectId(salaryId)) {
+          results.push({ salaryId, status: 'failed', error: 'Invalid salary id' });
+          failCount++;
+          continue;
+        }
+
         const salary = await Salary.findById(salaryId).populate('doctor_id', 'firstName lastName');
-        
+
         if (!salary) {
           results.push({ salaryId, status: 'not_found', error: 'Salary record not found' });
           failCount++;
@@ -546,39 +601,44 @@ exports.bulkPaySalaries = async (req, res) => {
         }
 
         if (salary.status === 'paid') {
-          results.push({ 
-            salaryId, 
-            status: 'already_paid', 
-            doctor: `${salary.doctor_id.firstName} ${salary.doctor_id.lastName}`,
-            amount: salary.net_amount 
+          results.push({
+            salaryId,
+            status: 'already_paid',
+            doctor: salary.doctor_id
+              ? `${salary.doctor_id.firstName} ${salary.doctor_id.lastName}`
+              : 'Unknown',
+            amount: salary.net_amount
           });
           continue;
         }
 
-        const updatedSalary = await Salary.findByIdAndUpdate(
+        const updated = await Salary.findByIdAndUpdate(
           salaryId,
           {
             status: 'paid',
-            payment_method: payment_method || salary.payment_method,
+            payment_method: payment_method || salary.payment_method || 'bank_transfer',
             paid_date: paid_date ? new Date(paid_date) : new Date(),
-            notes: `${salary.notes || ''} | ${notes || 'Bulk payment processed'}`
+            notes: `${salary.notes || ''} | ${notes || 'Bulk payment processed'}`.trim()
           },
           { new: true }
         ).populate('doctor_id', 'firstName lastName');
 
-        totalAmount += updatedSalary.net_amount;
+        totalAmount += toNumber(updated.net_amount, 0);
         successCount++;
 
         results.push({
           salaryId,
           status: 'paid',
-          doctor: `${updatedSalary.doctor_id.firstName} ${updatedSalary.doctor_id.lastName}`,
-          amount: updatedSalary.net_amount,
-          period: `${updatedSalary.period_start.toISOString().split('T')[0]} to ${updatedSalary.period_end.toISOString().split('T')[0]}`
+          doctor: updated.doctor_id
+            ? `${updated.doctor_id.firstName} ${updated.doctor_id.lastName}`
+            : 'Unknown',
+          amount: updated.net_amount,
+          period: `${updated.period_start.toISOString().split('T')[0]} to ${updated.period_end
+            .toISOString()
+            .split('T')[0]}`
         });
-
-      } catch (error) {
-        results.push({ salaryId, status: 'failed', error: error.message });
+      } catch (err) {
+        results.push({ salaryId, status: 'failed', error: err.message });
         failCount++;
       }
     }
@@ -593,132 +653,145 @@ exports.bulkPaySalaries = async (req, res) => {
       },
       results
     });
-
   } catch (error) {
     console.error('Error in bulk salary payment:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get pending salaries for bulk payment
+// -------------------- GET: pending salaries --------------------
 exports.getPendingSalaries = async (req, res) => {
   try {
     const { periodType, doctorId, startDate, endDate, page = 1, limit = 20 } = req.query;
 
     const filter = { status: 'pending' };
-    
-    if (periodType) filter.period_type = periodType;
-    if (doctorId) filter.doctor_id = doctorId;
-    
-    if (startDate && endDate) {
-      filter.period_start = { $gte: new Date(startDate) };
-      filter.period_end = { $lte: new Date(endDate) };
+
+    if (periodType && periodType !== 'all') filter.period_type = periodType;
+
+    if (doctorId && doctorId !== 'all') {
+      if (!isValidObjectId(doctorId)) return res.status(400).json({ error: 'Invalid doctorId' });
+      filter.doctor_id = doctorId;
     }
 
-    const salaries = await Salary.find(filter)
-      .populate('doctor_id', 'firstName lastName paymentType amount isFullTime')
-      .sort({ period_start: 1, doctor_id: 1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    const start = parseDateOrNull(startDate);
+    const end = parseDateOrNull(endDate);
+    if (start && end) addOverlapPeriodFilter(filter, start, end);
 
-    const total = await Salary.countDocuments(filter);
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, Math.min(200, parseInt(limit, 10) || 20));
+    const skip = (pageNum - 1) * limitNum;
 
-    // Calculate totals
-    const totals = await Salary.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: null,
-          totalAmount: { $sum: '$net_amount' },
-          totalRecords: { $sum: 1 }
+    const [salaries, total, totalsAgg] = await Promise.all([
+      Salary.find(filter)
+        .populate('doctor_id', 'firstName lastName paymentType amount isFullTime')
+        .sort({ period_start: 1, doctor_id: 1 })
+        .limit(limitNum)
+        .skip(skip),
+      Salary.countDocuments(filter),
+      Salary.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: '$net_amount' },
+            totalRecords: { $sum: 1 }
+          }
         }
-      }
+      ])
     ]);
 
     res.json({
       salaries,
-      totals: totals[0] || { totalAmount: 0, totalRecords: 0 },
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
+      totals: totalsAgg[0] || { totalAmount: 0, totalRecords: 0 },
+      totalPages: Math.ceil(total / limitNum),
+      currentPage: pageNum,
       total
     });
-
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// Generate salary payment report for a period
+// -------------------- GET: salary report (paid) --------------------
 exports.generateSalaryPaymentReport = async (req, res) => {
   try {
     const { periodType, startDate, endDate, format = 'json' } = req.query;
 
-    const periodStart = new Date(startDate);
-    const periodEnd = new Date(endDate);
+    if (!periodType || !['daily', 'weekly', 'monthly'].includes(periodType)) {
+      return res.status(400).json({ error: 'periodType is required: daily/weekly/monthly' });
+    }
 
-    const salaries = await Salary.find({
+    const start = parseDateOrNull(startDate);
+    const end = parseDateOrNull(endDate);
+    if (!start || !end) return res.status(400).json({ error: 'Invalid startDate/endDate' });
+
+    // Find paid salaries whose period overlaps the requested range
+    const match = {
+      status: 'paid',
       period_type: periodType,
-      period_start: { $gte: periodStart },
-      period_end: { $lte: periodEnd },
-      status: 'paid'
-    })
-    .populate('doctor_id', 'firstName lastName paymentType amount isFullTime')
-    .sort({ paid_date: -1 });
+      period_start: { $lte: end },
+      period_end: { $gte: start }
+    };
 
+    const salaries = await Salary.find(match)
+      .populate('doctor_id', 'firstName lastName paymentType amount isFullTime')
+      .sort({ paid_date: -1 });
+
+    // ✅ FIX: aggregation must $lookup doctors BEFORE grouping by paymentType
     const summary = await Salary.aggregate([
+      { $match: match },
       {
-        $match: {
-          period_type: periodType,
-          period_start: { $gte: periodStart },
-          period_end: { $lte: periodEnd },
-          status: 'paid'
+        $lookup: {
+          from: 'doctors',
+          localField: 'doctor_id',
+          foreignField: '_id',
+          as: 'doctor'
         }
       },
+      { $unwind: '$doctor' },
       {
         $group: {
           _id: {
-            doctor_id: '$doctor_id',
-            paymentType: '$doctor_id.paymentType'
+            doctor_id: '$doctor._id',
+            paymentType: '$doctor.paymentType'
           },
+          doctorName: { $first: { $concat: ['$doctor.firstName', ' ', '$doctor.lastName'] } },
+          paymentType: { $first: '$doctor.paymentType' },
           totalAmount: { $sum: '$net_amount' },
           totalAppointments: { $sum: '$appointment_count' },
           paymentCount: { $sum: 1 }
         }
       },
-      {
-        $lookup: {
-          from: 'doctors',
-          localField: '_id.doctor_id',
-          foreignField: '_id',
-          as: 'doctor'
-        }
-      },
-      { $unwind: '$doctor' }
+      { $sort: { totalAmount: -1 } }
     ]);
 
     if (format === 'csv') {
-      // Generate CSV format
       let csv = 'Doctor Name,Payment Type,Amount,Appointments,Payment Date\n';
-      salaries.forEach(salary => {
-        csv += `"${salary.doctor_id.firstName} ${salary.doctor_id.lastName}",${salary.doctor_id.paymentType},${salary.net_amount},${salary.appointment_count},${salary.paid_date.toISOString().split('T')[0]}\n`;
+      salaries.forEach((s) => {
+        const d = s.doctor_id;
+        csv += `"${d ? `${d.firstName} ${d.lastName}` : 'Unknown'}",${d?.paymentType || ''},${
+          s.net_amount
+        },${s.appointment_count || 0},${s.paid_date ? s.paid_date.toISOString().split('T')[0] : ''}\n`;
       });
 
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename=salary-report-${startDate}-to-${endDate}.csv`);
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename=salary-report-${startDate}-to-${endDate}.csv`
+      );
       return res.send(csv);
     }
 
     res.json({
       period: { start: startDate, end: endDate, type: periodType },
       summary: {
-        totalAmount: summary.reduce((sum, item) => sum + item.totalAmount, 0),
-        totalAppointments: summary.reduce((sum, item) => sum + item.totalAppointments, 0),
-        totalPayments: summary.reduce((sum, item) => sum + item.paymentCount, 0),
+        totalAmount: summary.reduce((sum, item) => sum + toNumber(item.totalAmount, 0), 0),
+        totalAppointments: summary.reduce((sum, item) => sum + toNumber(item.totalAppointments, 0), 0),
+        totalPayments: summary.reduce((sum, item) => sum + toNumber(item.paymentCount, 0), 0),
         byPaymentType: summary
       },
       detailed: salaries
     });
-
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
