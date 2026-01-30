@@ -203,7 +203,7 @@ exports.loginUser = async (req, res) => {
         doctorId: doctor._id
       });
     }
-      else if(user.role==="staff")
+      else if(user.role==="staff" || user.role==="registrar" || user.role==="nurse")
       {
         const staff = await Staff.findOne({ email })
       res.json({
