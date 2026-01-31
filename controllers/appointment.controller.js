@@ -91,7 +91,7 @@ exports.getAppointmentsByPatientId = async (req, res) => {
 // ✅ Create Appointment
 exports.createAppointment = async (req, res) => {
   try {
-    const { type, doctor_id, hospital_id, department_id, appointment_date, duration = 30 } = req.body;
+    const { type, doctor_id, hospital_id, department_id, appointment_date, duration = 10 } = req.body; // Default duration 10 minutes
 
     if (!type || !doctor_id || !hospital_id || !department_id || !appointment_date) {
       return res.status(400).json({ error: 'Missing required fields' });
