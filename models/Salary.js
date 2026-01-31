@@ -25,6 +25,7 @@ const salarySchema = new mongoose.Schema({
     default: 'bank_transfer' 
   },
   appointment_count: { type: Number, default: 0 },
+  appointments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' }], // Track processed appointments
   total_hours: { type: Number, default: 0 }, // For hourly doctors
   base_salary: { type: Number, default: 0 }, // For full-time doctors
   bonus: { type: Number, default: 0 },
