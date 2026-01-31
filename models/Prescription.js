@@ -142,6 +142,14 @@ const prescriptionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Appointment' 
   },
+  presenting_complaint: { 
+    type: String, 
+    trim: true 
+  },
+  history_of_presenting_complaint: { 
+    type: String, 
+    trim: true 
+  },
   diagnosis: { 
     type: String, 
     trim: true 
