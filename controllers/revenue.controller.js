@@ -575,40 +575,111 @@ exports.getDailyRevenueReport = async (req, res) => {
     const startOfDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate()));
     const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000 - 1);
 
-    const baseQuery = {
-      startDate: startOfDay.toISOString(),
-      endDate: endOfDay.toISOString(),
-      doctorId,
-      departmentId,
-      invoiceType,
-      paymentMethod
+    console.log(`Looking for invoices between: ${startOfDay.toISOString()} and ${endOfDay.toISOString()}`);
+
+    // Create base filter
+    const baseFilter = {
+      createdAt: { 
+        $gte: startOfDay,
+        $lte: endOfDay 
+      }
     };
 
-    const { pipeline } = buildInvoicePipeline(baseQuery, {
-      requireDoctorJoin: true,
-      requirePatientJoin: true
-    });
-
-    // Ensure doctor_info for department breakdown + names
-    const hasDoctorInfoStage = pipeline.some((s) => s.$lookup && s.$lookup.from === 'doctors');
-    if (!hasDoctorInfoStage) {
-      pipeline.push(
-        {
-          $lookup: {
-            from: 'doctors',
-            localField: 'appointment_info.doctor_id',
-            foreignField: '_id',
-            as: 'doctor_info'
-          }
-        },
-        { $unwind: { path: '$doctor_info', preserveNullAndEmptyArrays: true } }
-      );
+    // Add optional filters
+    if (invoiceType) {
+      baseFilter.invoice_type = invoiceType;
+    }
+    if (paymentMethod) {
+      // This would need adjustment if you want to filter by payment method in history
+      console.log('Payment method filtering not fully implemented for payment_history array');
     }
 
+    // Start with simple aggregation to verify data exists
+    const dateMatchStage = { $match: baseFilter };
+
+    const pipeline = [
+      dateMatchStage,
+      {
+        $lookup: {
+          from: 'appointments',
+          let: { appointmentId: '$appointment_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$appointmentId'] } } },
+            { $project: { doctor_id: 1, department_id: 1 } }
+          ],
+          as: 'appointment_info'
+        }
+      },
+      { $unwind: { path: '$appointment_info', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'patients',
+          let: { patientId: '$patient_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$patientId'] } } },
+            { $project: { first_name: 1, last_name: 1 } }
+          ],
+          as: 'patient_info'
+        }
+      },
+      { $unwind: { path: '$patient_info', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'doctors',
+          let: { doctorId: '$appointment_info.doctor_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$doctorId'] } } },
+            { $project: { 
+              firstName: 1, 
+              lastName: 1, 
+              department: 1, 
+              revenuePercentage: 1, 
+              isFullTime: 1,
+              specialization: 1 
+            } }
+          ],
+          as: 'doctor_info'
+        }
+      },
+      { $unwind: { path: '$doctor_info', preserveNullAndEmptyArrays: true } }
+    ];
+
+    // Add doctor filter if provided
+    if (doctorId) {
+      pipeline.splice(1, 0, {
+        $match: { 'appointment_info.doctor_id': new mongoose.Types.ObjectId(doctorId) }
+      });
+    }
+
+    // Add department filter if provided
+    if (departmentId) {
+      pipeline.splice(1, 0, {
+        $match: { 'doctor_info.department': new mongoose.Types.ObjectId(departmentId) }
+      });
+    }
+
+    console.log('Pipeline stages:', JSON.stringify(pipeline, null, 2));
+
     const invoices = await Invoice.aggregate(pipeline);
+    
+    // Debug: Log found invoices
+    console.log(`Found ${invoices.length} invoices for date ${date}`);
+    if (invoices.length > 0) {
+      console.log('Sample invoice dates:', invoices.map(inv => ({
+        invoice_number: inv.invoice_number,
+        createdAt: inv.createdAt,
+        total: inv.total
+      })));
+    }
+
     const doctors = await Doctor.find({});
     const bifurcation = calculateRevenueBifurcation(invoices, doctors);
 
+    // Debug logging
+    console.log(`Daily report - Invoices: ${invoices.length}, Doctors: ${doctors.length}`);
+    console.log('Bifurcation:', bifurcation);
+
+    // Rest of your calculation logic...
     let totalRevenue = 0;
     let appointmentRevenue = 0;
     let pharmacyRevenue = 0;
@@ -625,7 +696,7 @@ exports.getDailyRevenueReport = async (req, res) => {
 
     invoices.forEach((inv) => {
       const amount = inv.total || 0;
-      const hour = new Date(inv.createdAt).getHours();
+      const hour = new Date(inv.createdAt).getUTCHours(); // Use UTC hours
 
       totalRevenue += amount;
       hourlyRevenue[hour] += amount;
@@ -753,11 +824,10 @@ exports.getDailyRevenueReport = async (req, res) => {
         totalSalaryExpenses,
         netRevenue,
         profitMargin: totalRevenue > 0 ? Number(((netRevenue / totalRevenue) * 100).toFixed(2)) : 0,
-        // Add bifurcation data
-        doctorRevenue: bifurcation.doctorRevenue,
-        hospitalRevenue: bifurcation.hospitalRevenue,
-        doctorCommission: bifurcation.doctorCommission,
-        netHospitalRevenue: bifurcation.netHospitalRevenue
+        doctorRevenue: bifurcation?.doctorRevenue || 0,
+        hospitalRevenue: bifurcation?.hospitalRevenue || 0,
+        doctorCommission: bifurcation?.doctorCommission || 0,
+        netHospitalRevenue: bifurcation?.netHospitalRevenue || 0
       },
       counts: {
         totalInvoices: invoices.length,
