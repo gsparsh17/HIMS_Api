@@ -1,4 +1,3 @@
-// controllers/salary.controller.js ✅ FULL UPDATED (drop-in replacement)
 const Salary = require('../models/Salary');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
@@ -18,7 +17,6 @@ const parseDateOrNull = (v) => {
   return isNaN(d.getTime()) ? null : d;
 };
 
-// Overlap filter: period overlaps [start,end]
 const addOverlapPeriodFilter = (filter, start, end) => {
   if (!start || !end) return filter;
   filter.period_start = { $lte: end };
@@ -31,7 +29,34 @@ const endOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23,
 
 const ALLOWED_SALARY_STATUSES = new Set(['pending', 'paid', 'cancelled', 'hold']);
 
-// -------------------- core: part-time salary calc --------------------
+// -------------------- NEW: Helper function to calculate revenue distribution --------------------
+const calculateRevenueDistribution = (doctor, appointmentFees) => {
+  const totalFees = toNumber(appointmentFees, 0);
+  
+  // Full-time doctors get 100% of their salary (already handled in monthly salary)
+  if (doctor.isFullTime || ['Salary', 'Contractual Salary'].includes(doctor.paymentType)) {
+    return {
+      doctorAmount: 0, // They get salary, not per-appointment
+      hospitalAmount: totalFees,
+      percentage: 100, // Hospital gets all appointment fees
+      isFullTime: true
+    };
+  }
+  
+  // Part-time doctors: apply revenue percentage
+  const percentage = toNumber(doctor.revenuePercentage, 100);
+  const doctorAmount = (totalFees * percentage) / 100;
+  const hospitalAmount = totalFees - doctorAmount;
+  
+  return {
+    doctorAmount,
+    hospitalAmount,
+    percentage,
+    isFullTime: false
+  };
+};
+
+// -------------------- UPDATED: Part-time salary calculation --------------------
 exports.calculatePartTimeSalary = async (appointmentId) => {
   try {
     if (!isValidObjectId(appointmentId)) return null;
@@ -53,7 +78,7 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
     }
 
     const rate = toNumber(doctor.amount, 0);
-    let amount = 0;
+    let appointmentFees = 0;
 
     let notes = `Appointment: ${appointment._id}, Patient: ${
       appointment.patient_id?.first_name || 'Unknown'
@@ -61,7 +86,7 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
 
     switch (doctor.paymentType) {
       case 'Fee per Visit':
-        amount = rate;
+        appointmentFees = rate;
         notes += `, Type: Per Visit`;
         break;
 
@@ -69,7 +94,7 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
         const durationMin = toNumber(appointment.duration, 0);
         if (durationMin > 0) {
           const hours = durationMin / 60;
-          amount = rate * hours;
+          appointmentFees = rate * hours;
           notes += `, Duration: ${durationMin}min, Rate: ₹${rate}/hr`;
         }
         break;
@@ -79,10 +104,18 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
         return null;
     }
 
-    amount = toNumber(amount, 0);
-    if (amount <= 0) return null;
+    appointmentFees = toNumber(appointmentFees, 0);
+    if (appointmentFees <= 0) return null;
 
-    // ✅ FIX: book salary into the appointment's completion day, not "today"
+    // Calculate revenue distribution
+    const revenueDistribution = calculateRevenueDistribution(doctor, appointmentFees);
+    
+    // Only part-time doctors get per-appointment salary
+    let doctorAmount = revenueDistribution.doctorAmount;
+    
+    notes += `, Total Fees: ₹${appointmentFees}, Doctor's Share: ${revenueDistribution.percentage}% (₹${doctorAmount.toFixed(2)})`;
+
+    // ✅ FIX: book salary into the appointment's completion day
     const baseDate =
       appointment.actual_end_time ||
       appointment.updatedAt ||
@@ -101,7 +134,7 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
     });
 
     if (salary) {
-      salary.amount = toNumber(salary.amount, 0) + amount;
+      salary.amount = toNumber(salary.amount, 0) + doctorAmount;
       salary.appointment_count = toNumber(salary.appointment_count, 0) + 1;
       salary.net_amount =
         toNumber(salary.amount, 0) +
@@ -118,9 +151,9 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
       period_type: 'daily',
       period_start: periodStart,
       period_end: periodEnd,
-      amount,
+      amount: doctorAmount,
       appointment_count: 1,
-      net_amount: amount,
+      net_amount: doctorAmount,
       notes,
       status: 'pending'
     });
@@ -133,7 +166,243 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
   }
 };
 
-// API wrapper for single appointment
+// -------------------- NEW: Function to track hospital revenue --------------------
+exports.trackHospitalRevenue = async (appointmentId) => {
+  try {
+    if (!isValidObjectId(appointmentId)) return null;
+
+    const appointment = await Appointment.findById(appointmentId)
+      .populate('doctor_id')
+      .populate('patient_id');
+
+    if (!appointment || appointment.status !== 'Completed') {
+      return null;
+    }
+
+    const doctor = appointment.doctor_id;
+    if (!doctor) return null;
+
+    const rate = toNumber(doctor.amount, 0);
+    let appointmentFees = 0;
+
+    switch (doctor.paymentType) {
+      case 'Fee per Visit':
+        appointmentFees = rate;
+        break;
+      case 'Per Hour': {
+        const durationMin = toNumber(appointment.duration, 0);
+        if (durationMin > 0) {
+          const hours = durationMin / 60;
+          appointmentFees = rate * hours;
+        }
+        break;
+      }
+      case 'Salary':
+      case 'Contractual Salary':
+        // For salary doctors, hospital keeps all appointment fees
+        appointmentFees = rate;
+        break;
+      default:
+        return null;
+    }
+
+    appointmentFees = toNumber(appointmentFees, 0);
+    if (appointmentFees <= 0) return null;
+
+    // Calculate hospital's share
+    let hospitalAmount = appointmentFees;
+    
+    if (!doctor.isFullTime && !['Salary', 'Contractual Salary'].includes(doctor.paymentType)) {
+      const percentage = toNumber(doctor.revenuePercentage, 100);
+      const doctorAmount = (appointmentFees * percentage) / 100;
+      hospitalAmount = appointmentFees - doctorAmount;
+    }
+    
+    return {
+      totalFees: appointmentFees,
+      hospitalShare: hospitalAmount,
+      doctorShare: appointmentFees - hospitalAmount,
+      percentage: doctor.isFullTime ? 0 : (100 - toNumber(doctor.revenuePercentage, 100))
+    };
+  } catch (error) {
+    console.error('Error tracking hospital revenue:', error);
+    return null;
+  }
+};
+
+// -------------------- UPDATED: Bulk calculate with revenue distribution --------------------
+exports.bulkCalculateAndPayPartTimeSalaries = async (req, res) => {
+  try {
+    const { periodType, startDate, endDate, payment_method, notes } = req.body;
+
+    if (!['daily', 'weekly', 'monthly'].includes(periodType)) {
+      return res.status(400).json({ error: 'Invalid period type. Use daily, weekly, or monthly.' });
+    }
+
+    const periodStart = parseDateOrNull(startDate);
+    const periodEnd = parseDateOrNull(endDate);
+
+    if (!periodStart || !periodEnd) {
+      return res.status(400).json({ error: 'Invalid date format.' });
+    }
+
+    const partTimeDoctors = await Doctor.find({
+      isFullTime: false,
+      paymentType: { $in: ['Fee per Visit', 'Per Hour'] }
+    });
+
+    const results = [];
+    let totalAmount = 0;
+    let totalAppointments = 0;
+    let totalHospitalRevenue = 0;
+
+    for (const doctor of partTimeDoctors) {
+      const appointments = await Appointment.find({
+        doctor_id: doctor._id,
+        status: 'Completed',
+        actual_end_time: { $gte: periodStart, $lte: periodEnd }
+      }).populate('patient_id');
+
+      if (!appointments.length) {
+        results.push({
+          doctor: doctor._id,
+          doctorName: `${doctor.firstName} ${doctor.lastName}`,
+          status: 'no_appointments',
+          amount: 0,
+          appointments: 0,
+          hospitalRevenue: 0
+        });
+        continue;
+      }
+
+      const rate = toNumber(doctor.amount, 0);
+      let totalDoctorAmount = 0;
+      let totalAppointmentFees = 0;
+
+      let doctorNotes = `Bulk payment for ${periodType} period: ${startDate} to ${endDate}. Appointments: `;
+
+      for (const appt of appointments) {
+        let appointmentFees = 0;
+
+        if (doctor.paymentType === 'Fee per Visit') {
+          appointmentFees = rate;
+        } else if (doctor.paymentType === 'Per Hour') {
+          const mins = toNumber(appt.duration, 0);
+          if (mins > 0) appointmentFees = rate * (mins / 60);
+        }
+
+        appointmentFees = toNumber(appointmentFees, 0);
+        if (appointmentFees > 0) {
+          totalAppointmentFees += appointmentFees;
+          
+          // Apply revenue percentage
+          const percentage = toNumber(doctor.revenuePercentage, 100);
+          const doctorAmount = (appointmentFees * percentage) / 100;
+          totalDoctorAmount += doctorAmount;
+          
+          doctorNotes += `${appt._id} (Fees: ₹${appointmentFees.toFixed(2)}, Doctor: ${percentage}% = ₹${doctorAmount.toFixed(2)}), `;
+        }
+      }
+
+      const hospitalRevenue = totalAppointmentFees - totalDoctorAmount;
+      totalHospitalRevenue += hospitalRevenue;
+
+      if (totalDoctorAmount <= 0) {
+        results.push({
+          doctor: doctor._id,
+          doctorName: `${doctor.firstName} ${doctor.lastName}`,
+          status: 'no_earnings',
+          amount: 0,
+          appointments: appointments.length,
+          hospitalRevenue: hospitalRevenue
+        });
+        continue;
+      }
+
+      const existingSalary = await Salary.findOne({
+        doctor_id: doctor._id,
+        period_type: periodType,
+        period_start: periodStart,
+        period_end: periodEnd
+      });
+
+      if (existingSalary && existingSalary.status === 'paid') {
+        results.push({
+          doctor: doctor._id,
+          doctorName: `${doctor.firstName} ${doctor.lastName}`,
+          status: 'already_paid',
+          amount: existingSalary.net_amount,
+          appointments: appointments.length,
+          hospitalRevenue: hospitalRevenue,
+          salaryId: existingSalary._id
+        });
+        continue;
+      }
+
+      let salaryDoc;
+      if (existingSalary) {
+        salaryDoc = await Salary.findByIdAndUpdate(
+          existingSalary._id,
+          {
+            amount: totalDoctorAmount,
+            appointment_count: appointments.length,
+            net_amount: totalDoctorAmount,
+            status: 'paid',
+            payment_method: payment_method || 'bank_transfer',
+            paid_date: new Date(),
+            notes: `${notes || ''} | ${doctorNotes}`.trim()
+          },
+          { new: true }
+        );
+      } else {
+        salaryDoc = new Salary({
+          doctor_id: doctor._id,
+          period_type: periodType,
+          period_start: periodStart,
+          period_end: periodEnd,
+          amount: totalDoctorAmount,
+          appointment_count: appointments.length,
+          net_amount: totalDoctorAmount,
+          status: 'paid',
+          payment_method: payment_method || 'bank_transfer',
+          paid_date: new Date(),
+          notes: `${notes || ''} | ${doctorNotes}`.trim()
+        });
+        await salaryDoc.save();
+      }
+
+      totalAmount += totalDoctorAmount;
+      totalAppointments += appointments.length;
+
+      results.push({
+        doctor: doctor._id,
+        doctorName: `${doctor.firstName} ${doctor.lastName}`,
+        status: 'paid',
+        amount: totalDoctorAmount,
+        appointments: appointments.length,
+        hospitalRevenue: hospitalRevenue,
+        salaryId: salaryDoc._id,
+        revenuePercentage: doctor.revenuePercentage
+      });
+    }
+
+    res.json({
+      success: true,
+      periodType,
+      period: { start: startDate, end: endDate },
+      totalDoctorAmount: totalAmount,
+      totalHospitalRevenue: totalHospitalRevenue,
+      totalAppointments,
+      totalDoctors: partTimeDoctors.length,
+      processedDoctors: results.length,
+      results
+    });
+  } catch (error) {
+    console.error('Error in bulk salary calculation:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 exports.calculateAppointmentSalary = async (req, res) => {
   try {
     const { appointmentId } = req.params;
@@ -155,7 +424,6 @@ exports.calculateAppointmentSalary = async (req, res) => {
   }
 };
 
-// -------------------- full-time monthly salary calc (cron) --------------------
 exports.calculateFullTimeSalaries = async () => {
   try {
     const now = new Date();
@@ -170,7 +438,6 @@ exports.calculateFullTimeSalaries = async () => {
     const results = [];
 
     for (const doctor of fullTimeDoctors) {
-      // ✅ FIX: correct existence check for same month range
       const existing = await Salary.findOne({
         doctor_id: doctor._id,
         period_type: 'monthly',
@@ -409,163 +676,6 @@ exports.getSalaryStatistics = async (req, res) => {
       overall: overallArr[0] || { totalRecords: 0, totalAmount: 0, averageSalary: 0 }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-
-// -------------------- POST: bulk calculate & pay part-time salaries --------------------
-exports.bulkCalculateAndPayPartTimeSalaries = async (req, res) => {
-  try {
-    const { periodType, startDate, endDate, payment_method, notes } = req.body;
-
-    if (!['daily', 'weekly', 'monthly'].includes(periodType)) {
-      return res.status(400).json({ error: 'Invalid period type. Use daily, weekly, or monthly.' });
-    }
-
-    const periodStart = parseDateOrNull(startDate);
-    const periodEnd = parseDateOrNull(endDate);
-
-    if (!periodStart || !periodEnd) {
-      return res.status(400).json({ error: 'Invalid date format.' });
-    }
-
-    const partTimeDoctors = await Doctor.find({
-      isFullTime: false,
-      paymentType: { $in: ['Fee per Visit', 'Per Hour'] }
-    });
-
-    const results = [];
-    let totalAmount = 0;
-    let totalAppointments = 0;
-
-    for (const doctor of partTimeDoctors) {
-      // ✅ use overlap on appointment completion time if available
-      const appointments = await Appointment.find({
-        doctor_id: doctor._id,
-        status: 'Completed',
-        actual_end_time: { $gte: periodStart, $lte: periodEnd }
-      }).populate('patient_id');
-
-      if (!appointments.length) {
-        results.push({
-          doctor: doctor._id,
-          doctorName: `${doctor.firstName} ${doctor.lastName}`,
-          status: 'no_appointments',
-          amount: 0,
-          appointments: 0
-        });
-        continue;
-      }
-
-      const rate = toNumber(doctor.amount, 0);
-      let totalDoctorAmount = 0;
-
-      let doctorNotes = `Bulk payment for ${periodType} period: ${startDate} to ${endDate}. Appointments: `;
-
-      for (const appt of appointments) {
-        let amt = 0;
-
-        if (doctor.paymentType === 'Fee per Visit') {
-          amt = rate;
-        } else if (doctor.paymentType === 'Per Hour') {
-          const mins = toNumber(appt.duration, 0);
-          if (mins > 0) amt = rate * (mins / 60);
-        }
-
-        amt = toNumber(amt, 0);
-        if (amt > 0) {
-          totalDoctorAmount += amt;
-          doctorNotes += `${appt._id} (₹${amt.toFixed(2)}), `;
-        }
-      }
-
-      if (totalDoctorAmount <= 0) {
-        results.push({
-          doctor: doctor._id,
-          doctorName: `${doctor.firstName} ${doctor.lastName}`,
-          status: 'no_earnings',
-          amount: 0,
-          appointments: appointments.length
-        });
-        continue;
-      }
-
-      const existingSalary = await Salary.findOne({
-        doctor_id: doctor._id,
-        period_type: periodType,
-        period_start: periodStart,
-        period_end: periodEnd
-      });
-
-      if (existingSalary && existingSalary.status === 'paid') {
-        results.push({
-          doctor: doctor._id,
-          doctorName: `${doctor.firstName} ${doctor.lastName}`,
-          status: 'already_paid',
-          amount: existingSalary.net_amount,
-          appointments: appointments.length,
-          salaryId: existingSalary._id
-        });
-        continue;
-      }
-
-      let salaryDoc;
-      if (existingSalary) {
-        salaryDoc = await Salary.findByIdAndUpdate(
-          existingSalary._id,
-          {
-            amount: totalDoctorAmount,
-            appointment_count: appointments.length,
-            net_amount: totalDoctorAmount,
-            status: 'paid',
-            payment_method: payment_method || 'bank_transfer',
-            paid_date: new Date(),
-            notes: `${notes || ''} | ${doctorNotes}`.trim()
-          },
-          { new: true }
-        );
-      } else {
-        salaryDoc = new Salary({
-          doctor_id: doctor._id,
-          period_type: periodType,
-          period_start: periodStart,
-          period_end: periodEnd,
-          amount: totalDoctorAmount,
-          appointment_count: appointments.length,
-          net_amount: totalDoctorAmount,
-          status: 'paid',
-          payment_method: payment_method || 'bank_transfer',
-          paid_date: new Date(),
-          notes: `${notes || ''} | ${doctorNotes}`.trim()
-        });
-        await salaryDoc.save();
-      }
-
-      totalAmount += totalDoctorAmount;
-      totalAppointments += appointments.length;
-
-      results.push({
-        doctor: doctor._id,
-        doctorName: `${doctor.firstName} ${doctor.lastName}`,
-        status: 'paid',
-        amount: totalDoctorAmount,
-        appointments: appointments.length,
-        salaryId: salaryDoc._id
-      });
-    }
-
-    res.json({
-      success: true,
-      periodType,
-      period: { start: startDate, end: endDate },
-      totalAmount,
-      totalAppointments,
-      totalDoctors: partTimeDoctors.length,
-      processedDoctors: results.length,
-      results
-    });
-  } catch (error) {
-    console.error('Error in bulk salary calculation:', error);
     res.status(500).json({ error: error.message });
   }
 };

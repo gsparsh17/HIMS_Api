@@ -10,12 +10,12 @@ exports.createDoctor = async (req, res) => {
     const {
       firstName, lastName, email,
       isFullTime, contractStartDate, contractEndDate, aadharNumber, panNumber,
-      timeSlots, workingDaysPerWeek, visitsPerWeek, hospitalId
+      timeSlots, workingDaysPerWeek, visitsPerWeek, hospitalId,
+      revenuePercentage // NEW FIELD
     } = req.body;
 
-    // ✅ Create Doctor (User creation decoupled)
+    // ✅ Create Doctor
     const newDoctor = await Doctor.create({
-      // user_id: newUser._id, // User created separately via Staff Login
       firstName,
       lastName,
       email,
@@ -39,6 +39,7 @@ exports.createDoctor = async (req, res) => {
       notes: req.body.notes,
       paymentType: req.body.paymentType,
       amount: req.body.amount ? Number(req.body.amount) : null,
+      revenuePercentage: revenuePercentage ? Number(revenuePercentage) : undefined, // NEW FIELD
       contractStartDate: contractStartDate ? new Date(contractStartDate) : null,
       contractEndDate: contractEndDate ? new Date(contractEndDate) : null,
       visitsPerWeek: req.body.visitsPerWeek ? Number(req.body.visitsPerWeek) : null,
@@ -49,12 +50,10 @@ exports.createDoctor = async (req, res) => {
       hospitalId: hospitalId || null
     });
 
-    // 👇 3. Immediately add the new doctor to all relevant calendars
+    // Add doctor to calendars
     try {
       console.log(`🗓️ Adding new doctor ${firstName} ${lastName} to calendars...`);
       
-      // If hospitalId is provided, only update that hospital's calendar
-      // Otherwise, update all hospital calendars (for multi-hospital systems)
       const hospitals = hospitalId 
         ? [await Hospital.findById(hospitalId)]
         : await Hospital.find();
@@ -64,7 +63,6 @@ exports.createDoctor = async (req, res) => {
       } else {
         for (const hospital of hospitals) {
           if (!hospital) continue;
-          
           await addDoctorToCalendar(hospital._id, newDoctor);
         }
       }
@@ -72,7 +70,6 @@ exports.createDoctor = async (req, res) => {
       console.log(`✅ Finished calendar update for Doctor ${newDoctor.firstName} ${newDoctor.lastName}`);
     } catch (calendarError) {
       console.error('❌ Failed to update calendar with new doctor:', calendarError);
-      // Log the error, but don't block the API response
     }
 
     res.status(201).json({
@@ -90,7 +87,6 @@ async function addDoctorToCalendar(hospitalId, doctor) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  // Generate dates for previous 15 days and next 15 days
   const datesToUpdate = [];
   for (let i = -15; i <= 15; i++) {
     const date = new Date(today);
@@ -101,7 +97,6 @@ async function addDoctorToCalendar(hospitalId, doctor) {
 
   let calendar = await Calendar.findOne({ hospitalId });
   if (!calendar) {
-    // Create calendar if it doesn't exist
     calendar = new Calendar({ hospitalId, days: [] });
   }
 
@@ -111,7 +106,6 @@ async function addDoctorToCalendar(hospitalId, doctor) {
     const dateStr = targetDate.toISOString().split('T')[0];
     const dayName = targetDate.toLocaleDateString('en-US', { weekday: 'long' });
     
-    // Check if doctor should be available on this date
     if (!doctor.isFullTime) {
       const contractStart = doctor.contractStartDate ? new Date(doctor.contractStartDate) : null;
       const contractEnd = doctor.contractEndDate ? new Date(doctor.contractEndDate) : null;
@@ -125,7 +119,6 @@ async function addDoctorToCalendar(hospitalId, doctor) {
     );
 
     if (existingDayIndex !== -1) {
-      // Day exists, check if doctor is already added
       const existingDay = calendar.days[existingDayIndex];
       const isDoctorAlreadyAdded = existingDay.doctors.some(
         d => d.doctorId.toString() === doctor._id.toString()
@@ -144,7 +137,6 @@ async function addDoctorToCalendar(hospitalId, doctor) {
         });
       }
     } else {
-      // Create new day entry with doctor
       console.log(`➕ Creating new day ${dateStr} with doctor ${doctor.firstName} ${doctor.lastName}`);
       needsUpdate = true;
       
@@ -163,7 +155,6 @@ async function addDoctorToCalendar(hospitalId, doctor) {
   }
 
   if (needsUpdate) {
-    // Filter to keep only 31 days (15 before + today + 15 after)
     const todayStr = today.toISOString().split('T')[0];
     calendar.days = calendar.days.filter(day => {
       const dayDate = new Date(day.date);
@@ -171,7 +162,6 @@ async function addDoctorToCalendar(hospitalId, doctor) {
       return diffDays >= -15 && diffDays <= 15;
     });
 
-    // Sort days chronologically
     calendar.days.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     await calendar.save();
@@ -205,30 +195,35 @@ exports.getDoctorById = async (req, res) => {
 // Update a doctor by ID
 exports.updateDoctor = async (req, res) => {
   try {
+    // Handle revenuePercentage update
+    if (req.body.revenuePercentage !== undefined) {
+      req.body.revenuePercentage = Number(req.body.revenuePercentage);
+      
+      // Validate percentage for part-time doctors
+      if (req.body.revenuePercentage < 0 || req.body.revenuePercentage > 100) {
+        return res.status(400).json({ error: 'Revenue percentage must be between 0 and 100' });
+      }
+    }
+
     const doctor = await Doctor.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
     
     // Check if password update is requested
     if (req.body.password) {
       const { password } = req.body;
-      // Find associated user by user_id
       let user = await User.findById(doctor.user_id);
       
       if (user) {
-        // Update existing user
         user.password = password;
-        // Also update details if they changed
         user.name = `${doctor.firstName} ${doctor.lastName}`;
         user.email = doctor.email; 
         await user.save();
         console.log(`✅ Password updated for user associated with Doctor ${doctor._id}`);
       } else {
-        // If for some reason user doesn't exist (legacy data?), create one
-        // Try finding by email first to avoid duplicate email error
         user = await User.findOne({ email: doctor.email });
         if (user) {
            user.password = password;
-           user.role = 'doctor'; // Ensure role is doctor
+           user.role = 'doctor';
            await user.save();
         } else {
            user = await User.create({
@@ -237,7 +232,6 @@ exports.updateDoctor = async (req, res) => {
             password: password,
             role: 'doctor'
           });
-          // Update doctor with new user_id
           doctor.user_id = user._id;
           await doctor.save();
         }
@@ -245,7 +239,7 @@ exports.updateDoctor = async (req, res) => {
       }
     }
 
-    // Also update calendar if doctor's availability changed
+    // Update calendar if doctor's availability changed
     if (req.body.timeSlots || req.body.isFullTime || req.body.contractStartDate || req.body.contractEndDate) {
       try {
         await updateDoctorInCalendar(doctor._id, doctor);
@@ -272,19 +266,16 @@ async function updateDoctorInCalendar(doctorId, updatedDoctor) {
     
     let updated = false;
     
-    // Update each day in the calendar
     for (const day of calendar.days) {
       const doctorIndex = day.doctors.findIndex(d => d.doctorId.toString() === doctorId.toString());
       
       if (doctorIndex !== -1) {
-        // Check if doctor should be available on this date
         const targetDate = new Date(day.date);
         
         if (!updatedDoctor.isFullTime) {
           const contractStart = updatedDoctor.contractStartDate ? new Date(updatedDoctor.contractStartDate) : null;
           const contractEnd = updatedDoctor.contractEndDate ? new Date(updatedDoctor.contractEndDate) : null;
           
-          // If doctor is part-time and date is outside contract period, remove them
           if ((contractStart && targetDate < contractStart) || (contractEnd && targetDate > contractEnd)) {
             day.doctors.splice(doctorIndex, 1);
             updated = true;
@@ -292,7 +283,6 @@ async function updateDoctorInCalendar(doctorId, updatedDoctor) {
           }
         }
         
-        // Update working hours for part-time doctors
         if (!updatedDoctor.isFullTime) {
           day.doctors[doctorIndex].workingHours = updatedDoctor.timeSlots || [];
         }
@@ -313,8 +303,9 @@ exports.getDoctorsByDepartmentId = async (req, res) => {
   try {
     const { departmentId } = req.params;
 
-    const doctors = await Doctor.find({ department: departmentId }).populate('department').populate('user_id', 'name email role');
-
+    const doctors = await Doctor.find({ department: departmentId })
+      .populate('department')
+      .populate('user_id', 'name email role');
 
     res.json(doctors);
   } catch (err) {
@@ -358,7 +349,6 @@ async function removeDoctorFromCalendar(doctorId) {
     
     let updated = false;
     
-    // Remove doctor from all days
     for (const day of calendar.days) {
       const initialLength = day.doctors.length;
       day.doctors = day.doctors.filter(d => d.doctorId.toString() !== doctorId.toString());
@@ -388,11 +378,11 @@ exports.bulkCreateDoctors = async (req, res) => {
 
   for (const doctor of doctorsData) {
     try {
-      // ✅ Check if user already exists
+      // Check if user already exists
       const userExists = await User.findOne({ email: doctor.email });
       if (userExists) throw new Error('User with this email already exists.');
 
-      // ✅ Resolve department name
+      // Resolve department name
       let departmentId = null;
       if (doctor.department) {
         const dept = await Department.findOne({ name: new RegExp(`^${doctor.department}$`, 'i') });
@@ -400,7 +390,7 @@ exports.bulkCreateDoctors = async (req, res) => {
         departmentId = dept._id;
       }
 
-      // ✅ Create User
+      // Create User
       const newUser = await User.create({
         name: `${doctor.firstName} ${doctor.lastName}`,
         email: doctor.email,
@@ -408,7 +398,7 @@ exports.bulkCreateDoctors = async (req, res) => {
         role: 'doctor'
       });
 
-      // ✅ Create Doctor
+      // Create Doctor - INCLUDING revenuePercentage
       const newDoctor = await Doctor.create({
         user_id: newUser._id,
         firstName: doctor.firstName,
@@ -427,6 +417,7 @@ exports.bulkCreateDoctors = async (req, res) => {
         experience: doctor.experience ? Number(doctor.experience) : null,
         paymentType: doctor.paymentType || null,
         amount: doctor.amount ? Number(doctor.amount) : null,
+        revenuePercentage: doctor.revenuePercentage ? Number(doctor.revenuePercentage) : undefined, // NEW FIELD
         isFullTime: doctor.isFullTime === 'true' || doctor.isFullTime === true,
         contractStartDate: doctor.contractStartDate ? new Date(doctor.contractStartDate) : null,
         contractEndDate: doctor.contractEndDate ? new Date(doctor.contractEndDate) : null,
