@@ -81,7 +81,7 @@ exports.getAllPatients = async (req, res) => {
           pipeline: [
             { $match: { $expr: { $eq: ['$patient_id', '$$pid'] } } },
             { $sort: { appointment_date: -1 } },
-            { $project: { appointment_date: 1, department_id: 1 } }
+            { $project: { appointment_date: 1, department_id: 1, doctor_id: 1 } }
           ],
           as: 'appointmentData'
         }
@@ -114,8 +114,25 @@ exports.getAllPatients = async (req, res) => {
         }
       },
       {
+        $lookup: {
+          from: 'doctors',
+          localField: 'latestAppointment.doctor_id',
+          foreignField: '_id',
+          as: 'docData'
+        }
+      },
+      {
         $addFields: {
-          lastVisitedDepartment: { $arrayElemAt: ["$deptData.name", 0] }
+          lastVisitedDepartment: { $arrayElemAt: ["$deptData.name", 0] },
+          lastVisitedDoctor: {
+            $let: {
+              vars: {
+                fName: { $arrayElemAt: ["$docData.firstName", 0] },
+                lName: { $arrayElemAt: ["$docData.lastName", 0] }
+              },
+              in: { $concat: [ { $ifNull: ["$$fName", ""] }, " ", { $ifNull: ["$$lName", ""] } ] }
+            }
+          }
         }
       },
       {
@@ -123,7 +140,8 @@ exports.getAllPatients = async (req, res) => {
              appointmentData: 0,
              billData: 0,
              latestAppointment: 0,
-             deptData: 0
+             deptData: 0,
+             docData: 0
          }
       }
     ]);
