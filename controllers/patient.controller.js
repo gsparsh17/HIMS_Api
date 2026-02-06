@@ -51,30 +51,84 @@ exports.createPatient = async (req, res) => {
 };
 
 // Get all patients
-  exports.getAllPatients = async (req, res) => {
+exports.getAllPatients = async (req, res) => {
   try {
     const { page = 1, limit = 1000, search, gender, sortBy = 'registered_at', sortOrder = 'desc' } = req.query;
 
-    const filter = {};
+    const matchStage = {};
     if (search) {
-      filter.$or = [
+      matchStage.$or = [
         { first_name: { $regex: search, $options: 'i' } },
         { last_name: { $regex: search, $options: 'i' } },
         // { email: { $regex: search, $options: 'i' } },
         // { phone: { $regex: search, $options: 'i' } }
       ];
     }
-    console.log(search)
-    if (gender) filter.gender = gender;
+    
+    if (gender) matchStage.gender = gender;
 
-    const sortOptions = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
+    const sortStage = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
 
-    const patients = await Patient.find(filter)
-      .sort(sortOptions)
-      .limit(parseInt(limit))
-      .skip((page - 1) * parseInt(limit));
+    const patients = await Patient.aggregate([
+      { $match: matchStage },
+      { $sort: sortStage },
+      { $skip: (page - 1) * parseInt(limit) },
+      { $limit: parseInt(limit) },
+      {
+        $lookup: {
+          from: 'appointments',
+          let: { pid: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$patient_id', '$$pid'] } } },
+            { $sort: { appointment_date: -1 } },
+            { $project: { appointment_date: 1, department_id: 1 } }
+          ],
+          as: 'appointmentData'
+        }
+      },
+      {
+        $lookup: {
+          from: 'bills',
+          let: { pid: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$patient_id', '$$pid'] } } },
+            { $project: { total_amount: 1 } }
+          ],
+          as: 'billData'
+        }
+      },
+      {
+        $addFields: {
+          totalAppointments: { $size: "$appointmentData" },
+          totalCollection: { $sum: "$billData.total_amount" },
+          lastVisitDate: { $max: "$appointmentData.appointment_date" },
+          latestAppointment: { $arrayElemAt: ["$appointmentData", 0] }
+        }
+      },
+      {
+        $lookup: {
+          from: 'departments',
+          localField: 'latestAppointment.department_id',
+          foreignField: '_id',
+          as: 'deptData'
+        }
+      },
+      {
+        $addFields: {
+          lastVisitedDepartment: { $arrayElemAt: ["$deptData.name", 0] }
+        }
+      },
+      {
+         $project: {
+             appointmentData: 0,
+             billData: 0,
+             latestAppointment: 0,
+             deptData: 0
+         }
+      }
+    ]);
 
-    const total = await Patient.countDocuments(filter);
+    const total = await Patient.countDocuments(matchStage);
 
     res.json({
       patients,
