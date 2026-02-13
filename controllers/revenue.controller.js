@@ -697,7 +697,10 @@ exports.getDailyRevenueReport = async (req, res) => {
     invoices.forEach((inv) => {
       const amount = inv.total || 0;
       const hour = new Date(inv.createdAt).getUTCHours(); // Use UTC hours
-
+      if(inv.status !== 'Paid' && inv.status !== 'paid') {
+        console.log(`Skipping invoice ${inv.invoice_number} with status ${inv.status}`);
+        return; // Only count paid invoices for revenue
+      }
       totalRevenue += amount;
       hourlyRevenue[hour] += amount;
 
