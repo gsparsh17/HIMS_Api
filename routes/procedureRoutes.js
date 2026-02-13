@@ -77,7 +77,6 @@ router.get('/', async (req, res) => {
     }
 
     const procedures = await Procedure.find({ is_active: true })
-      .limit(50)
       .sort({ name: 1 })
       .select('code name category base_price')
       .lean();
