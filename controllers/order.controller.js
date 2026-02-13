@@ -72,10 +72,10 @@ exports.receivePurchaseOrder = async (req, res) => {
         await batch.save();
         
         // Update medicine stock
-        await Medicine.findByIdAndUpdate(
-          orderItem.medicine_id,
-          { $inc: { stock_quantity: receivedItem.quantity_received || 0 } }
-        );
+        // await Medicine.findByIdAndUpdate(
+        //   orderItem.medicine_id,
+        //   { $inc: { stock_quantity: receivedItem.quantity_received || 0 } }
+        // );
 
         // Update order item with received quantity and details
         orderItem.received = (orderItem.received || 0) + (receivedItem.quantity_received || 0);
