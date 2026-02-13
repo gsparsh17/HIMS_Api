@@ -3,11 +3,12 @@ const mongoose = require('mongoose');
 const paymentSchema = new mongoose.Schema({
   date: { 
     type: Date, 
-    default: Date.now 
+    default: () => new Date() // Use function to ensure fresh timestamp
   },
   amount: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: [0, 'Amount cannot be negative']
   },
   method: { 
     type: String, 
@@ -19,6 +20,7 @@ const paymentSchema = new mongoose.Schema({
   },
   status: { 
     type: String, 
+    enum: ['Pending', 'Completed', 'Failed', 'Refunded'],
     default: 'Completed' 
   },
   collected_by: { 
@@ -28,6 +30,8 @@ const paymentSchema = new mongoose.Schema({
   transaction_id: {
     type: String
   }
+}, {
+  timestamps: true // Adds createdAt and updatedAt to payment subdocuments
 });
 
 const serviceItemSchema = new mongoose.Schema({
@@ -37,23 +41,29 @@ const serviceItemSchema = new mongoose.Schema({
   },
   quantity: { 
     type: Number, 
-    default: 1 
+    default: 1,
+    min: [1, 'Quantity must be at least 1']
   },
   unit_price: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: [0, 'Unit price cannot be negative']
   },
   total_price: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: [0, 'Total price cannot be negative']
   },
   tax_rate: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    min: [0, 'Tax rate cannot be negative'],
+    max: [100, 'Tax rate cannot exceed 100%']
   },
   tax_amount: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    min: [0, 'Tax amount cannot be negative']
   },
   service_type: { 
     type: String, 
@@ -93,23 +103,29 @@ const medicineItemSchema = new mongoose.Schema({
   },
   quantity: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: [1, 'Quantity must be at least 1']
   },
   unit_price: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: [0, 'Unit price cannot be negative']
   },
   total_price: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: [0, 'Total price cannot be negative']
   },
   tax_rate: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    min: [0, 'Tax rate cannot be negative'],
+    max: [100, 'Tax rate cannot exceed 100%']
   },
   tax_amount: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    min: [0, 'Tax amount cannot be negative']
   },
   prescription_required: { 
     type: Boolean, 
@@ -122,6 +138,9 @@ const medicineItemSchema = new mongoose.Schema({
   is_dispensed: {
     type: Boolean,
     default: false
+  },
+  dispensed_at: {
+    type: Date
   }
 });
 
@@ -136,23 +155,29 @@ const procedureItemSchema = new mongoose.Schema({
   },
   quantity: {
     type: Number,
-    default: 1
+    default: 1,
+    min: [1, 'Quantity must be at least 1']
   },
   unit_price: {
     type: Number,
-    required: true
+    required: true,
+    min: [0, 'Unit price cannot be negative']
   },
   total_price: {
     type: Number,
-    required: true
+    required: true,
+    min: [0, 'Total price cannot be negative']
   },
   tax_rate: {
     type: Number,
-    default: 0
+    default: 0,
+    min: [0, 'Tax rate cannot be negative'],
+    max: [100, 'Tax rate cannot exceed 100%']
   },
   tax_amount: {
     type: Number,
-    default: 0
+    default: 0,
+    min: [0, 'Tax amount cannot be negative']
   },
   prescription_id: {
     type: mongoose.Schema.Types.ObjectId,
@@ -160,7 +185,7 @@ const procedureItemSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Pending', 'Scheduled', 'In Progress', 'Completed'],
+    enum: ['Pending', 'Scheduled', 'In Progress', 'Completed', 'Cancelled', 'Paid'],
     default: 'Pending'
   },
   scheduled_date: {
@@ -172,68 +197,92 @@ const procedureItemSchema = new mongoose.Schema({
   performed_by: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Doctor'
+  },
+  notes: {
+    type: String
   }
+}, {
+  timestamps: true // Adds createdAt and updatedAt to procedure items
 });
 
 const invoiceSchema = new mongoose.Schema({
   invoice_number: { 
     type: String, 
-    unique: true 
+    unique: true,
+    uppercase: true,
+    trim: true
   },
   
   // Customer Information
   patient_id: { 
     type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Patient' 
+    ref: 'Patient',
+    index: true
   },
   customer_type: { 
     type: String, 
     enum: ['Patient', 'Walk-in', 'Insurance', 'Corporate', 'Supplier', 'Other'], 
-    required: true 
+    required: true,
+    default: 'Patient'
   },
   customer_name: { 
-    type: String 
+    type: String,
+    trim: true
   },
   customer_phone: { 
-    type: String 
+    type: String,
+    trim: true
   },
   customer_address: { 
-    type: String 
+    type: String,
+    trim: true
   },
   
   // Reference Links
   appointment_id: { 
     type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Appointment' 
+    ref: 'Appointment',
+    index: true
   },
   bill_id: { 
     type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Bill' 
+    ref: 'Bill',
+    index: true
   },
   sale_id: { 
     type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Sale' 
+    ref: 'Sale',
+    index: true
   },
   prescription_id: { 
     type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Prescription' 
+    ref: 'Prescription',
+    index: true
   },
   
   // Invoice Type
   invoice_type: { 
     type: String, 
     enum: ['Appointment', 'Pharmacy', 'Procedure', 'Mixed', 'Other', 'Purchase'], 
-    required: true 
+    required: true,
+    index: true
   },
   
-  // Dates
+  // Dates - All stored in UTC
   issue_date: { 
     type: Date, 
-    default: Date.now 
+    default: () => new Date(),
+    required: true
   },
   due_date: { 
     type: Date, 
-    required: true 
+    required: true,
+    validate: {
+      validator: function(v) {
+        return v >= this.issue_date;
+      },
+      message: 'Due date must be after issue date'
+    }
   },
   
   // Items
@@ -244,29 +293,58 @@ const invoiceSchema = new mongoose.Schema({
   // Financial details
   subtotal: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: [0, 'Subtotal cannot be negative'],
+    validate: {
+      validator: function(v) {
+        return v <= this.total;
+      },
+      message: 'Subtotal cannot exceed total'
+    }
   },
   discount: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    min: [0, 'Discount cannot be negative'],
+    validate: {
+      validator: function(v) {
+        return v <= this.subtotal;
+      },
+      message: 'Discount cannot exceed subtotal'
+    }
   },
   tax: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    min: [0, 'Tax cannot be negative']
   },
   total: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: [0, 'Total cannot be negative'],
+    validate: {
+      validator: function(v) {
+        return Math.abs(v - (this.subtotal - this.discount + this.tax)) < 0.01;
+      },
+      message: 'Total must equal subtotal - discount + tax'
+    }
   },
   
   // Payment tracking
   amount_paid: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    min: [0, 'Amount paid cannot be negative'],
+    validate: {
+      validator: function(v) {
+        return v <= this.total;
+      },
+      message: 'Amount paid cannot exceed total'
+    }
   },
   balance_due: { 
-    type: Number, 
-    default: function() { return this.total; } 
+    type: Number,
+    min: [0, 'Balance due cannot be negative']
   },
   payment_history: [paymentSchema],
   
@@ -274,15 +352,18 @@ const invoiceSchema = new mongoose.Schema({
   status: { 
     type: String, 
     enum: ['Draft', 'Issued', 'Paid', 'Partial', 'Overdue', 'Cancelled', 'Refunded'],
-    default: 'Draft' 
+    default: 'Draft',
+    index: true
   },
   
   // Additional fields
   notes: { 
-    type: String 
+    type: String,
+    trim: true
   },
   terms_and_conditions: { 
-    type: String 
+    type: String,
+    trim: true
   },
   created_by: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -309,39 +390,74 @@ const invoiceSchema = new mongoose.Schema({
   },
   procedures_status: {
     type: String,
-    enum: ['None', 'Pending', 'Partial', 'Completed'],
+    enum: ['None', 'Pending', 'Partial', 'Completed', 'Paid'],
     default: 'None'
+  },
+  
+  // Audit fields - Enhanced timestamp handling
+  created_at: {
+    type: Date,
+    default: () => new Date(),
+    immutable: true // Cannot be modified after creation
+  },
+  updated_at: {
+    type: Date,
+    default: () => new Date()
   }
 }, { 
-  timestamps: true 
+  timestamps: {
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
+  },
+  toJSON: { 
+    virtuals: true,
+    transform: function(doc, ret) {
+      // Format dates when converting to JSON
+      if (ret.created_at) {
+        ret.created_at_ist = new Date(ret.created_at).toLocaleString('en-IN', { 
+          timeZone: 'Asia/Kolkata',
+          dateStyle: 'full',
+          timeStyle: 'long'
+        });
+      }
+      if (ret.updated_at) {
+        ret.updated_at_ist = new Date(ret.updated_at).toLocaleString('en-IN', { 
+          timeZone: 'Asia/Kolkata',
+          dateStyle: 'full',
+          timeStyle: 'long'
+        });
+      }
+      return ret;
+    }
+  },
+  toObject: { virtuals: true }
 });
 
-// Generate invoice number
-invoiceSchema.pre('save', async function(next) {
-  if (this.isNew && !this.invoice_number) {
-    const count = await mongoose.model('Invoice').countDocuments();
-    const year = new Date().getFullYear();
-    
-    let prefix = 'INV';
-    switch(this.invoice_type) {
-      case 'Pharmacy':
-        prefix = 'PH-INV';
-        this.is_pharmacy_sale = true;
-        break;
-      case 'Procedure':
-        prefix = 'PR-INV';
-        break;
-      case 'Appointment':
-        prefix = 'AP-INV';
-        break;
-      case 'Mixed':
-        prefix = 'MX-INV';
-        break;
-      default:
-        prefix = 'INV';
-    }
-    
-    this.invoice_number = `${prefix}-${year}-${(count + 1).toString().padStart(6, '0')}`;
+// Pre-save middleware for enhanced timestamp handling
+invoiceSchema.pre('save', function(next) {
+  // Always update the updated_at timestamp
+  this.updated_at = new Date();
+  
+  // Set created_at only if it's a new document
+  if (this.isNew) {
+    this.created_at = new Date();
+  }
+  
+  // Calculate balance due
+  this.balance_due = this.total - this.amount_paid;
+  
+  // Validate dates
+  if (this.due_date < this.issue_date) {
+    return next(new Error('Due date cannot be before issue date'));
+  }
+  
+  // Auto-update status based on payment
+  if (this.amount_paid >= this.total) {
+    this.status = 'Paid';
+  } else if (this.amount_paid > 0) {
+    this.status = 'Partial';
+  } else if (new Date() > this.due_date && !['Paid', 'Cancelled', 'Refunded'].includes(this.status)) {
+    this.status = 'Overdue';
   }
   
   // Update procedures related fields
@@ -363,45 +479,97 @@ invoiceSchema.pre('save', async function(next) {
   next();
 });
 
-// Update balance due and auto-detect invoice type
-invoiceSchema.pre('save', function(next) {
-  this.balance_due = this.total - this.amount_paid;
-  
-  // Auto-detect invoice type if not set
-  if (!this.invoice_type || this.invoice_type === 'Mixed') {
-    const hasMedicines = this.medicine_items.length > 0;
-    const hasServices = this.service_items.length > 0;
-    const hasProcedures = this.procedure_items.length > 0;
+// Pre-validate middleware for calculations
+invoiceSchema.pre('validate', function(next) {
+  // Auto-calculate totals if items are provided
+  if (this.isNew || this.isModified('service_items') || this.isModified('medicine_items') || this.isModified('procedure_items')) {
+    let calculatedSubtotal = 0;
     
-    if (hasMedicines && (hasServices || hasProcedures)) {
-      this.invoice_type = 'Mixed';
-      this.is_pharmacy_sale = true;
-    } else if (hasMedicines) {
-      this.invoice_type = 'Pharmacy';
-      this.is_pharmacy_sale = true;
-    } else if (hasProcedures) {
-      this.invoice_type = 'Procedure';
-    } else if (hasServices) {
-      this.invoice_type = 'Appointment';
-      this.is_pharmacy_sale = false;
+    // Sum up all items
+    [...this.service_items, ...this.medicine_items, ...this.procedure_items].forEach(item => {
+      calculatedSubtotal += item.total_price || 0;
+    });
+    
+    // Only auto-calculate if subtotal is not manually set
+    if (!this.subtotal || this.subtotal === 0) {
+      this.subtotal = calculatedSubtotal;
     }
-  }
-  
-  // Auto-update status based on payment
-  if (this.amount_paid >= this.total) {
-    this.status = 'Paid';
-  } else if (this.amount_paid > 0) {
-    this.status = 'Partial';
-  } else if (new Date() > this.due_date && this.status !== 'Paid') {
-    this.status = 'Overdue';
+    
+    // Calculate total if not manually set
+    if (!this.total || this.total === 0) {
+      this.total = this.subtotal - (this.discount || 0) + (this.tax || 0);
+    }
   }
   
   next();
 });
 
+// Generate invoice number
+invoiceSchema.pre('save', async function(next) {
+  if (this.isNew && !this.invoice_number) {
+    try {
+      const year = new Date().getFullYear();
+      const month = String(new Date().getMonth() + 1).padStart(2, '0');
+      
+      // Get count of invoices for this month
+      const startOfMonth = new Date(Date.UTC(year, new Date().getMonth(), 1));
+      const endOfMonth = new Date(Date.UTC(year, new Date().getMonth() + 1, 0, 23, 59, 59, 999));
+      
+      const count = await mongoose.model('Invoice').countDocuments({
+        created_at: { $gte: startOfMonth, $lte: endOfMonth }
+      });
+      
+      let prefix = 'INV';
+      switch(this.invoice_type) {
+        case 'Pharmacy':
+          prefix = 'PH';
+          this.is_pharmacy_sale = true;
+          break;
+        case 'Procedure':
+          prefix = 'PR';
+          break;
+        case 'Appointment':
+          prefix = 'AP';
+          break;
+        case 'Mixed':
+          prefix = 'MX';
+          break;
+        case 'Purchase':
+          prefix = 'PO';
+          break;
+        default:
+          prefix = 'INV';
+      }
+      
+      // Format: PREFIX-YYYYMM-XXXXXX (e.g., INV-202602-000001)
+      this.invoice_number = `${prefix}-${year}${month}-${(count + 1).toString().padStart(6, '0')}`;
+    } catch (error) {
+      return next(error);
+    }
+  }
+  
+  next();
+});
+
+// Post-save middleware for logging
+invoiceSchema.post('save', function(doc) {
+  console.log(`📄 Invoice ${doc.invoice_number} saved at ${new Date().toISOString()}`);
+});
+
+// Post-save middleware for error handling
+invoiceSchema.post('save', function(error, doc, next) {
+  if (error.name === 'MongoServerError' && error.code === 11000) {
+    next(new Error('Invoice number already exists. Please try again.'));
+  } else {
+    next(error);
+  }
+});
+
 // Virtual for total items count
 invoiceSchema.virtual('total_items').get(function() {
-  return this.service_items.length + this.medicine_items.length + this.procedure_items.length;
+  return (this.service_items?.length || 0) + 
+         (this.medicine_items?.length || 0) + 
+         (this.procedure_items?.length || 0);
 });
 
 // Virtual for is_fully_paid
@@ -412,16 +580,83 @@ invoiceSchema.virtual('is_fully_paid').get(function() {
 // Virtual for pending procedures count
 invoiceSchema.virtual('pending_procedures_count').get(function() {
   if (!this.has_procedures) return 0;
-  return this.procedure_items.filter(p => p.status === 'Pending').length;
+  return this.procedure_items?.filter(p => p.status === 'Pending').length || 0;
 });
 
-// Indexes
-invoiceSchema.index({ invoice_number: 1 });
-invoiceSchema.index({ patient_id: 1, issue_date: -1 });
-invoiceSchema.index({ appointment_id: 1 });
+// Virtual for days overdue
+invoiceSchema.virtual('days_overdue').get(function() {
+  if (this.status !== 'Overdue') return 0;
+  const today = new Date();
+  const dueDate = new Date(this.due_date);
+  const diffTime = Math.abs(today - dueDate);
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+});
+
+// Virtual for formatted dates in different timezones
+invoiceSchema.virtual('created_at_ist').get(function() {
+  return this.created_at?.toLocaleString('en-IN', { 
+    timeZone: 'Asia/Kolkata',
+    dateStyle: 'full',
+    timeStyle: 'long'
+  });
+});
+
+invoiceSchema.virtual('created_at_utc').get(function() {
+  return this.created_at?.toISOString();
+});
+
+invoiceSchema.virtual('due_date_ist').get(function() {
+  return this.due_date?.toLocaleString('en-IN', { 
+    timeZone: 'Asia/Kolkata',
+    dateStyle: 'full'
+  });
+});
+
+// Static methods for date-based queries
+invoiceSchema.statics.findByDate = function(date, timezone = 'UTC') {
+  const startDate = new Date(date);
+  startDate.setUTCHours(0, 0, 0, 0);
+  
+  const endDate = new Date(date);
+  endDate.setUTCHours(23, 59, 59, 999);
+  
+  return this.find({
+    created_at: {
+      $gte: startDate,
+      $lte: endDate
+    }
+  });
+};
+
+invoiceSchema.statics.findByDateRange = function(startDate, endDate) {
+  const start = new Date(startDate);
+  start.setUTCHours(0, 0, 0, 0);
+  
+  const end = new Date(endDate);
+  end.setUTCHours(23, 59, 59, 999);
+  
+  return this.find({
+    created_at: {
+      $gte: start,
+      $lte: end
+    }
+  }).sort({ created_at: -1 });
+};
+
+// Indexes for better query performance
+invoiceSchema.index({ invoice_number: 1 }, { unique: true });
+invoiceSchema.index({ patient_id: 1, created_at: -1 });
+invoiceSchema.index({ appointment_id: 1, created_at: -1 });
 invoiceSchema.index({ prescription_id: 1 });
-invoiceSchema.index({ invoice_type: 1 });
-invoiceSchema.index({ status: 1 });
-invoiceSchema.index({ 'procedure_items.status': 1 });
+invoiceSchema.index({ invoice_type: 1, created_at: -1 });
+invoiceSchema.index({ status: 1, due_date: 1 });
+// invoiceSchema.index({ 'procedure_items.status': 1 });
+invoiceSchema.index({ created_at: -1 });
+invoiceSchema.index({ due_date: 1, status: 1 });
+invoiceSchema.index({ amount_paid: 1, total: 1 }); // For partial payment queries
+
+// Compound indexes for common queries
+invoiceSchema.index({ invoice_type: 1, status: 1, created_at: -1 });
+invoiceSchema.index({ patient_id: 1, status: 1, created_at: -1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

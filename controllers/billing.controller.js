@@ -6,39 +6,39 @@ const mongoose = require('mongoose');
 
 exports.createBill = async (req, res) => {
   try {
-    const { 
-      patient_id, 
-      appointment_id, 
+    const {
+      patient_id,
+      appointment_id,
       prescription_id,
-      payment_method, 
-      items, 
-      status = 'Draft', 
+      payment_method,
+      items,
+      status = 'Draft',
       total_amount,
       subtotal,
       tax_amount = 0,
       discount = 0,
       notes
     } = req.body;
-
+    console.log('Creating bill with data:', req.body);
     // Validate required fields
     if (!patient_id || !appointment_id || !payment_method) {
-      return res.status(400).json({ 
-        error: 'Patient ID, Appointment ID, and Payment Method are required' 
+      return res.status(400).json({
+        error: 'Patient ID, Appointment ID, and Payment Method are required'
       });
     }
 
     // Calculate totals if not provided
     let calculatedSubtotal = subtotal;
     let calculatedTotal = total_amount;
-    
+
     if (!subtotal || !total_amount) {
       calculatedSubtotal = items.reduce((sum, item) => sum + (item.amount * (item.quantity || 1)), 0);
       calculatedTotal = calculatedSubtotal + (tax_amount || 0) - (discount || 0);
     }
 
     // Create the bill
-    const bill = new Bill({ 
-      patient_id, 
+    const bill = new Bill({
+      patient_id,
       appointment_id,
       prescription_id,
       total_amount: calculatedTotal,
@@ -46,7 +46,7 @@ exports.createBill = async (req, res) => {
       tax_amount: tax_amount || 0,
       discount: discount || 0,
       payment_method,
-      status: status === 'Draft' ? 'Draft' : 'Generated',
+      status,
       items: items.map(item => ({
         description: item.description,
         amount: item.amount,
@@ -59,7 +59,7 @@ exports.createBill = async (req, res) => {
       notes,
       created_by: req.user?._id
     });
-    
+
     await bill.save();
 
     // If status is not Draft, create invoice
@@ -77,7 +77,7 @@ exports.createBill = async (req, res) => {
       // Determine invoice type based on items
       const hasProcedures = items.some(item => item.item_type === 'Procedure');
       const hasMedicines = items.some(item => item.item_type === 'Medicine');
-      
+
       let invoiceType = 'Appointment';
       if (hasProcedures && hasMedicines) {
         invoiceType = 'Mixed';
@@ -103,7 +103,7 @@ exports.createBill = async (req, res) => {
             tax_rate: 0,
             tax_amount: 0,
             prescription_id: item.prescription_id,
-            status: 'Pending',
+            status: 'Paid',
             scheduled_date: new Date()
           });
         } else if (item.item_type === 'Medicine') {
@@ -132,13 +132,24 @@ exports.createBill = async (req, res) => {
         }
       });
 
+      let amountPaid = 0;
+      let balanceDue = calculatedTotal;
+
+      if (status === 'Paid') {
+        amountPaid = calculatedTotal;
+        balanceDue = 0;
+      } else if (status === 'Partially Paid') {
+        amountPaid = req.body.paid_amount || 0;
+        balanceDue = calculatedTotal - amountPaid;
+      }
+
       // Create invoice
       invoice = new Invoice({
         invoice_type: invoiceType,
         patient_id: patient_id,
         customer_type: 'Patient',
-        customer_name: appointment.patient_id ? 
-          `${appointment.patient_id.first_name} ${appointment.patient_id.last_name}` : 
+        customer_name: appointment.patient_id ?
+          `${appointment.patient_id.first_name} ${appointment.patient_id.last_name}` :
           'Patient',
         customer_phone: appointment.patient_id?.phone,
         appointment_id: appointment_id,
@@ -153,9 +164,9 @@ exports.createBill = async (req, res) => {
         tax: tax_amount || 0,
         discount: discount || 0,
         total: calculatedTotal,
-        status: payment_method?.toUpperCase() === 'PENDING' ? 'Pending' : 'Paid',
-        amount_paid: payment_method?.toUpperCase() === 'PENDING' ? 0 : calculatedTotal,
-        balance_due: payment_method?.toUpperCase() === 'PENDING' ? calculatedTotal : 0,
+        amount_paid: amountPaid,
+        balance_due: balanceDue,
+        status: status === 'Paid' ? 'Paid' : (status === 'Partially Paid' ? 'Partial' : 'Pending'),
         notes: `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}`,
         created_by: req.user?._id,
         has_procedures: procedureItems.length > 0,
@@ -197,7 +208,7 @@ exports.createBill = async (req, res) => {
       .populate('invoice_id', 'invoice_number status')
       .populate('created_by', 'name');
 
-    res.status(201).json({ 
+    res.status(201).json({
       success: true,
       message: 'Bill created successfully',
       bill: populatedBill,
@@ -212,31 +223,31 @@ exports.createBill = async (req, res) => {
 // Get bills with procedure items
 exports.getAllBills = async (req, res) => {
   try {
-    const { 
-      page = 1, 
-      limit = 10, 
-      status, 
+    const {
+      page = 1,
+      limit = 10,
+      status,
       patient_id,
       has_procedures,
       start_date,
-      end_date 
+      end_date
     } = req.query;
-    
+
     const filter = {};
     if (status) filter.status = status;
     if (patient_id) filter.patient_id = patient_id;
-    
+
     if (has_procedures === 'true') {
       filter['items.item_type'] = 'Procedure';
     }
-    
+
     if (start_date && end_date) {
       filter.generated_at = {
         $gte: new Date(start_date),
         $lte: new Date(end_date)
       };
     }
-    
+
     const bills = await Bill.find(filter)
       .populate('patient_id', 'first_name last_name patientId')
       .populate('appointment_id', 'appointment_date type')
@@ -245,22 +256,22 @@ exports.getAllBills = async (req, res) => {
       .sort({ generated_at: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
-    
+
     const total = await Bill.countDocuments(filter);
-    
+
     // Calculate statistics
     const totalRevenue = await Bill.aggregate([
       { $match: { status: 'Paid', ...filter } },
       { $group: { _id: null, total: { $sum: '$total_amount' } } }
     ]);
-    
+
     const procedureRevenue = await Bill.aggregate([
-      { 
-        $match: { 
-          status: 'Paid', 
+      {
+        $match: {
+          status: 'Paid',
           'items.item_type': 'Procedure',
-          ...filter 
-        } 
+          ...filter
+        }
       },
       { $unwind: '$items' },
       { $match: { 'items.item_type': 'Procedure' } },
@@ -294,7 +305,7 @@ exports.getBillById = async (req, res) => {
       .populate('prescription_id', 'prescription_number diagnosis recommendedProcedures')
       .populate('invoice_id')
       .populate('created_by', 'name');
-    
+
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
     }
@@ -319,13 +330,13 @@ exports.getBillById = async (req, res) => {
 // Update bill status
 exports.updateBillStatus = async (req, res) => {
   try {
-    const { 
-      status, 
+    const {
+      status,
       paid_amount,
       payment_method,
-      notes 
+      notes
     } = req.body;
-    
+
     const bill = await Bill.findById(req.params.id);
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
@@ -359,7 +370,7 @@ exports.updateBillStatus = async (req, res) => {
         if (paid_amount !== undefined) {
           invoice.amount_paid += paid_amount;
           invoice.balance_due = invoice.total - invoice.amount_paid;
-          
+
           // Add payment to history
           invoice.payment_history.push({
             amount: paid_amount,
@@ -375,10 +386,10 @@ exports.updateBillStatus = async (req, res) => {
           } else if (invoice.amount_paid > 0) {
             invoice.status = 'Partial';
           }
-          
+
           await invoice.save();
         }
-        
+
         // Update invoice status if bill status changed
         if (status === 'Paid' && invoice.status !== 'Paid') {
           invoice.status = 'Paid';
@@ -403,23 +414,23 @@ exports.updateBillStatus = async (req, res) => {
 // Generate bill for procedures
 exports.generateProcedureBill = async (req, res) => {
   try {
-    const { 
-      prescription_id, 
-      procedure_ids, 
-      additional_items = [] 
+    const {
+      prescription_id,
+      procedure_ids,
+      additional_items = []
     } = req.body;
 
     const prescription = await Prescription.findById(prescription_id)
       .populate('patient_id')
       .populate('doctor_id')
       .populate('appointment_id');
-    
+
     if (!prescription) {
       return res.status(404).json({ error: 'Prescription not found' });
     }
 
     // Filter selected procedures
-    const selectedProcedures = prescription.recommendedProcedures.filter(proc => 
+    const selectedProcedures = prescription.recommendedProcedures.filter(proc =>
       procedure_ids.includes(proc._id.toString())
     );
 
@@ -558,9 +569,9 @@ exports.getBillByAppointmentId = async (req, res) => {
       });
 
     if (!bill) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Bill not found for this appointment' 
+        error: 'Bill not found for this appointment'
       });
     }
 
@@ -584,8 +595,8 @@ exports.deleteBill = async (req, res) => {
 
     // Check if bill can be deleted
     if (bill.status === 'Paid') {
-      return res.status(400).json({ 
-        error: 'Cannot delete a paid bill. Please refund instead.' 
+      return res.status(400).json({
+        error: 'Cannot delete a paid bill. Please refund instead.'
       });
     }
 
@@ -616,9 +627,9 @@ exports.deleteBill = async (req, res) => {
 
     await Bill.findByIdAndDelete(req.params.id);
 
-    res.json({ 
+    res.json({
       success: true,
-      message: 'Bill deleted successfully' 
+      message: 'Bill deleted successfully'
     });
   } catch (err) {
     console.error('Error deleting bill:', err);

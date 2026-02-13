@@ -5,7 +5,6 @@ const Vital = require('../models/Vital');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 
 // In your appointment completion function
-// In your appointment completion function
 exports.completeAppointment = async (req, res) => {
   try {
     const appointment = await Appointment.findByIdAndUpdate(

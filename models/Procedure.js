@@ -154,10 +154,10 @@ const procedureSchema = new mongoose.Schema({
     ref: 'User'
   },
   
-  last_updated_by: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
-  },
+  // last_updated_by: {
+  //   type: mongoose.Schema.Types.ObjectId,
+  //   ref: 'User'
+  // },
   
   version: {
     type: String,

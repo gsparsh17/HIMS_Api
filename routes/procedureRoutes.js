@@ -78,7 +78,6 @@ router.get('/', async (req, res) => {
 
     const procedures = await Procedure.find({ is_active: true })
       .sort({ name: 1 })
-      .select('code name category base_price')
       .lean();
 
     res.json({
@@ -151,8 +150,6 @@ function extractProcedureCode(input) {
   return input.toUpperCase();
 }
 
-// Add this to your procedureRoutes.js file
-
 // Update procedure by ID
 router.put('/:id', async (req, res) => {
   try {
@@ -167,61 +164,72 @@ router.put('/:id', async (req, res) => {
     } = req.body;
 
     let procedure;
+    let updateResult;
 
-    // Check if the ID is a valid ObjectId
+    // Check if the ID is a valid MongoDB ObjectId (24 hex characters)
     const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(id);
     
     if (isValidObjectId) {
-      procedure = await Procedure.findById(id);
+      // If it's a valid ObjectId, update by _id
+      updateResult = await Procedure.findByIdAndUpdate(
+        id,
+        {
+          $set: {
+            ...(base_price !== undefined && { base_price: Number(base_price) }),
+            ...(is_active !== undefined && { is_active }),
+            ...(category !== undefined && { category }),
+            ...(duration_minutes !== undefined && { duration_minutes: Number(duration_minutes) }),
+            ...(description !== undefined && { description }),
+            ...(last_updated_by !== undefined && { last_updated_by }),
+            updated_at: new Date()
+          }
+        },
+        { new: true, runValidators: true }
+      );
     } else {
-      procedure = await Procedure.findOne({ code: id.toUpperCase() });
+      // For invalid ObjectId, try to find by code instead
+      // Note: This assumes the ID might be a procedure code
+      const procedureCode = id.toUpperCase();
+      
+      // First find the procedure by code to get its _id
+      procedure = await Procedure.findOne({ code: procedureCode });
+      
+      if (!procedure) {
+        return res.status(404).json({
+          success: false,
+          message: 'Procedure not found with the provided code'
+        });
+      }
+      
+      // Then update using the _id
+      updateResult = await Procedure.findByIdAndUpdate(
+        procedure._id,
+        {
+          $set: {
+            ...(base_price !== undefined && { base_price: Number(base_price) }),
+            ...(is_active !== undefined && { is_active }),
+            ...(category !== undefined && { category }),
+            ...(duration_minutes !== undefined && { duration_minutes: Number(duration_minutes) }),
+            ...(description !== undefined && { description }),
+            ...(last_updated_by !== undefined && { last_updated_by }),
+            updated_at: new Date()
+          }
+        },
+        { new: true, runValidators: true }
+      );
     }
     
-    if (!procedure) {
+    if (!updateResult) {
       return res.status(404).json({
         success: false,
         message: 'Procedure not found'
       });
     }
 
-    // Prepare update data
-    const updateData = { updated_at: new Date() };
-    
-    if (base_price !== undefined) {
-      updateData.base_price = Number(base_price);
-    }
-    
-    if (is_active !== undefined) {
-      updateData.is_active = is_active;
-    }
-    
-    if (category !== undefined) {
-      updateData.category = category;
-    }
-    
-    if (duration_minutes !== undefined) {
-      updateData.duration_minutes = Number(duration_minutes);
-    }
-    
-    if (description !== undefined) {
-      updateData.description = description;
-    }
-    
-    if (last_updated_by !== undefined) {
-      updateData.last_updated_by = last_updated_by;
-    }
-
-    // Update the procedure
-    const updatedProcedure = await Procedure.findByIdAndUpdate(
-      procedure._id,
-      updateData,
-      { new: true, runValidators: true }
-    );
-
     res.json({
       success: true,
       message: 'Procedure updated successfully',
-      data: updatedProcedure
+      data: updateResult
     });
   } catch (error) {
     console.error('Update procedure error:', error);
@@ -233,6 +241,15 @@ router.put('/:id', async (req, res) => {
         success: false,
         message: 'Validation error',
         errors: errors
+      });
+    }
+    
+    // Handle CastError (invalid ID format)
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid procedure ID format',
+        error: 'The provided ID is not a valid MongoDB ObjectId'
       });
     }
     
