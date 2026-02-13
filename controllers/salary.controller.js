@@ -134,8 +134,20 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
     });
 
     if (salary) {
+      // Check if this appointment is already accounted for
+      if (salary.appointments && salary.appointments.includes(appointmentId)) {
+        return salary;
+      }
+
       salary.amount = toNumber(salary.amount, 0) + doctorAmount;
       salary.appointment_count = toNumber(salary.appointment_count, 0) + 1;
+      
+      // Initialize appointments array if it doesn't exist (migrations)
+      if (!salary.appointments) {
+        salary.appointments = [];
+      }
+      salary.appointments.push(appointmentId);
+
       salary.net_amount =
         toNumber(salary.amount, 0) +
         toNumber(salary.bonus, 0) -
@@ -153,6 +165,7 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
       period_end: periodEnd,
       amount: doctorAmount,
       appointment_count: 1,
+      appointments: [appointmentId], // Initialize with current appointment
       net_amount: doctorAmount,
       notes,
       status: 'pending'
