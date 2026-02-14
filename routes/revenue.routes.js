@@ -15,7 +15,9 @@ const {
   exportMonthly,
   exportDoctor,
   exportDepartment,
-  exportDetailed
+  exportDetailed,
+  getProcedureRevenueAnalytics,
+  exportProcedureRevenue
 } = require('../controllers/revenue.controller');
 
 // Revenue routes
@@ -26,6 +28,9 @@ router.get('/doctor', getDoctorRevenue);            // Doctor-wise revenue
 router.get('/department', getDepartmentRevenue);    // Department-wise revenue
 router.get('/detailed', getDetailedRevenueReport);  // Detailed transactions (paginated)
 
+router.get('/procedures', getProcedureRevenueAnalytics);
+
+
 // Export routes
 router.get('/export', exportRevenueData);           // Main export (CSV/Excel/PDF/JSON)
 router.get('/export/overview', exportOverview);     // Overview export
@@ -34,5 +39,6 @@ router.get('/export/monthly', exportMonthly);       // Monthly export
 router.get('/export/doctor', exportDoctor);         // Doctor export
 router.get('/export/department', exportDepartment); // Department export
 router.get('/export/detailed', exportDetailed);     // Detailed export
+router.get('/export/procedures', exportProcedureRevenue);
 
 module.exports = router;
