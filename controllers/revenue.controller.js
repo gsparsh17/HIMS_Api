@@ -3118,6 +3118,689 @@ exports.exportDaily = async (req, res) => {
 };
 
 /**
+ * Get Lab Test Revenue Analytics with dual date field support
+ */
+exports.getLabTestRevenueAnalytics = async (req, res) => {
+  try {
+    const { startDate, endDate, departmentId, doctorId } = req.query;
+
+    console.log('🧪 Lab Test Revenue Request:', { startDate, endDate, departmentId, doctorId });
+
+    // Use the same date handling with dual field support
+    let startOfDayUTC, endOfDayUTC;
+    
+    if (startDate && endDate) {
+      // If both dates provided, use the range
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      
+      endOfDayUTC = new Date(endDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else if (startDate) {
+      // If only start date provided, use that day
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(startDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else {
+      // Default to last 30 days
+      endOfDayUTC = new Date();
+      startOfDayUTC = new Date();
+      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    }
+
+    console.log('📅 Date range:', {
+      start: startOfDayUTC.toISOString(),
+      end: endOfDayUTC.toISOString()
+    });
+
+    // Build the date filter using dual field support
+    const dateFilter = {
+      $or: [
+        {
+          created_at: {
+            $gte: startOfDayUTC,
+            $lte: endOfDayUTC
+          }
+        },
+        {
+          createdAt: {
+            $gte: startOfDayUTC,
+            $lte: endOfDayUTC
+          }
+        }
+      ]
+    };
+
+    // Build pipeline for lab test revenue
+    const pipeline = [
+      // Match only Lab Test invoices
+      { 
+        $match: { 
+          invoice_type: 'Lab Test',
+          ...dateFilter
+        } 
+      },
+      
+      // Unwind lab_test_items to get individual lab test records
+      { $unwind: { path: '$lab_test_items', preserveNullAndEmptyArrays: false } },
+      
+      // Lookup appointment to get doctor
+      {
+        $lookup: {
+          from: 'appointments',
+          localField: 'appointment_id',
+          foreignField: '_id',
+          as: 'appointment'
+        }
+      },
+      { $unwind: { path: '$appointment', preserveNullAndEmptyArrays: true } },
+      
+      // Lookup doctor
+      {
+        $lookup: {
+          from: 'doctors',
+          localField: 'appointment.doctor_id',
+          foreignField: '_id',
+          as: 'doctor'
+        }
+      },
+      { $unwind: { path: '$doctor', preserveNullAndEmptyArrays: true } },
+      
+      // Lookup patient
+      {
+        $lookup: {
+          from: 'patients',
+          localField: 'patient_id',
+          foreignField: '_id',
+          as: 'patient'
+        }
+      },
+      { $unwind: { path: '$patient', preserveNullAndEmptyArrays: true } },
+      
+      // Add computed fields
+      {
+        $addFields: {
+          labTestCode: '$lab_test_items.lab_test_code',
+          labTestName: '$lab_test_items.lab_test_name',
+          labTestRevenue: '$lab_test_items.total_price',
+          labTestQuantity: '$lab_test_items.quantity',
+          labTestUnitPrice: '$lab_test_items.unit_price',
+          labTestStatus: '$lab_test_items.status',
+          doctorId: { $ifNull: ['$doctor._id', null] },
+          doctorName: { 
+            $cond: {
+              if: { $and: ['$doctor.firstName', '$doctor.lastName'] },
+              then: { $concat: ['$doctor.firstName', ' ', '$doctor.lastName'] },
+              else: 'Unknown'
+            }
+          },
+          departmentId: '$doctor.department',
+          date: { 
+            $dateToString: { 
+              format: '%Y-%m-%d', 
+              date: { $ifNull: ['$created_at', '$createdAt'] }
+            } 
+          }
+        }
+      }
+    ];
+
+    // Apply doctor filter if provided
+    if (doctorId && doctorId !== 'all' && doctorId !== 'undefined') {
+      pipeline.push({ 
+        $match: { 
+          'appointment.doctor_id': new mongoose.Types.ObjectId(doctorId) 
+        } 
+      });
+    }
+
+    // Apply department filter if provided
+    if (departmentId && departmentId !== 'all' && departmentId !== 'undefined') {
+      pipeline.push({ 
+        $match: { 
+          'doctor.department': new mongoose.Types.ObjectId(departmentId) 
+        } 
+      });
+    }
+
+    const labTestInvoices = await Invoice.aggregate(pipeline);
+    
+    console.log('✅ Lab Test invoice items after pipeline:', labTestInvoices.length);
+
+    // Group by lab test code
+    const labTestStats = {};
+    const doctorLabTestStats = {};
+    const dailyLabTestStats = {};
+    const departmentLabTestStats = {};
+    const statusStats = {};
+
+    let totalLabTestRevenue = 0;
+    let totalLabTestCount = 0;
+
+    labTestInvoices.forEach(item => {
+      const labCode = item.labTestCode || 'UNKNOWN';
+      const labName = item.labTestName || 'Unknown Lab Test';
+      const revenue = item.labTestRevenue || 0;
+      const quantity = item.labTestQuantity || 1;
+      const unitPrice = item.labTestUnitPrice || 0;
+      const status = item.labTestStatus || 'Pending';
+      const doctorId = item.doctorId ? item.doctorId.toString() : 'unknown';
+      const doctorName = item.doctorName || 'Unknown';
+      const departmentId = item.departmentId ? item.departmentId.toString() : 'unknown';
+      const dateKey = item.date || new Date().toISOString().split('T')[0];
+
+      totalLabTestRevenue += revenue;
+      totalLabTestCount += 1;
+
+      // Status stats
+      if (!statusStats[status]) {
+        statusStats[status] = {
+          status,
+          count: 0,
+          revenue: 0
+        };
+      }
+      statusStats[status].count += 1;
+      statusStats[status].revenue += revenue;
+
+      // Lab test stats
+      if (!labTestStats[labCode]) {
+        labTestStats[labCode] = {
+          code: labCode,
+          name: labName,
+          revenue: 0,
+          quantity: 0,
+          count: 0,
+          averagePrice: 0,
+          unitPrice: unitPrice
+        };
+      }
+      labTestStats[labCode].revenue += revenue;
+      labTestStats[labCode].quantity += quantity;
+      labTestStats[labCode].count += 1;
+
+      // Doctor lab test stats
+      const key = `${doctorId}-${labCode}`;
+      if (!doctorLabTestStats[key]) {
+        doctorLabTestStats[key] = {
+          doctorId,
+          doctorName,
+          labTestCode: labCode,
+          labTestName: labName,
+          revenue: 0,
+          quantity: 0,
+          count: 0
+        };
+      }
+      doctorLabTestStats[key].revenue += revenue;
+      doctorLabTestStats[key].quantity += quantity;
+      doctorLabTestStats[key].count += 1;
+
+      // Department stats
+      if (!departmentLabTestStats[departmentId]) {
+        departmentLabTestStats[departmentId] = {
+          departmentId,
+          departmentName: departmentId === 'unknown' ? 'Unknown' : 'Department',
+          revenue: 0,
+          count: 0
+        };
+      }
+      departmentLabTestStats[departmentId].revenue += revenue;
+      departmentLabTestStats[departmentId].count += 1;
+
+      // Daily stats
+      if (!dailyLabTestStats[dateKey]) {
+        dailyLabTestStats[dateKey] = {
+          date: dateKey,
+          revenue: 0,
+          quantity: 0,
+          count: 0
+        };
+      }
+      dailyLabTestStats[dateKey].revenue += revenue;
+      dailyLabTestStats[dateKey].quantity += quantity;
+      dailyLabTestStats[dateKey].count += 1;
+    });
+
+    // Calculate average price for each lab test
+    Object.values(labTestStats).forEach(test => {
+      test.averagePrice = test.count > 0 ? test.revenue / test.count : 0;
+    });
+
+    // Calculate doctor commission for lab tests
+    const doctors = await Doctor.find({});
+    const doctorCommissionMap = new Map();
+    doctors.forEach(doc => {
+      doctorCommissionMap.set(doc._id.toString(), {
+        commissionPercentage: doc.revenuePercentage || (doc.isFullTime ? 100 : 30),
+        isFullTime: doc.isFullTime,
+        name: `${doc.firstName} ${doc.lastName || ''}`.trim(),
+        department: doc.department
+      });
+    });
+
+    const doctorLabTestStatsWithCommission = Object.values(doctorLabTestStats).map(stat => {
+      const commissionInfo = doctorCommissionMap.get(stat.doctorId);
+      const commissionPercentage = commissionInfo?.commissionPercentage || 30;
+      const commission = stat.revenue * (commissionPercentage / 100);
+      return {
+        ...stat,
+        doctorName: commissionInfo?.name || stat.doctorName,
+        commission,
+        commissionPercentage,
+        hospitalShare: stat.revenue - commission,
+        percentage: totalLabTestRevenue > 0 ? (stat.revenue / totalLabTestRevenue) * 100 : 0
+      };
+    });
+
+    // Get department names
+    const departments = await Department.find({});
+    const deptMap = new Map(departments.map(d => [d._id.toString(), d.name]));
+
+    // Format department data
+    const departmentStats = Object.entries(departmentLabTestStats).map(([deptId, data]) => ({
+      departmentId: deptId,
+      departmentName: deptMap.get(deptId) || (deptId === 'unknown' ? 'Unknown' : 'Unknown Department'),
+      revenue: data.revenue,
+      count: data.count,
+      percentage: totalLabTestRevenue > 0 ? (data.revenue / totalLabTestRevenue) * 100 : 0
+    }));
+
+    const response = {
+      success: true,
+      period: {
+        start: startDate || startOfDayUTC.toISOString().split('T')[0],
+        end: endDate || endOfDayUTC.toISOString().split('T')[0],
+        dateRange: {
+          from: startOfDayUTC,
+          to: endOfDayUTC
+        }
+      },
+      summary: {
+        totalLabTestRevenue,
+        totalLabTests: totalLabTestCount,
+        uniqueLabTests: Object.keys(labTestStats).length,
+        averageLabTestValue: totalLabTestCount > 0 ? totalLabTestRevenue / totalLabTestCount : 0,
+        labTestCount: totalLabTestCount
+      },
+      breakdown: {
+        byStatus: Object.values(statusStats)
+          .map(s => ({
+            ...s,
+            percentage: totalLabTestRevenue > 0 ? (s.revenue / totalLabTestRevenue) * 100 : 0
+          }))
+          .sort((a, b) => b.revenue - a.revenue),
+        byLabTest: Object.values(labTestStats)
+          .map(t => ({
+            ...t,
+            percentage: totalLabTestRevenue > 0 ? (t.revenue / totalLabTestRevenue) * 100 : 0
+          }))
+          .sort((a, b) => b.revenue - a.revenue),
+        byDoctor: doctorLabTestStatsWithCommission.sort((a, b) => b.revenue - a.revenue),
+        byDepartment: departmentStats.sort((a, b) => b.revenue - a.revenue),
+        daily: Object.values(dailyLabTestStats).sort((a, b) => new Date(a.date) - new Date(b.date))
+      }
+    };
+
+    console.log('📊 Sending response with lab test revenue:', {
+      total: totalLabTestRevenue,
+      count: totalLabTestCount,
+      labTests: Object.keys(labTestStats).length
+    });
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ Error in getLabTestRevenueAnalytics:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      stack: error.stack 
+    });
+  }
+};
+
+/**
+ * Helper function to get lab test data with dual date field support
+ */
+async function getLabTestRevenueData(query) {
+  const { startDate, endDate, doctorId, departmentId } = query;
+
+  const dateFilter = {};
+  if (startDate && endDate) {
+    dateFilter.$or = [
+      { created_at: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } },
+      { createdAt: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } }
+    ];
+  }
+
+  const pipeline = [
+    { $match: { invoice_type: 'Lab Test', ...dateFilter } },
+    { $unwind: '$lab_test_items' },
+    {
+      $lookup: {
+        from: 'appointments',
+        localField: 'appointment_id',
+        foreignField: '_id',
+        as: 'appointment'
+      }
+    },
+    { $unwind: { path: '$appointment', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'doctors',
+        localField: 'appointment.doctor_id',
+        foreignField: '_id',
+        as: 'doctor'
+      }
+    },
+    { $unwind: { path: '$doctor', preserveNullAndEmptyArrays: true } },
+    {
+      $addFields: {
+        labTestCode: '$lab_test_items.lab_test_code',
+        labTestName: '$lab_test_items.lab_test_name',
+        labTestRevenue: '$lab_test_items.total_price',
+        labTestQuantity: '$lab_test_items.quantity',
+        labTestStatus: '$lab_test_items.status',
+        doctorId: '$doctor._id',
+        doctorName: { $concat: ['$doctor.firstName', ' ', { $ifNull: ['$doctor.lastName', ''] }] },
+        departmentId: '$doctor.department',
+        date: { 
+          $dateToString: { 
+            format: '%Y-%m-%d', 
+            date: { $ifNull: ['$created_at', '$createdAt'] }
+          } 
+        }
+      }
+    }
+  ];
+
+  if (doctorId && doctorId !== 'all') {
+    pipeline.push({ $match: { 'appointment.doctor_id': new mongoose.Types.ObjectId(doctorId) } });
+  }
+
+  if (departmentId && departmentId !== 'all') {
+    pipeline.push({ $match: { 'doctor.department': new mongoose.Types.ObjectId(departmentId) } });
+  }
+
+  const labTestInvoices = await Invoice.aggregate(pipeline);
+
+  // Group by lab test code
+  const labTestStats = {};
+  const doctorLabTestStats = {};
+  const dailyLabTestStats = {};
+  const statusStats = {};
+
+  let totalLabTestRevenue = 0;
+  let totalLabTestCount = 0;
+
+  labTestInvoices.forEach(item => {
+    const labCode = item.labTestCode;
+    const labName = item.labTestName;
+    const revenue = item.labTestRevenue || 0;
+    const quantity = item.labTestQuantity || 1;
+    const status = item.labTestStatus || 'Pending';
+    const doctorId = item.doctorId ? item.doctorId.toString() : 'unknown';
+    const doctorName = item.doctorName || 'Unknown';
+    const dateKey = item.date;
+
+    totalLabTestRevenue += revenue;
+    totalLabTestCount += 1;
+
+    // Status stats
+    if (!statusStats[status]) {
+      statusStats[status] = {
+        status,
+        count: 0,
+        revenue: 0
+      };
+    }
+    statusStats[status].count += 1;
+    statusStats[status].revenue += revenue;
+
+    if (!labTestStats[labCode]) {
+      labTestStats[labCode] = {
+        code: labCode,
+        name: labName,
+        revenue: 0,
+        quantity: 0,
+        count: 0,
+        averagePrice: 0
+      };
+    }
+    labTestStats[labCode].revenue += revenue;
+    labTestStats[labCode].quantity += quantity;
+    labTestStats[labCode].count += 1;
+
+    const key = `${doctorId}-${labCode}`;
+    if (!doctorLabTestStats[key]) {
+      doctorLabTestStats[key] = {
+        doctorId,
+        doctorName,
+        labTestCode: labCode,
+        labTestName: labName,
+        revenue: 0,
+        quantity: 0,
+        count: 0
+      };
+    }
+    doctorLabTestStats[key].revenue += revenue;
+    doctorLabTestStats[key].quantity += quantity;
+    doctorLabTestStats[key].count += 1;
+
+    if (!dailyLabTestStats[dateKey]) {
+      dailyLabTestStats[dateKey] = {
+        date: dateKey,
+        revenue: 0,
+        quantity: 0,
+        count: 0
+      };
+    }
+    dailyLabTestStats[dateKey].revenue += revenue;
+    dailyLabTestStats[dateKey].quantity += quantity;
+    dailyLabTestStats[dateKey].count += 1;
+  });
+
+  Object.values(labTestStats).forEach(test => {
+    test.averagePrice = test.count > 0 ? test.revenue / test.count : 0;
+  });
+
+  const doctors = await Doctor.find({});
+  const doctorCommissionMap = new Map();
+  doctors.forEach(doc => {
+    doctorCommissionMap.set(doc._id.toString(), {
+      commissionPercentage: doc.revenuePercentage || (doc.isFullTime ? 100 : 30),
+      isFullTime: doc.isFullTime,
+      name: `${doc.firstName} ${doc.lastName || ''}`.trim()
+    });
+  });
+
+  const doctorLabTestStatsWithCommission = Object.values(doctorLabTestStats).map(stat => {
+    const commissionInfo = doctorCommissionMap.get(stat.doctorId);
+    const commissionPercentage = commissionInfo?.commissionPercentage || 30;
+    const commission = stat.revenue * (commissionPercentage / 100);
+    return {
+      ...stat,
+      doctorName: commissionInfo?.name || stat.doctorName,
+      commission,
+      commissionPercentage,
+      hospitalShare: stat.revenue - commission,
+      percentage: totalLabTestRevenue > 0 ? (stat.revenue / totalLabTestRevenue) * 100 : 0
+    };
+  });
+
+  return {
+    summary: {
+      totalLabTestRevenue,
+      totalLabTests: totalLabTestCount,
+      uniqueLabTests: Object.keys(labTestStats).length,
+      averageLabTestValue: totalLabTestCount > 0 ? totalLabTestRevenue / totalLabTestCount : 0
+    },
+    breakdown: {
+      byStatus: Object.values(statusStats),
+      byLabTest: Object.values(labTestStats).map(t => ({
+        ...t,
+        percentage: totalLabTestRevenue > 0 ? (t.revenue / totalLabTestRevenue) * 100 : 0
+      })),
+      byDoctor: doctorLabTestStatsWithCommission,
+      daily: Object.values(dailyLabTestStats)
+    }
+  };
+}
+
+/**
+ * Export Lab Test Revenue Report with dual date field support
+ */
+exports.exportLabTestRevenue = async (req, res) => {
+  try {
+    const { startDate, endDate, exportType = 'csv', doctorId, departmentId } = req.query;
+
+    // Use the lab test analytics function to get data
+    const labTestData = await getLabTestRevenueData(req.query);
+
+    if (exportType === 'excel') {
+      const workbook = new ExcelJS.Workbook();
+      
+      // Summary sheet
+      const summarySheet = workbook.addWorksheet('Lab Test Summary');
+      summarySheet.columns = [
+        { header: 'Metric', key: 'metric', width: 25 },
+        { header: 'Value', key: 'value', width: 25 }
+      ];
+
+      summarySheet.addRow({ metric: 'Total Lab Test Revenue', value: labTestData.summary.totalLabTestRevenue });
+      summarySheet.addRow({ metric: 'Total Lab Tests', value: labTestData.summary.totalLabTests });
+      summarySheet.addRow({ metric: 'Unique Lab Tests', value: labTestData.summary.uniqueLabTests });
+      summarySheet.addRow({ metric: 'Average Lab Test Value', value: labTestData.summary.averageLabTestValue });
+
+      // Status sheet
+      const statusSheet = workbook.addWorksheet('By Status');
+      statusSheet.columns = [
+        { header: 'Status', key: 'status', width: 20 },
+        { header: 'Revenue', key: 'revenue', width: 15 },
+        { header: 'Count', key: 'count', width: 10 },
+        { header: 'Percentage', key: 'percentage', width: 12 }
+      ];
+
+      labTestData.breakdown.byStatus.forEach(status => {
+        statusSheet.addRow({
+          status: status.status,
+          revenue: status.revenue,
+          count: status.count,
+          percentage: status.percentage.toFixed(2) + '%'
+        });
+      });
+
+      // Lab Tests sheet
+      const labTestSheet = workbook.addWorksheet('Lab Tests');
+      labTestSheet.columns = [
+        { header: 'Code', key: 'code', width: 15 },
+        { header: 'Name', key: 'name', width: 40 },
+        { header: 'Revenue', key: 'revenue', width: 15 },
+        { header: 'Count', key: 'count', width: 10 },
+        { header: 'Avg Price', key: 'averagePrice', width: 15 },
+        { header: 'Percentage', key: 'percentage', width: 12 }
+      ];
+
+      labTestData.breakdown.byLabTest.forEach(test => {
+        labTestSheet.addRow({
+          code: test.code,
+          name: test.name,
+          revenue: test.revenue,
+          count: test.count,
+          averagePrice: test.averagePrice,
+          percentage: test.percentage.toFixed(2) + '%'
+        });
+      });
+
+      // Doctors sheet
+      const doctorSheet = workbook.addWorksheet('By Doctor');
+      doctorSheet.columns = [
+        { header: 'Doctor', key: 'doctorName', width: 25 },
+        { header: 'Lab Test', key: 'labTestName', width: 40 },
+        { header: 'Revenue', key: 'revenue', width: 15 },
+        { header: 'Commission', key: 'commission', width: 15 },
+        { header: 'Hospital Share', key: 'hospitalShare', width: 15 },
+        { header: 'Count', key: 'count', width: 10 }
+      ];
+
+      labTestData.breakdown.byDoctor.forEach(doc => {
+        doctorSheet.addRow({
+          doctorName: doc.doctorName,
+          labTestName: doc.labTestName,
+          revenue: doc.revenue,
+          commission: doc.commission,
+          hospitalShare: doc.hospitalShare,
+          count: doc.count
+        });
+      });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=labtest_revenue_${startDate || 'all'}_to_${endDate || 'now'}.xlsx`);
+      
+      await workbook.xlsx.write(res);
+      res.end();
+    } else {
+      // CSV format - combine all data
+      const csvData = [
+        ...labTestData.breakdown.byLabTest.map(t => ({
+          Type: 'Lab Test',
+          Code: t.code,
+          Name: t.name,
+          Revenue: t.revenue,
+          Count: t.count,
+          'Avg Price': t.averagePrice,
+          Percentage: t.percentage.toFixed(2) + '%'
+        })),
+        ...labTestData.breakdown.byDoctor.map(d => ({
+          Type: 'Doctor',
+          Doctor: d.doctorName,
+          'Lab Test': d.labTestName,
+          Revenue: d.revenue,
+          Commission: d.commission,
+          'Hospital Share': d.hospitalShare,
+          Count: d.count
+        })),
+        ...labTestData.breakdown.byStatus.map(s => ({
+          Type: 'Status',
+          Status: s.status,
+          Revenue: s.revenue,
+          Count: s.count,
+          Percentage: s.percentage.toFixed(2) + '%'
+        }))
+      ];
+
+      const headers = Object.keys(csvData[0]);
+      const csvLines = [
+        headers.join(','),
+        ...csvData.map((row) =>
+          headers
+            .map((h) => {
+              const v = row[h] ?? '';
+              const s = String(v);
+              return s.includes(',') || s.includes('"') || s.includes('\n')
+                ? `"${s.replace(/"/g, '""')}"`
+                : s;
+            })
+            .join(',')
+        )
+      ];
+
+      const csvContent = csvLines.join('\n');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=labtest_revenue_${startDate || 'all'}_to_${endDate || 'now'}.csv`);
+      return res.send(csvContent);
+    }
+  } catch (error) {
+    console.error('Error exporting lab test revenue:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+/**
  * Export Monthly Report with dual date field support
  */
 exports.exportMonthly = async (req, res) => {

@@ -284,6 +284,353 @@ exports.updateInvoiceProcedureStatus = async (req, res) => {
 };
 
 
+/* =====================================================================================
+   ✅ NEW: LAB TEST INVOICE FUNCTIONS (ADDED, DOES NOT REMOVE ANY EXISTING FUNCTION)
+   NOTE: Requires Invoice schema to have lab_test_items + has_lab_tests + lab_tests_status
+         and Prescription schema to have recommendedLabTests (like recommendedProcedures).
+===================================================================================== */
+
+// Generate invoice for lab tests
+exports.generateLabTestInvoice = async (req, res) => {
+  try {
+    const {
+      prescription_id,
+      patient_id,
+      appointment_id,
+      lab_tests,
+      additional_services = [],
+      discount = 0,
+      notes,
+      payment_method
+    } = req.body;
+
+    if (!lab_tests || lab_tests.length === 0) {
+      return res.status(400).json({
+        message: 'Invoice must contain at least one lab test.'
+      });
+    }
+
+    // Calculate totals
+    const labSubtotal = lab_tests.reduce((sum, t) => sum + (t.unit_price * t.quantity), 0);
+    const serviceSubtotal = additional_services.reduce((sum, s) => sum + (s.unit_price * s.quantity), 0);
+
+    const subtotal = labSubtotal + serviceSubtotal;
+    const tax =
+      lab_tests.reduce((sum, t) => sum + (t.tax_amount || 0), 0) +
+      additional_services.reduce((sum, s) => sum + (s.tax_amount || 0), 0);
+
+    const total = subtotal + tax - discount;
+
+    const labTestItems = lab_tests.map(t => ({
+      lab_test_code: t.lab_test_code,
+      lab_test_name: t.lab_test_name,
+      quantity: t.quantity,
+      unit_price: t.unit_price,
+      total_price: t.unit_price * t.quantity,
+      tax_rate: t.tax_rate || 0,
+      tax_amount: t.tax_amount || 0,
+      prescription_id: prescription_id,
+      status: t.status || 'Pending',
+      scheduled_date: t.scheduled_date,
+      sample_collected_at: t.sample_collected_at,
+      completed_date: t.completed_date,
+      performed_by: t.performed_by,
+      notes: t.notes,
+      report_url: t.report_url
+    }));
+
+    const serviceItems = additional_services.map(service => ({
+      description: service.description,
+      quantity: service.quantity,
+      unit_price: service.unit_price,
+      total_price: service.unit_price * service.quantity,
+      tax_rate: service.tax_rate || 0,
+      tax_amount: service.tax_amount || 0,
+      service_type: service.service_type || 'Other',
+      prescription_id: prescription_id
+    }));
+
+    const invoice = new Invoice({
+      invoice_type: 'Lab Test',
+      patient_id: patient_id,
+      customer_type: 'Patient',
+      lab_test_items: labTestItems,
+      service_items: serviceItems,
+      subtotal,
+      discount,
+      tax,
+      total,
+      status: 'Issued',
+      payment_method,
+      notes,
+      created_by: req.user?._id,
+      prescription_id,
+      appointment_id,
+      has_lab_tests: true,
+      lab_tests_status: 'Pending',
+      issue_date: new Date(),
+      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    await invoice.save();
+
+    // Update prescription lab tests billing status (if your Prescription has recommendedLabTests)
+    if (prescription_id) {
+      const prescription = await Prescription.findById(prescription_id);
+      if (prescription && Array.isArray(prescription.recommendedLabTests)) {
+        lab_tests.forEach(t => {
+          const idx = prescription.recommendedLabTests.findIndex(x => x.lab_test_code === t.lab_test_code);
+          if (idx !== -1) {
+            prescription.recommendedLabTests[idx].is_billed = true;
+            prescription.recommendedLabTests[idx].invoice_id = invoice._id;
+            prescription.recommendedLabTests[idx].cost = t.unit_price * t.quantity;
+          }
+        });
+        await prescription.save();
+      }
+    }
+
+    const populatedInvoice = await Invoice.findById(invoice._id)
+      .populate('patient_id', 'first_name last_name phone')
+      .populate('prescription_id', 'prescription_number diagnosis')
+      .populate('appointment_id', 'appointment_date type')
+      .populate('lab_test_items.performed_by', 'firstName lastName');
+
+    res.status(201).json({
+      success: true,
+      message: 'Lab test invoice created successfully',
+      invoice: populatedInvoice
+    });
+  } catch (err) {
+    console.error('Error generating lab test invoice:', err);
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Get lab test invoices
+exports.getLabTestInvoices = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      status,
+      patient_id,
+      prescription_id,
+      start_date,
+      end_date
+    } = req.query;
+
+    const filter = { invoice_type: 'Lab Test' };
+
+    if (status) filter.status = status;
+    if (patient_id) filter.patient_id = patient_id;
+    if (prescription_id) filter.prescription_id = prescription_id;
+
+    if (start_date && end_date) {
+      filter.issue_date = {
+        $gte: new Date(start_date),
+        $lte: new Date(end_date)
+      };
+    }
+
+    const invoices = await Invoice.find(filter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('prescription_id', 'prescription_number')
+      .populate('appointment_id', 'appointment_date')
+      .populate('lab_test_items.performed_by', 'firstName lastName')
+      .sort({ issue_date: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Invoice.countDocuments(filter);
+
+    const labTestStats = await Invoice.aggregate([
+      { $match: filter },
+      { $unwind: '$lab_test_items' },
+      {
+        $group: {
+          _id: '$lab_test_items.status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$lab_test_items.total_price' }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      invoices,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      total,
+      labTestStats
+    });
+  } catch (err) {
+    console.error('Error fetching lab test invoices:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get invoices with lab tests (similar to getInvoicesWithProcedures)
+exports.getInvoicesWithLabTests = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      lab_tests_status,
+      status,
+      start_date,
+      end_date
+    } = req.query;
+
+    const filter = { has_lab_tests: true };
+
+    if (lab_tests_status) filter.lab_tests_status = lab_tests_status;
+    if (status) filter.status = status;
+
+    if (start_date && end_date) {
+      filter.issue_date = {
+        $gte: new Date(start_date),
+        $lte: new Date(end_date)
+      };
+    }
+
+    const invoices = await Invoice.find(filter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('prescription_id', 'prescription_number')
+      .populate('appointment_id', 'appointment_date')
+      .sort({ issue_date: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Invoice.countDocuments(filter);
+
+    const stats = await Invoice.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$lab_tests_status',
+          count: { $sum: 1 },
+          totalRevenue: { $sum: '$total' }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      invoices,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      total,
+      statistics: stats
+    });
+  } catch (err) {
+    console.error('Error fetching invoices with lab tests:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Update lab test status in invoice
+exports.updateInvoiceLabTestStatus = async (req, res) => {
+  try {
+    const { invoiceId, labTestIndex } = req.params;
+    const { status, performed_by, completed_date, sample_collected_at, notes, report_url } = req.body;
+
+    const invoice = await Invoice.findById(invoiceId);
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    if (!invoice.lab_test_items || labTestIndex >= invoice.lab_test_items.length) {
+      return res.status(404).json({ error: 'Lab test not found in invoice' });
+    }
+
+    // Update lab test
+    if (status) {
+      invoice.lab_test_items[labTestIndex].status = status;
+
+      if (status === 'Completed') {
+        invoice.lab_test_items[labTestIndex].completed_date = completed_date || new Date();
+      }
+      if (status === 'Sample Collected') {
+        invoice.lab_test_items[labTestIndex].sample_collected_at = sample_collected_at || new Date();
+      }
+    }
+
+    if (performed_by) {
+      invoice.lab_test_items[labTestIndex].performed_by = performed_by;
+    }
+
+    if (report_url) {
+      invoice.lab_test_items[labTestIndex].report_url = report_url;
+    }
+
+    if (notes) {
+      const currentNotes = invoice.lab_test_items[labTestIndex].notes || '';
+      invoice.lab_test_items[labTestIndex].notes =
+        currentNotes ? `${currentNotes}\n${notes}` : notes;
+    }
+
+    // Update invoice lab tests status
+    const totalTests = invoice.lab_test_items.length;
+    const completedTests = invoice.lab_test_items.filter(t => t.status === 'Completed').length;
+
+    if (completedTests === 0) {
+      invoice.lab_tests_status = 'Pending';
+    } else if (completedTests === totalTests) {
+      invoice.lab_tests_status = 'Completed';
+    } else {
+      invoice.lab_tests_status = 'Partial';
+    }
+
+    await invoice.save();
+
+    // Sync into prescription if exists
+    if (invoice.prescription_id) {
+      const prescription = await Prescription.findById(invoice.prescription_id);
+      if (prescription && Array.isArray(prescription.recommendedLabTests)) {
+        const code = invoice.lab_test_items[labTestIndex].lab_test_code;
+        const idx = prescription.recommendedLabTests.findIndex(t => t.lab_test_code === code);
+
+        if (idx !== -1) {
+          prescription.recommendedLabTests[idx].status = status;
+
+          if (status === 'Completed') {
+            prescription.recommendedLabTests[idx].completed_date = completed_date || new Date();
+          }
+          if (status === 'Sample Collected') {
+            prescription.recommendedLabTests[idx].sample_collected_at = sample_collected_at || new Date();
+          }
+          if (performed_by) {
+            prescription.recommendedLabTests[idx].performed_by = performed_by;
+          }
+          if (report_url) {
+            prescription.recommendedLabTests[idx].report_url = report_url;
+          }
+
+          await prescription.save();
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Lab test status updated successfully',
+      invoice: await Invoice.findById(invoiceId)
+        .populate('lab_test_items.performed_by', 'firstName lastName')
+    });
+  } catch (err) {
+    console.error('Error updating lab test status:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+/* =====================================================================================
+   EXISTING: Generate pharmacy invoice with stock management
+   NOTE: You already have ANOTHER generatePharmacyInvoice later in this file.
+         I am NOT removing it (as per your request).
+===================================================================================== */
+
 // Generate pharmacy invoice with stock management
 exports.generatePharmacyInvoice = async (req, res) => {
   try {
@@ -359,6 +706,8 @@ exports.downloadInvoicePDF = async (req, res) => {
       .populate('appointment_id', 'appointment_date type')
       .populate('prescription_id', 'prescription_number diagnosis')
       .populate('procedure_items.performed_by', 'firstName lastName')
+      // ✅ NEW: populate lab test performer too
+      .populate('lab_test_items.performed_by', 'firstName lastName')
       .populate('medicine_items.medicine_id', 'name generic_name')
       .populate('medicine_items.batch_id', 'batch_number expiry_date');
 
@@ -388,6 +737,9 @@ exports.downloadInvoicePDF = async (req, res) => {
     // Add items table based on invoice type
     if (invoice.invoice_type === 'Procedure' || invoice.procedure_items.length > 0) {
       addProcedureItemsTable(doc, invoice);
+    } else if (invoice.invoice_type === 'Lab Test' || (invoice.lab_test_items && invoice.lab_test_items.length > 0)) {
+      // ✅ NEW: Lab test table
+      addLabTestItemsTable(doc, invoice);
     } else if (invoice.invoice_type === 'Pharmacy') {
       addMedicineItemsTable(doc, invoice);
     } else {
@@ -569,6 +921,95 @@ function addProcedureItemsTable(doc, invoice) {
   return y;
 }
 
+/* =========================
+   ✅ NEW: Lab Test Items Table
+========================= */
+function addLabTestItemsTable(doc, invoice) {
+  const tableTop = 340;
+  const headers = ['Code', 'Test Name', 'Qty', 'Unit Price', 'Amount', 'Status'];
+  const colWidths = [60, 200, 50, 80, 80, 70];
+  let x = 50;
+
+  doc.fontSize(10).font('Helvetica-Bold');
+  headers.forEach((header, i) => {
+    doc.text(header, x, tableTop);
+    x += colWidths[i];
+  });
+
+  doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
+
+  let y = tableTop + 30;
+  doc.fontSize(9).font('Helvetica');
+
+  (invoice.lab_test_items || []).forEach((item) => {
+    if (y > 700) {
+      doc.addPage();
+      y = 50;
+    }
+
+    x = 50;
+    doc.text(item.lab_test_code || 'LT', x, y);
+    x += colWidths[0];
+
+    doc.text(item.lab_test_name || 'Lab Test', x, y, { width: colWidths[1] - 10 });
+    x += colWidths[1];
+
+    doc.text((item.quantity || 1).toString(), x, y);
+    x += colWidths[2];
+
+    doc.text(`₹${Number(item.unit_price || 0).toFixed(2)}`, x, y);
+    x += colWidths[3];
+
+    doc.text(`₹${Number(item.total_price || 0).toFixed(2)}`, x, y);
+    x += colWidths[4];
+
+    const status = item.status || 'Pending';
+    const statusColors = {
+      'Completed': '#10B981',
+      'In Progress': '#3B82F6',
+      'Scheduled': '#8B5CF6',
+      'Sample Collected': '#F59E0B',
+      'Pending': '#EF4444'
+    };
+
+    doc.fillColor(statusColors[status] || '#6B7280');
+    doc.text(status, x, y);
+    doc.fillColor('#000000');
+
+    y += 20;
+  });
+
+  // service items if any
+  (invoice.service_items || []).forEach((item) => {
+    if (y > 700) {
+      doc.addPage();
+      y = 50;
+    }
+
+    x = 50;
+    doc.text('SVC', x, y);
+    x += colWidths[0];
+
+    doc.text(item.description, x, y, { width: colWidths[1] - 10 });
+    x += colWidths[1];
+
+    doc.text((item.quantity || 1).toString(), x, y);
+    x += colWidths[2];
+
+    doc.text(`₹${Number(item.unit_price || 0).toFixed(2)}`, x, y);
+    x += colWidths[3];
+
+    doc.text(`₹${Number(item.total_price || 0).toFixed(2)}`, x, y);
+    x += colWidths[4];
+
+    doc.text('N/A', x, y);
+
+    y += 20;
+  });
+
+  return y;
+}
+
 function addMedicineItemsTable(doc, invoice) {
   const tableTop = 340;
   const headers = ['Code', 'Description', 'Batch', 'Qty', 'Unit Price', 'Amount'];
@@ -668,6 +1109,14 @@ function addServiceItemsTable(doc, invoice) {
   return y;
 }
 
+/* =========================================================
+   IMPORTANT FIX:
+   You had TWO functions named addFooter.
+   The second one overwrote the first.
+   ✅ Keep the first rich footer as addFooter()
+   ✅ Rename the second to addFooterSimple()
+========================================================= */
+
 function addFooter(doc, invoice) {
   const footerY = 650;
   
@@ -723,6 +1172,19 @@ function addFooter(doc, invoice) {
       const completedCount = invoice.procedure_items.filter(p => p.status === 'Completed').length;
       doc.text(`Pending: ${pendingCount} | Completed: ${completedCount} | Total: ${invoice.procedure_items.length}`, 
         50, 815);
+    }
+  }
+
+  // ✅ NEW: Lab tests status if applicable
+  if (invoice.has_lab_tests) {
+    doc.moveDown(2);
+    doc.fontSize(9).text(`Lab Tests Status: ${invoice.lab_tests_status}`, 50, 835);
+
+    if (invoice.lab_test_items && invoice.lab_test_items.length > 0) {
+      const pendingCount = invoice.lab_test_items.filter(t => t.status === 'Pending').length;
+      const completedCount = invoice.lab_test_items.filter(t => t.status === 'Completed').length;
+      doc.text(`Pending: ${pendingCount} | Completed: ${completedCount} | Total: ${invoice.lab_test_items.length}`,
+        50, 850);
     }
   }
 }
@@ -784,7 +1246,8 @@ function addItemsTable(doc, invoice) {
   return y;
 }
 
-function addFooter(doc, invoice) {
+/* ✅ This is your SECOND footer, renamed so it no longer overwrites addFooter() */
+function addFooterSimple(doc, invoice) {
   const footerY = 650;
   
   // Summary
@@ -807,7 +1270,7 @@ function addFooter(doc, invoice) {
   // Footer note
   doc.fontSize(8).text('Thank you for your business!', 50, 750, { align: 'center' });
   doc.text('This is a computer generated invoice and does not require a physical signature.', 50, 765, { align: 'center' });
-};
+}
 
 exports.getPharmacyInvoices = async (req, res) => {
   try {
@@ -884,6 +1347,7 @@ exports.updateMedicineStock = async (medicineId, quantity) => {
     throw err;
   }
 };
+
 // Generate invoice for appointment
 exports.generateAppointmentInvoice = async (req, res) => {
   try {
@@ -1085,6 +1549,7 @@ exports.generatePurchaseInvoice = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
+
 // Get all invoices with filters
 exports.getAllInvoices = async (req, res) => {
   try {
@@ -1195,8 +1660,6 @@ exports.getInvoicesWithProcedures = async (req, res) => {
   }
 };
 
-// Update invoice (existing functions updated for procedures)
-
 // Get invoice by ID
 exports.getInvoiceById = async (req, res) => {
   try {
@@ -1216,6 +1679,7 @@ exports.getInvoiceById = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
 exports.updateInvoicePayment = async (req, res) => {
   try {
     const { amount, method, reference, collected_by } = req.body;
@@ -1377,6 +1841,24 @@ exports.getInvoiceStatistics = async (req, res) => {
       { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
     ]);
 
+    // ✅ NEW: Lab test statistics
+    const labTestStats = await Invoice.aggregate([
+      { $match: { ...filter, has_lab_tests: true } },
+      { $unwind: '$lab_test_items' },
+      {
+        $group: {
+          _id: '$lab_test_items.status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$lab_test_items.total_price' }
+        }
+      }
+    ]);
+
+    const labTestRevenue = await Invoice.aggregate([
+      { $match: { ...filter, invoice_type: 'Lab Test' } },
+      { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
+    ]);
+
     res.json({
       totalInvoices,
       totalRevenue: totalRevenue[0]?.total || 0,
@@ -1386,7 +1868,12 @@ exports.getInvoiceStatistics = async (req, res) => {
       statusCounts,
       procedureStats,
       procedureRevenue: procedureRevenue[0]?.total || 0,
-      procedureCount: procedureRevenue[0]?.count || 0
+      procedureCount: procedureRevenue[0]?.count || 0,
+
+      // ✅ NEW
+      labTestStats,
+      labTestRevenue: labTestRevenue[0]?.total || 0,
+      labTestCount: labTestRevenue[0]?.count || 0
     });
   } catch (err) {
     console.error('Error fetching invoice statistics:', err);

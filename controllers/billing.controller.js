@@ -19,7 +19,9 @@ exports.createBill = async (req, res) => {
       discount = 0,
       notes
     } = req.body;
+
     console.log('Creating bill with data:', req.body);
+
     // Validate required fields
     if (!patient_id || !appointment_id || !payment_method) {
       return res.status(400).json({
@@ -27,12 +29,16 @@ exports.createBill = async (req, res) => {
       });
     }
 
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'At least one bill item is required' });
+    }
+
     // Calculate totals if not provided
     let calculatedSubtotal = subtotal;
     let calculatedTotal = total_amount;
 
     if (!subtotal || !total_amount) {
-      calculatedSubtotal = items.reduce((sum, item) => sum + (item.amount * (item.quantity || 1)), 0);
+      calculatedSubtotal = items.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
       calculatedTotal = calculatedSubtotal + (tax_amount || 0) - (discount || 0);
     }
 
@@ -49,12 +55,20 @@ exports.createBill = async (req, res) => {
       status,
       items: items.map(item => ({
         description: item.description,
-        amount: item.amount,
+        amount: Number(item.amount || 0),
         quantity: item.quantity || 1,
         item_type: item.item_type || 'Other',
+
+        // Procedure fields
         procedure_code: item.procedure_code,
-        prescription_id: item.prescription_id,
-        procedure_id: item.procedure_id
+        procedure_id: item.procedure_id,
+
+        // Lab test fields
+        lab_test_code: item.lab_test_code,
+        lab_test_id: item.lab_test_id,
+
+        // Common
+        prescription_id: item.prescription_id
       })),
       notes,
       created_by: req.user?._id
@@ -76,13 +90,16 @@ exports.createBill = async (req, res) => {
 
       // Determine invoice type based on items
       const hasProcedures = items.some(item => item.item_type === 'Procedure');
+      const hasLabTests = items.some(item => item.item_type === 'Lab Test');
       const hasMedicines = items.some(item => item.item_type === 'Medicine');
 
       let invoiceType = 'Appointment';
-      if (hasProcedures && hasMedicines) {
+      if (hasMedicines && (hasProcedures || hasLabTests)) {
         invoiceType = 'Mixed';
       } else if (hasProcedures) {
         invoiceType = 'Procedure';
+      } else if (hasLabTests) {
+        invoiceType = 'Lab Test';
       } else if (hasMedicines) {
         invoiceType = 'Pharmacy';
       }
@@ -91,15 +108,32 @@ exports.createBill = async (req, res) => {
       const serviceItems = [];
       const medicineItems = [];
       const procedureItems = [];
+      const labTestItems = [];
 
       items.forEach(item => {
+        const qty = item.quantity || 1;
+        const unitPrice = qty > 0 ? (Number(item.amount || 0) / qty) : Number(item.amount || 0);
+
         if (item.item_type === 'Procedure') {
           procedureItems.push({
             procedure_code: item.procedure_code,
             procedure_name: item.description,
-            quantity: item.quantity || 1,
-            unit_price: item.amount / (item.quantity || 1),
-            total_price: item.amount,
+            quantity: qty,
+            unit_price: unitPrice,
+            total_price: Number(item.amount || 0),
+            tax_rate: 0,
+            tax_amount: 0,
+            prescription_id: item.prescription_id,
+            status: 'Paid',
+            scheduled_date: new Date()
+          });
+        } else if (item.item_type === 'Lab Test') {
+          labTestItems.push({
+            lab_test_code: item.lab_test_code,
+            lab_test_name: item.description,
+            quantity: qty,
+            unit_price: unitPrice,
+            total_price: Number(item.amount || 0),
             tax_rate: 0,
             tax_amount: 0,
             prescription_id: item.prescription_id,
@@ -109,9 +143,9 @@ exports.createBill = async (req, res) => {
         } else if (item.item_type === 'Medicine') {
           medicineItems.push({
             medicine_name: item.description,
-            quantity: item.quantity || 1,
-            unit_price: item.amount / (item.quantity || 1),
-            total_price: item.amount,
+            quantity: qty,
+            unit_price: unitPrice,
+            total_price: Number(item.amount || 0),
             tax_rate: 0,
             tax_amount: 0,
             prescription_id: item.prescription_id,
@@ -120,14 +154,18 @@ exports.createBill = async (req, res) => {
         } else {
           serviceItems.push({
             description: item.description,
-            quantity: item.quantity || 1,
-            unit_price: item.amount / (item.quantity || 1),
-            total_price: item.amount,
+            quantity: qty,
+            unit_price: unitPrice,
+            total_price: Number(item.amount || 0),
             tax_rate: 0,
             tax_amount: 0,
             service_type: item.item_type,
             prescription_id: item.prescription_id,
-            bill_id: bill._id
+            bill_id: bill._id,
+
+            // optional codes
+            procedure_code: item.procedure_code,
+            lab_test_code: item.lab_test_code
           });
         }
       });
@@ -156,21 +194,29 @@ exports.createBill = async (req, res) => {
         prescription_id: prescription_id,
         bill_id: bill._id,
         issue_date: new Date(),
-        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+
         service_items: serviceItems,
         medicine_items: medicineItems,
         procedure_items: procedureItems,
+        lab_test_items: labTestItems,
+
         subtotal: calculatedSubtotal,
         tax: tax_amount || 0,
         discount: discount || 0,
         total: calculatedTotal,
         amount_paid: amountPaid,
         balance_due: balanceDue,
+
         status: status === 'Paid' ? 'Paid' : (status === 'Partially Paid' ? 'Partial' : 'Pending'),
         notes: `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}`,
         created_by: req.user?._id,
+
         has_procedures: procedureItems.length > 0,
-        procedures_status: procedureItems.length > 0 ? 'Pending' : 'None'
+        procedures_status: procedureItems.length > 0 ? 'Pending' : 'None',
+
+        has_lab_tests: labTestItems.length > 0,
+        lab_tests_status: labTestItems.length > 0 ? 'Pending' : 'None'
       });
 
       await invoice.save();
@@ -179,28 +225,48 @@ exports.createBill = async (req, res) => {
       bill.invoice_id = invoice._id;
       await bill.save();
 
-      // Update prescription procedures billing status if prescription_id exists
+      // Update prescription billing status for procedures/labtests if prescription_id exists
       if (prescription_id) {
         const prescription = await Prescription.findById(prescription_id);
-        if (prescription && prescription.recommendedProcedures.length > 0) {
-          items.forEach(item => {
-            if (item.item_type === 'Procedure' && item.procedure_id) {
-              const procIndex = prescription.recommendedProcedures.findIndex(
-                p => p._id.toString() === item.procedure_id
-              );
-              if (procIndex !== -1) {
-                prescription.recommendedProcedures[procIndex].is_billed = true;
-                prescription.recommendedProcedures[procIndex].invoice_id = invoice._id;
-                prescription.recommendedProcedures[procIndex].cost = item.amount;
+
+        if (prescription) {
+          // Procedures
+          if (prescription.recommendedProcedures?.length > 0) {
+            items.forEach(item => {
+              if (item.item_type === 'Procedure' && item.procedure_id) {
+                const procIndex = prescription.recommendedProcedures.findIndex(
+                  p => p._id.toString() === item.procedure_id
+                );
+                if (procIndex !== -1) {
+                  prescription.recommendedProcedures[procIndex].is_billed = true;
+                  prescription.recommendedProcedures[procIndex].invoice_id = invoice._id;
+                  prescription.recommendedProcedures[procIndex].cost = Number(item.amount || 0);
+                }
               }
-            }
-          });
+            });
+          }
+
+          // Lab Tests
+          if (prescription.recommendedLabTests?.length > 0) {
+            items.forEach(item => {
+              if (item.item_type === 'Lab Test' && item.lab_test_id) {
+                const testIndex = prescription.recommendedLabTests.findIndex(
+                  t => t._id.toString() === item.lab_test_id
+                );
+                if (testIndex !== -1) {
+                  prescription.recommendedLabTests[testIndex].is_billed = true;
+                  prescription.recommendedLabTests[testIndex].invoice_id = invoice._id;
+                  prescription.recommendedLabTests[testIndex].cost = Number(item.amount || 0);
+                }
+              }
+            });
+          }
+
           await prescription.save();
         }
       }
     }
 
-    // Populate response
     const populatedBill = await Bill.findById(bill._id)
       .populate('patient_id', 'first_name last_name patientId')
       .populate('appointment_id', 'appointment_date type')
@@ -220,7 +286,6 @@ exports.createBill = async (req, res) => {
   }
 };
 
-// Get bills with procedure items
 exports.getAllBills = async (req, res) => {
   try {
     const {
@@ -229,6 +294,7 @@ exports.getAllBills = async (req, res) => {
       status,
       patient_id,
       has_procedures,
+      has_lab_tests,
       start_date,
       end_date
     } = req.query;
@@ -239,6 +305,9 @@ exports.getAllBills = async (req, res) => {
 
     if (has_procedures === 'true') {
       filter['items.item_type'] = 'Procedure';
+    }
+    if (has_lab_tests === 'true') {
+      filter['items.item_type'] = 'Lab Test';
     }
 
     if (start_date && end_date) {
@@ -259,22 +328,23 @@ exports.getAllBills = async (req, res) => {
 
     const total = await Bill.countDocuments(filter);
 
-    // Calculate statistics
+    // Stats: total revenue
     const totalRevenue = await Bill.aggregate([
       { $match: { status: 'Paid', ...filter } },
       { $group: { _id: null, total: { $sum: '$total_amount' } } }
     ]);
 
     const procedureRevenue = await Bill.aggregate([
-      {
-        $match: {
-          status: 'Paid',
-          'items.item_type': 'Procedure',
-          ...filter
-        }
-      },
+      { $match: { status: 'Paid', ...filter } },
       { $unwind: '$items' },
       { $match: { 'items.item_type': 'Procedure' } },
+      { $group: { _id: null, total: { $sum: '$items.amount' } } }
+    ]);
+
+    const labTestRevenue = await Bill.aggregate([
+      { $match: { status: 'Paid', ...filter } },
+      { $unwind: '$items' },
+      { $match: { 'items.item_type': 'Lab Test' } },
       { $group: { _id: null, total: { $sum: '$items.amount' } } }
     ]);
 
@@ -287,6 +357,7 @@ exports.getAllBills = async (req, res) => {
       statistics: {
         totalRevenue: totalRevenue[0]?.total || 0,
         procedureRevenue: procedureRevenue[0]?.total || 0,
+        labTestRevenue: labTestRevenue[0]?.total || 0,
         totalBills: total
       }
     });
@@ -296,13 +367,12 @@ exports.getAllBills = async (req, res) => {
   }
 };
 
-// Get bill by ID
 exports.getBillById = async (req, res) => {
   try {
     const bill = await Bill.findById(req.params.id)
       .populate('patient_id', 'first_name last_name patientId phone address')
       .populate('appointment_id', 'appointment_date type doctor_id department_id')
-      .populate('prescription_id', 'prescription_number diagnosis recommendedProcedures')
+      .populate('prescription_id', 'prescription_number diagnosis recommendedProcedures recommendedLabTests')
       .populate('invoice_id')
       .populate('created_by', 'name');
 
@@ -310,16 +380,23 @@ exports.getBillById = async (req, res) => {
       return res.status(404).json({ error: 'Bill not found' });
     }
 
-    // Get related prescription procedures if exists
     let procedures = [];
-    if (bill.prescription_id && bill.prescription_id.recommendedProcedures) {
-      procedures = bill.prescription_id.recommendedProcedures;
+    let lab_tests = [];
+
+    if (bill.prescription_id) {
+      if (bill.prescription_id.recommendedProcedures) {
+        procedures = bill.prescription_id.recommendedProcedures;
+      }
+      if (bill.prescription_id.recommendedLabTests) {
+        lab_tests = bill.prescription_id.recommendedLabTests;
+      }
     }
 
     res.json({
       success: true,
       bill,
-      procedures
+      procedures,
+      lab_tests
     });
   } catch (err) {
     console.error('Error fetching bill:', err);
@@ -327,24 +404,16 @@ exports.getBillById = async (req, res) => {
   }
 };
 
-// Update bill status
 exports.updateBillStatus = async (req, res) => {
   try {
-    const {
-      status,
-      paid_amount,
-      payment_method,
-      notes
-    } = req.body;
+    const { status, paid_amount, payment_method, notes } = req.body;
 
     const bill = await Bill.findById(req.params.id);
-    if (!bill) {
-      return res.status(404).json({ error: 'Bill not found' });
-    }
+    if (!bill) return res.status(404).json({ error: 'Bill not found' });
 
-    // Update bill
     const updateData = {};
     if (status) updateData.status = status;
+
     if (paid_amount !== undefined) {
       updateData.paid_amount = bill.paid_amount + paid_amount;
       if (status === 'Paid' || updateData.paid_amount >= bill.total_amount) {
@@ -354,14 +423,12 @@ exports.updateBillStatus = async (req, res) => {
         updateData.status = 'Partially Paid';
       }
     }
+
     if (payment_method) updateData.payment_method = payment_method;
     if (notes) updateData.notes = notes;
 
-    const updatedBill = await Bill.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true }
-    ).populate('patient_id appointment_id invoice_id');
+    const updatedBill = await Bill.findByIdAndUpdate(req.params.id, updateData, { new: true })
+      .populate('patient_id appointment_id invoice_id');
 
     // Update related invoice if exists
     if (updatedBill.invoice_id) {
@@ -371,7 +438,6 @@ exports.updateBillStatus = async (req, res) => {
           invoice.amount_paid += paid_amount;
           invoice.balance_due = invoice.total - invoice.amount_paid;
 
-          // Add payment to history
           invoice.payment_history.push({
             amount: paid_amount,
             method: payment_method || bill.payment_method,
@@ -380,7 +446,6 @@ exports.updateBillStatus = async (req, res) => {
             collected_by: req.user?._id
           });
 
-          // Update invoice status
           if (invoice.amount_paid >= invoice.total) {
             invoice.status = 'Paid';
           } else if (invoice.amount_paid > 0) {
@@ -390,7 +455,6 @@ exports.updateBillStatus = async (req, res) => {
           await invoice.save();
         }
 
-        // Update invoice status if bill status changed
         if (status === 'Paid' && invoice.status !== 'Paid') {
           invoice.status = 'Paid';
           invoice.amount_paid = invoice.total;
@@ -406,7 +470,7 @@ exports.updateBillStatus = async (req, res) => {
       bill: updatedBill
     });
   } catch (err) {
-    console.error("Error updating bill status:", err);
+    console.error('Error updating bill status:', err);
     res.status(400).json({ error: err.message });
   }
 };
@@ -414,11 +478,7 @@ exports.updateBillStatus = async (req, res) => {
 // Generate bill for procedures
 exports.generateProcedureBill = async (req, res) => {
   try {
-    const {
-      prescription_id,
-      procedure_ids,
-      additional_items = []
-    } = req.body;
+    const { prescription_id, procedure_ids, additional_items = [] } = req.body;
 
     const prescription = await Prescription.findById(prescription_id)
       .populate('patient_id')
@@ -429,8 +489,7 @@ exports.generateProcedureBill = async (req, res) => {
       return res.status(404).json({ error: 'Prescription not found' });
     }
 
-    // Filter selected procedures
-    const selectedProcedures = prescription.recommendedProcedures.filter(proc =>
+    const selectedProcedures = (prescription.recommendedProcedures || []).filter(proc =>
       procedure_ids.includes(proc._id.toString())
     );
 
@@ -438,10 +497,9 @@ exports.generateProcedureBill = async (req, res) => {
       return res.status(400).json({ error: 'No procedures selected' });
     }
 
-    // Create bill items from procedures
     const procedureItems = selectedProcedures.map(proc => ({
       description: `${proc.procedure_code} - ${proc.procedure_name}`,
-      amount: proc.cost || 0, // Use stored cost or default to 0
+      amount: proc.cost || 0,
       quantity: 1,
       item_type: 'Procedure',
       procedure_code: proc.procedure_code,
@@ -449,15 +507,12 @@ exports.generateProcedureBill = async (req, res) => {
       procedure_id: proc._id
     }));
 
-    // Add additional items if any
     const allItems = [...procedureItems, ...additional_items];
 
-    // Calculate totals
-    const subtotal = allItems.reduce((sum, item) => sum + (item.amount * (item.quantity || 1)), 0);
-    const tax = 0; // Calculate tax if needed
+    const subtotal = allItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
+    const tax = 0;
     const total = subtotal + tax;
 
-    // Create bill
     const bill = new Bill({
       patient_id: prescription.patient_id._id,
       appointment_id: prescription.appointment_id?._id,
@@ -474,7 +529,6 @@ exports.generateProcedureBill = async (req, res) => {
 
     await bill.save();
 
-    // Create invoice
     const invoice = new Invoice({
       invoice_type: 'Procedure',
       patient_id: prescription.patient_id._id,
@@ -510,11 +564,9 @@ exports.generateProcedureBill = async (req, res) => {
 
     await invoice.save();
 
-    // Update bill with invoice reference
     bill.invoice_id = invoice._id;
     await bill.save();
 
-    // Update procedures billing status
     selectedProcedures.forEach(proc => {
       const procIndex = prescription.recommendedProcedures.findIndex(
         p => p._id.toString() === proc._id.toString()
@@ -530,7 +582,6 @@ exports.generateProcedureBill = async (req, res) => {
 
     await prescription.save();
 
-    // Populate response
     const populatedBill = await Bill.findById(bill._id)
       .populate('patient_id', 'first_name last_name')
       .populate('appointment_id', 'appointment_date')
@@ -550,7 +601,133 @@ exports.generateProcedureBill = async (req, res) => {
   }
 };
 
-// Get bill by appointment_id
+// ✅ NEW: Generate bill for lab tests
+exports.generateLabTestBill = async (req, res) => {
+  try {
+    const { prescription_id, lab_test_ids, additional_items = [] } = req.body;
+
+    const prescription = await Prescription.findById(prescription_id)
+      .populate('patient_id')
+      .populate('doctor_id')
+      .populate('appointment_id');
+
+    if (!prescription) {
+      return res.status(404).json({ error: 'Prescription not found' });
+    }
+
+    const selectedLabTests = (prescription.recommendedLabTests || []).filter(test =>
+      lab_test_ids.includes(test._id.toString())
+    );
+
+    if (selectedLabTests.length === 0) {
+      return res.status(400).json({ error: 'No lab tests selected' });
+    }
+
+    const labTestBillItems = selectedLabTests.map(test => ({
+      description: `${test.lab_test_code} - ${test.lab_test_name}`,
+      amount: test.cost || 0,
+      quantity: 1,
+      item_type: 'Lab Test',
+      lab_test_code: test.lab_test_code,
+      prescription_id: prescription._id,
+      lab_test_id: test._id
+    }));
+
+    const allItems = [...labTestBillItems, ...additional_items];
+
+    const subtotal = allItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
+    const tax = 0;
+    const total = subtotal + tax;
+
+    const bill = new Bill({
+      patient_id: prescription.patient_id._id,
+      appointment_id: prescription.appointment_id?._id,
+      prescription_id: prescription._id,
+      total_amount: total,
+      subtotal: subtotal,
+      tax_amount: tax,
+      payment_method: 'Pending',
+      items: allItems,
+      status: 'Generated',
+      notes: `Lab test bill for prescription ${prescription.prescription_number}`,
+      created_by: req.user?._id
+    });
+
+    await bill.save();
+
+    const invoice = new Invoice({
+      invoice_type: 'Lab Test',
+      patient_id: prescription.patient_id._id,
+      customer_type: 'Patient',
+      customer_name: `${prescription.patient_id.first_name} ${prescription.patient_id.last_name}`,
+      customer_phone: prescription.patient_id.phone,
+      appointment_id: prescription.appointment_id?._id,
+      prescription_id: prescription._id,
+      bill_id: bill._id,
+      issue_date: new Date(),
+      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+
+      lab_test_items: selectedLabTests.map(test => ({
+        lab_test_code: test.lab_test_code,
+        lab_test_name: test.lab_test_name,
+        quantity: 1,
+        unit_price: test.cost || 0,
+        total_price: test.cost || 0,
+        prescription_id: prescription._id,
+        status: test.status || 'Pending',
+        scheduled_date: test.scheduled_date
+      })),
+
+      subtotal: subtotal,
+      tax: tax,
+      total: total,
+      status: 'Issued',
+      amount_paid: 0,
+      balance_due: total,
+      notes: `Invoice for lab tests from prescription ${prescription.prescription_number}`,
+      created_by: req.user?._id,
+
+      has_lab_tests: true,
+      lab_tests_status: 'Pending'
+    });
+
+    await invoice.save();
+
+    bill.invoice_id = invoice._id;
+    await bill.save();
+
+    selectedLabTests.forEach(test => {
+      const idx = prescription.recommendedLabTests.findIndex(t => t._id.toString() === test._id.toString());
+      if (idx !== -1) {
+        prescription.recommendedLabTests[idx].is_billed = true;
+        prescription.recommendedLabTests[idx].invoice_id = invoice._id;
+        if (!prescription.recommendedLabTests[idx].cost && test.cost) {
+          prescription.recommendedLabTests[idx].cost = test.cost;
+        }
+      }
+    });
+
+    await prescription.save();
+
+    const populatedBill = await Bill.findById(bill._id)
+      .populate('patient_id', 'first_name last_name')
+      .populate('appointment_id', 'appointment_date')
+      .populate('prescription_id', 'prescription_number')
+      .populate('invoice_id', 'invoice_number');
+
+    res.status(201).json({
+      success: true,
+      message: 'Lab test bill generated successfully',
+      bill: populatedBill,
+      invoice,
+      lab_tests_billed: selectedLabTests.length
+    });
+  } catch (err) {
+    console.error('Error generating lab test bill:', err);
+    res.status(400).json({ error: err.message });
+  }
+};
+
 exports.getBillByAppointmentId = async (req, res) => {
   try {
     const { appointmentId } = req.params;
@@ -558,7 +735,7 @@ exports.getBillByAppointmentId = async (req, res) => {
     const bill = await Bill.findOne({ appointment_id: appointmentId })
       .populate('patient_id', 'first_name last_name patientId')
       .populate('appointment_id', 'appointment_date type doctor_id department_id')
-      .populate('prescription_id', 'prescription_number diagnosis recommendedProcedures')
+      .populate('prescription_id', 'prescription_number diagnosis recommendedProcedures recommendedLabTests')
       .populate('invoice_id', 'invoice_number status total')
       .populate({
         path: 'appointment_id',
@@ -585,7 +762,6 @@ exports.getBillByAppointmentId = async (req, res) => {
   }
 };
 
-// Delete bill
 exports.deleteBill = async (req, res) => {
   try {
     const bill = await Bill.findById(req.params.id);
@@ -593,34 +769,41 @@ exports.deleteBill = async (req, res) => {
       return res.status(404).json({ error: 'Bill not found' });
     }
 
-    // Check if bill can be deleted
     if (bill.status === 'Paid') {
       return res.status(400).json({
         error: 'Cannot delete a paid bill. Please refund instead.'
       });
     }
 
-    // Delete related invoice if exists
     if (bill.invoice_id) {
       await Invoice.findByIdAndDelete(bill.invoice_id);
     }
 
-    // Update prescription procedures billing status if needed
     if (bill.prescription_id) {
       const prescription = await Prescription.findById(bill.prescription_id);
       if (prescription) {
-        // Reset billing status for procedures in this bill
         bill.items.forEach(item => {
           if (item.item_type === 'Procedure' && item.procedure_id) {
             const procIndex = prescription.recommendedProcedures.findIndex(
-              p => p._id.toString() === item.procedure_id
+              p => p._id.toString() === item.procedure_id.toString()
             );
             if (procIndex !== -1) {
               prescription.recommendedProcedures[procIndex].is_billed = false;
               prescription.recommendedProcedures[procIndex].invoice_id = null;
             }
           }
+
+          if (item.item_type === 'Lab Test' && item.lab_test_id) {
+            const testIndex = prescription.recommendedLabTests.findIndex(
+              t => t._id.toString() === item.lab_test_id.toString()
+            );
+            if (testIndex !== -1) {
+              prescription.recommendedLabTests[testIndex].is_billed = false;
+              prescription.recommendedLabTests[testIndex].invoice_id = null;
+            }
+          }
         });
+
         await prescription.save();
       }
     }

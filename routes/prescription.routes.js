@@ -20,17 +20,25 @@ const upload = multer({ storage: storage });
 // Image Upload
 router.post('/upload', upload.single('image'), prescriptionController.uploadPrescriptionImage);
 
-// Procedure management routes (must come before /:id routes)
+// ===================== PROCEDURE MANAGEMENT (EXISTING) =====================
 router.get('/with-procedures', prescriptionController.getPrescriptionsWithProcedures);
 router.get('/todays-procedures', prescriptionController.getTodaysProcedures);
 router.get('/procedures/status/:status', prescriptionController.getProceduresByStatus);
-
-// Procedure update routes
 router.put('/:prescription_id/procedures/:procedure_id/status', prescriptionController.updateProcedureStatus);
 router.put('/:prescription_id/procedures/:procedure_id/billed', prescriptionController.markProcedureAsBilled);
-
-// Patient pending procedures
 router.get('/patient/:patientId/pending-procedures', prescriptionController.getPatientPendingProcedures);
+
+// ===================== ✅ LAB TEST MANAGEMENT (NEW) =====================
+router.get('/with-lab-tests', prescriptionController.getPrescriptionsWithLabTests);
+router.get('/todays-lab-tests', prescriptionController.getTodaysLabTests);
+router.get('/lab-tests/status/:status', prescriptionController.getLabTestsByStatus);
+
+// Lab test update routes
+router.put('/:prescription_id/lab-tests/:lab_test_id/status', prescriptionController.updateLabTestStatus);
+router.put('/:prescription_id/lab-tests/:lab_test_id/billed', prescriptionController.markLabTestAsBilled);
+
+// Patient pending lab tests
+router.get('/patient/:patientId/pending-lab-tests', prescriptionController.getPatientPendingLabTests);
 
 // ============== STANDARD CRUD ROUTES ==============
 

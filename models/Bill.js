@@ -18,28 +18,40 @@ const billItemSchema = new mongoose.Schema({
     enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Other'],
     required: true
   },
+
+  // Procedure linking
   procedure_code: {
     type: String
   },
+  procedure_id: {
+    type: mongoose.Schema.Types.ObjectId
+  },
+
+  // Lab Test linking
+  lab_test_code: {
+    type: String
+  },
+  lab_test_id: {
+    type: mongoose.Schema.Types.ObjectId
+  },
+
+  // Common linking
   prescription_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Prescription'
-  },
-  procedure_id: {
-    type: mongoose.Schema.Types.ObjectId
   }
 });
 
 const billSchema = new mongoose.Schema({
-  patient_id: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Patient', 
-    required: true 
+  patient_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Patient',
+    required: true
   },
-  appointment_id: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Appointment', 
-    required: true 
+  appointment_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Appointment',
+    required: true
   },
   prescription_id: {
     type: mongoose.Schema.Types.ObjectId,
@@ -49,9 +61,10 @@ const billSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Invoice'
   },
-  total_amount: { 
-    type: Number, 
-    required: true 
+
+  total_amount: {
+    type: Number,
+    required: true
   },
   subtotal: {
     type: Number,
@@ -65,20 +78,23 @@ const billSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
-  payment_method: { 
-    type: String, 
-    enum: ['Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Government Funded Scheme'], 
-    required: true 
+
+  payment_method: {
+    type: String,
+    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Government Funded Scheme'],
+    required: true
   },
+
   items: [billItemSchema],
-  status: { 
-    type: String, 
-    enum: ['Draft', 'Generated', 'Pending', 'Paid', 'Partially Paid', 'Refunded', 'Cancelled'], 
-    default: 'Draft' 
+
+  status: {
+    type: String,
+    enum: ['Draft', 'Generated', 'Pending', 'Paid', 'Partially Paid', 'Refunded', 'Cancelled'],
+    default: 'Draft'
   },
-  generated_at: { 
-    type: Date, 
-    default: Date.now 
+  generated_at: {
+    type: Date,
+    default: Date.now
   },
   paid_at: {
     type: Date
@@ -105,7 +121,7 @@ const billSchema = new mongoose.Schema({
 // Calculate balance before save
 billSchema.pre('save', function(next) {
   this.balance_due = this.total_amount - this.paid_amount;
-  
+
   // Update status based on payment
   if (this.paid_amount >= this.total_amount) {
     this.status = 'Paid';
@@ -115,7 +131,7 @@ billSchema.pre('save', function(next) {
   } else if (this.status === 'Generated') {
     this.status = 'Pending';
   }
-  
+
   next();
 });
 
