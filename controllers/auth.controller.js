@@ -32,6 +32,7 @@ const Pharmacy = require('../models/Pharmacy');
 const Department = require('../models/Department');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
+const PathologyStaff = require('../models/PathologyStaff');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -184,65 +185,95 @@ exports.registerUser = async (req, res) => {
 
 
 // Login
+// controllers/userController.js - Update the login function
+
+// Login
+// controllers/userController.js - Login function with pathology_staff support
+
+// Login
 exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
-    const hospitalId = await Hospital.findOne({});
+    const hospital = await Hospital.findOne({});
+    
     if (user && await user.matchPassword(password)) {
-      if(user.role==="doctor")
-      {
-        const doctor = await Doctor.findOne({ email })
+      
+      if(user.role === "doctor") {
+        const doctor = await Doctor.findOne({ email });
         res.json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        token: generateToken(user._id, user.role),
-        hospitalID: hospitalId._id,
-        doctorId: doctor._id
-      });
-    }
-      else if(user.role==="staff" || user.role==="registrar" || user.role==="nurse")
-      {
-        const staff = await Staff.findOne({ email })
-      res.json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        token: generateToken(user._id, user.role),
-        hospitalID: hospitalId._id,
-        staffId: staff._id
-      });
-    }
-    else if(user.role==="pharmacy")
-      {
-        const pharmacy = await Pharmacy.findOne({ email })
-      res.json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        token: generateToken(user._id, user.role),
-        hospitalID: hospitalId._id,
-        pharmacyId: pharmacy._id
-      });
-    }
-    else{
-      res.json({
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        token: generateToken(user._id, user.role),
-        hospitalID: hospitalId._id
-      });
-    }
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          token: generateToken(user._id, user.role),
+          hospitalID: hospital?._id,
+          doctorId: doctor?._id
+        });
+      }
+      else if(user.role === "staff" || user.role === "registrar" || user.role === "receptionist") {
+        const staff = await Staff.findOne({ email });
+        res.json({
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          token: generateToken(user._id, user.role),
+          hospitalID: hospital?._id,
+          staffId: staff?._id
+        });
+      }
+      else if(user.role === "nurse") {
+        const nurse = await Staff.findOne({ email });
+        res.json({
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          token: generateToken(user._id, user.role),
+          hospitalID: hospital?._id,
+          staffId: nurse?._id
+        });
+      }
+      else if(user.role === "pharmacy") {
+        const pharmacy = await Pharmacy.findOne({ email });
+        res.json({
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          token: generateToken(user._id, user.role),
+          hospitalID: hospital?._id,
+          pharmacyId: pharmacy?._id
+        });
+      }
+      else if(user.role === "pathology_staff") {
+        const pathologyStaff = await PathologyStaff.findOne({ email });
+        res.json({
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          token: generateToken(user._id, user.role),
+          hospitalID: hospital?._id,
+          pathologyStaffId: pathologyStaff?._id
+        });
+      }
+      else {
+        res.json({
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          token: generateToken(user._id, user.role),
+          hospitalID: hospital?._id
+        });
+      }
     } else {
       res.status(401).json({ error: 'Invalid email or password' });
     }
   } catch (err) {
+    console.error('Login error:', err);
     res.status(500).json({ error: err.message });
   }
 };

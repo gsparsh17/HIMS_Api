@@ -53,6 +53,7 @@ const pharmacyRoutes = require('./routes/pharmacy.routes');
 const invoiceRoutes = require('./routes/invoice.routes');
 const salaryRoutes = require('./routes/salary.routes');
 const revenueRoutes = require('./routes/revenue.routes');
+const pathologyStaffRoutes = require('./routes/pathologyStaff.routes');
 const cronJobs = require('./jobs/jobs');
 const { updateCalendar } = require('./jobs/calendarJob.js');
 
@@ -66,6 +67,7 @@ app.use('/api/stock-adjustments', stockAdjustmentRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/pharmacy', pharmacyRoutes);
 app.use('/api/invoices', invoiceRoutes);
+app.use('/api/pathology-staff', pathologyStaffRoutes);
 app.use('/api/labtests', require('./routes/labTest.routes.js'));
 
 updateCalendar();

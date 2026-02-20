@@ -1,3 +1,4 @@
+// models/User.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -7,13 +8,13 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { 
     type: String, 
-    enum: ['admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy', 'registrar', 'receptionist'], 
+    enum: ['admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy', 'registrar', 'receptionist', 'pathology_staff'], 
     required: true 
   },
   resetPasswordToken: String,
-  resetPasswordExpire: Date
+  resetPasswordExpire: Date,
+  is_active: { type: Boolean, default: true }
 }, { timestamps: true });
-
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {
