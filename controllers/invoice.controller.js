@@ -14,34 +14,34 @@ const path = require('path');
 // Generate invoice for procedures
 exports.generateProcedureInvoice = async (req, res) => {
   try {
-    const { 
-      prescription_id, 
-      patient_id, 
+    const {
+      prescription_id,
+      patient_id,
       appointment_id,
       procedures,
       additional_services = [],
       discount = 0,
       notes,
-      payment_method 
+      payment_method
     } = req.body;
 
     if (!procedures || procedures.length === 0) {
-      return res.status(400).json({ 
-        message: 'Invoice must contain at least one procedure.' 
+      return res.status(400).json({
+        message: 'Invoice must contain at least one procedure.'
       });
     }
 
     // Calculate totals
-    const procedureSubtotal = procedures.reduce((sum, proc) => 
+    const procedureSubtotal = procedures.reduce((sum, proc) =>
       sum + (proc.unit_price * proc.quantity), 0);
-    
-    const serviceSubtotal = additional_services.reduce((sum, service) => 
+
+    const serviceSubtotal = additional_services.reduce((sum, service) =>
       sum + (service.unit_price * service.quantity), 0);
-    
+
     const subtotal = procedureSubtotal + serviceSubtotal;
     const tax = procedures.reduce((sum, proc) => sum + (proc.tax_amount || 0), 0) +
-               additional_services.reduce((sum, service) => sum + (service.tax_amount || 0), 0);
-    
+      additional_services.reduce((sum, service) => sum + (service.tax_amount || 0), 0);
+
     const total = subtotal + tax - discount;
 
     // Create procedure items
@@ -136,29 +136,29 @@ exports.generateProcedureInvoice = async (req, res) => {
 // Get procedure invoices
 exports.getProcedureInvoices = async (req, res) => {
   try {
-    const { 
-      page = 1, 
-      limit = 10, 
-      status, 
+    const {
+      page = 1,
+      limit = 10,
+      status,
       patient_id,
       prescription_id,
       start_date,
-      end_date 
+      end_date
     } = req.query;
-    
+
     const filter = { invoice_type: 'Procedure' };
-    
+
     if (status) filter.status = status;
     if (patient_id) filter.patient_id = patient_id;
     if (prescription_id) filter.prescription_id = prescription_id;
-    
+
     if (start_date && end_date) {
       filter.issue_date = {
         $gte: new Date(start_date),
         $lte: new Date(end_date)
       };
     }
-    
+
     const invoices = await Invoice.find(filter)
       .populate('patient_id', 'first_name last_name patientId')
       .populate('prescription_id', 'prescription_number')
@@ -167,14 +167,14 @@ exports.getProcedureInvoices = async (req, res) => {
       .sort({ issue_date: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
-    
+
     const total = await Invoice.countDocuments(filter);
-    
+
     // Calculate procedure statistics
     const procedureStats = await Invoice.aggregate([
       { $match: filter },
       { $unwind: '$procedure_items' },
-      { 
+      {
         $group: {
           _id: '$procedure_items.status',
           count: { $sum: 1 },
@@ -202,40 +202,40 @@ exports.updateInvoiceProcedureStatus = async (req, res) => {
   try {
     const { invoiceId, procedureIndex } = req.params;
     const { status, performed_by, completed_date, notes } = req.body;
-    
+
     const invoice = await Invoice.findById(invoiceId);
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
-    
+
     if (procedureIndex >= invoice.procedure_items.length) {
       return res.status(404).json({ error: 'Procedure not found in invoice' });
     }
-    
+
     // Update procedure
     if (status) {
       invoice.procedure_items[procedureIndex].status = status;
-      
+
       if (status === 'Completed') {
         invoice.procedure_items[procedureIndex].completed_date = completed_date || new Date();
       }
     }
-    
+
     if (performed_by) {
       invoice.procedure_items[procedureIndex].performed_by = performed_by;
     }
-    
+
     if (notes) {
       // Add notes to procedure
       const currentNotes = invoice.procedure_items[procedureIndex].notes || '';
-      invoice.procedure_items[procedureIndex].notes = 
+      invoice.procedure_items[procedureIndex].notes =
         currentNotes ? `${currentNotes}\n${notes}` : notes;
     }
-    
+
     // Update invoice procedures status
     const totalProcedures = invoice.procedure_items.length;
     const completedProcedures = invoice.procedure_items.filter(p => p.status === 'Completed').length;
-    
+
     if (completedProcedures === 0) {
       invoice.procedures_status = 'Pending';
     } else if (completedProcedures === totalProcedures) {
@@ -243,9 +243,9 @@ exports.updateInvoiceProcedureStatus = async (req, res) => {
     } else {
       invoice.procedures_status = 'Partial';
     }
-    
+
     await invoice.save();
-    
+
     // Update prescription procedure status if prescription_id exists
     if (invoice.prescription_id) {
       const prescription = await Prescription.findById(invoice.prescription_id);
@@ -254,23 +254,23 @@ exports.updateInvoiceProcedureStatus = async (req, res) => {
         const procIndex = prescription.recommendedProcedures.findIndex(
           p => p.procedure_code === procCode
         );
-        
+
         if (procIndex !== -1) {
           prescription.recommendedProcedures[procIndex].status = status;
-          
+
           if (status === 'Completed') {
             prescription.recommendedProcedures[procIndex].completed_date = completed_date || new Date();
           }
-          
+
           if (performed_by) {
             prescription.recommendedProcedures[procIndex].performed_by = performed_by;
           }
-          
+
           await prescription.save();
         }
       }
     }
-    
+
     res.json({
       success: true,
       message: 'Procedure status updated successfully',
@@ -699,7 +699,7 @@ exports.generatePharmacyInvoice = async (req, res) => {
 exports.downloadInvoicePDF = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Fetch invoice with populated data
     const invoice = await Invoice.findById(id)
       .populate('patient_id', 'first_name last_name phone address')
@@ -717,7 +717,7 @@ exports.downloadInvoicePDF = async (req, res) => {
 
     // Create PDF document
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
-    
+
     // Set response headers
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoice.invoice_number}.pdf"`);
@@ -763,12 +763,12 @@ function addHeader(doc) {
   // Hospital/Clinic header
   doc.fontSize(20).font('Helvetica-Bold').text('MEDICAL CENTER', { align: 'center' });
   doc.fontSize(12).font('Helvetica').text('Tax Invoice/Bill of Supply', { align: 'center' });
-  
+
   doc.moveDown(0.5);
   doc.fontSize(10).text('123 Medical Street, Healthcare City', { align: 'center' });
   doc.text('Phone: +91-9876543210 | Email: info@medicalcenter.com', { align: 'center' });
   doc.text('GSTIN: 27AAAAA0000A1Z5 | License No: MH/2023/12345', { align: 'center' });
-  
+
   doc.moveTo(50, 130).lineTo(550, 130).stroke();
   doc.moveDown(1);
 }
@@ -777,41 +777,41 @@ function addInvoiceDetails(doc, invoice) {
   const leftCol = 50;
   const rightCol = 350;
   let y = 150;
-  
+
   doc.fontSize(12).font('Helvetica-Bold').text('INVOICE', leftCol, y);
-  
+
   y += 30;
   doc.fontSize(10).font('Helvetica');
-  
+
   // Left column - Invoice details
   doc.text('Invoice Number:', leftCol, y);
   doc.text(invoice.invoice_number, leftCol + 100, y);
-  
+
   doc.text('Invoice Date:', leftCol, y + 15);
   doc.text(new Date(invoice.issue_date).toLocaleDateString(), leftCol + 100, y + 15);
-  
+
   doc.text('Due Date:', leftCol, y + 30);
   doc.text(new Date(invoice.due_date).toLocaleDateString(), leftCol + 100, y + 30);
-  
+
   // Right column - Prescription details
   if (invoice.prescription_id) {
     doc.text('Prescription No:', rightCol, y);
     doc.text(invoice.prescription_id.prescription_number, rightCol + 100, y);
-    
+
     if (invoice.appointment_id) {
       doc.text('Appointment Date:', rightCol, y + 15);
       doc.text(new Date(invoice.appointment_id.appointment_date).toLocaleDateString(), rightCol + 100, y + 15);
     }
   }
-  
+
   doc.moveDown(2);
 }
 
 function addCustomerDetails(doc, invoice) {
   doc.fontSize(11).font('Helvetica-Bold').text('Bill To:', 50, 240);
-  
+
   doc.fontSize(10).font('Helvetica');
-  
+
   if (invoice.patient_id) {
     doc.text(`Name: ${invoice.patient_id.first_name} ${invoice.patient_id.last_name}`, 50, 260);
     doc.text(`Phone: ${invoice.patient_id.phone || 'N/A'}`, 50, 275);
@@ -820,7 +820,7 @@ function addCustomerDetails(doc, invoice) {
     doc.text(`Name: ${invoice.customer_name || 'N/A'}`, 50, 260);
     doc.text(`Phone: ${invoice.customer_phone || 'N/A'}`, 50, 275);
   }
-  
+
   doc.moveDown(3);
 }
 
@@ -829,20 +829,20 @@ function addProcedureItemsTable(doc, invoice) {
   const headers = ['Code', 'Description', 'Qty', 'Unit Price', 'Amount', 'Status'];
   const colWidths = [60, 200, 50, 80, 80, 70];
   let x = 50;
-  
+
   // Table headers
   doc.fontSize(10).font('Helvetica-Bold');
   headers.forEach((header, i) => {
     doc.text(header, x, tableTop);
     x += colWidths[i];
   });
-  
+
   // Draw header line
   doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
-  
+
   let y = tableTop + 30;
   doc.fontSize(9).font('Helvetica');
-  
+
   // Procedure items
   invoice.procedure_items.forEach((item, index) => {
     if (y > 700) {
@@ -857,23 +857,23 @@ function addProcedureItemsTable(doc, invoice) {
       y += 30;
       doc.moveTo(50, y - 15).lineTo(550, y - 15).stroke();
     }
-    
+
     x = 50;
     doc.text(item.procedure_code, x, y);
     x += colWidths[0];
-    
+
     doc.text(item.procedure_name, x, y, { width: colWidths[1] - 10 });
     x += colWidths[1];
-    
+
     doc.text(item.quantity.toString(), x, y);
     x += colWidths[2];
-    
+
     doc.text(`₹${item.unit_price.toFixed(2)}`, x, y);
     x += colWidths[3];
-    
+
     doc.text(`₹${item.total_price.toFixed(2)}`, x, y);
     x += colWidths[4];
-    
+
     // Status with color coding
     const status = item.status || 'Pending';
     const statusColors = {
@@ -882,42 +882,42 @@ function addProcedureItemsTable(doc, invoice) {
       'Scheduled': '#8B5CF6',
       'Pending': '#EF4444'
     };
-    
+
     doc.fillColor(statusColors[status] || '#6B7280');
     doc.text(status, x, y);
     doc.fillColor('#000000'); // Reset to black
-    
+
     y += 20;
   });
-  
+
   // Service items if any
   invoice.service_items.forEach((item) => {
     if (y > 700) {
       doc.addPage();
       y = 50;
     }
-    
+
     x = 50;
     doc.text('SVC', x, y);
     x += colWidths[0];
-    
+
     doc.text(item.description, x, y, { width: colWidths[1] - 10 });
     x += colWidths[1];
-    
+
     doc.text(item.quantity.toString(), x, y);
     x += colWidths[2];
-    
+
     doc.text(`₹${item.unit_price.toFixed(2)}`, x, y);
     x += colWidths[3];
-    
+
     doc.text(`₹${item.total_price.toFixed(2)}`, x, y);
     x += colWidths[4];
-    
+
     doc.text('N/A', x, y);
-    
+
     y += 20;
   });
-  
+
   return y;
 }
 
@@ -1015,50 +1015,50 @@ function addMedicineItemsTable(doc, invoice) {
   const headers = ['Code', 'Description', 'Batch', 'Qty', 'Unit Price', 'Amount'];
   const colWidths = [60, 180, 70, 50, 80, 80];
   let x = 50;
-  
+
   // Table headers
   doc.fontSize(10).font('Helvetica-Bold');
   headers.forEach((header, i) => {
     doc.text(header, x, tableTop);
     x += colWidths[i];
   });
-  
+
   // Draw header line
   doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
-  
+
   let y = tableTop + 30;
   doc.fontSize(9).font('Helvetica');
-  
+
   // Medicine items
   invoice.medicine_items.forEach((item) => {
     if (y > 700) {
       doc.addPage();
       y = 50;
     }
-    
+
     x = 50;
     doc.text(item.batch_id?.batch_number?.slice(-4) || 'N/A', x, y);
     x += colWidths[0];
-    
+
     const medName = item.medicine_name || (item.medicine_id?.name || 'Medicine');
     const batchInfo = item.batch_number ? ` (Batch: ${item.batch_number})` : '';
     doc.text(`${medName}${batchInfo}`, x, y, { width: colWidths[1] - 10 });
     x += colWidths[1];
-    
+
     doc.text(item.batch_number || 'N/A', x, y);
     x += colWidths[2];
-    
+
     doc.text(item.quantity.toString(), x, y);
     x += colWidths[3];
-    
+
     doc.text(`₹${item.unit_price.toFixed(2)}`, x, y);
     x += colWidths[4];
-    
+
     doc.text(`₹${item.total_price.toFixed(2)}`, x, y);
-    
+
     y += 20;
   });
-  
+
   return y;
 }
 
@@ -1067,45 +1067,45 @@ function addServiceItemsTable(doc, invoice) {
   const headers = ['Code', 'Description', 'Qty', 'Unit Price', 'Amount'];
   const colWidths = [60, 250, 50, 90, 90];
   let x = 50;
-  
+
   // Table headers
   doc.fontSize(10).font('Helvetica-Bold');
   headers.forEach((header, i) => {
     doc.text(header, x, tableTop);
     x += colWidths[i];
   });
-  
+
   // Draw header line
   doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
-  
+
   let y = tableTop + 30;
   doc.fontSize(9).font('Helvetica');
-  
+
   // Service items
   invoice.service_items.forEach((item) => {
     if (y > 700) {
       doc.addPage();
       y = 50;
     }
-    
+
     x = 50;
     doc.text('SVC', x, y);
     x += colWidths[0];
-    
+
     doc.text(item.description, x, y, { width: colWidths[1] - 10 });
     x += colWidths[1];
-    
+
     doc.text(item.quantity.toString(), x, y);
     x += colWidths[2];
-    
+
     doc.text(`₹${item.unit_price.toFixed(2)}`, x, y);
     x += colWidths[3];
-    
+
     doc.text(`₹${item.total_price.toFixed(2)}`, x, y);
-    
+
     y += 20;
   });
-  
+
   return y;
 }
 
@@ -1119,32 +1119,32 @@ function addServiceItemsTable(doc, invoice) {
 
 function addFooter(doc, invoice) {
   const footerY = 650;
-  
+
   // Summary section
   const summaryX = 400;
   doc.fontSize(10).font('Helvetica');
-  
+
   doc.text('Subtotal:', summaryX, footerY, { align: 'right' });
   doc.text(`₹${invoice.subtotal.toFixed(2)}`, 550, footerY, { align: 'right' });
-  
+
   if (invoice.tax > 0) {
     doc.text('Tax:', summaryX, footerY + 15, { align: 'right' });
     doc.text(`₹${invoice.tax.toFixed(2)}`, 550, footerY + 15, { align: 'right' });
   }
-  
+
   if (invoice.discount > 0) {
     doc.text('Discount:', summaryX, footerY + 30, { align: 'right' });
     doc.text(`-₹${invoice.discount.toFixed(2)}`, 550, footerY + 30, { align: 'right' });
   }
-  
+
   doc.fontSize(11).font('Helvetica-Bold');
   doc.text('Total:', summaryX, footerY + 45, { align: 'right' });
   doc.text(`₹${invoice.total.toFixed(2)}`, 550, footerY + 45, { align: 'right' });
-  
+
   doc.fontSize(10).font('Helvetica');
   doc.text(`Amount Paid: ₹${invoice.amount_paid.toFixed(2)}`, summaryX, footerY + 65, { align: 'right' });
   doc.text(`Balance Due: ₹${invoice.balance_due.toFixed(2)}`, summaryX, footerY + 80, { align: 'right' });
-  
+
   // Payment status
   const statusColors = {
     'Paid': '#10B981',
@@ -1152,25 +1152,25 @@ function addFooter(doc, invoice) {
     'Pending': '#EF4444',
     'Overdue': '#DC2626'
   };
-  
+
   doc.fillColor(statusColors[invoice.status] || '#6B7280');
   doc.text(`Status: ${invoice.status}`, 50, footerY + 80);
   doc.fillColor('#000000');
-  
+
   // Footer notes
   doc.fontSize(8).text('Thank you for choosing our services!', 50, 750, { align: 'center' });
   doc.text('This is a computer generated invoice and does not require a physical signature.', 50, 765, { align: 'center' });
   doc.text('For any queries, please contact our billing department.', 50, 780, { align: 'center' });
-  
+
   // Procedures status if applicable
   if (invoice.has_procedures) {
     doc.moveDown(2);
     doc.fontSize(9).text(`Procedures Status: ${invoice.procedures_status}`, 50, 800);
-    
+
     if (invoice.procedure_items && invoice.procedure_items.length > 0) {
       const pendingCount = invoice.procedure_items.filter(p => p.status === 'Pending').length;
       const completedCount = invoice.procedure_items.filter(p => p.status === 'Completed').length;
-      doc.text(`Pending: ${pendingCount} | Completed: ${completedCount} | Total: ${invoice.procedure_items.length}`, 
+      doc.text(`Pending: ${pendingCount} | Completed: ${completedCount} | Total: ${invoice.procedure_items.length}`,
         50, 815);
     }
   }
@@ -1223,7 +1223,7 @@ function addItemsTable(doc, invoice) {
     doc.text(item.quantity.toString(), quantityX, y);
     doc.text(`₹${item.unit_price.toFixed(2)}`, priceX, y);
     doc.text(`₹${item.total_price.toFixed(2)}`, amountX, y);
-    
+
     y += 20;
   });
 
@@ -1239,7 +1239,7 @@ function addItemsTable(doc, invoice) {
     doc.text(item.quantity.toString(), quantityX, y);
     doc.text(`₹${item.unit_price.toFixed(2)}`, priceX, y);
     doc.text(`₹${item.total_price.toFixed(2)}`, amountX, y);
-    
+
     y += 20;
   });
 
@@ -1249,7 +1249,7 @@ function addItemsTable(doc, invoice) {
 /* ✅ This is your SECOND footer, renamed so it no longer overwrites addFooter() */
 function addFooterSimple(doc, invoice) {
   const footerY = 650;
-  
+
   // Summary
   doc.fontSize(10).font('Helvetica');
   doc.text(`Subtotal: ₹${invoice.subtotal.toFixed(2)}`, 400, footerY, { align: 'right' });
@@ -1259,14 +1259,14 @@ function addFooterSimple(doc, invoice) {
   }
   doc.fontSize(11).font('Helvetica-Bold');
   doc.text(`Total: ₹${invoice.total.toFixed(2)}`, 400, footerY + 45, { align: 'right' });
-  
+
   doc.fontSize(10).font('Helvetica');
   doc.text(`Amount Paid: ₹${invoice.amount_paid.toFixed(2)}`, 400, footerY + 65, { align: 'right' });
   doc.text(`Balance Due: ₹${invoice.balance_due.toFixed(2)}`, 400, footerY + 80, { align: 'right' });
 
   // Status
   doc.text(`Status: ${invoice.status}`, 50, footerY + 80);
-  
+
   // Footer note
   doc.fontSize(8).text('Thank you for your business!', 50, 750, { align: 'center' });
   doc.text('This is a computer generated invoice and does not require a physical signature.', 50, 765, { align: 'center' });
@@ -1275,7 +1275,7 @@ function addFooterSimple(doc, invoice) {
 exports.getPharmacyInvoices = async (req, res) => {
   try {
     const { page = 1, limit = 10, status } = req.query;
-    
+
     const filter = { invoice_type: 'Pharmacy' };
     if (status) filter.status = status;
 
@@ -1313,6 +1313,40 @@ exports.getPharmacyMonthlyRevenue = async (req, res) => {
           invoice_type: 'Pharmacy',
           status: 'Paid',
           issue_date: { $gte: startOfMonth, $lte: endOfMonth }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$total' },
+          totalInvoices: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const totalRevenue = result.length > 0 ? result[0].totalRevenue : 0;
+    const totalInvoices = result.length > 0 ? result[0].totalInvoices : 0;
+
+    res.json({ totalRevenue, totalInvoices });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get daily revenue for pharmacy
+exports.getPharmacyDailyRevenue = async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+
+    const result = await Invoice.aggregate([
+      {
+        $match: {
+          invoice_type: 'Pharmacy',
+          status: 'Paid',
+          issue_date: { $gte: startOfDay, $lte: endOfDay }
         }
       },
       {
@@ -1518,7 +1552,7 @@ exports.generatePurchaseInvoice = async (req, res) => {
 
     // Create or update purchase order
     if (purchase_order_id) {
-      await PurchaseOrder.findByIdAndUpdate(purchase_order_id, { 
+      await PurchaseOrder.findByIdAndUpdate(purchase_order_id, {
         invoice_id: invoice._id,
         status: 'Ordered'
       });
@@ -1553,23 +1587,23 @@ exports.generatePurchaseInvoice = async (req, res) => {
 // Get all invoices with filters
 exports.getAllInvoices = async (req, res) => {
   try {
-    const { 
-      page = 1, 
-      limit = 10, 
-      status, 
-      invoice_type, 
+    const {
+      page = 1,
+      limit = 10,
+      status,
+      invoice_type,
       patient_id,
       customer_type,
       startDate,
-      endDate 
+      endDate
     } = req.query;
-    
+
     const filter = {};
     if (status) filter.status = status;
     if (invoice_type) filter.invoice_type = invoice_type;
     if (patient_id) filter.patient_id = patient_id;
     if (customer_type) filter.customer_type = customer_type;
-    
+
     if (startDate && endDate) {
       filter.issue_date = {
         $gte: new Date(startDate),
@@ -1603,27 +1637,27 @@ exports.getAllInvoices = async (req, res) => {
 // Get invoices with procedures
 exports.getInvoicesWithProcedures = async (req, res) => {
   try {
-    const { 
-      page = 1, 
+    const {
+      page = 1,
       limit = 10,
       procedures_status,
       status,
       start_date,
-      end_date 
+      end_date
     } = req.query;
-    
+
     const filter = { has_procedures: true };
-    
+
     if (procedures_status) filter.procedures_status = procedures_status;
     if (status) filter.status = status;
-    
+
     if (start_date && end_date) {
       filter.issue_date = {
         $gte: new Date(start_date),
         $lte: new Date(end_date)
       };
     }
-    
+
     const invoices = await Invoice.find(filter)
       .populate('patient_id', 'first_name last_name patientId')
       .populate('prescription_id', 'prescription_number')
@@ -1631,9 +1665,9 @@ exports.getInvoicesWithProcedures = async (req, res) => {
       .sort({ issue_date: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
-    
+
     const total = await Invoice.countDocuments(filter);
-    
+
     // Calculate procedure statistics
     const stats = await Invoice.aggregate([
       { $match: filter },
@@ -1645,7 +1679,7 @@ exports.getInvoicesWithProcedures = async (req, res) => {
         }
       }
     ]);
-    
+
     res.json({
       success: true,
       invoices,
@@ -1667,8 +1701,8 @@ exports.getInvoiceById = async (req, res) => {
       .populate('patient_id')
       .populate('appointment_id')
       .populate('sale_id')
-      // .populate('purchase_order_id')
-      // .populate('created_by', 'name');
+    // .populate('purchase_order_id')
+    // .populate('created_by', 'name');
 
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
@@ -1706,15 +1740,15 @@ exports.updateInvoicePayment = async (req, res) => {
     // Update status based on payment
     if (invoice.amount_paid >= invoice.total) {
       invoice.status = 'Paid';
-      
+
       // Update related sale status if exists
       if (invoice.sale_id) {
-        await Sale.findByIdAndUpdate(invoice.sale_id, { 
+        await Sale.findByIdAndUpdate(invoice.sale_id, {
           status: 'Completed',
           payment_method: method
         });
       }
-      
+
       // Update bill status if exists
       if (invoice.bill_id) {
         await Bill.findByIdAndUpdate(invoice.bill_id, {
@@ -1723,10 +1757,10 @@ exports.updateInvoicePayment = async (req, res) => {
           paid_at: new Date()
         });
       }
-      
+
     } else if (invoice.amount_paid > 0) {
       invoice.status = 'Partial';
-      
+
       // Update bill status if exists
       if (invoice.bill_id) {
         await Bill.findByIdAndUpdate(invoice.bill_id, {
@@ -1797,12 +1831,12 @@ exports.getInvoiceStatistics = async (req, res) => {
     if (type) filter.invoice_type = type;
 
     const totalInvoices = await Invoice.countDocuments(filter);
-    
+
     const totalRevenue = await Invoice.aggregate([
       { $match: filter },
       { $group: { _id: null, total: { $sum: '$total' } } }
     ]);
-    
+
     const paidRevenue = await Invoice.aggregate([
       { $match: { ...filter, status: 'Paid' } },
       { $group: { _id: null, total: { $sum: '$total' } } }
@@ -1810,12 +1844,14 @@ exports.getInvoiceStatistics = async (req, res) => {
 
     const revenueByType = await Invoice.aggregate([
       { $match: filter },
-      { $group: { 
-        _id: '$invoice_type', 
-        total: { $sum: '$total' }, 
-        count: { $sum: 1 },
-        avg: { $avg: '$total' }
-      } }
+      {
+        $group: {
+          _id: '$invoice_type',
+          total: { $sum: '$total' },
+          count: { $sum: 1 },
+          avg: { $avg: '$total' }
+        }
+      }
     ]);
 
     const statusCounts = await Invoice.aggregate([

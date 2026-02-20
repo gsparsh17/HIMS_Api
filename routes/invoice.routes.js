@@ -12,7 +12,8 @@ const {
   exportInvoices,
   downloadInvoicePDF,
   getPharmacyInvoices,
-  getPharmacyMonthlyRevenue
+  getPharmacyMonthlyRevenue,
+  getPharmacyDailyRevenue
 } = require('../controllers/invoice.controller');
 
 const invoiceController = require('../controllers/invoice.controller');
@@ -38,6 +39,7 @@ router.get('/', getAllInvoices);
 router.get('/pharmacy', getPharmacyInvoices);
 router.get('/stats', getInvoiceStatistics);
 router.get('/stats/pharmacy-monthly', getPharmacyMonthlyRevenue);
+router.get('/stats/pharmacy-daily', getPharmacyDailyRevenue);
 router.get('/export', exportInvoices);
 router.get('/type/:type', getInvoicesByType);
 
