@@ -197,7 +197,6 @@ exports.getAllPathologyStaff = async (req, res) => {
 exports.getPathologyStaffById = async (req, res) => {
   try {
     const { id } = req.params;
-
     const staff = await PathologyStaff.findById(id)
       .populate('user_id', 'name email role')
       .populate('department', 'name code head')
@@ -690,6 +689,8 @@ exports.updateStaffPassword = async (req, res) => {
   }
 };
 
+// Add to controllers/pathologyStaff.controller.js
+
 // @desc    Get current pathology staff profile
 // @route   GET /api/pathology-staff/profile/me
 // @access  Private (Pathology Staff only)
@@ -737,7 +738,7 @@ exports.updateMyProfile = async (req, res) => {
     }
 
     // Fields that staff can update
-    const allowedUpdates = ['phone', 'qualification', 'specialization', 'profile_image'];
+    const allowedUpdates = ['phone', 'qualification', 'specialization', 'address'];
     const updates = {};
 
     allowedUpdates.forEach(field => {
@@ -762,6 +763,63 @@ exports.updateMyProfile = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to update profile',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Change password
+// @route   PUT /api/pathology-staff/change-password
+// @access  Private (Pathology Staff only)
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password and new password are required'
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be at least 6 characters long'
+      });
+    }
+
+    // Get the user
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Verify current password
+    const isMatch = await user.matchPassword(currentPassword);
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
+    }
+
+    // Update password
+    user.password = newPassword;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to change password',
       error: error.message
     });
   }
