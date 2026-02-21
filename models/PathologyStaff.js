@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 
 const pathologyStaffSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   staffId: { type: String, unique: true },
   first_name: { type: String, required: true },
   last_name: { type: String },

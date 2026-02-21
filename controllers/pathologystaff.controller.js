@@ -229,6 +229,7 @@ exports.updatePathologyStaff = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
+    const { password, email, fullName, phone } = req.body;
 
     // Remove fields that shouldn't be updated directly
     delete updates._id;
@@ -275,15 +276,12 @@ exports.updatePathologyStaff = async (req, res) => {
 
     updates.updated_by = req.user?._id;
 
+    // First update the pathology staff record
     const staff = await PathologyStaff.findByIdAndUpdate(
       id,
       { $set: updates },
       { new: true, runValidators: true }
-    )
-      .populate('user_id', 'name email role')
-      .populate('department', 'name code')
-      .populate('accessible_test_ids', 'code name category base_price')
-      .populate('assigned_lab_tests.lab_test_id', 'code name category base_price');
+    );
 
     if (!staff) {
       return res.status(404).json({
@@ -292,13 +290,69 @@ exports.updatePathologyStaff = async (req, res) => {
       });
     }
 
+    // Handle password/User account creation/update if password is provided
+    if (password) {
+      const staffEmail = email || staff.email;
+      const staffName = fullName || `${staff.first_name} ${staff.last_name || ''}`.trim();
+      const staffPhone = phone || staff.phone;
+
+      // Check if user already exists
+      let user = await User.findOne({ email: staffEmail });
+
+      if (user) {
+        // Update existing user
+        user.password = password; // Will be hashed by pre-save hook
+        user.name = staffName;
+        if (staffPhone) user.phone = staffPhone;
+        user.role = 'pathology_staff'; // Ensure role is set correctly
+        await user.save();
+        
+        // Update staff with user_id if not already set
+        if (!staff.user_id) {
+          staff.user_id = user._id;
+          await staff.save();
+        }
+      } else {
+        // Create new user
+        user = new User({
+          name: staffName,
+          email: staffEmail,
+          password: password,
+          phone: staffPhone,
+          role: 'pathology_staff'
+        });
+        await user.save();
+
+        // Update staff with user_id
+        staff.user_id = user._id;
+        await staff.save();
+      }
+    }
+
+    // Populate the response
+    const populatedStaff = await PathologyStaff.findById(staff._id)
+      .populate('user_id', 'name email role')
+      .populate('department', 'name code')
+      .populate('accessible_test_ids', 'code name category base_price')
+      .populate('assigned_lab_tests.lab_test_id', 'code name category base_price');
+
     res.json({
       success: true,
-      message: 'Pathology staff updated successfully',
-      data: staff
+      message: password ? 'Pathology staff updated and credentials saved successfully' : 'Pathology staff updated successfully',
+      data: populatedStaff
     });
   } catch (error) {
     console.error('Error updating pathology staff:', error);
+    
+    // Handle duplicate key errors
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email already exists',
+        error: error.message
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Failed to update pathology staff',
@@ -306,6 +360,7 @@ exports.updatePathologyStaff = async (req, res) => {
     });
   }
 };
+
 
 exports.deletePathologyStaff = async (req, res) => {
   try {
