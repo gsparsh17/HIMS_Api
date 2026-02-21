@@ -42,6 +42,37 @@ const billItemSchema = new mongoose.Schema({
   }
 });
 
+const deletionRequestSchema = new mongoose.Schema({
+  requested_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  requested_at: {
+    type: Date,
+    default: Date.now
+  },
+  reason: {
+    type: String,
+    required: true
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending'
+  },
+  reviewed_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  reviewed_at: {
+    type: Date
+  },
+  review_notes: {
+    type: String
+  }
+});
+
 const billSchema = new mongoose.Schema({
   patient_id: {
     type: mongoose.Schema.Types.ObjectId,
@@ -113,7 +144,24 @@ const billSchema = new mongoose.Schema({
   },
   notes: {
     type: String
-  }
+  },
+  
+  // Soft delete fields
+  is_deleted: {
+    type: Boolean,
+    default: false
+  },
+  deleted_at: {
+    type: Date
+  },
+  deleted_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  deletion_reason: {
+    type: String
+  },
+  deletion_request: deletionRequestSchema
 }, {
   timestamps: true
 });
@@ -145,11 +193,18 @@ billSchema.virtual('is_fully_paid').get(function() {
   return this.paid_amount >= this.total_amount;
 });
 
+// Virtual for has_pending_deletion
+billSchema.virtual('has_pending_deletion').get(function() {
+  return this.deletion_request && this.deletion_request.status === 'pending';
+});
+
 // Indexes
 billSchema.index({ patient_id: 1, generated_at: -1 });
 billSchema.index({ appointment_id: 1 });
 billSchema.index({ prescription_id: 1 });
 billSchema.index({ status: 1 });
 billSchema.index({ 'items.item_type': 1 });
+billSchema.index({ is_deleted: 1 });
+billSchema.index({ 'deletion_request.status': 1 });
 
 module.exports = mongoose.model('Bill', billSchema);

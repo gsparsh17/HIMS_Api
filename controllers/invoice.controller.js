@@ -1585,6 +1585,7 @@ exports.generatePurchaseInvoice = async (req, res) => {
 };
 
 // Get all invoices with filters
+// Update your getAllInvoices function in invoice.controller.js
 exports.getAllInvoices = async (req, res) => {
   try {
     const {
@@ -1592,18 +1593,43 @@ exports.getAllInvoices = async (req, res) => {
       limit = 10,
       status,
       invoice_type,
+      payment_method,
       patient_id,
       customer_type,
+      patient_type,
+      doctor_id,
+      department_id,
+      has_procedures,
+      has_lab_tests,
+      is_pharmacy_sale,
+      min_amount,
+      max_amount,
       startDate,
       endDate
     } = req.query;
 
     const filter = {};
+    
+    // Basic filters
     if (status) filter.status = status;
     if (invoice_type) filter.invoice_type = invoice_type;
+    if (payment_method) filter['payment_history.method'] = payment_method;
     if (patient_id) filter.patient_id = patient_id;
     if (customer_type) filter.customer_type = customer_type;
+    
+    // Boolean flags
+    if (has_procedures === 'true') filter.has_procedures = true;
+    if (has_lab_tests === 'true') filter.has_lab_tests = true;
+    if (is_pharmacy_sale === 'true') filter.is_pharmacy_sale = true;
+    
+    // Amount range
+    if (min_amount || max_amount) {
+      filter.total = {};
+      if (min_amount) filter.total.$gte = parseFloat(min_amount);
+      if (max_amount) filter.total.$lte = parseFloat(max_amount);
+    }
 
+    // Date range
     if (startDate && endDate) {
       filter.issue_date = {
         $gte: new Date(startDate),
@@ -1611,25 +1637,237 @@ exports.getAllInvoices = async (req, res) => {
       };
     }
 
-    const invoices = await Invoice.find(filter)
-      .populate('patient_id', 'first_name last_name patientId')
-      .populate('appointment_id', 'appointment_date type')
-      .populate('sale_id', 'sale_number sale_date')
-      // .populate('purchase_order_id', 'order_number order_date')
-      // .populate('created_by', 'name')
-      .sort({ issue_date: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    // For doctor/department filters, we need to join with appointments
+    const pipeline = [];
 
-    const total = await Invoice.countDocuments(filter);
+    // Initial match
+    pipeline.push({ $match: filter });
+
+    // Join with appointments if needed
+    if (doctor_id || department_id) {
+      pipeline.push(
+        {
+          $lookup: {
+            from: 'appointments',
+            localField: 'appointment_id',
+            foreignField: '_id',
+            as: 'appointment_info'
+          }
+        },
+        { $unwind: { path: '$appointment_info', preserveNullAndEmptyArrays: true } }
+      );
+
+      if (doctor_id) {
+        pipeline.push({
+          $match: { 'appointment_info.doctor_id': mongoose.Types.ObjectId(doctor_id) }
+        });
+      }
+
+      if (department_id) {
+        pipeline.push(
+          {
+            $lookup: {
+              from: 'doctors',
+              localField: 'appointment_info.doctor_id',
+              foreignField: '_id',
+              as: 'doctor_info'
+            }
+          },
+          { $unwind: { path: '$doctor_info', preserveNullAndEmptyArrays: true } },
+          { $match: { 'doctor_info.department': mongoose.Types.ObjectId(department_id) } }
+        );
+      }
+    }
+
+    // Patient type filter
+    if (patient_type) {
+      pipeline.push(
+        {
+          $lookup: {
+            from: 'patients',
+            localField: 'patient_id',
+            foreignField: '_id',
+            as: 'patient_info'
+          }
+        },
+        { $unwind: { path: '$patient_info', preserveNullAndEmptyArrays: true } },
+        { $match: { 'patient_info.patient_type': patient_type } }
+      );
+    }
+
+    // Get total count
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const countResult = await Invoice.aggregate(countPipeline);
+    const total = countResult[0]?.total || 0;
+
+    // Add sorting, pagination, and projection
+    pipeline.push(
+      { $sort: { issue_date: -1 } },
+      { $skip: (parseInt(page) - 1) * parseInt(limit) },
+      { $limit: parseInt(limit) },
+      {
+        $project: {
+          invoice_number: 1,
+          invoice_type: 1,
+          issue_date: 1,
+          due_date: 1,
+          total: 1,
+          amount_paid: 1,
+          balance_due: 1,
+          status: 1,
+          payment_history: 1,
+          has_procedures: 1,
+          has_lab_tests: 1,
+          is_pharmacy_sale: 1,
+          procedure_items: { $size: { $ifNull: ['$procedure_items', []] } },
+          lab_test_items: { $size: { $ifNull: ['$lab_test_items', []] } },
+          patient_id: {
+            _id: 1,
+            first_name: 1,
+            last_name: 1,
+            patientId: 1,
+            patient_type: 1
+          },
+          customer_name: 1,
+          customer_phone: 1,
+          appointment_id: {
+            doctor_id: {
+              firstName: 1,
+              lastName: 1
+            }
+          }
+        }
+      }
+    );
+
+    const invoices = await Invoice.aggregate(pipeline);
 
     res.json({
       invoices,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
+      totalPages: Math.ceil(total / parseInt(limit)),
+      currentPage: parseInt(page),
       total
     });
   } catch (err) {
+    console.error('Error in getAllInvoices:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Update getInvoiceStatistics to include payment method breakdown
+exports.getInvoiceStatistics = async (req, res) => {
+  try {
+    const { startDate, endDate, type, payment_method } = req.query;
+
+    const filter = {};
+    if (startDate && endDate) {
+      filter.issue_date = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    if (type) filter.invoice_type = type;
+
+    const totalInvoices = await Invoice.countDocuments(filter);
+
+    const totalRevenue = await Invoice.aggregate([
+      { $match: filter },
+      { $group: { _id: null, total: { $sum: '$total' } } }
+    ]);
+
+    const paidRevenue = await Invoice.aggregate([
+      { $match: { ...filter, status: 'Paid' } },
+      { $group: { _id: null, total: { $sum: '$total' } } }
+    ]);
+
+    const revenueByType = await Invoice.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$invoice_type',
+          total: { $sum: '$total' },
+          count: { $sum: 1 },
+          avg: { $avg: '$total' }
+        }
+      }
+    ]);
+
+    const statusCounts = await Invoice.aggregate([
+      { $match: filter },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]);
+
+    // Payment method breakdown
+    const paymentMethodBreakdown = await Invoice.aggregate([
+      { $match: filter },
+      { $unwind: '$payment_history' },
+      {
+        $group: {
+          _id: '$payment_history.method',
+          amount: { $sum: '$payment_history.amount' },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { amount: -1 } }
+    ]);
+
+    // Procedure specific statistics
+    const procedureStats = await Invoice.aggregate([
+      { $match: { ...filter, has_procedures: true } },
+      { $unwind: '$procedure_items' },
+      {
+        $group: {
+          _id: '$procedure_items.status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$procedure_items.total_price' }
+        }
+      }
+    ]);
+
+    const procedureRevenue = await Invoice.aggregate([
+      { $match: { ...filter, invoice_type: 'Procedure' } },
+      { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
+    ]);
+
+    // Lab test statistics
+    const labTestStats = await Invoice.aggregate([
+      { $match: { ...filter, has_lab_tests: true } },
+      { $unwind: '$lab_test_items' },
+      {
+        $group: {
+          _id: '$lab_test_items.status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$lab_test_items.total_price' }
+        }
+      }
+    ]);
+
+    const labTestRevenue = await Invoice.aggregate([
+      { $match: { ...filter, invoice_type: 'Lab Test' } },
+      { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
+    ]);
+
+    res.json({
+      totalInvoices,
+      totalRevenue: totalRevenue[0]?.total || 0,
+      paidRevenue: paidRevenue[0]?.total || 0,
+      pendingRevenue: (totalRevenue[0]?.total || 0) - (paidRevenue[0]?.total || 0),
+      revenueByType,
+      statusCounts,
+      byPaymentMethod: paymentMethodBreakdown.map(item => ({
+        method: item._id,
+        amount: item.amount,
+        count: item.count
+      })),
+      procedureStats,
+      procedureRevenue: procedureRevenue[0]?.total || 0,
+      procedureCount: procedureRevenue[0]?.count || 0,
+      labTestStats,
+      labTestRevenue: labTestRevenue[0]?.total || 0,
+      labTestCount: labTestRevenue[0]?.count || 0
+    });
+  } catch (err) {
+    console.error('Error fetching invoice statistics:', err);
     res.status(500).json({ error: err.message });
   }
 };

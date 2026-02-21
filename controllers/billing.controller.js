@@ -207,7 +207,7 @@ exports.createBill = async (req, res) => {
         total: calculatedTotal,
         amount_paid: amountPaid,
         balance_due: balanceDue,
-
+        method: payment_method,
         status: status === 'Paid' ? 'Paid' : (status === 'Partially Paid' ? 'Partial' : 'Pending'),
         notes: `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}`,
         created_by: req.user?._id,
@@ -296,10 +296,17 @@ exports.getAllBills = async (req, res) => {
       has_procedures,
       has_lab_tests,
       start_date,
-      end_date
+      end_date,
+      includeDeleted = false
     } = req.query;
 
     const filter = {};
+    
+    // Exclude soft-deleted bills by default
+    if (!includeDeleted) {
+      filter.is_deleted = { $ne: true };
+    }
+    
     if (status) filter.status = status;
     if (patient_id) filter.patient_id = patient_id;
 
@@ -328,21 +335,23 @@ exports.getAllBills = async (req, res) => {
 
     const total = await Bill.countDocuments(filter);
 
-    // Stats: total revenue
+    // Stats: total revenue (excluding deleted)
+    const statsFilter = { ...filter, is_deleted: { $ne: true } };
+    
     const totalRevenue = await Bill.aggregate([
-      { $match: { status: 'Paid', ...filter } },
+      { $match: { status: 'Paid', ...statsFilter } },
       { $group: { _id: null, total: { $sum: '$total_amount' } } }
     ]);
 
     const procedureRevenue = await Bill.aggregate([
-      { $match: { status: 'Paid', ...filter } },
+      { $match: { status: 'Paid', ...statsFilter } },
       { $unwind: '$items' },
       { $match: { 'items.item_type': 'Procedure' } },
       { $group: { _id: null, total: { $sum: '$items.amount' } } }
     ]);
 
     const labTestRevenue = await Bill.aggregate([
-      { $match: { status: 'Paid', ...filter } },
+      { $match: { status: 'Paid', ...statsFilter } },
       { $unwind: '$items' },
       { $match: { 'items.item_type': 'Lab Test' } },
       { $group: { _id: null, total: { $sum: '$items.amount' } } }
@@ -374,7 +383,10 @@ exports.getBillById = async (req, res) => {
       .populate('appointment_id', 'appointment_date type doctor_id department_id')
       .populate('prescription_id', 'prescription_number diagnosis recommendedProcedures recommendedLabTests')
       .populate('invoice_id')
-      .populate('created_by', 'name');
+      .populate('created_by', 'name')
+      .populate('deleted_by', 'name')
+      .populate('deletion_request.requested_by', 'name')
+      .populate('deletion_request.reviewed_by', 'name');
 
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
@@ -408,15 +420,23 @@ exports.updateBillStatus = async (req, res) => {
   try {
     const { status, paid_amount, payment_method, notes } = req.body;
 
-    const bill = await Bill.findById(req.params.id);
+    const bill = await Bill.findById(req.params.id)
+      .populate('patient_id')
+      .populate('appointment_id');
+      
     if (!bill) return res.status(404).json({ error: 'Bill not found' });
 
     const updateData = {};
+    const oldStatus = bill.status;
+    
     if (status) updateData.status = status;
 
+    // Handle payment
     if (paid_amount !== undefined) {
-      updateData.paid_amount = bill.paid_amount + paid_amount;
-      if (status === 'Paid' || updateData.paid_amount >= bill.total_amount) {
+      updateData.paid_amount = (bill.paid_amount || 0) + paid_amount;
+      
+      // Check if fully paid
+      if (updateData.paid_amount >= bill.total_amount) {
         updateData.status = 'Paid';
         updateData.paid_at = new Date();
       } else if (updateData.paid_amount > 0) {
@@ -425,7 +445,11 @@ exports.updateBillStatus = async (req, res) => {
     }
 
     if (payment_method) updateData.payment_method = payment_method;
-    if (notes) updateData.notes = notes;
+    if (notes) {
+      updateData.notes = bill.notes 
+        ? `${bill.notes}\n${new Date().toLocaleDateString()}: ${notes}`
+        : `${new Date().toLocaleDateString()}: ${notes}`;
+    }
 
     const updatedBill = await Bill.findByIdAndUpdate(req.params.id, updateData, { new: true })
       .populate('patient_id appointment_id invoice_id');
@@ -433,17 +457,19 @@ exports.updateBillStatus = async (req, res) => {
     // Update related invoice if exists
     if (updatedBill.invoice_id) {
       const invoice = await Invoice.findById(updatedBill.invoice_id);
+      
       if (invoice) {
         if (paid_amount !== undefined) {
-          invoice.amount_paid += paid_amount;
+          invoice.amount_paid = (invoice.amount_paid || 0) + paid_amount;
           invoice.balance_due = invoice.total - invoice.amount_paid;
 
           invoice.payment_history.push({
             amount: paid_amount,
-            method: payment_method || bill.payment_method,
+            method: payment_method || bill.payment_method || 'Cash',
             date: new Date(),
             status: 'Completed',
-            collected_by: req.user?._id
+            collected_by: req.user?._id,
+            reference: notes || `Payment from bill ${updatedBill._id}`
           });
 
           if (invoice.amount_paid >= invoice.total) {
@@ -453,13 +479,72 @@ exports.updateBillStatus = async (req, res) => {
           }
 
           await invoice.save();
-        }
-
-        if (status === 'Paid' && invoice.status !== 'Paid') {
-          invoice.status = 'Paid';
-          invoice.amount_paid = invoice.total;
-          invoice.balance_due = 0;
+        } else if (status === 'Paid' && invoice.status !== 'Paid') {
+          const remainingAmount = invoice.total - (invoice.amount_paid || 0);
+          
+          if (remainingAmount > 0) {
+            invoice.amount_paid = invoice.total;
+            invoice.balance_due = 0;
+            invoice.status = 'Paid';
+            
+            invoice.payment_history.push({
+              amount: remainingAmount,
+              method: payment_method || bill.payment_method || 'Cash',
+              date: new Date(),
+              status: 'Completed',
+              collected_by: req.user?._id,
+              reference: notes || `Bulk payment from bill ${updatedBill._id}`
+            });
+            
+            await invoice.save();
+          }
+        } else if (status === 'Refunded' && invoice.status !== 'Refunded') {
+          invoice.status = 'Refunded';
+          invoice.notes = invoice.notes 
+            ? `${invoice.notes}\n${new Date().toLocaleDateString()}: Bill marked as Refunded`
+            : `${new Date().toLocaleDateString()}: Bill marked as Refunded`;
           await invoice.save();
+        } else if (status === 'Cancelled' && invoice.status !== 'Cancelled') {
+          invoice.status = 'Cancelled';
+          invoice.notes = invoice.notes 
+            ? `${invoice.notes}\n${new Date().toLocaleDateString()}: Bill cancelled`
+            : `${new Date().toLocaleDateString()}: Bill cancelled`;
+          await invoice.save();
+        }
+      }
+    }
+
+    // Update prescription billing status if applicable
+    if (updatedBill.prescription_id && (status === 'Paid' || paid_amount > 0)) {
+      const prescription = await Prescription.findById(updatedBill.prescription_id);
+      
+      if (prescription) {
+        let needsUpdate = false;
+        
+        updatedBill.items.forEach(item => {
+          if (item.item_type === 'Procedure' && item.procedure_id) {
+            const procIndex = prescription.recommendedProcedures.findIndex(
+              p => p._id.toString() === item.procedure_id.toString()
+            );
+            if (procIndex !== -1 && !prescription.recommendedProcedures[procIndex].is_billed) {
+              prescription.recommendedProcedures[procIndex].is_billed = true;
+              needsUpdate = true;
+            }
+          }
+          
+          if (item.item_type === 'Lab Test' && item.lab_test_id) {
+            const testIndex = prescription.recommendedLabTests.findIndex(
+              t => t._id.toString() === item.lab_test_id.toString()
+            );
+            if (testIndex !== -1 && !prescription.recommendedLabTests[testIndex].is_billed) {
+              prescription.recommendedLabTests[testIndex].is_billed = true;
+              needsUpdate = true;
+            }
+          }
+        });
+        
+        if (needsUpdate) {
+          await prescription.save();
         }
       }
     }
@@ -472,6 +557,354 @@ exports.updateBillStatus = async (req, res) => {
   } catch (err) {
     console.error('Error updating bill status:', err);
     res.status(400).json({ error: err.message });
+  }
+};
+
+/**
+ * Admin direct delete bill (permanent deletion)
+ * Only accessible by admin users - deletes both bill and associated invoice
+ */
+exports.adminDeleteBill = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    const bill = await Bill.findById(id)
+      .populate('patient_id')
+      .populate('invoice_id');
+
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+
+    // Store deletion info for audit
+    const deletionInfo = {
+      deleted_by: req.user?._id,
+      deleted_by_name: req.user?.name || 'Admin',
+      deleted_at: new Date(),
+      deletion_reason: reason || 'Admin direct deletion',
+      bill_amount: bill.total_amount,
+      bill_id: bill._id,
+      bill_number: bill.bill_number || bill._id.toString().slice(-6).toUpperCase(),
+      patient_name: bill.patient_id ? 
+        `${bill.patient_id.first_name} ${bill.patient_id.last_name}` : 'Unknown',
+      invoice_number: bill.invoice_id?.invoice_number
+    };
+
+    // Delete associated invoice if exists
+    if (bill.invoice_id) {
+      await Invoice.findByIdAndDelete(bill.invoice_id);
+      console.log(`🧾 Invoice ${bill.invoice_id.invoice_number} deleted with bill`);
+    }
+
+    // Update prescription billing status if needed
+    if (bill.prescription_id) {
+      const prescription = await Prescription.findById(bill.prescription_id);
+      if (prescription) {
+        let needsUpdate = false;
+        
+        bill.items.forEach(item => {
+          if (item.item_type === 'Procedure' && item.procedure_id) {
+            const procIndex = prescription.recommendedProcedures.findIndex(
+              p => p._id.toString() === item.procedure_id.toString()
+            );
+            if (procIndex !== -1) {
+              prescription.recommendedProcedures[procIndex].is_billed = false;
+              prescription.recommendedProcedures[procIndex].invoice_id = null;
+              needsUpdate = true;
+            }
+          }
+          
+          if (item.item_type === 'Lab Test' && item.lab_test_id) {
+            const testIndex = prescription.recommendedLabTests.findIndex(
+              t => t._id.toString() === item.lab_test_id.toString()
+            );
+            if (testIndex !== -1) {
+              prescription.recommendedLabTests[testIndex].is_billed = false;
+              prescription.recommendedLabTests[testIndex].invoice_id = null;
+              needsUpdate = true;
+            }
+          }
+        });
+        
+        if (needsUpdate) {
+          await prescription.save();
+        }
+      }
+    }
+
+    // Permanently delete the bill
+    await Bill.findByIdAndDelete(id);
+
+    // Log the deletion for audit purposes
+    console.log('🗑️ Admin deleted bill:', deletionInfo);
+
+    res.json({
+      success: true,
+      message: 'Bill and associated invoice permanently deleted',
+      deletion_info: deletionInfo
+    });
+  } catch (err) {
+    console.error('Error in adminDeleteBill:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * Request deletion of a bill (soft delete request)
+ * Staff users call this to request deletion
+ */
+exports.requestBillDeletion = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    if (!reason) {
+      return res.status(400).json({ error: 'Deletion reason is required' });
+    }
+
+    const bill = await Bill.findById(id)
+      .populate('patient_id')
+      .populate('invoice_id');
+
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+
+    // Check if bill is already deleted
+    if (bill.is_deleted) {
+      return res.status(400).json({ error: 'Bill is already deleted' });
+    }
+
+    // Check if there's already a pending deletion request
+    if (bill.deletion_request && bill.deletion_request.status === 'pending') {
+      return res.status(400).json({ 
+        error: 'A deletion request is already pending for this bill',
+        request: bill.deletion_request
+      });
+    }
+
+    // Create deletion request
+    bill.deletion_request = {
+      requested_by: req.user._id,
+      requested_at: new Date(),
+      reason: reason,
+      status: 'pending'
+    };
+
+    await bill.save();
+
+    // Also mark the associated invoice for deletion (but don't delete yet)
+    if (bill.invoice_id) {
+      const invoice = await Invoice.findById(bill.invoice_id);
+      if (invoice) {
+        invoice.deletion_request_id = bill._id;
+        await invoice.save();
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Deletion request submitted successfully. Waiting for admin approval.',
+      bill
+    });
+  } catch (err) {
+    console.error('Error requesting bill deletion:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * Get all pending deletion requests (for admin)
+ */
+exports.getPendingDeletionRequests = async (req, res) => {
+  try {
+    const bills = await Bill.find({
+      'deletion_request.status': 'pending',
+      is_deleted: false
+    })
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('appointment_id', 'appointment_date')
+      .populate('invoice_id', 'invoice_number total')
+      .populate('deletion_request.requested_by', 'name email')
+      .sort({ 'deletion_request.requested_at': -1 });
+
+    res.json({
+      success: true,
+      count: bills.length,
+      requests: bills
+    });
+  } catch (err) {
+    console.error('Error fetching deletion requests:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * Approve or reject deletion request (admin only)
+ */
+exports.reviewDeletionRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { action, review_notes } = req.body; // action: 'approve' or 'reject'
+
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action. Use "approve" or "reject"' });
+    }
+
+    const bill = await Bill.findById(id)
+      .populate('invoice_id');
+
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+
+    if (!bill.deletion_request || bill.deletion_request.status !== 'pending') {
+      return res.status(400).json({ error: 'No pending deletion request found for this bill' });
+    }
+
+    // Update deletion request status
+    bill.deletion_request.status = action === 'approve' ? 'approved' : 'rejected';
+    bill.deletion_request.reviewed_by = req.user._id;
+    bill.deletion_request.reviewed_at = new Date();
+    if (review_notes) {
+      bill.deletion_request.review_notes = review_notes;
+    }
+
+    if (action === 'approve') {
+      // Soft delete the bill
+      bill.is_deleted = true;
+      bill.deleted_at = new Date();
+      bill.deleted_by = req.user._id;
+      bill.deletion_reason = bill.deletion_request.reason;
+
+      // Also soft delete the associated invoice
+      if (bill.invoice_id) {
+        await Invoice.findByIdAndUpdate(bill.invoice_id, {
+          is_deleted: true,
+          deleted_at: new Date(),
+          deleted_by: req.user._id,
+          deletion_reason: `Bill deletion approved: ${bill.deletion_request.reason}`
+        });
+      }
+
+      // Update prescription billing status if needed
+      if (bill.prescription_id) {
+        const prescription = await Prescription.findById(bill.prescription_id);
+        if (prescription) {
+          let needsUpdate = false;
+          
+          bill.items.forEach(item => {
+            if (item.item_type === 'Procedure' && item.procedure_id) {
+              const procIndex = prescription.recommendedProcedures.findIndex(
+                p => p._id.toString() === item.procedure_id.toString()
+              );
+              if (procIndex !== -1) {
+                prescription.recommendedProcedures[procIndex].is_billed = false;
+                prescription.recommendedProcedures[procIndex].invoice_id = null;
+                needsUpdate = true;
+              }
+            }
+            
+            if (item.item_type === 'Lab Test' && item.lab_test_id) {
+              const testIndex = prescription.recommendedLabTests.findIndex(
+                t => t._id.toString() === item.lab_test_id.toString()
+              );
+              if (testIndex !== -1) {
+                prescription.recommendedLabTests[testIndex].is_billed = false;
+                prescription.recommendedLabTests[testIndex].invoice_id = null;
+                needsUpdate = true;
+              }
+            }
+          });
+          
+          if (needsUpdate) {
+            await prescription.save();
+          }
+        }
+      }
+    }
+
+    await bill.save();
+
+    res.json({
+      success: true,
+      message: `Deletion request ${action === 'approve' ? 'approved' : 'rejected'} successfully`,
+      bill
+    });
+  } catch (err) {
+    console.error('Error reviewing deletion request:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * Get deleted bills history (admin only)
+ */
+exports.getDeletedBills = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      start_date,
+      end_date
+    } = req.query;
+
+    const filter = { is_deleted: true };
+
+    if (start_date && end_date) {
+      filter.deleted_at = {
+        $gte: new Date(start_date),
+        $lte: new Date(end_date)
+      };
+    }
+
+    const bills = await Bill.find(filter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('appointment_id', 'appointment_date')
+      .populate('invoice_id', 'invoice_number total')
+      .populate('deleted_by', 'name email')
+      .populate('deletion_request.requested_by', 'name email')
+      .populate('deletion_request.reviewed_by', 'name email')
+      .sort({ deleted_at: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Bill.countDocuments(filter);
+
+    res.json({
+      success: true,
+      bills,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      total
+    });
+  } catch (err) {
+    console.error('Error fetching deleted bills:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * Main delete function - handles both admin direct delete and staff deletion requests
+ */
+exports.deleteBill = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    const isAdmin = req.user?.role === 'admin' || req.user?.isAdmin === true;
+    
+    if (isAdmin) {
+      // Admin can directly delete
+      return exports.adminDeleteBill(req, res);
+    } else {
+      // Staff must use deletion request system
+      return exports.requestBillDeletion(req, res);
+    }
+  } catch (err) {
+    console.error('Error in deleteBill:', err);
+    res.status(500).json({ error: err.message });
   }
 };
 
@@ -601,7 +1034,7 @@ exports.generateProcedureBill = async (req, res) => {
   }
 };
 
-// ✅ NEW: Generate bill for lab tests
+// Generate bill for lab tests
 exports.generateLabTestBill = async (req, res) => {
   try {
     const { prescription_id, lab_test_ids, additional_items = [] } = req.body;
@@ -758,64 +1191,6 @@ exports.getBillByAppointmentId = async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching bill by appointment:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-exports.deleteBill = async (req, res) => {
-  try {
-    const bill = await Bill.findById(req.params.id);
-    if (!bill) {
-      return res.status(404).json({ error: 'Bill not found' });
-    }
-
-    if (bill.status === 'Paid') {
-      return res.status(400).json({
-        error: 'Cannot delete a paid bill. Please refund instead.'
-      });
-    }
-
-    if (bill.invoice_id) {
-      await Invoice.findByIdAndDelete(bill.invoice_id);
-    }
-
-    if (bill.prescription_id) {
-      const prescription = await Prescription.findById(bill.prescription_id);
-      if (prescription) {
-        bill.items.forEach(item => {
-          if (item.item_type === 'Procedure' && item.procedure_id) {
-            const procIndex = prescription.recommendedProcedures.findIndex(
-              p => p._id.toString() === item.procedure_id.toString()
-            );
-            if (procIndex !== -1) {
-              prescription.recommendedProcedures[procIndex].is_billed = false;
-              prescription.recommendedProcedures[procIndex].invoice_id = null;
-            }
-          }
-
-          if (item.item_type === 'Lab Test' && item.lab_test_id) {
-            const testIndex = prescription.recommendedLabTests.findIndex(
-              t => t._id.toString() === item.lab_test_id.toString()
-            );
-            if (testIndex !== -1) {
-              prescription.recommendedLabTests[testIndex].is_billed = false;
-              prescription.recommendedLabTests[testIndex].invoice_id = null;
-            }
-          }
-        });
-
-        await prescription.save();
-      }
-    }
-
-    await Bill.findByIdAndDelete(req.params.id);
-
-    res.json({
-      success: true,
-      message: 'Bill deleted successfully'
-    });
-  } catch (err) {
-    console.error('Error deleting bill:', err);
     res.status(500).json({ error: err.message });
   }
 };

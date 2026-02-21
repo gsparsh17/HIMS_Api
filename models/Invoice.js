@@ -479,6 +479,24 @@ const invoiceSchema = new mongoose.Schema({
     enum: ['None', 'Pending', 'Partial', 'Completed', 'Paid'],
     default: 'None'
   },
+  is_deleted: {
+    type: Boolean,
+    default: false
+  },
+  deleted_at: {
+    type: Date
+  },
+  deleted_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  deletion_reason: {
+    type: String
+  },
+  deletion_request_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Bill'
+  },
 
   // Audit fields
   created_at: {
@@ -765,5 +783,6 @@ invoiceSchema.index({ amount_paid: 1, total: 1 });
 
 invoiceSchema.index({ invoice_type: 1, status: 1, created_at: -1 });
 invoiceSchema.index({ patient_id: 1, status: 1, created_at: -1 });
+invoiceSchema.index({ is_deleted: 1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);
