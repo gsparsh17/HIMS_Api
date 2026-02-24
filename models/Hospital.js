@@ -20,6 +20,11 @@ const hospitalSchema = new mongoose.Schema({
   healthBima: { type: String }, // Optional
   additionalInfo: { type: String }, // Optional
   vitalsEnabled: { type: Boolean, default: true },
+  vitalsController: { 
+        type: String, 
+        enum: ['doctor', 'nurse', 'registrar'],
+        default: 'nurse' 
+    },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
 

@@ -1,16 +1,12 @@
-// const express = require('express');
-// const router = express.Router();
-// const { getHospitalDetails } = require('../controllers/hospital.controller.js');
-
-// // This handles the GET request for '/api/hospitals'
-// router.get('/', getHospitalDetails);
-
-// module.exports = router;
-
-
 const express = require('express');
 const router = express.Router();
-const { getHospitalDetails, updateHospitalDetails } = require('../controllers/hospital.controller.js');
+const { 
+  getHospitalDetails, 
+  getHospitalById,
+  updateHospitalDetails,
+  getVitalsConfig,
+  updateVitalsConfig
+} = require('../controllers/hospital.controller.js');
 
 const multer = require('multer');
 const path = require('path');
@@ -26,10 +22,23 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// This existing route gets hospital details
+// Public routes
 router.get('/', getHospitalDetails);
+router.get('/:hospitalId', getHospitalById);
 
-// **FIX: Add this new route to handle updates**
-router.patch('/:hospitalId/details', upload.single('logo'), updateHospitalDetails);
+// Protected routes - require authentication
+router.get('/:hospitalId/vitals-config', getVitalsConfig);
+
+// Admin only routes
+router.patch(
+  '/:hospitalId/details', 
+  upload.single('logo'), 
+  updateHospitalDetails
+);
+
+router.patch(
+  '/:hospitalId/vitals-config', 
+  updateVitalsConfig
+);
 
 module.exports = router;
