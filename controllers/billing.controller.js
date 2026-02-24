@@ -76,9 +76,9 @@ exports.createBill = async (req, res) => {
 
     await bill.save();
 
-    // If status is not Draft, create invoice
+    // Only create invoice if status is 'Paid' (not for Draft, Pending, or Partially Paid)
     let invoice = null;
-    if (status !== 'Draft') {
+    if (status === 'Paid') {
       // Get appointment details for invoice
       const appointment = await Appointment.findById(appointment_id)
         .populate('patient_id')
@@ -170,17 +170,6 @@ exports.createBill = async (req, res) => {
         }
       });
 
-      let amountPaid = 0;
-      let balanceDue = calculatedTotal;
-
-      if (status === 'Paid') {
-        amountPaid = calculatedTotal;
-        balanceDue = 0;
-      } else if (status === 'Partially Paid') {
-        amountPaid = req.body.paid_amount || 0;
-        balanceDue = calculatedTotal - amountPaid;
-      }
-
       // Create invoice
       invoice = new Invoice({
         invoice_type: invoiceType,
@@ -205,18 +194,18 @@ exports.createBill = async (req, res) => {
         tax: tax_amount || 0,
         discount: discount || 0,
         total: calculatedTotal,
-        amount_paid: amountPaid,
-        balance_due: balanceDue,
+        amount_paid: calculatedTotal,
+        balance_due: 0,
         method: payment_method,
-        status: status === 'Paid' ? 'Paid' : (status === 'Partially Paid' ? 'Partial' : 'Pending'),
+        status: 'Paid',
         notes: `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}`,
         created_by: req.user?._id,
 
         has_procedures: procedureItems.length > 0,
-        procedures_status: procedureItems.length > 0 ? 'Pending' : 'None',
+        procedures_status: procedureItems.length > 0 ? 'Paid' : 'None',
 
         has_lab_tests: labTestItems.length > 0,
-        lab_tests_status: labTestItems.length > 0 ? 'Pending' : 'None'
+        lab_tests_status: labTestItems.length > 0 ? 'Paid' : 'None'
       });
 
       await invoice.save();
@@ -241,6 +230,7 @@ exports.createBill = async (req, res) => {
                   prescription.recommendedProcedures[procIndex].is_billed = true;
                   prescription.recommendedProcedures[procIndex].invoice_id = invoice._id;
                   prescription.recommendedProcedures[procIndex].cost = Number(item.amount || 0);
+                  prescription.recommendedProcedures[procIndex].status = 'Paid';
                 }
               }
             });
@@ -257,6 +247,7 @@ exports.createBill = async (req, res) => {
                   prescription.recommendedLabTests[testIndex].is_billed = true;
                   prescription.recommendedLabTests[testIndex].invoice_id = invoice._id;
                   prescription.recommendedLabTests[testIndex].cost = Number(item.amount || 0);
+                  prescription.recommendedLabTests[testIndex].status = 'Paid';
                 }
               }
             });
@@ -282,6 +273,376 @@ exports.createBill = async (req, res) => {
     });
   } catch (err) {
     console.error('Error creating bill:', err);
+    res.status(400).json({ error: err.message });
+  }
+};
+
+exports.updateBillStatus = async (req, res) => {
+  try {
+    const { status, paid_amount, payment_method, notes } = req.body;
+
+    const bill = await Bill.findById(req.params.id)
+      .populate('patient_id')
+      .populate('appointment_id');
+      
+    if (!bill) return res.status(404).json({ error: 'Bill not found' });
+
+    const updateData = {};
+    const oldStatus = bill.status;
+    
+    if (status) updateData.status = status;
+
+    // Handle payment
+    if (paid_amount !== undefined) {
+      updateData.paid_amount = (bill.paid_amount || 0) + paid_amount;
+      
+      // Check if fully paid
+      if (updateData.paid_amount >= bill.total_amount) {
+        updateData.status = 'Paid';
+        updateData.paid_at = new Date();
+      } else if (updateData.paid_amount > 0) {
+        updateData.status = 'Partially Paid';
+      }
+    }
+
+    if (payment_method) updateData.payment_method = payment_method;
+    if (notes) {
+      updateData.notes = bill.notes 
+        ? `${bill.notes}\n${new Date().toLocaleDateString()}: ${notes}`
+        : `${new Date().toLocaleDateString()}: ${notes}`;
+    }
+
+    const updatedBill = await Bill.findByIdAndUpdate(req.params.id, updateData, { new: true })
+      .populate('patient_id appointment_id invoice_id');
+
+    // Check if we need to create/update invoice
+    const newStatus = updatedBill.status;
+    const isBecomingPaid = newStatus === 'Paid' && oldStatus !== 'Paid';
+    
+    // Create invoice if bill becomes Paid and doesn't have one
+    if (isBecomingPaid && !updatedBill.invoice_id) {
+      // Get appointment details for invoice
+      const appointment = await Appointment.findById(updatedBill.appointment_id)
+        .populate('patient_id')
+        .populate('doctor_id');
+
+      if (!appointment) {
+        throw new Error('Appointment not found');
+      }
+
+      // Determine invoice type based on items
+      const hasProcedures = updatedBill.items.some(item => item.item_type === 'Procedure');
+      const hasLabTests = updatedBill.items.some(item => item.item_type === 'Lab Test');
+      const hasMedicines = updatedBill.items.some(item => item.item_type === 'Medicine');
+
+      let invoiceType = 'Appointment';
+      if (hasMedicines && (hasProcedures || hasLabTests)) {
+        invoiceType = 'Mixed';
+      } else if (hasProcedures) {
+        invoiceType = 'Procedure';
+      } else if (hasLabTests) {
+        invoiceType = 'Lab Test';
+      } else if (hasMedicines) {
+        invoiceType = 'Pharmacy';
+      }
+
+      // Create invoice items
+      const serviceItems = [];
+      const medicineItems = [];
+      const procedureItems = [];
+      const labTestItems = [];
+
+      updatedBill.items.forEach(item => {
+        const qty = item.quantity || 1;
+        const unitPrice = qty > 0 ? (Number(item.amount || 0) / qty) : Number(item.amount || 0);
+
+        if (item.item_type === 'Procedure') {
+          procedureItems.push({
+            procedure_code: item.procedure_code,
+            procedure_name: item.description,
+            quantity: qty,
+            unit_price: unitPrice,
+            total_price: Number(item.amount || 0),
+            tax_rate: 0,
+            tax_amount: 0,
+            prescription_id: item.prescription_id,
+            status: 'Paid',
+            scheduled_date: new Date()
+          });
+        } else if (item.item_type === 'Lab Test') {
+          labTestItems.push({
+            lab_test_code: item.lab_test_code,
+            lab_test_name: item.description,
+            quantity: qty,
+            unit_price: unitPrice,
+            total_price: Number(item.amount || 0),
+            tax_rate: 0,
+            tax_amount: 0,
+            prescription_id: item.prescription_id,
+            status: 'Paid',
+            scheduled_date: new Date()
+          });
+        } else if (item.item_type === 'Medicine') {
+          medicineItems.push({
+            medicine_name: item.description,
+            quantity: qty,
+            unit_price: unitPrice,
+            total_price: Number(item.amount || 0),
+            tax_rate: 0,
+            tax_amount: 0,
+            prescription_id: item.prescription_id,
+            is_dispensed: false
+          });
+        } else {
+          serviceItems.push({
+            description: item.description,
+            quantity: qty,
+            unit_price: unitPrice,
+            total_price: Number(item.amount || 0),
+            tax_rate: 0,
+            tax_amount: 0,
+            service_type: item.item_type,
+            prescription_id: item.prescription_id,
+            bill_id: updatedBill._id,
+            procedure_code: item.procedure_code,
+            lab_test_code: item.lab_test_code
+          });
+        }
+      });
+
+      // Create invoice
+      const invoice = new Invoice({
+        invoice_type: invoiceType,
+        patient_id: updatedBill.patient_id._id,
+        customer_type: 'Patient',
+        customer_name: updatedBill.patient_id ?
+          `${updatedBill.patient_id.first_name} ${updatedBill.patient_id.last_name}` :
+          'Patient',
+        customer_phone: updatedBill.patient_id?.phone,
+        appointment_id: updatedBill.appointment_id,
+        prescription_id: updatedBill.prescription_id,
+        bill_id: updatedBill._id,
+        issue_date: new Date(),
+        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+
+        service_items: serviceItems,
+        medicine_items: medicineItems,
+        procedure_items: procedureItems,
+        lab_test_items: labTestItems,
+
+        subtotal: updatedBill.subtotal,
+        tax: updatedBill.tax_amount || 0,
+        discount: updatedBill.discount || 0,
+        total: updatedBill.total_amount,
+        amount_paid: updatedBill.total_amount,
+        balance_due: 0,
+        method: updatedBill.payment_method,
+        status: 'Paid',
+        notes: `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}`,
+        created_by: req.user?._id,
+
+        has_procedures: procedureItems.length > 0,
+        procedures_status: procedureItems.length > 0 ? 'Paid' : 'None',
+
+        has_lab_tests: labTestItems.length > 0,
+        lab_tests_status: labTestItems.length > 0 ? 'Paid' : 'None'
+      });
+
+      await invoice.save();
+
+      // Update bill with invoice reference
+      updatedBill.invoice_id = invoice._id;
+      await updatedBill.save();
+
+      // Update prescription billing status
+      if (updatedBill.prescription_id) {
+        const prescription = await Prescription.findById(updatedBill.prescription_id);
+
+        if (prescription) {
+          // Procedures
+          if (prescription.recommendedProcedures?.length > 0) {
+            updatedBill.items.forEach(item => {
+              if (item.item_type === 'Procedure' && item.procedure_id) {
+                const procIndex = prescription.recommendedProcedures.findIndex(
+                  p => p._id.toString() === item.procedure_id.toString()
+                );
+                if (procIndex !== -1) {
+                  prescription.recommendedProcedures[procIndex].is_billed = true;
+                  prescription.recommendedProcedures[procIndex].invoice_id = invoice._id;
+                  prescription.recommendedProcedures[procIndex].cost = Number(item.amount || 0);
+                  prescription.recommendedProcedures[procIndex].status = 'Paid';
+                }
+              }
+            });
+          }
+
+          // Lab Tests
+          if (prescription.recommendedLabTests?.length > 0) {
+            updatedBill.items.forEach(item => {
+              if (item.item_type === 'Lab Test' && item.lab_test_id) {
+                const testIndex = prescription.recommendedLabTests.findIndex(
+                  t => t._id.toString() === item.lab_test_id.toString()
+                );
+                if (testIndex !== -1) {
+                  prescription.recommendedLabTests[testIndex].is_billed = true;
+                  prescription.recommendedLabTests[testIndex].invoice_id = invoice._id;
+                  prescription.recommendedLabTests[testIndex].cost = Number(item.amount || 0);
+                  prescription.recommendedLabTests[testIndex].status = 'Paid';
+                }
+              }
+            });
+          }
+
+          await prescription.save();
+        }
+      }
+
+      // Add invoice to response
+      updatedBill._doc.invoice = invoice;
+    }
+    // Update existing invoice if bill becomes paid
+    else if (isBecomingPaid && updatedBill.invoice_id) {
+      const invoice = await Invoice.findById(updatedBill.invoice_id);
+      
+      if (invoice && invoice.status !== 'Paid') {
+        const remainingAmount = invoice.total - (invoice.amount_paid || 0);
+        
+        if (remainingAmount > 0) {
+          invoice.amount_paid = invoice.total;
+          invoice.balance_due = 0;
+          invoice.status = 'Paid';
+          
+          invoice.payment_history.push({
+            amount: remainingAmount,
+            method: payment_method || updatedBill.payment_method || 'Cash',
+            date: new Date(),
+            status: 'Completed',
+            collected_by: req.user?._id,
+            reference: notes || `Bulk payment from bill ${updatedBill._id}`
+          });
+          
+          // Update invoice items status
+          if (invoice.procedure_items?.length > 0) {
+            invoice.procedure_items.forEach(item => {
+              if (item.status !== 'Paid') {
+                item.status = 'Paid';
+              }
+            });
+            invoice.procedures_status = 'Paid';
+          }
+          
+          if (invoice.lab_test_items?.length > 0) {
+            invoice.lab_test_items.forEach(item => {
+              if (item.status !== 'Paid') {
+                item.status = 'Paid';
+              }
+            });
+            invoice.lab_tests_status = 'Paid';
+          }
+          
+          await invoice.save();
+        }
+      }
+    }
+    // Handle other status changes for existing invoice
+    else if (updatedBill.invoice_id) {
+      const invoice = await Invoice.findById(updatedBill.invoice_id);
+      
+      if (invoice) {
+        if (paid_amount !== undefined) {
+          invoice.amount_paid = (invoice.amount_paid || 0) + paid_amount;
+          invoice.balance_due = invoice.total - invoice.amount_paid;
+
+          invoice.payment_history.push({
+            amount: paid_amount,
+            method: payment_method || updatedBill.payment_method || 'Cash',
+            date: new Date(),
+            status: 'Completed',
+            collected_by: req.user?._id,
+            reference: notes || `Payment from bill ${updatedBill._id}`
+          });
+
+          if (invoice.amount_paid >= invoice.total) {
+            invoice.status = 'Paid';
+            
+            // Update invoice items status
+            if (invoice.procedure_items?.length > 0) {
+              invoice.procedure_items.forEach(item => {
+                if (item.status !== 'Paid') {
+                  item.status = 'Paid';
+                }
+              });
+              invoice.procedures_status = 'Paid';
+            }
+            
+            if (invoice.lab_test_items?.length > 0) {
+              invoice.lab_test_items.forEach(item => {
+                if (item.status !== 'Paid') {
+                  item.status = 'Paid';
+                }
+              });
+              invoice.lab_tests_status = 'Paid';
+            }
+          } else if (invoice.amount_paid > 0) {
+            invoice.status = 'Partial';
+          }
+
+          await invoice.save();
+        } else if (status === 'Refunded' && invoice.status !== 'Refunded') {
+          invoice.status = 'Refunded';
+          invoice.notes = invoice.notes 
+            ? `${invoice.notes}\n${new Date().toLocaleDateString()}: Bill marked as Refunded`
+            : `${new Date().toLocaleDateString()}: Bill marked as Refunded`;
+          
+          // Update invoice items status
+          if (invoice.procedure_items?.length > 0) {
+            invoice.procedure_items.forEach(item => {
+              item.status = 'Refunded';
+            });
+            invoice.procedures_status = 'Refunded';
+          }
+          
+          if (invoice.lab_test_items?.length > 0) {
+            invoice.lab_test_items.forEach(item => {
+              item.status = 'Refunded';
+            });
+            invoice.lab_tests_status = 'Refunded';
+          }
+          
+          await invoice.save();
+        } else if (status === 'Cancelled' && invoice.status !== 'Cancelled') {
+          invoice.status = 'Cancelled';
+          invoice.notes = invoice.notes 
+            ? `${invoice.notes}\n${new Date().toLocaleDateString()}: Bill cancelled`
+            : `${new Date().toLocaleDateString()}: Bill cancelled`;
+          
+          // Update invoice items status
+          if (invoice.procedure_items?.length > 0) {
+            invoice.procedure_items.forEach(item => {
+              item.status = 'Cancelled';
+            });
+            invoice.procedures_status = 'Cancelled';
+          }
+          
+          if (invoice.lab_test_items?.length > 0) {
+            invoice.lab_test_items.forEach(item => {
+              item.status = 'Cancelled';
+            });
+            invoice.lab_tests_status = 'Cancelled';
+          }
+          
+          await invoice.save();
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Bill status updated successfully',
+      bill: updatedBill
+    });
+  } catch (err) {
+    console.error('Error updating bill status:', err);
     res.status(400).json({ error: err.message });
   }
 };
@@ -413,150 +774,6 @@ exports.getBillById = async (req, res) => {
   } catch (err) {
     console.error('Error fetching bill:', err);
     res.status(500).json({ error: err.message });
-  }
-};
-
-exports.updateBillStatus = async (req, res) => {
-  try {
-    const { status, paid_amount, payment_method, notes } = req.body;
-
-    const bill = await Bill.findById(req.params.id)
-      .populate('patient_id')
-      .populate('appointment_id');
-      
-    if (!bill) return res.status(404).json({ error: 'Bill not found' });
-
-    const updateData = {};
-    const oldStatus = bill.status;
-    
-    if (status) updateData.status = status;
-
-    // Handle payment
-    if (paid_amount !== undefined) {
-      updateData.paid_amount = (bill.paid_amount || 0) + paid_amount;
-      
-      // Check if fully paid
-      if (updateData.paid_amount >= bill.total_amount) {
-        updateData.status = 'Paid';
-        updateData.paid_at = new Date();
-      } else if (updateData.paid_amount > 0) {
-        updateData.status = 'Partially Paid';
-      }
-    }
-
-    if (payment_method) updateData.payment_method = payment_method;
-    if (notes) {
-      updateData.notes = bill.notes 
-        ? `${bill.notes}\n${new Date().toLocaleDateString()}: ${notes}`
-        : `${new Date().toLocaleDateString()}: ${notes}`;
-    }
-
-    const updatedBill = await Bill.findByIdAndUpdate(req.params.id, updateData, { new: true })
-      .populate('patient_id appointment_id invoice_id');
-
-    // Update related invoice if exists
-    if (updatedBill.invoice_id) {
-      const invoice = await Invoice.findById(updatedBill.invoice_id);
-      
-      if (invoice) {
-        if (paid_amount !== undefined) {
-          invoice.amount_paid = (invoice.amount_paid || 0) + paid_amount;
-          invoice.balance_due = invoice.total - invoice.amount_paid;
-
-          invoice.payment_history.push({
-            amount: paid_amount,
-            method: payment_method || bill.payment_method || 'Cash',
-            date: new Date(),
-            status: 'Completed',
-            collected_by: req.user?._id,
-            reference: notes || `Payment from bill ${updatedBill._id}`
-          });
-
-          if (invoice.amount_paid >= invoice.total) {
-            invoice.status = 'Paid';
-          } else if (invoice.amount_paid > 0) {
-            invoice.status = 'Partial';
-          }
-
-          await invoice.save();
-        } else if (status === 'Paid' && invoice.status !== 'Paid') {
-          const remainingAmount = invoice.total - (invoice.amount_paid || 0);
-          
-          if (remainingAmount > 0) {
-            invoice.amount_paid = invoice.total;
-            invoice.balance_due = 0;
-            invoice.status = 'Paid';
-            
-            invoice.payment_history.push({
-              amount: remainingAmount,
-              method: payment_method || bill.payment_method || 'Cash',
-              date: new Date(),
-              status: 'Completed',
-              collected_by: req.user?._id,
-              reference: notes || `Bulk payment from bill ${updatedBill._id}`
-            });
-            
-            await invoice.save();
-          }
-        } else if (status === 'Refunded' && invoice.status !== 'Refunded') {
-          invoice.status = 'Refunded';
-          invoice.notes = invoice.notes 
-            ? `${invoice.notes}\n${new Date().toLocaleDateString()}: Bill marked as Refunded`
-            : `${new Date().toLocaleDateString()}: Bill marked as Refunded`;
-          await invoice.save();
-        } else if (status === 'Cancelled' && invoice.status !== 'Cancelled') {
-          invoice.status = 'Cancelled';
-          invoice.notes = invoice.notes 
-            ? `${invoice.notes}\n${new Date().toLocaleDateString()}: Bill cancelled`
-            : `${new Date().toLocaleDateString()}: Bill cancelled`;
-          await invoice.save();
-        }
-      }
-    }
-
-    // Update prescription billing status if applicable
-    if (updatedBill.prescription_id && (status === 'Paid' || paid_amount > 0)) {
-      const prescription = await Prescription.findById(updatedBill.prescription_id);
-      
-      if (prescription) {
-        let needsUpdate = false;
-        
-        updatedBill.items.forEach(item => {
-          if (item.item_type === 'Procedure' && item.procedure_id) {
-            const procIndex = prescription.recommendedProcedures.findIndex(
-              p => p._id.toString() === item.procedure_id.toString()
-            );
-            if (procIndex !== -1 && !prescription.recommendedProcedures[procIndex].is_billed) {
-              prescription.recommendedProcedures[procIndex].is_billed = true;
-              needsUpdate = true;
-            }
-          }
-          
-          if (item.item_type === 'Lab Test' && item.lab_test_id) {
-            const testIndex = prescription.recommendedLabTests.findIndex(
-              t => t._id.toString() === item.lab_test_id.toString()
-            );
-            if (testIndex !== -1 && !prescription.recommendedLabTests[testIndex].is_billed) {
-              prescription.recommendedLabTests[testIndex].is_billed = true;
-              needsUpdate = true;
-            }
-          }
-        });
-        
-        if (needsUpdate) {
-          await prescription.save();
-        }
-      }
-    }
-
-    res.json({
-      success: true,
-      message: 'Bill status updated successfully',
-      bill: updatedBill
-    });
-  } catch (err) {
-    console.error('Error updating bill status:', err);
-    res.status(400).json({ error: err.message });
   }
 };
 
