@@ -78,7 +78,7 @@ exports.createBill = async (req, res) => {
 
     // Only create invoice if status is 'Paid' (not for Draft, Pending, or Partially Paid)
     let invoice = null;
-    if (status === 'Paid') {
+    // if (status === 'Paid') {
       // Get appointment details for invoice
       const appointment = await Appointment.findById(appointment_id)
         .populate('patient_id')
@@ -256,7 +256,7 @@ exports.createBill = async (req, res) => {
           await prescription.save();
         }
       }
-    }
+    // }
 
     const populatedBill = await Bill.findById(bill._id)
       .populate('patient_id', 'first_name last_name patientId')
