@@ -32,6 +32,108 @@ router.get('/health', (req, res) => {
   });
 });
 
+// Create new lab test
+router.post('/', async (req, res) => {
+  try {
+    const {
+      code,
+      name,
+      category,
+      description,
+      specimen_type,
+      fasting_required,
+      turnaround_time_hours,
+      base_price,
+      insurance_coverage,
+      is_active
+    } = req.body;
+
+    // Validate required fields
+    if (!code || !name || !category) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields',
+        errors: {
+          ...(!code && { code: 'Test code is required' }),
+          ...(!name && { name: 'Test name is required' }),
+          ...(!category && { category: 'Category is required' })
+        }
+      });
+    }
+
+    // Check if test with same code already exists
+    const existingTest = await LabTest.findOne({ 
+      code: code.toUpperCase() 
+    });
+    
+    if (existingTest) {
+      return res.status(400).json({
+        success: false,
+        message: 'Lab test with this code already exists',
+        errors: {
+          code: 'Test code must be unique'
+        }
+      });
+    }
+
+    // Create new lab test
+    const labTest = new LabTest({
+      code: code.toUpperCase(),
+      name: name.trim(),
+      category,
+      description: description?.trim() || '',
+      specimen_type: specimen_type?.trim() || '',
+      fasting_required: fasting_required || false,
+      turnaround_time_hours: Number(turnaround_time_hours) || 24,
+      base_price: Number(base_price) || 0,
+      insurance_coverage: insurance_coverage || 'Partial',
+      is_active: is_active !== undefined ? is_active : true,
+      usage_count: 0
+    });
+
+    await labTest.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Lab test created successfully',
+      data: labTest
+    });
+  } catch (error) {
+    console.error('Create lab test error:', error);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errors = {};
+      Object.keys(error.errors).forEach(key => {
+        errors[key] = error.errors[key].message;
+      });
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
+        errors
+      });
+    }
+
+    // Handle duplicate key error (if code index is unique)
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Lab test with this code already exists',
+        errors: {
+          code: 'Test code must be unique'
+        }
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create lab test',
+      error: error.message
+    });
+  }
+});
+
 // Search lab tests
 router.get('/search', async (req, res) => {
   try {
