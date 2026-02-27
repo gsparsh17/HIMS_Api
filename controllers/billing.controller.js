@@ -197,7 +197,7 @@ exports.createBill = async (req, res) => {
         amount_paid: calculatedTotal,
         balance_due: 0,
         method: payment_method,
-        status: 'Paid',
+        status: status === 'Paid' ? 'Paid' : 'Pending',
         notes: `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}`,
         created_by: req.user?._id,
 
