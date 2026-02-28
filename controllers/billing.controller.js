@@ -194,7 +194,7 @@ exports.createBill = async (req, res) => {
         tax: tax_amount || 0,
         discount: discount || 0,
         total: calculatedTotal,
-        amount_paid: calculatedTotal,
+        amount_paid: status === 'Paid' ? calculatedTotal : 0,
         balance_due: 0,
         method: payment_method,
         status: status === 'Paid' ? 'Paid' : 'Pending',
