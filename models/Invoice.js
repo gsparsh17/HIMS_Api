@@ -635,14 +635,7 @@ invoiceSchema.pre('save', async function(next) {
     try {
       const year = new Date().getFullYear();
       const month = String(new Date().getMonth() + 1).padStart(2, '0');
-
-      const startOfMonth = new Date(Date.UTC(year, new Date().getMonth(), 1));
-      const endOfMonth = new Date(Date.UTC(year, new Date().getMonth() + 1, 0, 23, 59, 59, 999));
-
-      const count = await mongoose.model('Invoice').countDocuments({
-        created_at: { $gte: startOfMonth, $lte: endOfMonth }
-      });
-
+      
       let prefix = 'INV';
       switch (this.invoice_type) {
         case 'Pharmacy':
@@ -668,12 +661,39 @@ invoiceSchema.pre('save', async function(next) {
           prefix = 'INV';
       }
 
-      this.invoice_number = `${prefix}-${year}${month}-${(count + 1).toString().padStart(6, '0')}`;
+      let attempts = 0;
+      const maxAttempts = 5;
+      let saved = false;
+
+      while (!saved && attempts < maxAttempts) {
+        try {
+          const startOfMonth = new Date(Date.UTC(year, new Date().getMonth(), 1));
+          const endOfMonth = new Date(Date.UTC(year, new Date().getMonth() + 1, 0, 23, 59, 59, 999));
+
+          const count = await mongoose.model('Invoice').countDocuments();
+
+          this.invoice_number = `${prefix}-${year}${month}-${(count + 2 + attempts).toString().padStart(6, '0')}`;
+          
+          // Try to save - this will throw if duplicate
+          await this.constructor.findById(this._id).session(this.$session());
+          saved = true;
+        } catch (error) {
+          if (error.code === 11000) {
+            attempts++;
+            if (attempts === maxAttempts) {
+              throw new Error('Unable to generate unique invoice number after multiple attempts');
+            }
+            // Small delay before retry
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } else {
+            throw error;
+          }
+        }
+      }
     } catch (error) {
       return next(error);
     }
   }
-
   next();
 });
 
@@ -683,13 +703,13 @@ invoiceSchema.post('save', function(doc) {
 });
 
 // Post-save middleware for error handling
-invoiceSchema.post('save', function(error, doc, next) {
-  if (error.name === 'MongoServerError' && error.code === 11000) {
-    next(new Error('Invoice number already exists. Please try again.'));
-  } else {
-    next(error);
-  }
-});
+// invoiceSchema.post('save', function(error, doc, next) {
+//   if (error.name === 'MongoServerError' && error.code === 11000) {
+//     next(new Error('Invoice number already exists. Please try again.'));
+//   } else {
+//     next(error);
+//   }
+// });
 
 // Virtual for total items count
 invoiceSchema.virtual('total_items').get(function() {
