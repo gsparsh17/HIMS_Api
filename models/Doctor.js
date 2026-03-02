@@ -80,20 +80,20 @@ doctorSchema.pre('save', async function (next) {
   try {
     if (!this.doctorId) {
       const hospital = await Hospital.findOne();
-      if (!hospital || !hospital.hospitalID) {
-        throw new Error('Hospital ID not found');
-      }
-
+      if (!hospital || !hospital.hospitalID) throw new Error('Hospital ID not found');
       this.hospitalId = hospital.hospitalID;
       this.doctorId = `${hospital.hospitalID}-${generateRandomCode(4)}`;
     }
-    
-    if (!this.isFullTime && this.revenuePercentage === 100) {
-      this.revenuePercentage = 80;
-    } else if (this.isFullTime) {
+
+    // ✅ FIX: only set default if not provided
+    if (this.isFullTime) {
       this.revenuePercentage = 100;
+    } else {
+      if (this.revenuePercentage === undefined || this.revenuePercentage === null) {
+        this.revenuePercentage = 80;
+      }
     }
-    
+
     next();
   } catch (err) {
     next(err);

@@ -195,24 +195,58 @@ function buildInvoicePipeline(query, opts = {}) {
 
 /**
  * Calculate doctor commission based on doctor type and revenue percentage
+ * Only applies commission to consultation fees, not registration fees
  */
-const calculateDoctorCommission = (doctor, revenue, serviceType = 'Appointment') => {
+const calculateDoctorCommission = (doctor, invoiceLike, serviceType = 'Appointment') => {
+  const invoice =
+    invoiceLike && typeof invoiceLike === 'object'
+      ? invoiceLike
+      : { total: Number(invoiceLike || 0), service_items: [] };
+
+  const invoiceTotal = Number(invoice.total || 0);
+
   if (!doctor) {
     return {
       commission: 0,
       commissionPercentage: 0,
-      hospitalShare: revenue,
+      hospitalShare: invoiceTotal,
       isFullTime: false,
-      doctorType: 'Unknown'
+      doctorType: 'Unknown',
+      consultationRevenue: 0,
+      registrationRevenue: invoiceTotal
     };
   }
 
-  const isFullTime = doctor.isFullTime || false;
-  const revenuePercentage = doctor.revenuePercentage || (isFullTime ? 100 : 30);
-  
-  // For full-time doctors, commission is 0 (they get salary, not commission)
-  const commission = isFullTime ? 0 : (revenue * revenuePercentage / 100);
-  const hospitalShare = revenue - commission;
+  const isFullTime = !!doctor.isFullTime;
+  const revenuePercentage = Number(
+    doctor.revenuePercentage ?? (isFullTime ? 0 : 30)
+  );
+
+  let consultationRevenue = 0;
+  let registrationRevenue = 0;
+
+  if (Array.isArray(invoice.service_items) && invoice.service_items.length) {
+    invoice.service_items.forEach((item) => {
+      const desc = String(item.description || '').toLowerCase();
+      const price = Number(item.total_price || 0);
+
+      // consultation items
+      if (desc.includes('consultation')) {
+        consultationRevenue += price;
+      } else {
+        registrationRevenue += price;
+      }
+    });
+  }
+
+  // Fallback: if appointment has no items split, assume whole total is consult revenue
+  if (consultationRevenue === 0 && serviceType === 'Appointment') {
+    consultationRevenue = invoiceTotal;
+    registrationRevenue = 0;
+  }
+
+  const commission = isFullTime ? 0 : (consultationRevenue * revenuePercentage) / 100;
+  const hospitalShare = invoiceTotal - commission;
 
   return {
     commission,
@@ -220,7 +254,9 @@ const calculateDoctorCommission = (doctor, revenue, serviceType = 'Appointment')
     hospitalShare,
     isFullTime,
     doctorType: isFullTime ? 'Full-time (Salary)' : 'Part-time (Commission)',
-    revenueGenerated: revenue,
+    revenueGenerated: invoiceTotal,
+    consultationRevenue,
+    registrationRevenue,
     doctorId: doctor._id,
     doctorName: `${doctor.firstName} ${doctor.lastName || ''}`.trim()
   };
@@ -231,127 +267,95 @@ const calculateDoctorCommission = (doctor, revenue, serviceType = 'Appointment')
  */
 const calculateRevenueBifurcation = (invoices, doctorsMap) => {
   let totalRevenue = 0;
-  let doctorEarnings = 0; // Total earnings by doctors (salary + commission)
-  let hospitalRevenue = 0; // Revenue before salary expenses
-  let totalCommission = 0; // Commission paid to part-time doctors
-  let totalSalaryExpenses = 0; // Salary expenses for full-time doctors (estimated based on revenue)
-  let partTimeCommission = 0;
-  let fullTimeSalaryExpenses = 0;
 
-  // Track by service type
-  const procedureMetrics = {
-    revenue: 0,
-    commission: 0,
-    hospitalShare: 0,
-    doctorEarnings: 0
+  let totalCommission = 0;     // part-time commission total
+  let doctorEarnings = 0;      // for your UI: doctor earnings == totalCommission
+  let hospitalRevenue = 0;     // hospital share (total - commission)
+  let totalSalaryExpenses = 0; // keep 0 unless you later add salary estimation
+  let fullTimeSalaryExpenses = 0; // keep 0 unless you later add salary estimation
+
+  const procedureMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const labTestMetrics   = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const appointmentMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const pharmacyMetrics  = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const otherMetrics     = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+
+  const pickDoctorId = (inv) => {
+    const d =
+      inv.doctor_id ||
+      inv.appointment_info?.doctor_id ||
+      inv.appointment_id?.doctor_id ||
+      inv.appointment?.doctor_id;
+
+    return d ? d.toString() : null;
   };
 
-  const labTestMetrics = {
-    revenue: 0,
-    commission: 0,
-    hospitalShare: 0,
-    doctorEarnings: 0
-  };
-
-  const appointmentMetrics = {
-    revenue: 0,
-    commission: 0,
-    hospitalShare: 0,
-    doctorEarnings: 0
-  };
-
-  const pharmacyMetrics = {
-    revenue: 0,
-    hospitalShare: 0,
-    commission: 0,
-    doctorEarnings: 0
-  };
-
-  const otherMetrics = {
-    revenue: 0,
-    hospitalShare: 0,
-    commission: 0,
-    doctorEarnings: 0
-  };
-
-  invoices.forEach(invoice => {
-    const amount = invoice.total || 0;
+  invoices.forEach((invoice) => {
+    const amount = Number(invoice.total || 0);
     totalRevenue += amount;
 
-    // Get doctor info from appointment
-    const doctorId = invoice.appointment_id?.doctor_id;
-    const doctor = doctorId ? doctorsMap.get(doctorId.toString()) : null;
-    
-    // Calculate commission based on doctor type
-    const commissionInfo = calculateDoctorCommission(doctor, amount, invoice.invoice_type);
-    
-    // Track doctor earnings (salary for full-time, commission for part-time)
-    if (commissionInfo.isFullTime) {
-      // Full-time doctor: Add to salary expenses (estimated based on revenue)
-      fullTimeSalaryExpenses += amount; // This represents revenue generated by full-time doctors
-      doctorEarnings += amount; // Their "earnings" for revenue tracking
-      totalSalaryExpenses += amount; // For expense calculation (estimated)
-    } else {
-      // Part-time doctor: Add commission
-      partTimeCommission += commissionInfo.commission;
-      totalCommission += commissionInfo.commission;
-      doctorEarnings += commissionInfo.commission;
-    }
+    const doctorId = pickDoctorId(invoice);
+    const doctor = doctorId ? doctorsMap.get(doctorId) : null;
 
-    // Hospital share is always amount minus commission (for part-time)
-    // For full-time, hospital share is full amount (since they're salaried)
-    const invoiceHospitalShare = commissionInfo.hospitalShare;
-    hospitalRevenue += invoiceHospitalShare;
+    const commissionInfo = calculateDoctorCommission(doctor, invoice, invoice.invoice_type);
 
-    // Track by service type
+    totalCommission += commissionInfo.commission;
+    doctorEarnings += commissionInfo.commission;
+
+    hospitalRevenue += commissionInfo.hospitalShare;
+
+    // Metrics by invoice type
     switch (invoice.invoice_type) {
       case 'Procedure':
         procedureMetrics.revenue += amount;
         procedureMetrics.commission += commissionInfo.commission;
-        procedureMetrics.hospitalShare += invoiceHospitalShare;
-        procedureMetrics.doctorEarnings += commissionInfo.isFullTime ? amount : commissionInfo.commission;
+        procedureMetrics.hospitalShare += commissionInfo.hospitalShare;
+        procedureMetrics.doctorEarnings += commissionInfo.commission;
         break;
+
       case 'Lab Test':
         labTestMetrics.revenue += amount;
         labTestMetrics.commission += commissionInfo.commission;
-        labTestMetrics.hospitalShare += invoiceHospitalShare;
-        labTestMetrics.doctorEarnings += commissionInfo.isFullTime ? amount : commissionInfo.commission;
+        labTestMetrics.hospitalShare += commissionInfo.hospitalShare;
+        labTestMetrics.doctorEarnings += commissionInfo.commission;
         break;
+
       case 'Appointment':
         appointmentMetrics.revenue += amount;
         appointmentMetrics.commission += commissionInfo.commission;
-        appointmentMetrics.hospitalShare += invoiceHospitalShare;
-        appointmentMetrics.doctorEarnings += commissionInfo.isFullTime ? amount : commissionInfo.commission;
+        appointmentMetrics.hospitalShare += commissionInfo.hospitalShare;
+        appointmentMetrics.doctorEarnings += commissionInfo.commission;
         break;
+
       case 'Pharmacy':
         pharmacyMetrics.revenue += amount;
-        pharmacyMetrics.hospitalShare += amount; // Pharmacy revenue is 100% hospital
-        pharmacyMetrics.commission += 0;
-        pharmacyMetrics.doctorEarnings += 0;
+        pharmacyMetrics.hospitalShare += amount;
+        // pharmacy has no doctor commission
         break;
+
       default:
         otherMetrics.revenue += amount;
-        otherMetrics.hospitalShare += invoiceHospitalShare;
         otherMetrics.commission += commissionInfo.commission;
-        otherMetrics.doctorEarnings += commissionInfo.isFullTime ? amount : commissionInfo.commission;
+        otherMetrics.hospitalShare += commissionInfo.hospitalShare;
+        otherMetrics.doctorEarnings += commissionInfo.commission;
         break;
     }
   });
 
-  // Calculate net hospital revenue (hospital revenue minus salary expenses)
+  // Net hospital revenue here is hospital share minus estimated salary (currently 0)
   const netHospitalRevenue = hospitalRevenue - fullTimeSalaryExpenses;
 
   return {
     totalRevenue,
-    doctorEarnings,
-    hospitalRevenue,
-    totalCommission,
+    doctorEarnings,          // ✅ will now be 960 for your case
+    hospitalRevenue,         // ✅ will now be 1240 for your case
+    totalCommission,         // ✅ 960
     totalSalaryExpenses,
-    partTimeCommission,
+    partTimeCommission: totalCommission,
     fullTimeSalaryExpenses,
     netHospitalRevenue,
     profitMargin: totalRevenue > 0 ? (netHospitalRevenue / totalRevenue) * 100 : 0,
-    
+
     procedureMetrics,
     labTestMetrics,
     appointmentMetrics,
@@ -672,7 +676,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
         
         doctorRevenue[doctorId] = (doctorRevenue[doctorId] || 0) + amount;
         
-        const commissionInfo = calculateDoctorCommission(doctor, amount, inv.invoice_type);
+        const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
         doctorEarningsMap[doctorId] = (doctorEarningsMap[doctorId] || 0) + commissionInfo.commission;
 
         if (inv.invoice_type === 'Procedure') {
@@ -724,7 +728,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
       }
       dailyStats[dateKey].revenue += amount;
       
-      const commissionInfo = calculateDoctorCommission(doctor, amount, inv.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
       dailyStats[dateKey].doctorEarnings += commissionInfo.commission;
       dailyStats[dateKey].hospitalShare += commissionInfo.hospitalShare;
       
@@ -873,7 +877,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
     // Format procedure by doctor with commission info
     const procedureByDoctorArray = Object.entries(procedureRevenueByDoctor).map(([docId, rev]) => {
       const doc = doctorsMap.get(docId);
-      const commissionInfo = calculateDoctorCommission(doc, rev, 'Procedure');
+      const commissionInfo = calculateDoctorCommission(doc, { total: rev, service_items: [] }, 'Procedure');
       return {
         doctorId: docId,
         doctorName: doc ? `${doc.firstName} ${doc.lastName || ''}`.trim() : 'Unknown',
@@ -888,7 +892,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
 
     const labTestByDoctorArray = Object.entries(labTestRevenueByDoctor).map(([docId, rev]) => {
       const doc = doctorsMap.get(docId);
-      const commissionInfo = calculateDoctorCommission(doc, rev, 'Lab Test');
+      const commissionInfo = calculateDoctorCommission(doc, { total: rev, service_items: [] }, 'Lab Test');
       return {
         doctorId: docId,
         doctorName: doc ? `${doc.firstName} ${doc.lastName || ''}`.trim() : 'Unknown',
@@ -1168,7 +1172,7 @@ exports.getDailyRevenueReport = async (req, res) => {
         totalPending += pending;
 
         const doctor = invoice.appointment_id?.doctor_id;
-        const commissionInfo = calculateDoctorCommission(doctor, amount, invoice.invoice_type);
+        const commissionInfo = calculateDoctorCommission(doctor, invoice, invoice.invoice_type);
         
         totalDoctorEarnings += commissionInfo.commission;
         totalHospitalShare += commissionInfo.hospitalShare;
@@ -1328,7 +1332,7 @@ exports.getDailyRevenueReport = async (req, res) => {
       },
       recentInvoices: invoices.slice(0, 20).map(inv => {
         const doctor = inv.appointment_id?.doctor_id;
-        const commissionInfo = calculateDoctorCommission(doctor, inv.total || 0, inv.invoice_type);
+        const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
         const dateField = inv.created_at || inv.createdAt;
         const istTime = new Date(dateField).toLocaleString('en-IN', { 
           timeZone: 'Asia/Kolkata',
@@ -1482,7 +1486,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
       const week = Math.ceil(day / 7);
 
       const doctor = inv.appointment_id?.doctor_id;
-      const commissionInfo = calculateDoctorCommission(doctor, amount, inv.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
 
       totalRevenue += amount;
       totalDoctorEarnings += commissionInfo.commission;
@@ -1873,7 +1877,7 @@ exports.getDoctorRevenue = async (req, res) => {
 
     invoices.forEach((inv) => {
       const amount = inv.total || 0;
-      const commissionInfo = calculateDoctorCommission(doctor, amount, inv.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
       
       totalRevenue += amount;
       totalCommission += commissionInfo.commission;
@@ -2087,7 +2091,7 @@ exports.getDepartmentRevenue = async (req, res) => {
       
       const doctorId = inv.appointment_info?.doctor_id ? String(inv.appointment_info.doctor_id) : null;
       const doctor = doctorId ? doctorsMap.get(doctorId) : null;
-      const commissionInfo = calculateDoctorCommission(doctor, amount, inv.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
 
       totalRevenue += amount;
       totalDoctorEarnings += commissionInfo.commission;
@@ -2332,7 +2336,7 @@ exports.getDetailedRevenueReport = async (req, res) => {
 
     const invoicesWithCommission = invoices.map(inv => {
       const doctor = inv.doctor?.id ? doctorsMap.get(inv.doctor.id.toString()) : null;
-      const commissionInfo = calculateDoctorCommission(doctor, inv.total || 0, inv.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
       
       return {
         ...inv,
@@ -3024,7 +3028,7 @@ exports.exportRevenueData = async (req, res) => {
       const doctor = invoice.appointment_id?.doctor_id;
       const patient = invoice.patient_id;
       const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
-      const commissionInfo = calculateDoctorCommission(doctorObj, invoice.total || 0, invoice.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctorObj, invoice, invoice.invoice_type);
       
       const dateField = invoice.created_at || invoice.createdAt;
 
@@ -3271,7 +3275,7 @@ exports.exportDaily = async (req, res) => {
       const amount = invoice.total || 0;
       const doctor = invoice.appointment_id?.doctor_id;
       const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
-      const commissionInfo = calculateDoctorCommission(doctorObj, amount, invoice.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctorObj, invoice, invoice.invoice_type);
       const dateField = invoice.created_at || invoice.createdAt;
       const istTime = new Date(dateField).toLocaleString('en-IN', { 
         timeZone: 'Asia/Kolkata',
@@ -3479,7 +3483,7 @@ exports.exportMonthly = async (req, res) => {
       const amount = invoice.total || 0;
       const doctor = invoice.appointment_id?.doctor_id;
       const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
-      const commissionInfo = calculateDoctorCommission(doctorObj, amount, invoice.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctorObj, invoice, invoice.invoice_type);
       
       let dateField;
       if (invoice.created_at) dateField = invoice.created_at;
@@ -3681,7 +3685,7 @@ exports.exportDoctor = async (req, res) => {
 
     invoices.forEach(invoice => {
       const amount = invoice.total || 0;
-      const commissionInfo = calculateDoctorCommission(doctor, amount, invoice.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctor, invoice, invoice.invoice_type);
       const dateField = invoice.computed_date || invoice.created_at || invoice.createdAt;
 
       totalRevenue += amount;
@@ -3869,7 +3873,7 @@ exports.exportDepartment = async (req, res) => {
       if (!doctor) return;
 
       const doctorId = doctor._id.toString();
-      const commissionInfo = calculateDoctorCommission(doctor, amount, invoice.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctor, invoice, invoice.invoice_type);
 
       totalRevenue += amount;
       totalDoctorEarnings += commissionInfo.commission;
@@ -4060,7 +4064,7 @@ exports.exportDetailed = async (req, res) => {
       const doctor = invoice.appointment_id?.doctor_id;
       const patient = invoice.patient_id;
       const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
-      const commissionInfo = calculateDoctorCommission(doctorObj, invoice.total || 0, invoice.invoice_type);
+      const commissionInfo = calculateDoctorCommission(doctorObj, invoice, invoice.invoice_type);
       
       const dateField = invoice.created_at || invoice.createdAt;
       const istDateTime = new Date(dateField).toLocaleString('en-IN', { 
@@ -4172,13 +4176,13 @@ exports.exportDetailed = async (req, res) => {
           commission: invoices.reduce((sum, inv) => {
             const doctor = inv.appointment_id?.doctor_id;
             const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
-            const commissionInfo = calculateDoctorCommission(doctorObj, inv.total || 0, inv.invoice_type);
+            const commissionInfo = calculateDoctorCommission(doctorObj, inv, inv.invoice_type);
             return sum + commissionInfo.commission;
           }, 0),
           hospitalShare: invoices.reduce((sum, inv) => {
             const doctor = inv.appointment_id?.doctor_id;
             const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
-            const commissionInfo = calculateDoctorCommission(doctorObj, inv.total || 0, inv.invoice_type);
+            const commissionInfo = calculateDoctorCommission(doctorObj, inv, inv.invoice_type);
             return sum + commissionInfo.hospitalShare;
           }, 0)
         }
@@ -4309,7 +4313,7 @@ exports.exportProcedureRevenue = async (req, res) => {
 
     const exportData = procedureItems.map(item => {
       const doctor = item.doctorId ? doctorsMap.get(item.doctorId.toString()) : null;
-      const commissionInfo = calculateDoctorCommission(doctor, item.procedureRevenue || 0, 'Procedure');
+      const commissionInfo = calculateDoctorCommission(doctor, { total: item.procedureRevenue || 0, service_items: [] }, 'Procedure');
       
       return {
         'Date': item.date,
@@ -4502,7 +4506,7 @@ exports.exportLabTestRevenue = async (req, res) => {
 
     const exportData = labTestItems.map(item => {
       const doctor = item.doctorId ? doctorsMap.get(item.doctorId.toString()) : null;
-      const commissionInfo = calculateDoctorCommission(doctor, item.labTestRevenue || 0, 'Lab Test');
+      const commissionInfo = calculateDoctorCommission(doctor, { total: item.labTestRevenue || 0, service_items: [] }, 'Lab Test');
       
       return {
         'Date': item.date,

@@ -14,10 +14,10 @@ const {
   calculateAppointmentSalary
 } = require('../controllers/salary.controller');
 
-// Salary routes
+// Salary / Commission routes
 router.get('/doctor/:doctorId', getDoctorSalaryHistory);
 
-// Calculate salary for a single completed appointment (part-time doctors)
+// Calculate commission for a single completed appointment (part-time doctors)
 router.post('/calculate-appointment/:appointmentId', calculateAppointmentSalary);
 
 // Lists

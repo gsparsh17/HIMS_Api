@@ -10,6 +10,7 @@ const Bill = require('../models/Bill');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
+const { default: mongoose } = require('mongoose');
 
 // Generate invoice for procedures
 exports.generateProcedureInvoice = async (req, res) => {
@@ -1585,7 +1586,6 @@ exports.generatePurchaseInvoice = async (req, res) => {
 };
 
 // Get all invoices with filters
-// Update your getAllInvoices function in invoice.controller.js
 exports.getAllInvoices = async (req, res) => {
   try {
     const {
@@ -1609,19 +1609,19 @@ exports.getAllInvoices = async (req, res) => {
     } = req.query;
 
     const filter = {};
-    
+
     // Basic filters
     if (status) filter.status = status;
     if (invoice_type) filter.invoice_type = invoice_type;
     if (payment_method) filter['payment_history.method'] = payment_method;
     if (patient_id) filter.patient_id = patient_id;
     if (customer_type) filter.customer_type = customer_type;
-    
+
     // Boolean flags
     if (has_procedures === 'true') filter.has_procedures = true;
     if (has_lab_tests === 'true') filter.has_lab_tests = true;
     if (is_pharmacy_sale === 'true') filter.is_pharmacy_sale = true;
-    
+
     // Amount range
     if (min_amount || max_amount) {
       filter.total = {};
@@ -1659,7 +1659,7 @@ exports.getAllInvoices = async (req, res) => {
 
       if (doctor_id) {
         pipeline.push({
-          $match: { 'appointment_info.doctor_id': mongoose.Types.ObjectId(doctor_id) }
+          $match: { 'appointment_info.doctor_id': new mongoose.Types.ObjectId(doctor_id) }
         });
       }
 
@@ -1674,7 +1674,11 @@ exports.getAllInvoices = async (req, res) => {
             }
           },
           { $unwind: { path: '$doctor_info', preserveNullAndEmptyArrays: true } },
-          { $match: { 'doctor_info.department': mongoose.Types.ObjectId(department_id) } }
+          {
+            $match: {
+              'doctor_info.department': new mongoose.Types.ObjectId(department_id)
+            }
+          }
         );
       }
     }
@@ -1719,6 +1723,8 @@ exports.getAllInvoices = async (req, res) => {
           has_procedures: 1,
           has_lab_tests: 1,
           is_pharmacy_sale: 1,
+          // Include service_items array
+          service_items: 1,
           procedure_items: { $size: { $ifNull: ['$procedure_items', []] } },
           lab_test_items: { $size: { $ifNull: ['$lab_test_items', []] } },
           patient_id: {
@@ -1730,12 +1736,7 @@ exports.getAllInvoices = async (req, res) => {
           },
           customer_name: 1,
           customer_phone: 1,
-          appointment_id: {
-            doctor_id: {
-              firstName: 1,
-              lastName: 1
-            }
-          }
+          appointment_id: 1 // Include the full appointment_id object
         }
       }
     );
