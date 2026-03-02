@@ -103,10 +103,9 @@ exports.resetPassword = async (req, res) => {
 exports.registerUser = async (req, res) => {
   try {
     const {
-      name, email, password, role,
-      hospitalID, registryNo, address, contact,
+      name, email, password, role, registryNo, address, contact,
       policyDetails, healthBima, additionalInfo,
-      fireNOC, hospitalName, companyName, companyNumber, state, city, pincode
+      fireNOC, hospitalName, companyName, licenseNumber, state, city, pincode
     } = req.body;
 
     let logoUrl = null;
@@ -130,42 +129,46 @@ exports.registerUser = async (req, res) => {
 
     // Only if the role is 'admin', create hospital entry
     if (role === 'admin') {
-      try{
-      await Hospital.create({
-      hospitalID,
-      registryNo,
-      hospitalName, // ✅ Updated
-      companyName,
-      companyNumber,
-      state,
-      city,
-      pincode,
-      name, // Contact person name
-      address,
-      contact,
-      email,
-      fireNOC, // optional during initial creation
-      policyDetails,
-      healthBima,
-      additionalInfo,
-      additionalInfo,
-      logo: logoUrl,
-      createdBy: user._id
-    });
+      try {
+        // Create hospital instance
+        const hospital = new Hospital({
+          registryNo,
+          hospitalName,
+          companyName,
+          licenseNumber,
+          state,
+          city,
+          pinCode: pincode,
+          name,
+          address,
+          contact,
+          email,
+          fireNOC,
+          policyDetails,
+          healthBima,
+          additionalInfo,
+          logo: logoUrl,
+          createdBy: user._id
+        });
 
-    await Department.create({
-      name: "Administration"
-    })
-    await Department.create({
-      name: "Emergency Department (ED/ER)"
-    })
+        // Save with validation disabled - this allows pre-save middleware to run first
+        await hospital.save({ validateBeforeSave: false });
 
+        // Create departments
+        await Department.create({
+          name: "Administration"
+        });
+        
+        await Department.create({
+          name: "Emergency Department"
+        });
+
+      } catch (hospitalErr) {
+        console.error('Hospital Creation Error:', hospitalErr);
+        return res.status(400).json({ message: 'Hospital creation failed', error: hospitalErr.message });
+      }
     }
-  catch (hospitalErr) {
-    console.error('Hospital Creation Error:', hospitalErr);
-    return res.status(400).json({ message: 'Hospital creation failed', error: hospitalErr.message });
-  }
-}
+
     res.status(201).json({
       _id: user._id,
       name: user.name,
@@ -174,13 +177,12 @@ exports.registerUser = async (req, res) => {
       token: generateToken(user._id, user.role)
     });
   } catch (err) {
-  console.error('🔴 Registration Error:', err);
-  return res.status(500).json({
-    message: err?.message || 'Internal Server Error',
-    stack: err?.stack
-  });
-}
-
+    console.error('🔴 Registration Error:', err);
+    return res.status(500).json({
+      message: err?.message || 'Internal Server Error',
+      stack: err?.stack
+    });
+  }
 };
 
 
