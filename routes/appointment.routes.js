@@ -20,7 +20,7 @@ router.patch('/:id/status', calendarController.updateAppointmentStatus);
 // Delete
 router.delete('/:id', appointmentController.deleteAppointment);
 
-// Filters
+router.get('/doctor/:doctorId/procedures/:date', appointmentController.getDoctorProceduresForDate);
 router.get('/doctor/:doctorId', appointmentController.getAppointmentsByDoctorId);
 router.get('/doctor/:doctorId/today', appointmentController.getTodaysAppointmentsByDoctorId);
 router.get('/department/:departmentId', appointmentController.getAppointmentsByDepartmentId);

@@ -230,7 +230,7 @@ exports.createBill = async (req, res) => {
                   prescription.recommendedProcedures[procIndex].is_billed = true;
                   prescription.recommendedProcedures[procIndex].invoice_id = invoice._id;
                   prescription.recommendedProcedures[procIndex].cost = Number(item.amount || 0);
-                  prescription.recommendedProcedures[procIndex].status = 'Paid';
+                  // prescription.recommendedProcedures[procIndex].status = 'Paid';
                 }
               }
             });
@@ -247,7 +247,7 @@ exports.createBill = async (req, res) => {
                   prescription.recommendedLabTests[testIndex].is_billed = true;
                   prescription.recommendedLabTests[testIndex].invoice_id = invoice._id;
                   prescription.recommendedLabTests[testIndex].cost = Number(item.amount || 0);
-                  prescription.recommendedLabTests[testIndex].status = 'Paid';
+                  // prescription.recommendedLabTests[testIndex].status = 'Paid';
                 }
               }
             });

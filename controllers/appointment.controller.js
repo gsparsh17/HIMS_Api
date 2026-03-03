@@ -31,6 +31,118 @@ exports.completeAppointment = async (req, res) => {
   }
 };
 
+// Get procedures scheduled for a doctor on a specific date
+exports.getDoctorProceduresForDate = async (req, res) => {
+  try {
+    const { doctorId, date } = req.params;
+    
+    // Parse the date
+    const targetDate = new Date(date);
+    targetDate.setHours(0, 0, 0, 0);
+    const nextDate = new Date(targetDate);
+    nextDate.setDate(targetDate.getDate() + 1);
+
+    // Find prescriptions with procedures for this doctor
+    const prescriptions = await Prescription.find({
+      'recommendedProcedures.scheduled_date': {
+        $gte: targetDate,
+        $lt: nextDate
+      },
+      'recommendedProcedures.status': { $in: ['Scheduled', 'In Progress', 'Completed'] }
+    })
+    .populate('patient_id', 'first_name last_name patientId phone')
+    .populate('doctor_id', 'firstName lastName')
+    .populate({
+      path: 'recommendedProcedures.performed_by',
+      select: '_id firstName lastName specialization'
+    });
+
+    // Extract and format the procedures
+    const procedures = [];
+    prescriptions.forEach(prescription => {
+      (prescription.recommendedProcedures || []).forEach(proc => {
+        // Check if procedure is scheduled for the target date
+        const isOnTargetDate = proc.scheduled_date && 
+            new Date(proc.scheduled_date) >= targetDate && 
+            new Date(proc.scheduled_date) < nextDate;
+        
+        if (!isOnTargetDate) return;
+        
+        // Check if the procedure is performed by this doctor
+        let isPerformedByThisDoctor = false;
+        
+        if (proc.performed_by) {
+          // Get the performed_by ID (whether it's populated or just an ID)
+          const performedById = typeof proc.performed_by === 'object' && proc.performed_by !== null
+            ? proc.performed_by._id.toString()
+            : proc.performed_by?.toString();
+          
+          isPerformedByThisDoctor = performedById === doctorId;
+        }
+        
+        // Only include if performed by this doctor
+        if (isPerformedByThisDoctor) {
+          // Format performed_by if it exists
+          let performedBy = null;
+          if (proc.performed_by) {
+            if (typeof proc.performed_by === 'object' && proc.performed_by !== null) {
+              performedBy = {
+                _id: proc.performed_by._id,
+                name: `Dr. ${proc.performed_by.firstName || ''} ${proc.performed_by.lastName || ''}`.trim(),
+                specialization: proc.performed_by.specialization
+              };
+            } else if (typeof proc.performed_by === 'string') {
+              performedBy = {
+                _id: proc.performed_by,
+                name: 'Unknown',
+                specialization: null
+              };
+            }
+          }
+
+          procedures.push({
+            _id: proc._id,
+            procedure_code: proc.procedure_code,
+            procedure_name: proc.procedure_name,
+            scheduled_date: proc.scheduled_date,
+            completed_date: proc.completed_date || null,
+            duration_minutes: proc.duration_minutes || 30,
+            performed_by: performedBy,
+            patient: {
+              _id: prescription.patient_id?._id,
+              name: `${prescription.patient_id?.first_name || ''} ${prescription.patient_id?.last_name || ''}`.trim(),
+              patientId: prescription.patient_id?.patientId,
+              phone: prescription.patient_id?.phone
+            },
+            prescribing_doctor: {
+              _id: prescription.doctor_id?._id,
+              name: `Dr. ${prescription.doctor_id?.firstName || ''} ${prescription.doctor_id?.last_name || ''}`.trim()
+            },
+            status: proc.status,
+            notes: proc.notes,
+            prescription_id: prescription._id,
+            prescription_number: prescription.prescription_number,
+            cost: proc.cost || 0,
+            is_billed: proc.is_billed || false
+          });
+        }
+      });
+    });
+
+    // Sort by scheduled time
+    procedures.sort((a, b) => new Date(a.scheduled_date) - new Date(b.scheduled_date));
+
+    res.json({
+      success: true,
+      count: procedures.length,
+      procedures
+    });
+  } catch (err) {
+    console.error('Error fetching doctor procedures:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // Helper function to check for time slot conflicts
 function hasTimeConflict(appointments, startTime, endTime, breaks = []) {
   // check against appointments
