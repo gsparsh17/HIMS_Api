@@ -9,7 +9,7 @@ const Procedure = require('../models/Procedure');
 router.get('/search', async (req, res) => {
   try {
     console.log('NLEM Medicine search called:', req.query);
-    
+
     if (!NLEMMedicine) {
       return res.status(500).json({
         success: false,
@@ -17,16 +17,20 @@ router.get('/search', async (req, res) => {
       });
     }
 
-    const { q = '', limit = 20, page = 1 } = req.query;
+    const { q = '', limit = 20, page = 1, dosage_form = '' } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     let query = { is_active: true };
-    
+
+    // Filter by dosage_form (medicine type) if provided
+    if (dosage_form && dosage_form.trim() !== '') {
+      query.dosage_form = dosage_form.trim();
+    }
+
     if (q && q.trim() !== '') {
       query.$or = [
         { medicine_name: { $regex: q, $options: 'i' } },
         { nlem_code: { $regex: q, $options: 'i' } },
-        { dosage_form: { $regex: q, $options: 'i' } },
         { strength: { $regex: q, $options: 'i' } }
       ];
     }
@@ -108,14 +112,14 @@ router.get('/:id', async (req, res) => {
     }
 
     const medicine = await NLEMMedicine.findById(req.params.id);
-    
+
     if (!medicine) {
       return res.status(404).json({
         success: false,
         message: 'Medicine not found'
       });
     }
-    
+
     res.json({
       success: true,
       data: medicine
