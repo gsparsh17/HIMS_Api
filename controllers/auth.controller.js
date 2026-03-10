@@ -1,26 +1,3 @@
-// const User = require('../models/User');
-// const generateToken = require('../utils/generateToken');
-
-// Register
-// exports.registerUser = async (req, res) => {
-//   try {
-//     const { name, email, password, role } = req.body;
-//     const userExists = await User.findOne({ email });
-//     if (userExists) return res.status(400).json({ error: 'User already exists' });
-
-//     const user = await User.create({ name, email, password, role });
-//     res.status(201).json({
-//       _id: user._id,
-//       name: user.name,
-//       email: user.email,
-//       role: user.role,
-//       token: generateToken(user._id, user.role)
-//     });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// };
-
 const User = require('../models/User');
 const Hospital = require('../models/Hospital'); // <- import
 const generateToken = require('../utils/generateToken');
@@ -33,6 +10,7 @@ const Department = require('../models/Department');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const PathologyStaff = require('../models/PathologyStaff');
+const jwt = require('jsonwebtoken');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -70,6 +48,118 @@ exports.forgotPassword = async (req, res) => {
   } catch (err) {
     console.error('Forgot Password Error:', err);
     res.status(500).json({ message: err.message });
+  }
+};
+
+exports.demoLogin = async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Get token from Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required - Invalid authorization header format' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required - Token missing' });
+    }
+
+    // Verify the token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (jwtError) {
+      console.error('JWT Verification Error:', jwtError);
+      if (jwtError.name === 'JsonWebTokenError') {
+        return res.status(401).json({ error: 'Invalid token format' });
+      }
+      if (jwtError.name === 'TokenExpiredError') {
+        return res.status(401).json({ error: 'Token expired' });
+      }
+      throw jwtError;
+    }
+
+    // Check if decoded has the expected structure (using 'id' as per your generateToken function)
+    if (!decoded || !decoded.id) {
+      return res.status(401).json({ error: 'Invalid token payload' });
+    }
+
+    // Find the demo user
+    const demoUser = await User.findById(decoded.id);
+    if (!demoUser) {
+      return res.status(403).json({ error: 'User not found' });
+    }
+
+    // if (demoUser.role !== 'demo') {
+    //   return res.status(403).json({ error: 'Only demo users can access this feature' });
+    // }
+
+    // Find the target user by email
+    const targetUser = await User.findOne({ email });
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Get hospital info
+    const hospital = await Hospital.findOne({});
+
+    // Generate new token for the target user
+    const newToken = generateToken(targetUser._id, targetUser.role);
+
+    // Prepare response based on target user's role
+    let response = {
+      _id: targetUser._id,
+      name: targetUser.name,
+      email: targetUser.email,
+      role: targetUser.role,
+      token: newToken,
+      hospitalID: hospital?._id,
+      isDemoLogin: true,
+      originalDemoUser: {
+        id: demoUser._id,
+        name: demoUser.name,
+        email: demoUser.email
+      }
+    };
+
+    // Add role-specific IDs
+    try {
+      if (targetUser.role === "doctor") {
+        const doctor = await Doctor.findOne({ email: targetUser.email });
+        response.doctorId = doctor?._id;
+      }
+      else if (["staff", "registrar", "receptionist"].includes(targetUser.role)) {
+        const staff = await Staff.findOne({ email: targetUser.email });
+        response.staffId = staff?._id;
+      }
+      else if (targetUser.role === "nurse") {
+        const nurse = await Staff.findOne({ email: targetUser.email });
+        response.staffId = nurse?._id;
+      }
+      else if (targetUser.role === "pharmacy") {
+        const pharmacy = await Pharmacy.findOne({ email: targetUser.email });
+        response.pharmacyId = pharmacy?._id;
+      }
+      else if (targetUser.role === "pathology_staff") {
+        const pathologyStaff = await PathologyStaff.findOne({ email: targetUser.email });
+        response.pathologyStaffId = pathologyStaff?._id;
+      }
+    } catch (roleError) {
+      console.error('Error fetching role-specific data:', roleError);
+      // Continue even if role-specific data fetch fails
+    }
+
+    res.json(response);
+
+  } catch (err) {
+    console.error('Demo Login error:', err);
+    res.status(500).json({ error: err.message });
   }
 };
 

@@ -21,5 +21,7 @@ router.post('/login', authController.loginUser);
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password/:token', authController.resetPassword);
 
+// Demo route - allows demo user to login as any staff member without password
+router.post('/demo-login', authController.demoLogin);
 
 module.exports = router;
