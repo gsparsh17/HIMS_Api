@@ -70,8 +70,6 @@ app.use('/api/invoices', invoiceRoutes);
 app.use('/api/pathology-staff', pathologyStaffRoutes);
 app.use('/api/labtests', require('./routes/labTest.routes.js'));
 
-updateCalendar();
-
 // Error Handlers
 app.use((req, res, next) => {
   res.status(404).json({ error: 'Route not found' });
