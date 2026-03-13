@@ -3,11 +3,10 @@ dotenv.config();
 
 const connectDB = require('./config/db');
 const app = require('./app');
-const { updateCalendar } = require('./jobs/calendarJob');
+const { startCalendarJob } = require('./jobs/calendarJob');
 
 const startServer = async () => {
   try {
-
     await connectDB();
     console.log('✅ MongoDB Connected');
 
@@ -17,8 +16,7 @@ const startServer = async () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
     });
 
-    // START CRON JOB AFTER DB CONNECTS
-    updateCalendar();
+    startCalendarJob();
 
   } catch (error) {
     console.error('❌ Failed to start server:', error);

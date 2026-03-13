@@ -169,16 +169,16 @@ function shouldDoctorBeAvailable(doctor, targetDate) {
   return true;
 }
 
-// Schedule the update to run every day at midnight
-cron.schedule('0 0 * * *', updateCalendar);
+function startCalendarJob() {
+  cron.schedule('0 0 * * *', updateCalendar);
 
-// Run on startup but with a delay to avoid immediate concurrent execution
-setTimeout(() => {
-  updateCalendar().catch(console.error);
-}, 5000);
+  setTimeout(() => {
+    updateCalendar().catch(console.error);
+  }, 5000);
+}
 
-// Export the function for manual triggering if needed
 module.exports = {
   updateCalendar,
+  startCalendarJob,
   shouldDoctorBeAvailable
 };
