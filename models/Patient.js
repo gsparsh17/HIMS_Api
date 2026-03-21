@@ -5,6 +5,10 @@ const patientSchema = new mongoose.Schema({
     type: String, 
     unique: true 
   },
+  uhid: {
+    type: String,
+    unique: true
+  },
   salutation: {
     type: String,
     enum: ['Mr.', 'Mrs.', 'Ms.', 'Miss', 'Dr.', 'Prof.', 'Baby', 'Master'],
@@ -82,18 +86,17 @@ const patientSchema = new mongoose.Schema({
   patient_type: {
     type: String,
     enum: ['opd', 'ipd'],
-    default: 'ipd',
+    default: 'opd',
   },
   aadhaar_number: {  // Added Aadhaar number field
     type: String,
     trim: true,
+    required: [true, 'Aadhaar number is strictly required'],
     validate: {
       validator: function(v) {
-        // Validate 12-digit Aadhaar number (optional)
-        if (!v) return true; // Allow empty
         return /^\d{12}$/.test(v);
       },
-      message: 'Aadhaar number must be 12 digits'
+      message: 'Aadhaar number must be exactly 12 digits'
     }
   },
   registered_at: { 
@@ -104,26 +107,11 @@ const patientSchema = new mongoose.Schema({
 
 const Hospital = require('./Hospital');
 
-// Helper function to generate structured patient ID
-function generateStructuredPatientId(firstName, lastName, phone, hospitalCode) {
-  // Format: HOSPITALCODE-NAMEPHONE-DATE-RANDOM
-  const date = new Date();
-  const year = date.getFullYear().toString().slice(-2);
-  const month = (date.getMonth() + 1).toString().padStart(2, '0');
-  
-  // Get first 3 letters of first name (uppercase)
-  const namePart = (firstName.substring(0, 3) + lastName.substring(0, 1)).toUpperCase();
-  
-  // Get last 4 digits of phone
-  const phonePart = phone.slice(-4);
-  
-  // Format: HOSP-NAME-YYYYMM
-  return `${hospitalCode}-${namePart}${phonePart}-${year}${month}`;
-}
+// Helper function removed because we now generate a modern UHID
 
 patientSchema.pre('save', async function (next) {
   try {
-    if (!this.patientId) {
+    if (!this.uhid || !this.patientId) {
       const hospital = await Hospital.findOne();
       if (!hospital || !hospital.hospitalID) {
         throw new Error('Hospital ID not found');
@@ -137,34 +125,53 @@ patientSchema.pre('save', async function (next) {
       });
 
       if (existingPatient) {
-        // Use existing patient ID instead of creating new
-        this.patientId = existingPatient.patientId;
+        // Reuse original UHID for same patient entering as follow-up
+        this.uhid = existingPatient.uhid || existingPatient.patientId;
+        this.patientId = existingPatient.patientId; // backward compatibility
         this.hospitalId = existingPatient.hospitalId;
       } else {
-        // Generate new ID with retry logic
-        let patientId;
-        let attempts = 0;
-        const maxAttempts = 5;
+        const date = new Date();
+        const yymm = `${date.getFullYear().toString().slice(-2)}${(date.getMonth()+1).toString().padStart(2, '0')}`;
+        
+        // Extract Hospital Initials
+        let hospitalPrefix = 'HS'; // Fallback
+        const hName = hospital.hospitalName || hospital.name;
+        if (hName) {
+           const words = hName.trim().split(/\s+/).filter(w => w.length > 0);
+           if (words.length > 0) {
+             hospitalPrefix = words.map(w => w[0]).join('').toUpperCase();
+           }
+        }
+        
+        // Aadhaar number last 8 digits, fallback to phone
+        let uniqueSuffix = '';
+        if (this.aadhaar_number && this.aadhaar_number.length >= 8) {
+          uniqueSuffix = this.aadhaar_number.slice(-8);
+        } else if (this.phone && this.phone.length >= 8) {
+          uniqueSuffix = this.phone.slice(-8);
+        } else {
+          uniqueSuffix = Math.floor(10000000 + Math.random() * 90000000).toString();
+        }
 
-        do {
-          patientId = generateStructuredPatientId(
-            this.first_name,
-            this.last_name,
-            this.phone,
-            hospital.hospitalID,
-          );
-          attempts++;
-          
-          // Check if this ID already exists
-          const exists = await mongoose.model('Patient').findOne({ patientId });
-          if (!exists) break;
-          
-          if (attempts >= maxAttempts) {
-            throw new Error('Could not generate unique patient ID');
+        let newUhid = `${hospitalPrefix}${yymm}${uniqueSuffix}`;
+        
+        // Guarantee uniqueness in edge cases
+        let isUnique = false;
+        let suffixCounter = 0;
+        
+        while (!isUnique) {
+          const checkUhid = suffixCounter === 0 ? newUhid : `${newUhid}-${suffixCounter}`;
+          const exists = await mongoose.model('Patient').findOne({ $or: [{ uhid: checkUhid }, { patientId: checkUhid }] });
+          if (!exists) {
+             newUhid = checkUhid;
+             isUnique = true;
+          } else {
+             suffixCounter++;
           }
-        } while (true);
-
-        this.patientId = patientId;
+        }
+        
+        this.uhid = newUhid;
+        this.patientId = newUhid; // replace patientId completely as UHID
         this.hospitalId = hospital.hospitalID;
       }
     }

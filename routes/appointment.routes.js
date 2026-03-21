@@ -5,6 +5,7 @@ const calendarController = require('../controllers/calendarController');
 
 // Create
 router.post('/', appointmentController.createAppointment);
+router.post('/bulk-add', appointmentController.bulkCreateAppointments);
 
 // Read
 router.get('/', appointmentController.getAllAppointments);

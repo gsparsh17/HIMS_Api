@@ -2,6 +2,10 @@ const Appointment = require('../models/Appointment');
 const Calendar = require('../models/Calendar');
 const Prescription = require('../models/Prescription');
 const Vital = require('../models/Vital');
+const Patient = require('../models/Patient');
+const Doctor = require('../models/Doctor');
+const Department = require('../models/Department');
+const Hospital = require('../models/Hospital');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 
 // In your appointment completion function
@@ -699,4 +703,173 @@ exports.getVitalsByAppointmentId = async (req, res) => {
     console.error("Error fetching vitals:", err);
     res.status(500).json({ error: err.message });
   }
+};
+
+// Bulk Create Appointments
+exports.bulkCreateAppointments = async (req, res) => {
+  const appointmentsData = req.body;
+
+  if (!appointmentsData || !Array.isArray(appointmentsData)) {
+    return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
+  }
+
+  const successfulImports = [];
+  const failedImports = [];
+
+  // Assuming single hospital system to make it robust across standard deployments
+  const hospital = await Hospital.findOne();
+  if (!hospital) {
+    return res.status(500).json({ error: 'Hospital not found.' });
+  }
+
+  for (const row of appointmentsData) {
+    try {
+      const isObjectId = (id) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+      
+      const robustParseDate = (dateStr) => {
+        if (!dateStr) return new Date(NaN);
+        let parsed = new Date(dateStr);
+        if (!isNaN(parsed.getTime())) return parsed;
+        
+        // Try fixing DD-MM-YYYY or DD/MM/YYYY format to YYYY-MM-DD
+        let replaced = String(dateStr).replace(/^(\d{2})[-/](\d{2})[-/](\d{4})(.*)$/, '$3-$2-$1$4');
+        parsed = new Date(replaced);
+        if (!isNaN(parsed.getTime())) return parsed;
+        
+        return new Date(NaN);
+      };
+
+      // Find Patient
+      let patient = null;
+      const patientIdentifier = row.patient_uhid || row.uhid || row.patient_id || row.patient_phone;
+      if (patientIdentifier) {
+        if (isObjectId(patientIdentifier)) {
+          patient = await Patient.findById(patientIdentifier);
+        } else {
+          // Look up by exact phone, format, patientId, or email
+          patient = await Patient.findOne({ 
+            $or: [
+              { uhid: patientIdentifier },
+              { patientId: patientIdentifier }, 
+              { phone: patientIdentifier }, 
+              { phone: String(patientIdentifier).trim() }, 
+              { email: patientIdentifier }
+            ] 
+          });
+        }
+      }
+      if (!patient) throw new Error(`Patient not found with provided UHID/ID/Phone: ${patientIdentifier}`);
+
+      // Find Doctor
+      let doctor = null;
+      const doctorIdentifier = row.doctor_email || row.doctor_id;
+      if (doctorIdentifier) {
+        if (isObjectId(doctorIdentifier)) {
+          doctor = await Doctor.findById(doctorIdentifier);
+        } else {
+          doctor = await Doctor.findOne({ 
+            $or: [
+              { email: doctorIdentifier }, 
+              { doctorId: doctorIdentifier }
+            ] 
+          });
+        }
+      }
+      if (!doctor) throw new Error(`Doctor not found with provided Email: ${doctorIdentifier}`);
+
+      // Find Department
+      let department = null;
+      if (row.department_id && isObjectId(row.department_id)) {
+        department = await Department.findById(row.department_id);
+      } else if (row.department_name) {
+        department = await Department.findOne({ name: new RegExp(`^${row.department_name}$`, 'i') });
+      }
+      if (!department && doctor) {
+        department = await Department.findById(doctor.department);
+      }
+      if (!department) throw new Error(`Department not found for Doctor`);
+
+      const appointment_date = robustParseDate(row.appointment_date);
+      if (isNaN(appointment_date.getTime())) {
+        throw new Error(`Invalid appointment_date: ${row.appointment_date}`);
+      }
+
+      const apptData = {
+        patient_id: patient._id,
+        doctor_id: doctor._id,
+        hospital_id: hospital._id,
+        department_id: department._id,
+        appointment_date: appointment_date,
+        type: row.type === 'number-based' ? 'number-based' : 'time-based',
+        appointment_type: row.appointment_type || 'consultation',
+        priority: row.priority || 'Normal',
+        notes: row.notes || '',
+        duration: row.duration ? parseInt(row.duration) : 10,
+        status: row.status || 'Scheduled'
+      };
+
+      const appointment = new Appointment(apptData);
+
+      const calendar = await Calendar.findOne({ hospitalId: hospital._id });
+      if (!calendar) throw new Error('Calendar not found');
+
+      const dateStr = appointment_date.toISOString().split('T')[0];
+      const day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
+      if (!day) throw new Error('Date not found in calendar');
+
+      const docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
+      if (!docDay) throw new Error('Doctor not found on this date');
+
+      if (appointment.type === 'time-based') {
+        if (!row.start_time) throw new Error('Start time is required for time-based appointments');
+        
+        const startTime = robustParseDate(row.start_time);
+        if (isNaN(startTime.getTime())) throw new Error(`Invalid start_time: ${row.start_time}`);
+        
+        const endTime = new Date(startTime.getTime() + appointment.duration * 60000);
+
+        if (hasTimeConflict(docDay.bookedAppointments, startTime, endTime, docDay.breaks)) {
+          throw new Error('Time slot not available (conflict with appointment or break)');
+        }
+
+        appointment.start_time = startTime;
+        appointment.end_time = endTime;
+
+        docDay.bookedAppointments.push({
+          startTime,
+          endTime,
+          duration: appointment.duration,
+          appointmentId: appointment._id,
+          status: 'Scheduled'
+        });
+      } else {
+        const lastPatient = docDay.bookedPatients.sort((a, b) => b.serialNumber - a.serialNumber)[0];
+        const serialNumber = lastPatient ? lastPatient.serialNumber + 1 : 1;
+
+        appointment.serial_number = serialNumber;
+
+        docDay.bookedPatients.push({
+          patientId: appointment.patient_id,
+          serialNumber,
+          appointmentId: appointment._id
+        });
+      }
+
+      await Promise.all([appointment.save(), calendar.save()]);
+      successfulImports.push(appointment);
+
+    } catch (err) {
+      failedImports.push({
+        row: row,
+        reason: err.message,
+      });
+    }
+  }
+
+  res.status(201).json({
+    message: 'Bulk import process completed.',
+    successfulCount: successfulImports.length,
+    failedCount: failedImports.length,
+    failedImports: failedImports,
+  });
 };
