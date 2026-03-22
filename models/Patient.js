@@ -86,7 +86,7 @@ const patientSchema = new mongoose.Schema({
   patient_type: {
     type: String,
     enum: ['opd', 'ipd'],
-    default: 'opd',
+    default: 'ipd',
   },
   aadhaar_number: {  // Added Aadhaar number field
     type: String,

@@ -722,6 +722,10 @@ exports.bulkCreateAppointments = async (req, res) => {
     return res.status(500).json({ error: 'Hospital not found.' });
   }
 
+  // Get current date for comparison (start of day)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
   for (const row of appointmentsData) {
     try {
       const isObjectId = (id) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
@@ -809,17 +813,76 @@ exports.bulkCreateAppointments = async (req, res) => {
       };
 
       const appointment = new Appointment(apptData);
-
-      const calendar = await Calendar.findOne({ hospitalId: hospital._id });
-      if (!calendar) throw new Error('Calendar not found');
+      
+      // Check if this is a historical appointment (date is in the past)
+      const isHistorical = appointment_date < today;
+      
+      if (isHistorical) {
+        // For historical appointments, we only save to Appointment table
+        // No calendar validation needed
+        console.log(`📅 Historical appointment detected for ${appointment_date.toISOString().split('T')[0]}, skipping calendar validation`);
+        
+        // Set start/end times if provided (for time-based)
+        if (appointment.type === 'time-based' && row.start_time) {
+          const startTime = robustParseDate(row.start_time);
+          if (!isNaN(startTime.getTime())) {
+            appointment.start_time = startTime;
+            appointment.end_time = new Date(startTime.getTime() + appointment.duration * 60000);
+          }
+        }
+        
+        // Set serial number if provided (for number-based)
+        if (appointment.type === 'number-based' && row.serial_number) {
+          appointment.serial_number = parseInt(row.serial_number);
+        }
+        
+        // Save appointment without calendar updates
+        await appointment.save();
+        successfulImports.push(appointment);
+        continue; // Skip calendar processing for historical appointments
+      }
+      
+      // For future appointments, process with calendar validation
+      let calendar = await Calendar.findOne({ hospitalId: hospital._id });
+      if (!calendar) {
+        // Create calendar if it doesn't exist
+        calendar = new Calendar({ hospitalId: hospital._id, days: [] });
+        await calendar.save();
+      }
 
       const dateStr = appointment_date.toISOString().split('T')[0];
-      const day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
-      if (!day) throw new Error('Date not found in calendar');
-
-      const docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
-      if (!docDay) throw new Error('Doctor not found on this date');
-
+      let day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
+      
+      // If day doesn't exist, create it
+      if (!day) {
+        const dayName = appointment_date.toLocaleDateString('en-US', { weekday: 'long' });
+        const dateObj = new Date(appointment_date);
+        
+        calendar.days.push({
+          date: dateObj,
+          dayName,
+          doctors: []
+        });
+        
+        day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
+      }
+      
+      // Find or create doctor entry for this day
+      let docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
+      
+      if (!docDay) {
+        // Add doctor to this day
+        day.doctors.push({
+          doctorId: doctor._id,
+          bookedAppointments: [],
+          bookedPatients: [],
+          breaks: []
+        });
+        
+        docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
+      }
+      
+      // Process based on appointment type
       if (appointment.type === 'time-based') {
         if (!row.start_time) throw new Error('Start time is required for time-based appointments');
         
@@ -827,37 +890,40 @@ exports.bulkCreateAppointments = async (req, res) => {
         if (isNaN(startTime.getTime())) throw new Error(`Invalid start_time: ${row.start_time}`);
         
         const endTime = new Date(startTime.getTime() + appointment.duration * 60000);
-
+        
+        // Check for conflicts
         if (hasTimeConflict(docDay.bookedAppointments, startTime, endTime, docDay.breaks)) {
           throw new Error('Time slot not available (conflict with appointment or break)');
         }
-
+        
         appointment.start_time = startTime;
         appointment.end_time = endTime;
-
+        
         docDay.bookedAppointments.push({
           startTime,
           endTime,
           duration: appointment.duration,
           appointmentId: appointment._id,
-          status: 'Scheduled'
+          status: appointment.status || 'Scheduled'
         });
       } else {
-        const lastPatient = docDay.bookedPatients.sort((a, b) => b.serialNumber - a.serialNumber)[0];
+        // Number-based appointment
+        // Get highest serial number
+        const lastPatient = [...docDay.bookedPatients].sort((a, b) => b.serialNumber - a.serialNumber)[0];
         const serialNumber = lastPatient ? lastPatient.serialNumber + 1 : 1;
-
+        
         appointment.serial_number = serialNumber;
-
+        
         docDay.bookedPatients.push({
           patientId: appointment.patient_id,
           serialNumber,
           appointmentId: appointment._id
         });
       }
-
+      
       await Promise.all([appointment.save(), calendar.save()]);
       successfulImports.push(appointment);
-
+      
     } catch (err) {
       failedImports.push({
         row: row,
@@ -870,6 +936,14 @@ exports.bulkCreateAppointments = async (req, res) => {
     message: 'Bulk import process completed.',
     successfulCount: successfulImports.length,
     failedCount: failedImports.length,
+    successfulImports: successfulImports.map(a => ({
+      id: a._id,
+      token: a.token,
+      patient: a.patient_id,
+      doctor: a.doctor_id,
+      date: a.appointment_date,
+      type: a.type
+    })),
     failedImports: failedImports,
   });
 };
