@@ -24,8 +24,8 @@ const patientSchema = new mongoose.Schema({
     type: String
   },
   email: { 
-  type: String,
-},
+    type: String,
+  },
   phone: { 
     type: String, 
     required: true 
@@ -88,12 +88,13 @@ const patientSchema = new mongoose.Schema({
     enum: ['opd', 'ipd'],
     default: 'ipd',
   },
-  aadhaar_number: {  // Added Aadhaar number field
+  aadhaar_number: {
     type: String,
     trim: true,
-    required: [true, 'Aadhaar number is strictly required'],
+    // Removed strict 'required' to allow fallback logic for patients without Aadhaar
     validate: {
       validator: function(v) {
+        if (!v) return true; // Allow empty so fallback logic can run
         return /^\d{12}$/.test(v);
       },
       message: 'Aadhaar number must be exactly 12 digits'
@@ -107,7 +108,15 @@ const patientSchema = new mongoose.Schema({
 
 const Hospital = require('./Hospital');
 
-// Helper function removed because we now generate a modern UHID
+// Helper for the OLD logic (Fallback)
+function generateStructuredPatientId(firstName, lastName, phone, hospitalCode) {
+  const date = new Date();
+  const year = date.getFullYear().toString().slice(-2);
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const namePart = (firstName.substring(0, 3) + (lastName ? lastName.substring(0, 1) : '')).toUpperCase();
+  const phonePart = phone.slice(-4);
+  return `${hospitalCode}-${namePart}${phonePart}-${year}${month}`;
+}
 
 patientSchema.pre('save', async function (next) {
   try {
@@ -125,53 +134,58 @@ patientSchema.pre('save', async function (next) {
       });
 
       if (existingPatient) {
-        // Reuse original UHID for same patient entering as follow-up
         this.uhid = existingPatient.uhid || existingPatient.patientId;
-        this.patientId = existingPatient.patientId; // backward compatibility
+        this.patientId = existingPatient.patientId;
         this.hospitalId = existingPatient.hospitalId;
       } else {
-        const date = new Date();
-        const yymm = `${date.getFullYear().toString().slice(-2)}${(date.getMonth()+1).toString().padStart(2, '0')}`;
-        
-        // Extract Hospital Initials
-        let hospitalPrefix = 'HS'; // Fallback
-        const hName = hospital.hospitalName || hospital.name;
-        if (hName) {
-           const words = hName.trim().split(/\s+/).filter(w => w.length > 0);
-           if (words.length > 0) {
-             hospitalPrefix = words.map(w => w[0]).join('').toUpperCase();
-           }
-        }
-        
-        // Aadhaar number last 8 digits, fallback to phone
-        let uniqueSuffix = '';
-        if (this.aadhaar_number && this.aadhaar_number.length >= 8) {
-          uniqueSuffix = this.aadhaar_number.slice(-8);
-        } else if (this.phone && this.phone.length >= 8) {
-          uniqueSuffix = this.phone.slice(-8);
-        } else {
-          uniqueSuffix = Math.floor(10000000 + Math.random() * 90000000).toString();
+        let finalGeneratedId = '';
+
+        // --- CONDITION: If Aadhaar is present, use New Logic ---
+        if (this.aadhaar_number && this.aadhaar_number.length === 12) {
+          const date = new Date();
+          const yymm = `${date.getFullYear().toString().slice(-2)}${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+          
+          let hospitalPrefix = 'HS'; 
+          const hName = hospital.hospitalName || hospital.name;
+          if (hName) {
+            const words = hName.trim().split(/\s+/).filter(w => w.length > 0);
+            if (words.length > 0) {
+              hospitalPrefix = words.map(w => w[0]).join('').toUpperCase();
+            }
+          }
+          const uniqueSuffix = this.aadhaar_number.slice(-8);
+          finalGeneratedId = `${hospitalPrefix}${yymm}${uniqueSuffix}`;
+        } 
+        // --- FALLBACK: If Aadhaar is NOT present, use Old Logic ---
+        else {
+          finalGeneratedId = generateStructuredPatientId(
+            this.first_name,
+            this.last_name || '',
+            this.phone,
+            hospital.hospitalID
+          );
         }
 
-        let newUhid = `${hospitalPrefix}${yymm}${uniqueSuffix}`;
-        
-        // Guarantee uniqueness in edge cases
+        // Guarantee uniqueness for whichever logic was used
         let isUnique = false;
         let suffixCounter = 0;
-        
+        let checkId = finalGeneratedId;
+
         while (!isUnique) {
-          const checkUhid = suffixCounter === 0 ? newUhid : `${newUhid}-${suffixCounter}`;
-          const exists = await mongoose.model('Patient').findOne({ $or: [{ uhid: checkUhid }, { patientId: checkUhid }] });
+          checkId = suffixCounter === 0 ? finalGeneratedId : `${finalGeneratedId}-${suffixCounter}`;
+          const exists = await mongoose.model('Patient').findOne({ 
+            $or: [{ uhid: checkId }, { patientId: checkId }] 
+          });
+          
           if (!exists) {
-             newUhid = checkUhid;
-             isUnique = true;
+            isUnique = true;
           } else {
-             suffixCounter++;
+            suffixCounter++;
           }
         }
         
-        this.uhid = newUhid;
-        this.patientId = newUhid; // replace patientId completely as UHID
+        this.uhid = checkId;
+        this.patientId = checkId; 
         this.hospitalId = hospital.hospitalID;
       }
     }
