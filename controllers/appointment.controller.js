@@ -6,9 +6,416 @@ const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const Department = require('../models/Department');
 const Hospital = require('../models/Hospital');
+const OfflineSyncLog = require('../models/OfflineSyncLog');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 
-// In your appointment completion function
+// ========== HELPER FUNCTIONS ==========
+function hasTimeConflict(appointments, startTime, endTime, breaks = []) {
+  for (const appt of appointments) {
+    if ((startTime >= appt.startTime && startTime < appt.endTime) ||
+      (endTime > appt.startTime && endTime <= appt.endTime) ||
+      (startTime <= appt.startTime && endTime >= appt.endTime)) {
+      return true;
+    }
+  }
+  for (const brk of breaks) {
+    if ((startTime >= brk.startTime && startTime < brk.endTime) ||
+      (endTime > brk.startTime && endTime <= brk.endTime) ||
+      (startTime <= brk.startTime && endTime >= brk.endTime)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function convertUTCTimeToLocalForDate(utcTimeString, targetDateString) {
+  if (!utcTimeString) return null;
+  const utcDate = new Date(utcTimeString);
+  const targetDate = new Date(targetDateString + 'T00:00:00');
+  return new Date(
+    targetDate.getFullYear(),
+    targetDate.getMonth(),
+    targetDate.getDate(),
+    utcDate.getUTCHours(),
+    utcDate.getUTCMinutes(),
+    utcDate.getUTCSeconds()
+  );
+}
+
+// ========== OFFLINE SYNC METHODS ==========
+
+// Check appointment conflict (for offline pre-check)
+exports.checkAppointmentConflict = async (req, res) => {
+  try {
+    const { doctorId, appointmentDate, startTime, duration = 10 } = req.query;
+
+    const hospital = await Hospital.findOne();
+    if (!hospital) {
+      return res.json({ hasConflict: false, message: 'No hospital found' });
+    }
+
+    const calendar = await Calendar.findOne({ hospitalId: hospital._id });
+    if (!calendar) {
+      return res.json({ hasConflict: false, message: 'No calendar found' });
+    }
+
+    const dateStr = new Date(appointmentDate).toISOString().split('T')[0];
+    const day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
+
+    if (!day) {
+      return res.json({ hasConflict: false, message: 'No schedule for this date' });
+    }
+
+    const doctor = day.doctors.find(d => d.doctorId.toString() === doctorId);
+    if (!doctor) {
+      return res.json({ hasConflict: false, message: 'Doctor not scheduled for this date' });
+    }
+
+    if (startTime) {
+      const start = new Date(startTime);
+      const end = new Date(start.getTime() + parseInt(duration) * 60000);
+
+      const hasConflict = doctor.bookedAppointments.some(appt => {
+        const apptStart = new Date(appt.startTime);
+        const apptEnd = new Date(appt.endTime);
+        return (start < apptEnd && end > apptStart);
+      });
+
+      return res.json({
+        hasConflict,
+        message: hasConflict ? 'Time slot is already booked' : 'Time slot is available'
+      });
+    }
+
+    res.json({ hasConflict: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get appointment by temp ID (for offline resolution)
+exports.getAppointmentByTempId = async (req, res) => {
+  try {
+    const { tempId } = req.params;
+
+    const queueItem = await OfflineSyncLog.findOne({
+      tempAppointmentId: tempId,
+      entityType: 'APPOINTMENT',
+      status: 'SYNCED'
+    });
+
+    if (queueItem && queueItem.serverId) {
+      const appointment = await Appointment.findById(queueItem.serverId)
+        .populate('patient_id')
+        .populate('doctor_id')
+        .populate('department_id')
+        .populate('hospital_id');
+
+      if (appointment) {
+        return res.json({ appointment });
+      }
+    }
+
+    // Also check by localId
+    const syncLog = await OfflineSyncLog.findOne({
+      localId: tempId,
+      entityType: 'APPOINTMENT',
+      status: 'SYNCED'
+    });
+
+    if (syncLog && syncLog.serverId) {
+      const appointment = await Appointment.findById(syncLog.serverId)
+        .populate('patient_id')
+        .populate('doctor_id')
+        .populate('department_id')
+        .populate('hospital_id');
+
+      if (appointment) {
+        return res.json({ appointment });
+      }
+    }
+
+    res.json({ appointment: null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Bulk Create Appointments (Enhanced for offline sync)
+exports.bulkCreateAppointments = async (req, res) => {
+  const appointmentsData = req.body;
+
+  if (!appointmentsData || !Array.isArray(appointmentsData)) {
+    return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
+  }
+
+  const successfulImports = [];
+  const failedImports = [];
+  const syncLogs = [];
+  const calendarUpdates = new Map();
+
+  const hospital = await Hospital.findOne();
+  if (!hospital) {
+    return res.status(500).json({ error: 'Hospital not found.' });
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  for (const appointmentData of appointmentsData) {
+    try {
+      // Get patient server ID - Enhanced lookup logic
+      let patientId = null;
+
+      // Strategy 1: Check if patient_id is already a MongoDB ObjectId
+      if (appointmentData.patient_id && appointmentData.patient_id.match(/^[0-9a-fA-F]{24}$/)) {
+        const patient = await Patient.findById(appointmentData.patient_id);
+        if (patient) {
+          patientId = patient._id;
+        }
+      }
+
+      // Strategy 2: Lookup by patientLocalId mapping from OfflineSyncLog
+      if (!patientId && appointmentData.patientLocalId) {
+        const syncLog = await OfflineSyncLog.findOne({
+          localId: appointmentData.patientLocalId,
+          entityType: 'PATIENT',
+          status: 'SYNCED'
+        });
+
+        if (syncLog && syncLog.serverId) {
+          patientId = syncLog.serverId;
+        }
+      }
+
+      // Strategy 3: Lookup by phone number
+      if (!patientId && appointmentData.phone) {
+        const patient = await Patient.findOne({ phone: appointmentData.phone });
+        if (patient) {
+          patientId = patient._id;
+        }
+      }
+
+      // Strategy 4: Lookup by patientId (UHID) - THIS IS THE KEY FIX
+      if (!patientId && appointmentData.patient_id) {
+        const patient = await Patient.findOne({
+          $or: [
+            { patientId: appointmentData.patient_id },
+            { uhid: appointmentData.patient_id }
+          ]
+        });
+        if (patient) {
+          patientId = patient._id;
+          console.log(`Found patient by patientId/uhid: ${appointmentData.patient_id} -> ${patientId}`);
+        }
+      }
+
+      // Strategy 5: Lookup by any other identifier in the appointment data
+      if (!patientId && appointmentData.uhid) {
+        const patient = await Patient.findOne({ uhid: appointmentData.uhid });
+        if (patient) {
+          patientId = patient._id;
+        }
+      }
+
+      // If still no patient found, try to create one (optional - based on your business logic)
+      if (!patientId && appointmentData.shouldCreatePatient) {
+        const newPatient = new Patient({
+          patientId: appointmentData.patient_id,
+          uhid: appointmentData.patient_id,
+          phone: appointmentData.phone || appointmentData.patient_id,
+          first_name: appointmentData.patient_first_name || 'Offline',
+          last_name: appointmentData.patient_last_name || 'Patient',
+          patient_type: appointmentData.patient_type || 'opd'
+        });
+        await newPatient.save();
+        patientId = newPatient._id;
+        console.log(`Created new patient for ID: ${appointmentData.patient_id}`);
+      }
+
+      if (!patientId) {
+        failedImports.push({
+          localId: appointmentData.localId,
+          patientId: appointmentData.patient_id,
+          patientLocalId: appointmentData.patientLocalId,
+          phone: appointmentData.phone,
+          reason: `Patient not found. Searched by: patient_id=${appointmentData.patient_id}, patientLocalId=${appointmentData.patientLocalId}, phone=${appointmentData.phone}`
+        });
+        continue;
+      }
+
+      // Get doctor
+      const doctor = await Doctor.findById(appointmentData.doctor_id);
+      if (!doctor) {
+        failedImports.push({
+          localId: appointmentData.localId,
+          reason: `Doctor not found: ${appointmentData.doctor_id}`
+        });
+        continue;
+      }
+
+      // Get department
+      let departmentId = appointmentData.department_id;
+      if (!departmentId && doctor.department) {
+        departmentId = doctor.department;
+      }
+
+      // Prepare appointment data
+      const appointmentDate = new Date(appointmentData.appointment_date);
+      const isHistorical = appointmentDate < today;
+
+      const appointment = new Appointment({
+        patient_id: patientId,
+        doctor_id: appointmentData.doctor_id,
+        hospital_id: hospital._id,
+        department_id: departmentId,
+        appointment_date: appointmentDate,
+        type: appointmentData.type || 'time-based',
+        appointment_type: appointmentData.appointment_type || 'consultation',
+        priority: appointmentData.priority || 'Normal',
+        notes: appointmentData.notes || '',
+        duration: appointmentData.duration || 10,
+        status: appointmentData.status || 'Scheduled'
+      });
+
+      // Handle calendar for future appointments
+      if (!isHistorical) {
+        const cacheKey = `${hospital._id}_${appointmentDate.toISOString().split('T')[0]}`;
+        let calendar = calendarUpdates.get(cacheKey);
+
+        if (!calendar) {
+          calendar = await Calendar.findOne({ hospitalId: hospital._id });
+          if (!calendar) {
+            calendar = new Calendar({ hospitalId: hospital._id, days: [] });
+          }
+          calendarUpdates.set(cacheKey, calendar);
+        }
+
+        const dateStr = appointmentDate.toISOString().split('T')[0];
+        let day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
+
+        if (!day) {
+          const dayName = appointmentDate.toLocaleDateString('en-US', { weekday: 'long' });
+          calendar.days.push({
+            date: appointmentDate,
+            dayName,
+            doctors: []
+          });
+          day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
+        }
+
+        let docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
+        if (!docDay) {
+          day.doctors.push({
+            doctorId: doctor._id,
+            bookedAppointments: [],
+            bookedPatients: [],
+            breaks: []
+          });
+          docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
+        }
+
+        if (appointment.type === 'time-based' && appointmentData.start_time) {
+          const startTime = new Date(appointmentData.start_time);
+          const endTime = new Date(startTime.getTime() + appointment.duration * 60000);
+
+          if (hasTimeConflict(docDay.bookedAppointments, startTime, endTime, docDay.breaks)) {
+            failedImports.push({
+              localId: appointmentData.localId,
+              reason: 'Time slot conflict'
+            });
+            continue;
+          }
+
+          appointment.start_time = startTime;
+          appointment.end_time = endTime;
+
+          docDay.bookedAppointments.push({
+            startTime,
+            endTime,
+            duration: appointment.duration,
+            appointmentId: appointment._id,
+            status: appointment.status
+          });
+        } else if (appointment.type === 'number-based') {
+          const lastPatient = docDay.bookedPatients.sort((a, b) => b.serialNumber - a.serialNumber)[0];
+          const serialNumber = lastPatient ? lastPatient.serialNumber + 1 : 1;
+          appointment.serial_number = serialNumber;
+
+          docDay.bookedPatients.push({
+            patientId: appointment.patient_id,
+            serialNumber,
+            appointmentId: appointment._id
+          });
+        }
+      } else {
+        // Historical appointment - set times if provided
+        if (appointment.type === 'time-based' && appointmentData.start_time) {
+          const startTime = new Date(appointmentData.start_time);
+          appointment.start_time = startTime;
+          appointment.end_time = new Date(startTime.getTime() + appointment.duration * 60000);
+        }
+        if (appointment.type === 'number-based' && appointmentData.serial_number) {
+          appointment.serial_number = parseInt(appointmentData.serial_number);
+        }
+      }
+
+      await appointment.save();
+
+      successfulImports.push({
+        localId: appointmentData.localId,
+        serverId: appointment._id,
+        token: appointment.token,
+        serialNumber: appointment.serial_number,
+        patientId: patientId,
+        patientIdentifier: appointmentData.patient_id
+      });
+
+      if (appointmentData.localId) {
+        syncLogs.push({
+          localId: appointmentData.localId,
+          entityType: 'APPOINTMENT',
+          operationType: 'CREATE',
+          data: appointmentData,
+          status: 'SYNCED',
+          serverId: appointment._id,
+          syncedAt: new Date(),
+          tempPatientId: appointmentData.patientLocalId,
+          tempAppointmentId: appointmentData.localId
+        });
+      }
+
+    } catch (err) {
+      console.error('Error processing appointment:', err);
+      failedImports.push({
+        localId: appointmentData.localId,
+        reason: err.message
+      });
+    }
+  }
+
+  // Save all calendar updates
+  for (const calendar of calendarUpdates.values()) {
+    await calendar.save();
+  }
+
+  // Bulk insert sync logs
+  if (syncLogs.length > 0) {
+    await OfflineSyncLog.insertMany(syncLogs);
+  }
+
+  res.status(201).json({
+    message: 'Bulk appointment sync completed',
+    successfulCount: successfulImports.length,
+    failedCount: failedImports.length,
+    successful: successfulImports,
+    failed: failedImports
+  });
+};
+
+// ========== EXISTING METHODS (Preserved) ==========
+
+// Complete appointment
 exports.completeAppointment = async (req, res) => {
   try {
     const appointment = await Appointment.findByIdAndUpdate(
@@ -21,12 +428,10 @@ exports.completeAppointment = async (req, res) => {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
-    // Calculate salary for part-time doctors
     try {
       await calculatePartTimeSalary(appointment._id);
     } catch (salaryError) {
       console.error('Error calculating part-time salary:', salaryError);
-      // You can choose to proceed even if salary calculation fails
     }
 
     res.json({ message: 'Appointment status updated to Completed', appointment });
@@ -39,14 +444,12 @@ exports.completeAppointment = async (req, res) => {
 exports.getDoctorProceduresForDate = async (req, res) => {
   try {
     const { doctorId, date } = req.params;
-    
-    // Parse the date
+
     const targetDate = new Date(date);
     targetDate.setHours(0, 0, 0, 0);
     const nextDate = new Date(targetDate);
     nextDate.setDate(targetDate.getDate() + 1);
 
-    // Find prescriptions with procedures for this doctor
     const prescriptions = await Prescription.find({
       'recommendedProcedures.scheduled_date': {
         $gte: targetDate,
@@ -54,39 +457,33 @@ exports.getDoctorProceduresForDate = async (req, res) => {
       },
       'recommendedProcedures.status': { $in: ['Scheduled', 'In Progress', 'Completed'] }
     })
-    .populate('patient_id', 'first_name last_name patientId phone')
-    .populate('doctor_id', 'firstName lastName')
-    .populate({
-      path: 'recommendedProcedures.performed_by',
-      select: '_id firstName lastName specialization'
-    });
+      .populate('patient_id', 'first_name last_name patientId phone')
+      .populate('doctor_id', 'firstName lastName')
+      .populate({
+        path: 'recommendedProcedures.performed_by',
+        select: '_id firstName lastName specialization'
+      });
 
-    // Extract and format the procedures
     const procedures = [];
     prescriptions.forEach(prescription => {
       (prescription.recommendedProcedures || []).forEach(proc => {
-        // Check if procedure is scheduled for the target date
-        const isOnTargetDate = proc.scheduled_date && 
-            new Date(proc.scheduled_date) >= targetDate && 
-            new Date(proc.scheduled_date) < nextDate;
-        
+        const isOnTargetDate = proc.scheduled_date &&
+          new Date(proc.scheduled_date) >= targetDate &&
+          new Date(proc.scheduled_date) < nextDate;
+
         if (!isOnTargetDate) return;
-        
-        // Check if the procedure is performed by this doctor
+
         let isPerformedByThisDoctor = false;
-        
+
         if (proc.performed_by) {
-          // Get the performed_by ID (whether it's populated or just an ID)
           const performedById = typeof proc.performed_by === 'object' && proc.performed_by !== null
             ? proc.performed_by._id.toString()
             : proc.performed_by?.toString();
-          
+
           isPerformedByThisDoctor = performedById === doctorId;
         }
-        
-        // Only include if performed by this doctor
+
         if (isPerformedByThisDoctor) {
-          // Format performed_by if it exists
           let performedBy = null;
           if (proc.performed_by) {
             if (typeof proc.performed_by === 'object' && proc.performed_by !== null) {
@@ -133,7 +530,6 @@ exports.getDoctorProceduresForDate = async (req, res) => {
       });
     });
 
-    // Sort by scheduled time
     procedures.sort((a, b) => new Date(a.scheduled_date) - new Date(b.scheduled_date));
 
     res.json({
@@ -147,33 +543,7 @@ exports.getDoctorProceduresForDate = async (req, res) => {
   }
 };
 
-// Helper function to check for time slot conflicts
-function hasTimeConflict(appointments, startTime, endTime, breaks = []) {
-  // check against appointments
-  for (const appt of appointments) {
-    if (
-      (startTime >= appt.startTime && startTime < appt.endTime) ||
-      (endTime > appt.startTime && endTime <= appt.endTime) ||
-      (startTime <= appt.startTime && endTime >= appt.endTime)
-    ) {
-      return true;
-    }
-  }
-
-  // check against breaks
-  for (const brk of breaks) {
-    if (
-      (startTime >= brk.startTime && startTime < brk.endTime) ||
-      (endTime > brk.startTime && endTime <= brk.endTime) ||
-      (startTime <= brk.startTime && endTime >= brk.endTime)
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
+// Get appointments by patient ID
 exports.getAppointmentsByPatientId = async (req, res) => {
   try {
     const { patientId } = req.params;
@@ -203,10 +573,10 @@ exports.getAppointmentsByPatientId = async (req, res) => {
   }
 };
 
-// ✅ Create Appointment
+// Create single appointment
 exports.createAppointment = async (req, res) => {
   try {
-    const { type, doctor_id, hospital_id, department_id, appointment_date, duration = 10 } = req.body; // Default duration 10 minutes
+    const { type, doctor_id, hospital_id, department_id, appointment_date, duration = 10 } = req.body;
 
     if (!type || !doctor_id || !hospital_id || !department_id || !appointment_date) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -238,7 +608,10 @@ exports.createAppointment = async (req, res) => {
       const endTime = new Date(startTime.getTime() + duration * 60000);
 
       if (hasTimeConflict(doctor.bookedAppointments, startTime, endTime, doctor.breaks)) {
-        return res.status(400).json({ error: 'Time slot not available (conflict with appointment or break)' });
+        return res.status(409).json({
+          error: 'SLOT_CONFLICT',
+          message: 'Time slot not available (conflict with appointment or break)'
+        });
       }
 
       appointment.start_time = startTime;
@@ -252,12 +625,9 @@ exports.createAppointment = async (req, res) => {
         status: 'Scheduled'
       });
     } else {
-      // Number-based booking
       const lastPatient = doctor.bookedPatients.sort((a, b) => b.serialNumber - a.serialNumber)[0];
       const serialNumber = lastPatient ? lastPatient.serialNumber + 1 : 1;
-
       appointment.serial_number = serialNumber;
-
       doctor.bookedPatients.push({
         patientId: appointment.patient_id,
         serialNumber,
@@ -266,6 +636,21 @@ exports.createAppointment = async (req, res) => {
     }
 
     await Promise.all([appointment.save(), calendar.save()]);
+
+    // Log sync if from offline
+    if (req.body.localId) {
+      await OfflineSyncLog.create({
+        localId: req.body.localId,
+        entityType: 'APPOINTMENT',
+        operationType: 'CREATE',
+        data: req.body,
+        status: 'SYNCED',
+        serverId: appointment._id,
+        syncedAt: new Date(),
+        tempAppointmentId: req.body.localId
+      });
+    }
+
     res.status(201).json(appointment);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -280,9 +665,8 @@ exports.getAllAppointments = async (req, res) => {
       .populate('doctor_id')
       .populate('department_id')
       .populate('hospital_id')
-      .sort({ appointment_date: -1 }); // Sort by date
+      .sort({ appointment_date: -1 });
 
-    // Fetch vitals for each appointment
     const appointmentsWithVitals = await Promise.all(appointments.map(async (appt) => {
       const vital = await Vital.findOne({ appointment_id: appt._id });
       return {
@@ -307,15 +691,8 @@ exports.getAppointmentById = async (req, res) => {
       .populate('hospital_id');
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
-    console.log(`[DEBUG] Fetching appointment ${req.params.id}`);
-
-    // Fetch associated vitals (linked primarily to appointment now)
-    const vitals = await Vital.findOne({ appointment_id: appointment._id }); 
-    console.log(`[DEBUG] Vitals via AppointmentID (${appointment._id}): ${vitals ? 'Found' : 'Not Found'}`);
-    
-    // Fetch associated prescription (independent of vitals now)
+    const vitals = await Vital.findOne({ appointment_id: appointment._id });
     const prescription = await Prescription.findOne({ appointment_id: appointment._id });
-    console.log(`[DEBUG] Prescription via AppointmentID: ${prescription ? 'Found' : 'Not Found'}`);
 
     res.json({
       ...appointment.toObject(),
@@ -327,17 +704,16 @@ exports.getAppointmentById = async (req, res) => {
   }
 };
 
-// Update appointment (basic details - not status)
+// Update appointment
 exports.updateAppointment = async (req, res) => {
   try {
     const { type, start_time, duration } = req.body;
     const appointment = await Appointment.findById(req.params.id);
-    
+
     if (!appointment) {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
-    // Don't allow changing appointment type
     if (type && type !== appointment.type) {
       return res.status(400).json({ error: 'Cannot change appointment type' });
     }
@@ -353,59 +729,51 @@ exports.updateAppointment = async (req, res) => {
     if (!doctor) return res.status(404).json({ error: 'Doctor not found on this day' });
 
     if (appointment.type === 'time-based') {
-      // Handle time changes for time-based appointments
       const newStartTime = start_time ? new Date(start_time) : appointment.start_time;
       const newDuration = duration || ((appointment.end_time - appointment.start_time) / 60000);
       const newEndTime = new Date(newStartTime.getTime() + newDuration * 60000);
 
-      // Check if time is being changed
-      if (newStartTime.getTime() !== appointment.start_time.getTime() || 
-          newEndTime.getTime() !== appointment.end_time.getTime()) {
-        
-        // Check for conflicts (excluding current appointment)
+      if (newStartTime.getTime() !== appointment.start_time.getTime() ||
+        newEndTime.getTime() !== appointment.end_time.getTime()) {
+
         const otherAppointments = doctor.bookedAppointments.filter(
           a => a.appointmentId.toString() !== appointment._id.toString()
         );
-        
+
         if (hasTimeConflict(otherAppointments, newStartTime, newEndTime)) {
           return res.status(400).json({ error: 'New time slot conflicts with existing appointments' });
         }
 
-        // Update calendar appointment
         const calendarAppointment = doctor.bookedAppointments.find(
           a => a.appointmentId.toString() === appointment._id.toString()
         );
-        
+
         if (calendarAppointment) {
           calendarAppointment.startTime = newStartTime;
           calendarAppointment.endTime = newEndTime;
           calendarAppointment.duration = newDuration;
         }
 
-        // Update appointment document
         appointment.start_time = newStartTime;
         appointment.end_time = newEndTime;
       }
     } else {
-      // For number-based appointments, only allow updating serial number if explicitly provided
       if (req.body.serial_number !== undefined) {
         const newSerialNumber = req.body.serial_number;
-        
-        // Check if serial number is already taken
+
         const existingPatient = doctor.bookedPatients.find(
-          p => p.serialNumber === newSerialNumber && 
-               p.appointmentId.toString() !== appointment._id.toString()
+          p => p.serialNumber === newSerialNumber &&
+            p.appointmentId.toString() !== appointment._id.toString()
         );
-        
+
         if (existingPatient) {
           return res.status(400).json({ error: 'Serial number already assigned' });
         }
 
-        // Update in calendar
         const patientEntry = doctor.bookedPatients.find(
           p => p.appointmentId.toString() === appointment._id.toString()
         );
-        
+
         if (patientEntry) {
           patientEntry.serialNumber = newSerialNumber;
         }
@@ -414,15 +782,12 @@ exports.updateAppointment = async (req, res) => {
       }
     }
 
-    // Update other fields
-const { notes, priority, appointment_type, status } = req.body; 
-    
+    const { notes, priority, appointment_type, status } = req.body;
+
     if (notes !== undefined) appointment.notes = notes;
     if (priority !== undefined) appointment.priority = priority;
     if (appointment_type !== undefined) appointment.appointment_type = appointment_type;
-    
-    // 2. ADD this check to actually update the status
-    if (status !== undefined) appointment.status = status; 
+    if (status !== undefined) appointment.status = status;
 
     await Promise.all([appointment.save(), calendar.save()]);
     res.json(appointment);
@@ -448,25 +813,19 @@ exports.deleteAppointment = async (req, res) => {
     if (!doctor) return res.status(404).json({ error: 'Doctor not found on this day' });
 
     if (appointment.type === 'time-based') {
-      // Remove from bookedAppointments
       const appointmentIndex = doctor.bookedAppointments.findIndex(
         a => a.appointmentId.toString() === appointment._id.toString()
       );
-      
+
       if (appointmentIndex !== -1) {
-        // Get the duration to adjust subsequent appointments
         const duration = (appointment.end_time - appointment.start_time) / 60000;
-        
-        // Remove the appointment
         doctor.bookedAppointments.splice(appointmentIndex, 1);
-        
-        // Adjust subsequent appointments
+
         for (let i = appointmentIndex; i < doctor.bookedAppointments.length; i++) {
           const appt = doctor.bookedAppointments[i];
           appt.startTime = new Date(appt.startTime.getTime() - duration * 60000);
           appt.endTime = new Date(appt.endTime.getTime() - duration * 60000);
-          
-          // Update the appointment document
+
           await Appointment.findByIdAndUpdate(appt.appointmentId, {
             start_time: appt.startTime,
             end_time: appt.endTime
@@ -474,7 +833,6 @@ exports.deleteAppointment = async (req, res) => {
         }
       }
     } else {
-      // Remove from bookedPatients
       doctor.bookedPatients = doctor.bookedPatients.filter(
         p => p.appointmentId.toString() !== appointment._id.toString()
       );
@@ -484,7 +842,7 @@ exports.deleteAppointment = async (req, res) => {
       Appointment.findByIdAndDelete(req.params.id),
       calendar.save()
     ]);
-    
+
     res.json({ message: 'Appointment deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -495,7 +853,6 @@ exports.deleteAppointment = async (req, res) => {
 exports.getAppointmentsByDoctorId = async (req, res) => {
   try {
     const { doctorId } = req.params;
-
     const appointments = await Appointment.find({ doctor_id: doctorId })
       .populate('patient_id')
       .populate('doctor_id')
@@ -520,7 +877,6 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
 exports.getAppointmentsByDepartmentId = async (req, res) => {
   try {
     const { departmentId } = req.params;
-
     const appointments = await Appointment.find({ department_id: departmentId })
       .populate('patient_id')
       .populate('doctor_id')
@@ -541,7 +897,6 @@ exports.getAppointmentsByDepartmentId = async (req, res) => {
 exports.getAppointmentsByHospitalId = async (req, res) => {
   try {
     const { hospitalId } = req.params;
-
     const appointments = await Appointment.find({ hospital_id: hospitalId })
       .populate('patient_id')
       .populate('doctor_id')
@@ -572,11 +927,11 @@ exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
         $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
       }
     })
-    .populate('patient_id')
-    .populate('doctor_id')
-    .populate('department_id')
-    .populate('hospital_id')
-    .sort({ start_time: 1 });
+      .populate('patient_id')
+      .populate('doctor_id')
+      .populate('department_id')
+      .populate('hospital_id')
+      .sort({ start_time: 1 });
 
     res.json(appointments);
   } catch (err) {
@@ -584,13 +939,10 @@ exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
   }
 };
 
-
-// // Add this new function to appointment.controller.js
-
 // Update appointment status
 exports.updateAppointmentStatus = async (req, res) => {
   try {
-    const { status } = req.body; 
+    const { status } = req.body;
 
     const appointment = await Appointment.findByIdAndUpdate(
       req.params.id,
@@ -602,17 +954,14 @@ exports.updateAppointmentStatus = async (req, res) => {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
-    // Trigger salary calculation if status is completed
     if (status === 'Completed') {
       try {
         await calculatePartTimeSalary(appointment._id);
-        
-        // Also ensure actual_end_time is set if not already
+
         if (!appointment.actual_end_time) {
           appointment.actual_end_time = new Date();
           await appointment.save();
         }
-
       } catch (salaryError) {
         console.error('Error calculating part-time salary during status update:', salaryError);
       }
@@ -636,11 +985,9 @@ exports.updateVitals = async (req, res) => {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
-    // Check if vitals already exist for this appointment
     let vitalRecord = await Vital.findOne({ appointment_id: appointmentId });
 
     if (vitalRecord) {
-      // Update existing
       vitalRecord.bp = bp || vitalRecord.bp;
       vitalRecord.weight = weight || vitalRecord.weight;
       vitalRecord.pulse = pulse || vitalRecord.pulse;
@@ -653,7 +1000,6 @@ exports.updateVitals = async (req, res) => {
       vitalRecord.recorded_by = req.user ? req.user._id : vitalRecord.recorded_by;
       await vitalRecord.save();
     } else {
-      // Create new
       vitalRecord = await Vital.create({
         patient_id: appointment.patient_id,
         appointment_id: appointmentId,
@@ -669,14 +1015,10 @@ exports.updateVitals = async (req, res) => {
       });
     }
 
-    // Update appointment document to store a reference if needed, or just return success
-    // Optional: could mark appointment status as 'Checked In' or 'Vitals Taken' if you have such a status
-
     res.json({
       message: 'Vitals updated successfully',
       vitals: vitalRecord
     });
-
   } catch (err) {
     console.error("Error updating vitals:", err);
     res.status(500).json({ error: err.message });
@@ -687,263 +1029,10 @@ exports.updateVitals = async (req, res) => {
 exports.getVitalsByAppointmentId = async (req, res) => {
   try {
     const appointmentId = req.params.id;
-    console.log(`[DEBUG] Fetching vitals separately for Appointment ID: ${appointmentId}`);
-    
     const vitals = await Vital.findOne({ appointment_id: appointmentId });
-    
-    if (!vitals) {
-      console.log(`[DEBUG] Vitals NOT found for Appointment ID: ${appointmentId}`);
-      // Return 200 with null or empty object so frontend doesn't error out
-      return res.json(null); 
-    }
-
-    console.log(`[DEBUG] Vitals FOUND:`, vitals);
-    res.json(vitals);
+    res.json(vitals || null);
   } catch (err) {
     console.error("Error fetching vitals:", err);
     res.status(500).json({ error: err.message });
   }
-};
-
-// Bulk Create Appointments
-exports.bulkCreateAppointments = async (req, res) => {
-  const appointmentsData = req.body;
-
-  if (!appointmentsData || !Array.isArray(appointmentsData)) {
-    return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
-  }
-
-  const successfulImports = [];
-  const failedImports = [];
-
-  // Assuming single hospital system to make it robust across standard deployments
-  const hospital = await Hospital.findOne();
-  if (!hospital) {
-    return res.status(500).json({ error: 'Hospital not found.' });
-  }
-
-  // Get current date for comparison (start of day)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  for (const row of appointmentsData) {
-    try {
-      const isObjectId = (id) => typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
-      
-      const robustParseDate = (dateStr) => {
-        if (!dateStr) return new Date(NaN);
-        let parsed = new Date(dateStr);
-        if (!isNaN(parsed.getTime())) return parsed;
-        
-        // Try fixing DD-MM-YYYY or DD/MM/YYYY format to YYYY-MM-DD
-        let replaced = String(dateStr).replace(/^(\d{2})[-/](\d{2})[-/](\d{4})(.*)$/, '$3-$2-$1$4');
-        parsed = new Date(replaced);
-        if (!isNaN(parsed.getTime())) return parsed;
-        
-        return new Date(NaN);
-      };
-
-      // Find Patient
-      let patient = null;
-      const patientIdentifier = row.patient_uhid || row.uhid || row.patient_id || row.patient_phone;
-      if (patientIdentifier) {
-        if (isObjectId(patientIdentifier)) {
-          patient = await Patient.findById(patientIdentifier);
-        } else {
-          // Look up by exact phone, format, patientId, or email
-          patient = await Patient.findOne({ 
-            $or: [
-              { uhid: patientIdentifier },
-              { patientId: patientIdentifier }, 
-              { phone: patientIdentifier }, 
-              { phone: String(patientIdentifier).trim() }, 
-              { email: patientIdentifier }
-            ] 
-          });
-        }
-      }
-      if (!patient) throw new Error(`Patient not found with provided UHID/ID/Phone: ${patientIdentifier}`);
-
-      // Find Doctor
-      let doctor = null;
-      const doctorIdentifier = row.doctor_email || row.doctor_id;
-      if (doctorIdentifier) {
-        if (isObjectId(doctorIdentifier)) {
-          doctor = await Doctor.findById(doctorIdentifier);
-        } else {
-          doctor = await Doctor.findOne({ 
-            $or: [
-              { email: doctorIdentifier }, 
-              { doctorId: doctorIdentifier }
-            ] 
-          });
-        }
-      }
-      if (!doctor) throw new Error(`Doctor not found with provided Email: ${doctorIdentifier}`);
-
-      // Find Department
-      let department = null;
-      if (row.department_id && isObjectId(row.department_id)) {
-        department = await Department.findById(row.department_id);
-      } else if (row.department_name) {
-        department = await Department.findOne({ name: new RegExp(`^${row.department_name}$`, 'i') });
-      }
-      if (!department && doctor) {
-        department = await Department.findById(doctor.department);
-      }
-      if (!department) throw new Error(`Department not found for Doctor`);
-
-      const appointment_date = robustParseDate(row.appointment_date);
-      if (isNaN(appointment_date.getTime())) {
-        throw new Error(`Invalid appointment_date: ${row.appointment_date}`);
-      }
-
-      const apptData = {
-        patient_id: patient._id,
-        doctor_id: doctor._id,
-        hospital_id: hospital._id,
-        department_id: department._id,
-        appointment_date: appointment_date,
-        type: row.type === 'number-based' ? 'number-based' : 'time-based',
-        appointment_type: row.appointment_type || 'consultation',
-        priority: row.priority || 'Normal',
-        notes: row.notes || '',
-        duration: row.duration ? parseInt(row.duration) : 10,
-        status: row.status || 'Scheduled'
-      };
-
-      const appointment = new Appointment(apptData);
-      
-      // Check if this is a historical appointment (date is in the past)
-      const isHistorical = appointment_date < today;
-      
-      if (isHistorical) {
-        // For historical appointments, we only save to Appointment table
-        // No calendar validation needed
-        console.log(`📅 Historical appointment detected for ${appointment_date.toISOString().split('T')[0]}, skipping calendar validation`);
-        
-        // Set start/end times if provided (for time-based)
-        if (appointment.type === 'time-based' && row.start_time) {
-          const startTime = robustParseDate(row.start_time);
-          if (!isNaN(startTime.getTime())) {
-            appointment.start_time = startTime;
-            appointment.end_time = new Date(startTime.getTime() + appointment.duration * 60000);
-          }
-        }
-        
-        // Set serial number if provided (for number-based)
-        if (appointment.type === 'number-based' && row.serial_number) {
-          appointment.serial_number = parseInt(row.serial_number);
-        }
-        
-        // Save appointment without calendar updates
-        await appointment.save();
-        successfulImports.push(appointment);
-        continue; // Skip calendar processing for historical appointments
-      }
-      
-      // For future appointments, process with calendar validation
-      let calendar = await Calendar.findOne({ hospitalId: hospital._id });
-      if (!calendar) {
-        // Create calendar if it doesn't exist
-        calendar = new Calendar({ hospitalId: hospital._id, days: [] });
-        await calendar.save();
-      }
-
-      const dateStr = appointment_date.toISOString().split('T')[0];
-      let day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
-      
-      // If day doesn't exist, create it
-      if (!day) {
-        const dayName = appointment_date.toLocaleDateString('en-US', { weekday: 'long' });
-        const dateObj = new Date(appointment_date);
-        
-        calendar.days.push({
-          date: dateObj,
-          dayName,
-          doctors: []
-        });
-        
-        day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
-      }
-      
-      // Find or create doctor entry for this day
-      let docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
-      
-      if (!docDay) {
-        // Add doctor to this day
-        day.doctors.push({
-          doctorId: doctor._id,
-          bookedAppointments: [],
-          bookedPatients: [],
-          breaks: []
-        });
-        
-        docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
-      }
-      
-      // Process based on appointment type
-      if (appointment.type === 'time-based') {
-        if (!row.start_time) throw new Error('Start time is required for time-based appointments');
-        
-        const startTime = robustParseDate(row.start_time);
-        if (isNaN(startTime.getTime())) throw new Error(`Invalid start_time: ${row.start_time}`);
-        
-        const endTime = new Date(startTime.getTime() + appointment.duration * 60000);
-        
-        // Check for conflicts
-        if (hasTimeConflict(docDay.bookedAppointments, startTime, endTime, docDay.breaks)) {
-          throw new Error('Time slot not available (conflict with appointment or break)');
-        }
-        
-        appointment.start_time = startTime;
-        appointment.end_time = endTime;
-        
-        docDay.bookedAppointments.push({
-          startTime,
-          endTime,
-          duration: appointment.duration,
-          appointmentId: appointment._id,
-          status: appointment.status || 'Scheduled'
-        });
-      } else {
-        // Number-based appointment
-        // Get highest serial number
-        const lastPatient = [...docDay.bookedPatients].sort((a, b) => b.serialNumber - a.serialNumber)[0];
-        const serialNumber = lastPatient ? lastPatient.serialNumber + 1 : 1;
-        
-        appointment.serial_number = serialNumber;
-        
-        docDay.bookedPatients.push({
-          patientId: appointment.patient_id,
-          serialNumber,
-          appointmentId: appointment._id
-        });
-      }
-      
-      await Promise.all([appointment.save(), calendar.save()]);
-      successfulImports.push(appointment);
-      
-    } catch (err) {
-      failedImports.push({
-        row: row,
-        reason: err.message,
-      });
-    }
-  }
-
-  res.status(201).json({
-    message: 'Bulk import process completed.',
-    successfulCount: successfulImports.length,
-    failedCount: failedImports.length,
-    successfulImports: successfulImports.map(a => ({
-      id: a._id,
-      token: a.token,
-      patient: a.patient_id,
-      doctor: a.doctor_id,
-      date: a.appointment_date,
-      type: a.type
-    })),
-    failedImports: failedImports,
-  });
 };
