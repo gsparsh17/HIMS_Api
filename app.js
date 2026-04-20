@@ -55,6 +55,7 @@ const invoiceRoutes = require('./routes/invoice.routes');
 const salaryRoutes = require('./routes/salary.routes');
 const revenueRoutes = require('./routes/revenue.routes');
 const pathologyStaffRoutes = require('./routes/pathologyStaff.routes');
+const licenseRoutes = require('./routes/license.routes.js');
 const cronJobs = require('./jobs/jobs');
 const { updateCalendar } = require('./jobs/calendarJob.js');
 
@@ -75,6 +76,7 @@ const externalLabRoutes = require('./routes/externalLab.routes');
 
 // Add this with other route registrations
 app.use('/api/external-lab', externalLabRoutes);
+app.use("/api/license", licenseRoutes);
 
 // Error Handlers
 app.use((req, res, next) => {
