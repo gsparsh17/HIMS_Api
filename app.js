@@ -44,7 +44,8 @@ app.use('/api/hospitals', require('./routes/hospital.routes'));
 app.use('/api/hospital-charges', require('./routes/hospitalcharges.routes'));
 app.use('/api/calendar', require('./routes/calendar.routes'));
 app.use('/api/customers', require('./routes/customer.routes.js'));
-app.use('/api/suppliers', require('./routes/supplierRoutes.js')); // ADDED: Mount the supplier routes
+app.use('/api/suppliers', require('./routes/supplierRoutes.js'));
+app.use('/api/episodes', require('./routes/episode.routes.js'));
 const medicineRoutes = require('./routes/medicine.routes');
 const batchRoutes = require('./routes/batch.routes');
 const stockAdjustmentRoutes = require('./routes/stockAdjustment.routes');
@@ -69,6 +70,11 @@ app.use('/api/pharmacy', pharmacyRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/pathology-staff', pathologyStaffRoutes);
 app.use('/api/labtests', require('./routes/labTest.routes.js'));
+// Add this with other route imports
+const externalLabRoutes = require('./routes/externalLab.routes');
+
+// Add this with other route registrations
+app.use('/api/external-lab', externalLabRoutes);
 
 // Error Handlers
 app.use((req, res, next) => {

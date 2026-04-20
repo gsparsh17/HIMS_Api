@@ -1,4 +1,3 @@
-// routes/labreport.routes.js
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/labreport.controller');
@@ -19,25 +18,23 @@ const upload = multer({
   storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png'];
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PDF, DOC, DOCX, JPG, PNG are allowed.'));
+      cb(new Error('Invalid file type. Only PDF, JPG, PNG are allowed.'));
     }
   }
 });
 
-// Get reports by patient
+// Routes
 router.get('/patient/:patientId', controller.getReportsByPatient);
-
-// Get reports by prescription
 router.get('/prescription/:prescriptionId', controller.getReportsByPrescription);
-
-// Upload report file
 router.post('/upload', upload.single('report'), controller.uploadReport);
-
-// CRUD routes
+router.get('/download/:report_id', controller.downloadReport);
+router.get('/download-stream/:report_id', controller.downloadReportStream);
+router.get('/external/:prescription_id/:lab_test_id/download', controller.downloadExternalReport);
+router.get('/external/:prescription_id/:lab_test_id/stream', controller.downloadExternalReportStream);
 router.post('/', controller.createLabReport);
 router.get('/', controller.getAllLabReports);
 router.get('/:id', controller.getReportById);

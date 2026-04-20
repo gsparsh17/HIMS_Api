@@ -27,6 +27,9 @@ router.get('/:id', appointmentController.getAppointmentById);
 // Get vitals by appointment ID
 router.get('/:id/vitals', appointmentController.getVitalsByAppointmentId);
 
+// Add this line with other routes
+router.post('/link-episode', appointmentController.linkAppointmentToEpisodeSuggestion);
+
 // ========== DOCTOR SPECIFIC ENDPOINTS ==========
 // Get doctor's procedures for a specific date
 router.get('/doctor/:doctorId/procedures/:date', appointmentController.getDoctorProceduresForDate);

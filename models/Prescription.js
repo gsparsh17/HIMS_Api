@@ -187,6 +187,7 @@ const recommendedProcedureSchema = new mongoose.Schema({
 });
 
 // ✅ NEW: Recommended Lab Tests (mirrors procedures)
+// Update the recommendedLabTestSchema to include external lab fields
 const recommendedLabTestSchema = new mongoose.Schema({
   lab_test_code: {
     type: String,
@@ -204,7 +205,7 @@ const recommendedLabTestSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Pending', 'Scheduled', 'Sample Collected', 'Processing', 'Completed', 'Cancelled'],
+    enum: ['Pending', 'Scheduled', 'Sample Collected', 'Processing', 'Completed', 'Cancelled', 'Referred Out'],
     default: 'Pending'
   },
   scheduled_date: {
@@ -234,6 +235,34 @@ const recommendedLabTestSchema = new mongoose.Schema({
   },
   report_url: {
     type: String
+  },
+  is_referred_out: {
+    type: Boolean,
+    default: false
+  },
+  external_lab_details: {
+    lab_name: { type: String, trim: true },
+    lab_address: { type: String, trim: true },
+    contact_person: { type: String, trim: true },
+    contact_phone: { type: String, trim: true },
+    reference_number: { type: String, trim: true },
+    external_report_url: { type: String },
+    external_report_received_date: { type: Date }
+  },
+  sample_handover_log: [{
+    handed_over_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    handed_over_at: { type: Date, default: Date.now },
+    courier_name: { type: String, trim: true },
+    tracking_number: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    received_by_external: { type: Boolean, default: false }
+  }],
+  external_report_uploaded_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  external_report_uploaded_at: {
+    type: Date
   }
 });
 

@@ -8,6 +8,30 @@ const Department = require('../models/Department');
 const Hospital = require('../models/Hospital');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
+// Add this function to handle episode linking during appointment creation
+exports.linkAppointmentToEpisodeSuggestion = async (req, res) => {
+  try {
+    const { appointmentId, episodeId } = req.body;
+
+    const appointment = await Appointment.findByIdAndUpdate(
+      appointmentId,
+      { episodeId },
+      { new: true }
+    );
+
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Appointment linked to episode',
+      appointment
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
 
 // ========== HELPER FUNCTIONS ==========
 function hasTimeConflict(appointments, startTime, endTime, breaks = []) {

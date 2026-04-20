@@ -31,6 +31,11 @@ const appointmentSchema = new mongoose.Schema({
     default: 'Scheduled'
   },
   created_at: { type: Date, default: Date.now },
+  episodeId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Episode',
+    index: true
+  },
   actual_start_time: Date, // When the appointment actually started
   actual_end_time: Date,   // When the appointment actually ended
   duration: Number,        // Actual duration in minutes
