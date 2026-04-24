@@ -778,6 +778,7 @@ exports.createPrescription = async (req, res) => {
       doctor_id,
       appointment_id,
       diagnosis,
+      diagnosis_icd11_code, // NEW: ICD-11 code from frontend
       symptoms,
       notes,
       investigation,
@@ -790,11 +791,12 @@ exports.createPrescription = async (req, res) => {
       is_repeatable,
       repeat_count,
       recommendedProcedures = [],
-      recommendedLabTests = [] // ✅ NEW
+      recommendedLabTests = []
     } = req.body;
 
     console.log('Creating prescription with procedures:', recommendedProcedures);
     console.log('Creating prescription with lab tests:', recommendedLabTests);
+    console.log('ICD-11 Code:', diagnosis_icd11_code);
 
     // Process items to ensure all fields are included
     const processedItems = items && Array.isArray(items)
@@ -880,7 +882,7 @@ exports.createPrescription = async (req, res) => {
         })
     );
 
-    // ✅ Process lab tests with their costs (similar to procedures)
+    // Process lab tests with their costs
     const processedLabTests = await Promise.all(
       (recommendedLabTests || [])
         .filter(t => t.lab_test_code && t.lab_test_name)
@@ -888,14 +890,14 @@ exports.createPrescription = async (req, res) => {
           try {
             const labCode = extractLabTestCode(t.lab_test_code);
 
-            // Find lab test in database to get correct cost (adjust fields to your LabTest schema)
+            // Find lab test in database to get correct cost
             const labTest = await LabTest.findOne({
               code: labCode,
               is_active: true
             });
 
             if (labTest) {
-              // Increment usage count (if your schema has these fields)
+              // Increment usage count
               await LabTest.findByIdAndUpdate(labTest._id, {
                 $inc: { usage_count: 1 },
                 last_used: new Date()
@@ -959,12 +961,13 @@ exports.createPrescription = async (req, res) => {
     const totalProcedureCost = processedProcedures.reduce((sum, proc) => sum + (proc.cost || 0), 0);
     const totalLabTestCost = processedLabTests.reduce((sum, t) => sum + (t.cost || 0), 0);
 
-    // Create prescription
+    // Create prescription with ICD-11 code
     const prescription = new Prescription({
       patient_id,
       doctor_id,
       appointment_id,
       diagnosis: diagnosis || '',
+      diagnosis_icd11_code: diagnosis_icd11_code || null, // Store ICD-11 code
       symptoms: symptoms || '',
       investigation: investigation || null,
       presenting_complaint: presenting_complaint || '',
@@ -977,7 +980,6 @@ exports.createPrescription = async (req, res) => {
       total_procedure_cost: totalProcedureCost,
       procedures_status: processedProcedures.length > 0 ? 'Pending' : 'None',
 
-      // ✅ NEW: lab tests fields
       recommendedLabTests: processedLabTests,
       has_lab_tests: processedLabTests.length > 0,
       total_lab_test_cost: totalLabTestCost,
@@ -1004,6 +1006,10 @@ exports.createPrescription = async (req, res) => {
       success: true,
       prescription: populatedPrescription,
       message: 'Prescription created successfully',
+      diagnosis_icd11: {
+        code: diagnosis_icd11_code || null,
+        text: diagnosis || ''
+      },
       procedures: {
         count: processedProcedures.length,
         totalCost: totalProcedureCost,

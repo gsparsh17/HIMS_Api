@@ -186,8 +186,7 @@ const recommendedProcedureSchema = new mongoose.Schema({
   }
 });
 
-// ✅ NEW: Recommended Lab Tests (mirrors procedures)
-// Update the recommendedLabTestSchema to include external lab fields
+// Recommended Lab Tests (mirrors procedures)
 const recommendedLabTestSchema = new mongoose.Schema({
   lab_test_code: {
     type: String,
@@ -297,6 +296,12 @@ const prescriptionSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  // ICD-11 Code Field
+  diagnosis_icd11_code: {
+    type: String,
+    trim: true,
+    index: true
+  },
   symptoms: {
     type: String,
     trim: true
@@ -359,7 +364,7 @@ const prescriptionSchema = new mongoose.Schema({
     default: 'None'
   },
 
-  // ✅ Lab test flags
+  // Lab test flags
   has_lab_tests: {
     type: Boolean,
     default: false
@@ -463,7 +468,7 @@ prescriptionSchema.virtual('are_procedures_completed').get(function() {
   return this.recommendedProcedures.every(proc => proc.status === 'Completed');
 });
 
-// ✅ Check if all lab tests are completed
+// Check if all lab tests are completed
 prescriptionSchema.virtual('are_lab_tests_completed').get(function() {
   if (!this.has_lab_tests) return true;
   return this.recommendedLabTests.every(t => t.status === 'Completed');
@@ -475,7 +480,7 @@ prescriptionSchema.virtual('pending_procedures_count').get(function() {
   return this.recommendedProcedures.filter(p => p.status === 'Pending').length;
 });
 
-// ✅ Virtual for pending lab tests count
+// Virtual for pending lab tests count
 prescriptionSchema.virtual('pending_lab_tests_count').get(function() {
   if (!this.has_lab_tests) return 0;
   return this.recommendedLabTests.filter(t => t.status === 'Pending').length;
@@ -494,7 +499,7 @@ prescriptionSchema.virtual('todays_procedures').get(function() {
   });
 });
 
-// ✅ Virtual for today's lab tests
+// Virtual for today's lab tests
 prescriptionSchema.virtual('todays_lab_tests').get(function() {
   if (!this.has_lab_tests) return [];
   const today = new Date();
@@ -512,6 +517,7 @@ prescriptionSchema.index({ patient_id: 1, issue_date: -1 });
 prescriptionSchema.index({ doctor_id: 1, issue_date: -1 });
 prescriptionSchema.index({ prescription_number: 1 });
 prescriptionSchema.index({ status: 1 });
+prescriptionSchema.index({ diagnosis_icd11_code: 1 }); // Index for ICD-11 code
 
 prescriptionSchema.index({ 'recommendedProcedures.status': 1 });
 prescriptionSchema.index({ 'recommendedProcedures.scheduled_date': 1 });

@@ -56,9 +56,13 @@ const salaryRoutes = require('./routes/salary.routes');
 const revenueRoutes = require('./routes/revenue.routes');
 const pathologyStaffRoutes = require('./routes/pathologyStaff.routes');
 const licenseRoutes = require('./routes/license.routes.js');
-const cronJobs = require('./jobs/jobs');
-const { updateCalendar } = require('./jobs/calendarJob.js');
+const { startBackupScheduler } = require('./scripts/backupScheduler');
 
+// Start backup scheduler when server starts
+// startBackupScheduler();
+
+const backupRoutes = require('./routes/backup.routes');
+app.use('/api/admin/backups', backupRoutes);
 app.use('/api/salaries', salaryRoutes);
 app.use('/api/revenue', revenueRoutes);
 
@@ -77,6 +81,7 @@ const externalLabRoutes = require('./routes/externalLab.routes');
 // Add this with other route registrations
 app.use('/api/external-lab', externalLabRoutes);
 app.use("/api/license", licenseRoutes);
+app.use('/api/icd11', require('./routes/icd11.routes.js'));
 
 // Error Handlers
 app.use((req, res, next) => {

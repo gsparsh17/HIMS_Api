@@ -7,14 +7,18 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@google-cloud/local-auth": "^3.0.1",
+    "archiver": "^7.0.1",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.7.0",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
+    "csv-parser": "^3.2.0",
     "dexie": "^4.4.2",
     "dotenv": "^16.0.3",
     "exceljs": "^4.4.0",
     "express": "^4.18.2",
+    "googleapis": "^171.4.0",
     "jsonwebtoken": "^9.0.0",
     "moment": "^2.30.1",
     "mongoose": "^7.0.4",

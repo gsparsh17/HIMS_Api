@@ -1,9 +1,9 @@
 require("dotenv").config();
 
 const axios = require("axios");
-const connectDB = require("./config/db");
-const getToken = require("./utils/getToken");
-const fetchEntity = require("./utils/fetchICD");
+const connectDB = require("../config/db");
+const getToken = require("../utils/getToken");
+const fetchEntity = require("../utils/fetchICD");
 
 async function getRoot(token) {
   const res = await axios.get(

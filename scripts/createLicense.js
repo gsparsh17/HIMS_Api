@@ -2,7 +2,7 @@
 
 const mongoose = require("mongoose");
 const dotenv = require("dotenv");
-const License = require("./models/License");
+const License = require("../models/License");
 
 dotenv.config();
 
