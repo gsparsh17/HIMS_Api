@@ -57,6 +57,10 @@ const revenueRoutes = require('./routes/revenue.routes');
 const pathologyStaffRoutes = require('./routes/pathologyStaff.routes');
 const licenseRoutes = require('./routes/license.routes.js');
 const { startBackupScheduler } = require('./scripts/backupScheduler');
+const ipdRoutes = require('./routes/ipd.routes');
+const wardRoutes = require('./routes/ward.routes');
+app.use('/api/ipd', ipdRoutes);
+app.use('/api/wards', wardRoutes);
 
 // Start backup scheduler when server starts
 // startBackupScheduler();
