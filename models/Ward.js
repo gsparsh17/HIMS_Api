@@ -9,7 +9,6 @@ const wardSchema = new mongoose.Schema({
   code: {
     type: String,
     unique: true,
-    required: true,
     uppercase: true,
     trim: true
   },
@@ -42,13 +41,21 @@ const wardSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Generate code before save
-wardSchema.pre('save', async function(next) {
-  if (!this.code) {
-    const count = await mongoose.model('Ward').countDocuments();
-    this.code = `WRD${String(count + 1).padStart(3, '0')}`;
+// Generate code before validate (to ensure code is generated before validation)
+wardSchema.pre('validate', async function(next) {
+  if (!this.code && this.name) {
+    try {
+      const Ward = mongoose.model('Ward');
+      const count = await Ward.countDocuments();
+      // Generate code: WRD001, WRD002, etc.
+      this.code = `WRD${String(count + 1).padStart(3, '0')}`;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  } else {
+    next();
   }
-  next();
 });
 
 module.exports = mongoose.model('Ward', wardSchema);

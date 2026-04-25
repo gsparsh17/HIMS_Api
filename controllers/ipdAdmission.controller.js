@@ -13,6 +13,7 @@ const DischargeSummary = require('../models/DischargeSummary');
 // ========== ADMISSION CRUD ==========
 
 // Create new IPD admission
+// Create new IPD admission
 exports.createAdmission = async (req, res) => {
   try {
     const {
@@ -44,9 +45,9 @@ exports.createAdmission = async (req, res) => {
       patientId,
       status: { $in: ['Admitted', 'Under Treatment', 'Discharge Initiated'] }
     });
-    
+
     if (existingAdmission) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Patient already has an active admission',
         admissionNumber: existingAdmission.admissionNumber
       });
@@ -56,7 +57,7 @@ exports.createAdmission = async (req, res) => {
     let bed = null;
     let roomId = null;
     let wardId = null;
-    
+
     if (bedId) {
       bed = await Bed.findById(bedId).populate('roomId');
       if (!bed) {
@@ -69,8 +70,18 @@ exports.createAdmission = async (req, res) => {
       wardId = bed.wardId;
     }
 
+    // Generate admission number manually (fallback)
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const count = await IPDAdmission.countDocuments();
+    const sequence = String(count + 1).padStart(4, '0');
+    const admissionNumber = `IPD-${year}${month}${day}-${sequence}`;
+
     // Create admission
     const admission = new IPDAdmission({
+      admissionNumber, // Manually set the admission number
       patientId,
       admissionType,
       departmentId,
@@ -115,7 +126,7 @@ exports.createAdmission = async (req, res) => {
         addedBy: req.user?._id
       });
       await charge.save();
-      
+
       admission.advanceAmount = advanceAmount;
       admission.paidAmount = advanceAmount;
       await admission.save();
@@ -135,22 +146,30 @@ exports.createAdmission = async (req, res) => {
 // Get all admissions with filters
 exports.getAllAdmissions = async (req, res) => {
   try {
-    const { 
-      page = 1, 
-      limit = 20, 
-      status, 
-      patientId, 
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      patientId,
       doctorId,
       startDate,
       endDate,
-      search 
+      search
     } = req.query;
 
     const filter = {};
-    if (status) filter.status = status;
+
+    // Fix: Handle comma-separated status values
+    if (status) {
+      // Split by comma and trim whitespace
+      const statusArray = status.split(',').map(s => s.trim());
+      // If there's only one status, use direct match, otherwise use $in operator
+      filter.status = statusArray.length === 1 ? statusArray[0] : { $in: statusArray };
+    }
+
     if (patientId) filter.patientId = patientId;
     if (doctorId) filter.primaryDoctorId = doctorId;
-    
+
     if (startDate || endDate) {
       filter.admissionDate = {};
       if (startDate) filter.admissionDate.$gte = new Date(startDate);
@@ -166,7 +185,7 @@ exports.getAllAdmissions = async (req, res) => {
           { phone: { $regex: search, $options: 'i' } }
         ]
       }).select('_id');
-      
+
       filter.patientId = { $in: patients.map(p => p._id) };
     }
 
@@ -190,7 +209,7 @@ exports.getAllAdmissions = async (req, res) => {
         { $match: { admissionId: admission._id } },
         { $group: { _id: null, total: { $sum: '$netAmount' } } }
       ]);
-      
+
       return {
         ...admission.toObject(),
         stats: {
@@ -217,7 +236,7 @@ exports.getAllAdmissions = async (req, res) => {
 exports.getAdmissionById = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const admission = await IPDAdmission.findById(id)
       .populate('patientId', 'first_name last_name patientId phone dob gender blood_group')
       .populate('primaryDoctorId', 'firstName lastName specialization')
@@ -236,20 +255,20 @@ exports.getAdmissionById = async (req, res) => {
       .populate('doctorId', 'firstName lastName')
       .sort({ roundDateTime: -1 })
       .limit(5);
-      
+
     const nursingNotes = await NursingNote.find({ admissionId: admission._id })
       .populate('nurseId', 'first_name last_name')
       .sort({ noteDateTime: -1 })
       .limit(5);
-      
+
     const vitals = await IPDVitals.find({ admissionId: admission._id })
       .populate('recordedBy', 'first_name last_name')
       .sort({ recordedAt: -1 })
       .limit(10);
-      
+
     const charges = await IPDCharge.find({ admissionId: admission._id })
       .sort({ chargeDate: -1 });
-      
+
     const dischargeSummary = await DischargeSummary.findOne({ admissionId: admission._id });
 
     res.json({
@@ -271,17 +290,17 @@ exports.updateAdmission = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-    
+
     const admission = await IPDAdmission.findByIdAndUpdate(
       id,
       { ...updates, updatedBy: req.user?._id },
       { new: true, runValidators: true }
     );
-    
+
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found' });
     }
-    
+
     res.json({
       success: true,
       message: 'Admission updated successfully',
@@ -298,12 +317,12 @@ exports.updateAdmissionStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, reason } = req.body;
-    
+
     const admission = await IPDAdmission.findById(id);
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found' });
     }
-    
+
     // Status transition validation
     const validTransitions = {
       'Admitted': ['Under Treatment', 'Discharge Initiated'],
@@ -315,26 +334,26 @@ exports.updateAdmissionStatus = async (req, res) => {
       'Ready for Discharge': ['Discharged', 'Payment Pending'],
       'Discharged': []
     };
-    
+
     if (validTransitions[admission.status] && !validTransitions[admission.status].includes(status)) {
       return res.status(400).json({ error: `Invalid status transition from ${admission.status} to ${status}` });
     }
-    
+
     if (status === 'Discharged' && !admission.dischargeDate) {
       admission.dischargeDate = new Date();
     }
-    
+
     if (reason && (status === 'LAMA' || status === 'DAMA' || status === 'Expired')) {
       admission.dischargeReason = reason;
       if (status === 'LAMA' || status === 'DAMA') {
         admission.isLAMA = true;
       }
     }
-    
+
     admission.status = status;
     admission.updatedBy = req.user?._id;
     await admission.save();
-    
+
     // If discharged, release the bed
     if (status === 'Discharged' && admission.bedId) {
       await Bed.findByIdAndUpdate(admission.bedId, {
@@ -342,7 +361,7 @@ exports.updateAdmissionStatus = async (req, res) => {
         currentAdmissionId: null
       });
     }
-    
+
     res.json({
       success: true,
       message: `Admission status updated to ${status}`,
@@ -358,20 +377,20 @@ exports.updateAdmissionStatus = async (req, res) => {
 exports.deleteAdmission = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const admission = await IPDAdmission.findById(id);
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found' });
     }
-    
+
     if (admission.status !== 'Admitted' && admission.status !== 'Under Treatment') {
       return res.status(400).json({ error: 'Cannot cancel admission after treatment has progressed' });
     }
-    
+
     admission.status = 'Cancelled';
     admission.updatedBy = req.user?._id;
     await admission.save();
-    
+
     // Release bed if occupied
     if (admission.bedId) {
       await Bed.findByIdAndUpdate(admission.bedId, {
@@ -379,7 +398,7 @@ exports.deleteAdmission = async (req, res) => {
         currentAdmissionId: null
       });
     }
-    
+
     res.json({
       success: true,
       message: 'Admission cancelled successfully'
@@ -396,19 +415,19 @@ exports.getDashboardStats = async (req, res) => {
     const totalAdmitted = await IPDAdmission.countDocuments({
       status: { $in: ['Admitted', 'Under Treatment'] }
     });
-    
+
     const dischargeInitiated = await IPDAdmission.countDocuments({
       status: { $in: ['Discharge Initiated', 'Discharge Summary Pending', 'Billing Pending', 'Payment Pending', 'Ready for Discharge'] }
     });
-    
+
     const dischargedToday = await IPDAdmission.countDocuments({
       status: 'Discharged',
       dischargeDate: { $gte: new Date().setHours(0, 0, 0, 0) }
     });
-    
+
     const occupiedBeds = await Bed.countDocuments({ status: 'Occupied' });
     const availableBeds = await Bed.countDocuments({ status: 'Available' });
-    
+
     const criticalPatients = await IPDAdmission.countDocuments({
       status: { $in: ['Admitted', 'Under Treatment'] },
       $or: [
@@ -416,20 +435,20 @@ exports.getDashboardStats = async (req, res) => {
         { roomId: { $in: await Room.find({ type: 'ICU' }).distinct('_id') } }
       ]
     });
-    
+
     const pendingLabReports = await LabReport.countDocuments({ status: 'Pending' });
-    
+
     const pendingPayments = await IPDAdmission.aggregate([
       { $match: { status: { $in: ['Under Treatment', 'Discharge Initiated'] } } },
       { $group: { _id: null, total: { $sum: { $subtract: ['$totalBillAmount', '$paidAmount'] } } } }
     ]);
-    
+
     const recentAdmissions = await IPDAdmission.find()
       .populate('patientId', 'first_name last_name patientId')
       .populate('primaryDoctorId', 'firstName lastName')
       .sort({ admissionDate: -1 })
       .limit(10);
-    
+
     res.json({
       success: true,
       stats: {

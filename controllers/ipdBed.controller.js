@@ -1,4 +1,6 @@
 const Bed = require('../models/Bed');
+const Room = require('../models/Room');
+const Ward = require('../models/Ward');
 
 // ========== BED CRUD ==========
 
@@ -7,13 +9,36 @@ exports.createBed = async (req, res) => {
   try {
     const { bedNumber, roomId, wardId, bedType, dailyCharge, features } = req.body;
     
+    // Validate required fields
+    if (!bedNumber) {
+      return res.status(400).json({ error: 'Bed number is required' });
+    }
+    if (!roomId) {
+      return res.status(400).json({ error: 'Room ID is required' });
+    }
+    if (!bedType) {
+      return res.status(400).json({ error: 'Bed type is required' });
+    }
+    
+    // Verify room exists
+    const room = await Room.findById(roomId);
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+    
+    // Generate bed code manually
+    const count = await Bed.countDocuments();
+    const bedCode = `BED${String(count + 1).padStart(4, '0')}`;
+    
     const bed = new Bed({
       bedNumber,
+      bedCode,
       roomId,
-      wardId,
+      wardId: wardId || null,
       bedType,
-      dailyCharge,
-      features,
+      dailyCharge: dailyCharge || 0,
+      features: features || [],
+      status: 'Available',
       createdBy: req.user?._id
     });
     
@@ -26,6 +51,10 @@ exports.createBed = async (req, res) => {
     });
   } catch (err) {
     console.error('Error creating bed:', err);
+    // Check for duplicate key error
+    if (err.code === 11000) {
+      return res.status(400).json({ error: 'Bed code already exists' });
+    }
     res.status(500).json({ error: err.message });
   }
 };
@@ -57,10 +86,11 @@ exports.getAllBeds = async (req, res) => {
 // Get available beds
 exports.getAvailableBeds = async (req, res) => {
   try {
-    const { wardId, bedType, date } = req.query;
+    const { wardId, roomId, bedType } = req.query;
     
     const filter = { status: 'Available', isActive: true };
     if (wardId) filter.wardId = wardId;
+    if (roomId) filter.roomId = roomId;
     if (bedType) filter.bedType = bedType;
     
     const beds = await Bed.find(filter)
@@ -120,12 +150,23 @@ exports.getBedById = async (req, res) => {
 exports.updateBed = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const { bedNumber, roomId, wardId, bedType, dailyCharge, features, status } = req.body;
     
-    const bed = await Bed.findByIdAndUpdate(id, updates, { new: true });
+    const bed = await Bed.findById(id);
     if (!bed) {
       return res.status(404).json({ error: 'Bed not found' });
     }
+    
+    // Update fields
+    if (bedNumber) bed.bedNumber = bedNumber;
+    if (roomId) bed.roomId = roomId;
+    if (wardId !== undefined) bed.wardId = wardId;
+    if (bedType) bed.bedType = bedType;
+    if (dailyCharge !== undefined) bed.dailyCharge = dailyCharge;
+    if (features) bed.features = features;
+    if (status) bed.status = status;
+    
+    await bed.save();
     
     res.json({
       success: true,
@@ -163,7 +204,7 @@ exports.updateBedStatus = async (req, res) => {
   }
 };
 
-// Delete bed
+// Delete bed (soft delete)
 exports.deleteBed = async (req, res) => {
   try {
     const { id } = req.params;

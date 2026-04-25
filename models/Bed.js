@@ -9,8 +9,8 @@ const bedSchema = new mongoose.Schema({
   bedCode: {
     type: String,
     unique: true,
-    required: true,
-    uppercase: true
+    uppercase: true,
+    trim: true
   },
   roomId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -56,13 +56,21 @@ const bedSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Generate bed code before save
-bedSchema.pre('save', async function(next) {
-  if (!this.bedCode) {
-    const count = await mongoose.model('Bed').countDocuments();
-    this.bedCode = `BED${String(count + 1).padStart(4, '0')}`;
+// Generate bed code before validate (to ensure code is generated before validation)
+bedSchema.pre('validate', async function(next) {
+  if (!this.bedCode && this.bedNumber) {
+    try {
+      const Bed = mongoose.model('Bed');
+      const count = await Bed.countDocuments();
+      // Generate code: BED0001, BED0002, etc.
+      this.bedCode = `BED${String(count + 1).padStart(4, '0')}`;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  } else {
+    next();
   }
-  next();
 });
 
 // Indexes

@@ -4,7 +4,7 @@ const ipdAdmissionSchema = new mongoose.Schema({
   admissionNumber: {
     type: String,
     unique: true,
-    required: true
+    // Remove required: true since we generate it automatically
   },
   patientId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -162,18 +162,25 @@ const ipdAdmissionSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Generate admission number before save
-ipdAdmissionSchema.pre('save', async function(next) {
+// Generate admission number before validate (to ensure it's generated before validation)
+ipdAdmissionSchema.pre('validate', async function(next) {
   if (!this.admissionNumber) {
-    const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const count = await mongoose.model('IPDAdmission').countDocuments();
-    const sequence = String(count + 1).padStart(4, '0');
-    this.admissionNumber = `IPD-${year}${month}${day}-${sequence}`;
+    try {
+      const IPDAdmission = mongoose.model('IPDAdmission');
+      const date = new Date();
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      const count = await IPDAdmission.countDocuments();
+      const sequence = String(count + 1).padStart(4, '0');
+      this.admissionNumber = `IPD-${year}${month}${day}-${sequence}`;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  } else {
+    next();
   }
-  next();
 });
 
 // Virtual for length of stay
@@ -193,5 +200,6 @@ ipdAdmissionSchema.index({ patientId: 1, status: 1 });
 ipdAdmissionSchema.index({ primaryDoctorId: 1, status: 1 });
 ipdAdmissionSchema.index({ admissionDate: -1 });
 ipdAdmissionSchema.index({ bedId: 1, status: 1 });
+ipdAdmissionSchema.index({ admissionNumber: 1 });
 
 module.exports = mongoose.model('IPDAdmission', ipdAdmissionSchema);

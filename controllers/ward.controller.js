@@ -5,12 +5,22 @@ exports.createWard = async (req, res) => {
   try {
     const { name, departmentId, floor, type, description } = req.body;
     
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Ward name is required' });
+    }
+    
+    // Generate code manually if needed
+    const count = await Ward.countDocuments();
+    const code = `WRD${String(count + 1).padStart(3, '0')}`;
+    
     const ward = new Ward({
       name,
-      departmentId,
-      floor,
-      type,
-      description,
+      code,
+      departmentId: departmentId || null,
+      floor: floor || '',
+      type: type || 'General',
+      description: description || '',
       createdBy: req.user?._id
     });
     
@@ -23,6 +33,10 @@ exports.createWard = async (req, res) => {
     });
   } catch (err) {
     console.error('Error creating ward:', err);
+    // Check for duplicate key error
+    if (err.code === 11000) {
+      return res.status(400).json({ error: 'Ward code already exists' });
+    }
     res.status(500).json({ error: err.message });
   }
 };
@@ -64,12 +78,21 @@ exports.getWardById = async (req, res) => {
 exports.updateWard = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const { name, departmentId, floor, type, description } = req.body;
     
-    const ward = await Ward.findByIdAndUpdate(id, updates, { new: true });
+    const ward = await Ward.findById(id);
     if (!ward) {
       return res.status(404).json({ error: 'Ward not found' });
     }
+    
+    // Update fields
+    if (name) ward.name = name;
+    if (departmentId !== undefined) ward.departmentId = departmentId;
+    if (floor !== undefined) ward.floor = floor;
+    if (type) ward.type = type;
+    if (description !== undefined) ward.description = description;
+    
+    await ward.save();
     
     res.json({
       success: true,
@@ -82,7 +105,7 @@ exports.updateWard = async (req, res) => {
   }
 };
 
-// Delete ward
+// Delete ward (soft delete)
 exports.deleteWard = async (req, res) => {
   try {
     const { id } = req.params;
