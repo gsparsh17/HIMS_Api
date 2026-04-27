@@ -67,7 +67,7 @@ const serviceItemSchema = new mongoose.Schema({
   },
   service_type: {
     type: String,
-    enum: ['Consultation', 'Procedure', 'Lab Test', 'Other', 'Purchase']
+    enum: ['Consultation', 'Procedure', 'Lab Test', 'Radiology', 'Other', 'Purchase']
   },
 
   // Optional codes (depending on service_type)
@@ -75,6 +75,9 @@ const serviceItemSchema = new mongoose.Schema({
     type: String
   },
   lab_test_code: {
+    type: String
+  },
+  radiology_test_code: {
     type: String
   },
 
@@ -211,7 +214,7 @@ const procedureItemSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// ✅ NEW: Lab Test items (mirrors procedure items)
+// Lab Test items (mirrors procedure items)
 const labTestItemSchema = new mongoose.Schema({
   lab_test_code: {
     type: String,
@@ -267,7 +270,82 @@ const labTestItemSchema = new mongoose.Schema({
   },
   performed_by: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Doctor'
+    ref: 'User'
+  },
+  notes: {
+    type: String
+  },
+  report_url: {
+    type: String
+  }
+}, {
+  timestamps: true
+});
+
+// Radiology items
+const radiologyItemSchema = new mongoose.Schema({
+  imaging_test_code: {
+    type: String,
+    required: true
+  },
+  imaging_test_name: {
+    type: String,
+    required: true
+  },
+  category: {
+    type: String
+  },
+  quantity: {
+    type: Number,
+    default: 1,
+    min: [1, 'Quantity must be at least 1']
+  },
+  unit_price: {
+    type: Number,
+    required: true,
+    min: [0, 'Unit price cannot be negative']
+  },
+  total_price: {
+    type: Number,
+    required: true,
+    min: [0, 'Total price cannot be negative']
+  },
+  tax_rate: {
+    type: Number,
+    default: 0,
+    min: [0, 'Tax rate cannot be negative'],
+    max: [100, 'Tax rate cannot exceed 100%']
+  },
+  tax_amount: {
+    type: Number,
+    default: 0,
+    min: [0, 'Tax amount cannot be negative']
+  },
+  prescription_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Prescription'
+  },
+  status: {
+    type: String,
+    enum: ['Pending', 'Approved', 'Scheduled', 'In Progress', 'Completed', 'Reported', 'Cancelled', 'Paid'],
+    default: 'Pending'
+  },
+  scheduled_date: {
+    type: Date
+  },
+  performed_at: {
+    type: Date
+  },
+  reported_at: {
+    type: Date
+  },
+  performed_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  reported_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
   notes: {
     type: String
@@ -318,6 +396,11 @@ const invoiceSchema = new mongoose.Schema({
     ref: 'Appointment',
     index: true
   },
+  admission_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'IPDAdmission',
+    index: true
+  },
   bill_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Bill',
@@ -337,7 +420,7 @@ const invoiceSchema = new mongoose.Schema({
   // Invoice Type
   invoice_type: {
     type: String,
-    enum: ['Appointment', 'Pharmacy', 'Procedure', 'Lab Test', 'Mixed', 'Other', 'Purchase'],
+    enum: ['Appointment', 'Pharmacy', 'Procedure', 'Lab Test', 'Radiology', 'Mixed', 'Other', 'Purchase'],
     required: true,
     index: true
   },
@@ -364,6 +447,7 @@ const invoiceSchema = new mongoose.Schema({
   medicine_items: [medicineItemSchema],
   procedure_items: [procedureItemSchema],
   lab_test_items: [labTestItemSchema],
+  radiology_items: [radiologyItemSchema],
 
   // Financial details
   subtotal: {
@@ -469,7 +553,7 @@ const invoiceSchema = new mongoose.Schema({
     default: 'None'
   },
 
-  // ✅ NEW: Lab Test specific
+  // Lab Test specific
   has_lab_tests: {
     type: Boolean,
     default: false
@@ -479,6 +563,19 @@ const invoiceSchema = new mongoose.Schema({
     enum: ['None', 'Pending', 'Partial', 'Completed', 'Paid'],
     default: 'None'
   },
+
+  // Radiology specific
+  has_radiology: {
+    type: Boolean,
+    default: false
+  },
+  radiology_status: {
+    type: String,
+    enum: ['None', 'Pending', 'Partial', 'Completed', 'Reported', 'Paid'],
+    default: 'None'
+  },
+
+  // Soft delete
   is_deleted: {
     type: Boolean,
     default: false
@@ -564,10 +661,8 @@ invoiceSchema.pre('save', function(next) {
   // Update procedures related fields
   if (this.procedure_items && this.procedure_items.length > 0) {
     this.has_procedures = true;
-
     const totalProcedures = this.procedure_items.length;
     const completedProcedures = this.procedure_items.filter(p => p.status === 'Completed').length;
-
     if (completedProcedures === 0) {
       this.procedures_status = 'Pending';
     } else if (completedProcedures === totalProcedures) {
@@ -580,13 +675,11 @@ invoiceSchema.pre('save', function(next) {
     this.procedures_status = 'None';
   }
 
-  // ✅ Update lab tests related fields
+  // Update lab tests related fields
   if (this.lab_test_items && this.lab_test_items.length > 0) {
     this.has_lab_tests = true;
-
     const total = this.lab_test_items.length;
     const completed = this.lab_test_items.filter(t => t.status === 'Completed').length;
-
     if (completed === 0) {
       this.lab_tests_status = 'Pending';
     } else if (completed === total) {
@@ -599,6 +692,23 @@ invoiceSchema.pre('save', function(next) {
     this.lab_tests_status = 'None';
   }
 
+  // Update radiology related fields
+  if (this.radiology_items && this.radiology_items.length > 0) {
+    this.has_radiology = true;
+    const total = this.radiology_items.length;
+    const reported = this.radiology_items.filter(r => r.status === 'Reported' || r.status === 'Completed').length;
+    if (reported === 0) {
+      this.radiology_status = 'Pending';
+    } else if (reported === total) {
+      this.radiology_status = 'Reported';
+    } else {
+      this.radiology_status = 'Partial';
+    }
+  } else {
+    this.has_radiology = false;
+    this.radiology_status = 'None';
+  }
+
   next();
 });
 
@@ -609,11 +719,12 @@ invoiceSchema.pre('validate', function(next) {
     this.isModified('service_items') ||
     this.isModified('medicine_items') ||
     this.isModified('procedure_items') ||
-    this.isModified('lab_test_items')
+    this.isModified('lab_test_items') ||
+    this.isModified('radiology_items')
   ) {
     let calculatedSubtotal = 0;
 
-    [...this.service_items, ...this.medicine_items, ...this.procedure_items, ...this.lab_test_items].forEach(item => {
+    [...this.service_items, ...this.medicine_items, ...this.procedure_items, ...this.lab_test_items, ...this.radiology_items].forEach(item => {
       calculatedSubtotal += item.total_price || 0;
     });
 
@@ -648,6 +759,9 @@ invoiceSchema.pre('save', async function(next) {
         case 'Lab Test':
           prefix = 'LT';
           break;
+        case 'Radiology':
+          prefix = 'RD';
+          break;
         case 'Appointment':
           prefix = 'AP';
           break;
@@ -667,15 +781,8 @@ invoiceSchema.pre('save', async function(next) {
 
       while (!saved && attempts < maxAttempts) {
         try {
-          const startOfMonth = new Date(Date.UTC(year, new Date().getMonth(), 1));
-          const endOfMonth = new Date(Date.UTC(year, new Date().getMonth() + 1, 0, 23, 59, 59, 999));
-
           const count = await mongoose.model('Invoice').countDocuments();
-
           this.invoice_number = `${prefix}-${year}${month}-${(count + 2 + attempts).toString().padStart(6, '0')}`;
-          
-          // Try to save - this will throw if duplicate
-          await this.constructor.findById(this._id).session(this.$session());
           saved = true;
         } catch (error) {
           if (error.code === 11000) {
@@ -683,7 +790,6 @@ invoiceSchema.pre('save', async function(next) {
             if (attempts === maxAttempts) {
               throw new Error('Unable to generate unique invoice number after multiple attempts');
             }
-            // Small delay before retry
             await new Promise(resolve => setTimeout(resolve, 100));
           } else {
             throw error;
@@ -702,41 +808,34 @@ invoiceSchema.post('save', function(doc) {
   console.log(`📄 Invoice ${doc.invoice_number} saved at ${new Date().toISOString()}`);
 });
 
-// Post-save middleware for error handling
-// invoiceSchema.post('save', function(error, doc, next) {
-//   if (error.name === 'MongoServerError' && error.code === 11000) {
-//     next(new Error('Invoice number already exists. Please try again.'));
-//   } else {
-//     next(error);
-//   }
-// });
-
-// Virtual for total items count
+// Virtuals
 invoiceSchema.virtual('total_items').get(function() {
   return (this.service_items?.length || 0) +
     (this.medicine_items?.length || 0) +
     (this.procedure_items?.length || 0) +
-    (this.lab_test_items?.length || 0);
+    (this.lab_test_items?.length || 0) +
+    (this.radiology_items?.length || 0);
 });
 
-// Virtual for is_fully_paid
 invoiceSchema.virtual('is_fully_paid').get(function() {
   return this.amount_paid >= this.total;
 });
 
-// Virtual for pending procedures count
 invoiceSchema.virtual('pending_procedures_count').get(function() {
   if (!this.has_procedures) return 0;
   return this.procedure_items?.filter(p => p.status === 'Pending').length || 0;
 });
 
-// ✅ Virtual for pending lab tests count
 invoiceSchema.virtual('pending_lab_tests_count').get(function() {
   if (!this.has_lab_tests) return 0;
   return this.lab_test_items?.filter(t => t.status === 'Pending').length || 0;
 });
 
-// Virtual for days overdue
+invoiceSchema.virtual('pending_radiology_count').get(function() {
+  if (!this.has_radiology) return 0;
+  return this.radiology_items?.filter(r => r.status === 'Pending' || r.status === 'Approved' || r.status === 'Scheduled').length || 0;
+});
+
 invoiceSchema.virtual('days_overdue').get(function() {
   if (this.status !== 'Overdue') return 0;
   const today = new Date();
@@ -745,7 +844,6 @@ invoiceSchema.virtual('days_overdue').get(function() {
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 });
 
-// Virtual for formatted dates
 invoiceSchema.virtual('created_at_ist').get(function() {
   return this.created_at?.toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
@@ -758,21 +856,12 @@ invoiceSchema.virtual('created_at_utc').get(function() {
   return this.created_at?.toISOString();
 });
 
-invoiceSchema.virtual('due_date_ist').get(function() {
-  return this.due_date?.toLocaleString('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    dateStyle: 'full'
-  });
-});
-
 // Static methods
 invoiceSchema.statics.findByDate = function(date) {
   const startDate = new Date(date);
   startDate.setUTCHours(0, 0, 0, 0);
-
   const endDate = new Date(date);
   endDate.setUTCHours(23, 59, 59, 999);
-
   return this.find({
     created_at: { $gte: startDate, $lte: endDate }
   });
@@ -781,10 +870,8 @@ invoiceSchema.statics.findByDate = function(date) {
 invoiceSchema.statics.findByDateRange = function(startDate, endDate) {
   const start = new Date(startDate);
   start.setUTCHours(0, 0, 0, 0);
-
   const end = new Date(endDate);
   end.setUTCHours(23, 59, 59, 999);
-
   return this.find({
     created_at: { $gte: start, $lte: end }
   }).sort({ created_at: -1 });
@@ -794,13 +881,13 @@ invoiceSchema.statics.findByDateRange = function(startDate, endDate) {
 invoiceSchema.index({ invoice_number: 1 }, { unique: true });
 invoiceSchema.index({ patient_id: 1, created_at: -1 });
 invoiceSchema.index({ appointment_id: 1, created_at: -1 });
+invoiceSchema.index({ admission_id: 1 });
 invoiceSchema.index({ prescription_id: 1 });
 invoiceSchema.index({ invoice_type: 1, created_at: -1 });
 invoiceSchema.index({ status: 1, due_date: 1 });
 invoiceSchema.index({ created_at: -1 });
 invoiceSchema.index({ due_date: 1, status: 1 });
 invoiceSchema.index({ amount_paid: 1, total: 1 });
-
 invoiceSchema.index({ invoice_type: 1, status: 1, created_at: -1 });
 invoiceSchema.index({ patient_id: 1, status: 1, created_at: -1 });
 invoiceSchema.index({ is_deleted: 1 });

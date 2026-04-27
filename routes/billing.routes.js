@@ -3,9 +3,10 @@ const router = express.Router();
 const billingController = require('../controllers/billing.controller');
 const { verifyToken, isAdmin } = require('../middlewares/auth');
 
-// Generate bills
+// Generate bills for procedures, lab tests, and radiology
 router.post('/procedure', billingController.generateProcedureBill);
 router.post('/labtest', billingController.generateLabTestBill);
+router.post('/radiology', billingController.generateRadiologyBill);  // ✅ NEW
 
 // Existing routes
 router.post('/', billingController.createBill);
@@ -17,11 +18,15 @@ router.get('/deletion-requests/pending', verifyToken, isAdmin, billingController
 router.put('/:id/review-deletion', verifyToken, isAdmin, billingController.reviewDeletionRequest);
 router.get('/deleted', verifyToken, isAdmin, billingController.getDeletedBills);
 
-// IMPORTANT: keep /appointment/:appointmentId BEFORE /:id
+// Admin direct delete (permanent)
+router.delete('/:id/admin-delete', verifyToken, isAdmin, billingController.adminDeleteBill);
+
+// IMPORTANT: keep specific routes BEFORE /:id
 router.get('/appointment/:appointmentId', billingController.getBillByAppointmentId);
+router.get('/admission/:admissionId', billingController.getBillByAdmissionId);  // ✅ NEW
 
 router.get('/:id', billingController.getBillById);
 router.put('/:id', billingController.updateBillStatus);
-router.delete('/:id', verifyToken, billingController.deleteBill); // Now handles both admin and staff
+router.delete('/:id', verifyToken, billingController.deleteBill);
 
 module.exports = router;

@@ -32,6 +32,7 @@ app.use('/api/staff', require('./routes/staff.routes'));
 app.use('/api/appointments', require('./routes/appointment.routes'));
 // app.use('/api/pharmacy', require('./routes/pharmacy.routes'));
 app.use('/api/prescriptions', require('./routes/prescription.routes'));
+app.use('/api/procedurerequests', require('./routes/procedureRequest.routes'));
 app.use('/api/procedures', require('./routes/procedureRoutes'));
 app.use('/api/NLEMmedicines', require('./routes/NLEMmedicineRoutes'));
 app.use('/api/billing', require('./routes/billing.routes'));
@@ -79,7 +80,8 @@ app.use('/api/pharmacy', pharmacyRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/pathology-staff', pathologyStaffRoutes);
 app.use('/api/labtests', require('./routes/labTest.routes.js'));
-// Add this with other route imports
+app.use('/api/lab', require('./routes/lab.routes.js'));
+app.use('/api/radiology', require('./routes/radiology.routes.js'));
 const externalLabRoutes = require('./routes/externalLab.routes');
 
 // Add this with other route registrations

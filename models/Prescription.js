@@ -10,385 +10,127 @@ const prescriptionItemSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  medicine_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Medicine'
+  },
   medicine_type: {
     type: String,
-    enum: {
-      values: ['As Licensed',
-  'As licensed',
-  'As licensed for medical purpose',
-  'Capsule',
-  'Capsule/Sachet (containing pellets/granules)',
-  'Capsule/Tablet',
-  'Chewable Tablet',
-  'Combi pack',
-  'Contains 52 mg of Levonorgestrel',
-  'Conventional/Effervescent/Dispersible/Enteric coated Tablet',
-  'Conventional/Effervescent/Dispersible/Enteric coated Tablets',
-  'Cream',
-  'Crystals for topical solution',
-  'Dispersible Tablet',
-  'Drops',
-  'Dry Syrup',
-  'Effervescent/Dispersible/Enteric coated Tablet',
-  'Enteric coated Tablet',
-  'Eye Drops',
-  'Eye drop',
-  'Gel',
-  'Granules',
-  'Granules/Husk/Powder',
-  'Inhalation (DPI)',
-  'Inhalation (MDI)',
-  'Inhalation (MDI/DPI)',
-  'Injection',
-  'Injection (Long acting)',
-  'Liquid for inhalation',
-  'Lotion',
-  'Lyophilized polyvalent',
-  'Modified Release Tablet',
-  'Modified release Tablet',
-  'Nasal Spray',
-  'Nasal drops',
-  'Ointment',
-  'Ophthalmic Strips',
-  'Oral Dosage forms',
-  'Oral Liquid',
-  'Oral Solution',
-  'Oral liquid',
-  'P,S,T',
-  'Pessary',
-  'Powder',
-  'Powder for Injection',
-  'Powder for injection',
-  'Powder for oral liquid',
-  'Powder for oral solution',
-  'Power for Injection',
-  'Respirator solution for use in nebulizer',
-  'Retention Enema',
-  'Solid oral dosage form',
-  'Soluble/liquid polyvalent',
-  'Solution',
-  'Solution for injection',
-  'Sublingual Tablet',
-  'Suppository',
-  'Suspension for intratracheal instillation',
-  'Tablet',
-  'Tablet (Sub-lingual)',
-  'Tablet/Capsule',
-  'Topical',
-  'Topical forms',
-  'Topical preparation'],
-      message: 'Please select a valid medicine type'
-    },
+    enum: ['Capsule', 'Tablet', 'Injection', 'Syrup', 'Cream', 'Ointment', 'Drops', 'Inhaler', 'Other'],
     trim: true,
-    default: ''
+    default: 'Tablet'
   },
   route_of_administration: {
     type: String,
-    enum: {
-      values: [
-        "Oral",
-        "Sublingual",
-        "Intramuscular Injection",
-        "Intravenous Injection",
-        "Subcutaneous Injection",
-        "Topical Application",
-        "Inhalation",
-        "Nasal",
-        "Eye Drops",
-        "Ear Drops",
-        "Rectal",
-        "Other"
-      ],
-      message: 'Please select a valid route of administration'
-    },
+    enum: ["Oral", "Sublingual", "Intramuscular Injection", "Intravenous Injection", 
+             "Subcutaneous Injection", "Topical Application", "Inhalation", "Nasal", 
+             "Eye Drops", "Ear Drops", "Rectal", "Other"],
     trim: true,
-    default: ''
+    default: 'Oral'
   },
-  dosage: {
-    type: String,
-    required: false
-  },
-  frequency: {
-    type: String,
-    required: true
-  },
-  duration: {
-    type: String,
-    required: true
-  },
-  quantity: {
-    type: Number,
-    required: false,
-    min: 1
-  },
-  instructions: {
-    type: String,
-    trim: true
-  },
-  timing: {
-    type: String,
-    enum: ['Before food', 'After food', 'With food', 'Anytime']
-  },
-  is_dispensed: {
-    type: Boolean,
-    default: false
-  },
-  dispensed_quantity: {
-    type: Number,
-    default: 0
-  },
-  dispensed_date: {
-    type: Date
-  }
+  dosage: { type: String },
+  frequency: { type: String, required: true },
+  duration: { type: String, required: true },
+  quantity: { type: Number, min: 1, default: 1 },
+  instructions: { type: String, trim: true },
+  timing: { type: String, enum: ['Before food', 'After food', 'With food', 'Anytime'] },
+  is_dispensed: { type: Boolean, default: false },
+  dispensed_quantity: { type: Number, default: 0 },
+  dispensed_date: { type: Date }
 });
 
-const recommendedProcedureSchema = new mongoose.Schema({
-  procedure_code: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  procedure_name: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  notes: {
-    type: String,
-    trim: true
-  },
-  status: {
-    type: String,
-    enum: ['Pending', 'Scheduled', 'In Progress', 'Completed', 'Cancelled'],
-    default: 'Pending'
-  },
-  scheduled_date: {
-    type: Date
-  },
-  completed_date: {
-    type: Date
-  },
-  performed_by: {
+// Lab Test Request Schema (embedded but creates separate LabRequest)
+const labTestRequestSchema = new mongoose.Schema({
+  lab_test_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Doctor'
+    ref: 'LabTest'
   },
-  cost: {
-    type: Number,
-    default: 0
-  },
-  is_billed: {
-    type: Boolean,
-    default: false
-  },
-  invoice_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Invoice'
-  }
+  lab_test_code: { type: String, required: true },
+  lab_test_name: { type: String, required: true },
+  category: { type: String },
+  clinical_history: { type: String, trim: true },
+  priority: { type: String, enum: ['Routine', 'Urgent', 'Stat'], default: 'Routine' },
+  scheduled_date: { type: Date },
+  notes: { type: String, trim: true },
+  request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'LabRequest' }, // Reference to created LabRequest
+  created_at: { type: Date, default: Date.now }
 });
 
-// Recommended Lab Tests (mirrors procedures)
-const recommendedLabTestSchema = new mongoose.Schema({
-  lab_test_code: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  lab_test_name: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  notes: {
-    type: String,
-    trim: true
-  },
-  status: {
-    type: String,
-    enum: ['Pending', 'Scheduled', 'Sample Collected', 'Processing', 'Completed', 'Cancelled', 'Referred Out'],
-    default: 'Pending'
-  },
-  scheduled_date: {
-    type: Date
-  },
-  sample_collected_at: {
-    type: Date
-  },
-  completed_date: {
-    type: Date
-  },
-  performed_by: {
+// Radiology/Imaging Test Request Schema
+const radiologyTestRequestSchema = new mongoose.Schema({
+  imaging_test_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Doctor'
+    ref: 'ImagingTest'
   },
-  cost: {
-    type: Number,
-    default: 0
-  },
-  is_billed: {
-    type: Boolean,
-    default: false
-  },
-  invoice_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Invoice'
-  },
-  report_url: {
-    type: String
-  },
-  is_referred_out: {
-    type: Boolean,
-    default: false
-  },
-  external_lab_details: {
-    lab_name: { type: String, trim: true },
-    lab_address: { type: String, trim: true },
-    contact_person: { type: String, trim: true },
-    contact_phone: { type: String, trim: true },
-    reference_number: { type: String, trim: true },
-    external_report_url: { type: String },
-    external_report_received_date: { type: Date }
-  },
-  sample_handover_log: [{
-    handed_over_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    handed_over_at: { type: Date, default: Date.now },
-    courier_name: { type: String, trim: true },
-    tracking_number: { type: String, trim: true },
-    notes: { type: String, trim: true },
-    received_by_external: { type: Boolean, default: false }
-  }],
-  external_report_uploaded_by: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
-  },
-  external_report_uploaded_at: {
-    type: Date
-  }
+  imaging_test_code: { type: String, required: true },
+  imaging_test_name: { type: String, required: true },
+  category: { type: String },
+  clinical_history: { type: String, trim: true },
+  priority: { type: String, enum: ['Routine', 'Urgent', 'Emergency'], default: 'Routine' },
+  scheduled_date: { type: Date },
+  notes: { type: String, trim: true },
+  request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'RadiologyRequest' }, // Reference to created RadiologyRequest
+  created_at: { type: Date, default: Date.now }
+});
+
+// Procedure Request Schema
+const procedureRequestSchema = new mongoose.Schema({
+  procedure_code: { type: String, required: true },
+  procedure_name: { type: String, required: true },
+  category: { type: String },
+  notes: { type: String, trim: true },
+  priority: { type: String, enum: ['Routine', 'Urgent', 'Emergency'], default: 'Routine' },
+  scheduled_date: { type: Date },
+  cost: { type: Number, default: 0 },
+  request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'ProcedureRequest' }, // Reference to created ProcedureRequest
+  created_at: { type: Date, default: Date.now }
 });
 
 const prescriptionSchema = new mongoose.Schema({
-  prescription_number: {
-    type: String,
-    unique: true
-  },
-  patient_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Patient',
-    required: true
-  },
-  doctor_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Doctor',
-    required: true
-  },
-  appointment_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Appointment'
-  },
-  presenting_complaint: {
-    type: String,
-    trim: true
-  },
-  history_of_presenting_complaint: {
-    type: String,
-    trim: true
-  },
-  diagnosis: {
-    type: String,
-    trim: true
-  },
-  // ICD-11 Code Field
-  diagnosis_icd11_code: {
-    type: String,
-    trim: true,
-    index: true
-  },
-  symptoms: {
-    type: String,
-    trim: true
-  },
-  investigation: {
-    type: String,
-    trim: true
-  },
+  prescription_number: { type: String, unique: true },
+  
+  // Patient & Doctor
+  patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true },
+  doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', required: true },
+  appointment_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' },
+  
+  // IPD Support
+  ipd_admission_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission' },
+  source_type: { type: String, enum: ['OPD', 'IPD', 'Emergency'], default: 'OPD' },
+  round_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDRound' },
+  
+  // Clinical Information
+  presenting_complaint: { type: String, trim: true },
+  history_of_presenting_complaint: { type: String, trim: true },
+  diagnosis: { type: String, trim: true },
+  diagnosis_icd11_code: { type: String, trim: true, index: true },
+  symptoms: { type: String, trim: true },
+  investigation: { type: String, trim: true },
 
+  // Medication Items
   items: [prescriptionItemSchema],
 
-  // Procedures + Lab Tests
-  recommendedProcedures: [recommendedProcedureSchema],
-  recommendedLabTests: [recommendedLabTestSchema],
+  // Test Requests (with request_id references)
+  lab_test_requests: [labTestRequestSchema],
+  radiology_test_requests: [radiologyTestRequestSchema],
+  procedure_requests: [procedureRequestSchema],
 
-  notes: {
-    type: String,
-    trim: true
-  },
-  prescription_image: {
-    type: String
-  },
-  status: {
-    type: String,
-    enum: ['Active', 'Completed', 'Cancelled', 'Expired'],
-    default: 'Active'
-  },
-  issue_date: {
-    type: Date,
-    default: Date.now
-  },
-  validity_days: {
-    type: Number,
-    default: 30
-  },
-  follow_up_date: {
-    type: Date
-  },
-  is_repeatable: {
-    type: Boolean,
-    default: false
-  },
-  repeat_count: {
-    type: Number,
-    default: 0
-  },
-  created_by: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
-  },
+  notes: { type: String, trim: true },
+  prescription_image: { type: String },
+  status: { type: String, enum: ['Active', 'Completed', 'Cancelled', 'Expired'], default: 'Active' },
+  issue_date: { type: Date, default: Date.now },
+  validity_days: { type: Number, default: 30 },
+  follow_up_date: { type: Date },
+  is_repeatable: { type: Boolean, default: false },
+  repeat_count: { type: Number, default: 0 },
+  created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  
+  // Pharmacy Integration
+  is_converted_to_ipd: { type: Boolean, default: false },
+  ipd_medication_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'IPDMedicationChart' }]
+}, { timestamps: true });
 
-  // Procedure flags
-  has_procedures: {
-    type: Boolean,
-    default: false
-  },
-  procedures_status: {
-    type: String,
-    enum: ['None', 'Pending', 'Partial', 'Completed'],
-    default: 'None'
-  },
-
-  // Lab test flags
-  has_lab_tests: {
-    type: Boolean,
-    default: false
-  },
-  lab_tests_status: {
-    type: String,
-    enum: ['None', 'Pending', 'Partial', 'Completed'],
-    default: 'None'
-  },
-
-  // Optional totals (helps billing/UI)
-  total_procedure_cost: {
-    type: Number,
-    default: 0
-  },
-  total_lab_test_cost: {
-    type: Number,
-    default: 0
-  }
-}, {
-  timestamps: true
-});
-
-// Generate prescription number + update statuses + totals before saving
+// Generate prescription number
 prescriptionSchema.pre('save', async function(next) {
   if (this.isNew && !this.prescription_number) {
     const count = await mongoose.model('Prescription').countDocuments();
@@ -397,119 +139,18 @@ prescriptionSchema.pre('save', async function(next) {
     const month = (date.getMonth() + 1).toString().padStart(2, '0');
     this.prescription_number = `RX${year}${month}${(count + 1).toString().padStart(4, '0')}`;
   }
-
-  // ---- Procedures ----
-  if (this.recommendedProcedures && this.recommendedProcedures.length > 0) {
-    this.has_procedures = true;
-
-    const totalProcedures = this.recommendedProcedures.length;
-    const completedProcedures = this.recommendedProcedures.filter(p => p.status === 'Completed').length;
-
-    if (completedProcedures === 0) {
-      this.procedures_status = 'Pending';
-    } else if (completedProcedures === totalProcedures) {
-      this.procedures_status = 'Completed';
-    } else {
-      this.procedures_status = 'Partial';
-    }
-
-    this.total_procedure_cost = this.recommendedProcedures.reduce((sum, p) => sum + (Number(p.cost) || 0), 0);
-  } else {
-    this.has_procedures = false;
-    this.procedures_status = 'None';
-    this.total_procedure_cost = 0;
-  }
-
-  // ---- Lab Tests ----
-  if (this.recommendedLabTests && this.recommendedLabTests.length > 0) {
-    this.has_lab_tests = true;
-
-    const totalLabTests = this.recommendedLabTests.length;
-    const completedLabTests = this.recommendedLabTests.filter(t => t.status === 'Completed').length;
-
-    if (completedLabTests === 0) {
-      this.lab_tests_status = 'Pending';
-    } else if (completedLabTests === totalLabTests) {
-      this.lab_tests_status = 'Completed';
-    } else {
-      this.lab_tests_status = 'Partial';
-    }
-
-    this.total_lab_test_cost = this.recommendedLabTests.reduce((sum, t) => sum + (Number(t.cost) || 0), 0);
-  } else {
-    this.has_lab_tests = false;
-    this.lab_tests_status = 'None';
-    this.total_lab_test_cost = 0;
-  }
-
   next();
 });
 
-// Calculate expiry date virtual
-prescriptionSchema.virtual('expiry_date').get(function() {
+// Virtuals
+prescriptionSchema.virtual('is_expired').get(function() {
   const expiryDate = new Date(this.issue_date);
   expiryDate.setDate(expiryDate.getDate() + this.validity_days);
-  return expiryDate;
+  return new Date() > expiryDate;
 });
 
-// Check if prescription is expired
-prescriptionSchema.virtual('is_expired').get(function() {
-  return new Date() > this.expiry_date;
-});
-
-// Check if all items are dispensed
 prescriptionSchema.virtual('is_fully_dispensed').get(function() {
   return this.items.every(item => item.is_dispensed);
-});
-
-// Check if all procedures are completed
-prescriptionSchema.virtual('are_procedures_completed').get(function() {
-  if (!this.has_procedures) return true;
-  return this.recommendedProcedures.every(proc => proc.status === 'Completed');
-});
-
-// Check if all lab tests are completed
-prescriptionSchema.virtual('are_lab_tests_completed').get(function() {
-  if (!this.has_lab_tests) return true;
-  return this.recommendedLabTests.every(t => t.status === 'Completed');
-});
-
-// Virtual for pending procedures count
-prescriptionSchema.virtual('pending_procedures_count').get(function() {
-  if (!this.has_procedures) return 0;
-  return this.recommendedProcedures.filter(p => p.status === 'Pending').length;
-});
-
-// Virtual for pending lab tests count
-prescriptionSchema.virtual('pending_lab_tests_count').get(function() {
-  if (!this.has_lab_tests) return 0;
-  return this.recommendedLabTests.filter(t => t.status === 'Pending').length;
-});
-
-// Virtual for today's procedures
-prescriptionSchema.virtual('todays_procedures').get(function() {
-  if (!this.has_procedures) return [];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return this.recommendedProcedures.filter(p => {
-    if (!p.scheduled_date) return false;
-    const scheduledDate = new Date(p.scheduled_date);
-    scheduledDate.setHours(0, 0, 0, 0);
-    return scheduledDate.getTime() === today.getTime() && p.status !== 'Completed';
-  });
-});
-
-// Virtual for today's lab tests
-prescriptionSchema.virtual('todays_lab_tests').get(function() {
-  if (!this.has_lab_tests) return [];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return this.recommendedLabTests.filter(t => {
-    if (!t.scheduled_date) return false;
-    const scheduledDate = new Date(t.scheduled_date);
-    scheduledDate.setHours(0, 0, 0, 0);
-    return scheduledDate.getTime() === today.getTime() && t.status !== 'Completed';
-  });
 });
 
 // Indexes
@@ -517,12 +158,10 @@ prescriptionSchema.index({ patient_id: 1, issue_date: -1 });
 prescriptionSchema.index({ doctor_id: 1, issue_date: -1 });
 prescriptionSchema.index({ prescription_number: 1 });
 prescriptionSchema.index({ status: 1 });
-prescriptionSchema.index({ diagnosis_icd11_code: 1 }); // Index for ICD-11 code
-
-prescriptionSchema.index({ 'recommendedProcedures.status': 1 });
-prescriptionSchema.index({ 'recommendedProcedures.scheduled_date': 1 });
-
-prescriptionSchema.index({ 'recommendedLabTests.status': 1 });
-prescriptionSchema.index({ 'recommendedLabTests.scheduled_date': 1 });
+prescriptionSchema.index({ diagnosis_icd11_code: 1 });
+prescriptionSchema.index({ ipd_admission_id: 1, source_type: 1 });
+prescriptionSchema.index({ 'lab_test_requests.request_id': 1 });
+prescriptionSchema.index({ 'radiology_test_requests.request_id': 1 });
+prescriptionSchema.index({ 'procedure_requests.request_id': 1 });
 
 module.exports = mongoose.model('Prescription', prescriptionSchema);

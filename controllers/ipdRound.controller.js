@@ -3,6 +3,7 @@ const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
 
 // Create round entry
+// Create round entry with medication prescriptions
 exports.createRound = async (req, res) => {
   try {
     const {
@@ -17,7 +18,7 @@ exports.createRound = async (req, res) => {
       diagnosis,
       treatmentPlan,
       advice,
-      medicationsPrescribed,
+      medicationsPrescribed, // Array of medications from doctor
       investigationsOrdered,
       proceduresOrdered,
       dischargeSuggested,
@@ -55,6 +56,44 @@ exports.createRound = async (req, res) => {
     
     await round.save();
     
+    // Create medication orders from prescribed medications
+    const IPDMedicationChart = require('../models/IPDMedicationChart');
+    const createdMedications = [];
+    
+    if (medicationsPrescribed && medicationsPrescribed.length > 0) {
+      for (const med of medicationsPrescribed) {
+        const medicationOrder = new IPDMedicationChart({
+          admissionId,
+          patientId,
+          prescribedBy: doctorId,
+          roundId: round._id,
+          medicineName: med.medicineName,
+          dosage: med.dosage,
+          frequency: med.frequency,
+          duration: med.duration,
+          route: med.route || 'Oral',
+          startDate: new Date(),
+          requiresPharmacyDispense: med.requiresPharmacyDispense || false,
+          createdBy: req.user?._id
+        });
+        
+        await medicationOrder.save();
+        createdMedications.push(medicationOrder);
+        
+        // Create nursing note for new medication
+        const NursingNote = require('../models/NursingNote');
+        const nursingNote = new NursingNote({
+          admissionId,
+          patientId,
+          noteType: 'Medication',
+          note: `New medication prescribed: ${med.medicineName} ${med.dosage} ${med.frequency}`,
+          priority: med.isHighRisk ? 'Important' : 'Normal',
+          createdBy: req.user?._id
+        });
+        await nursingNote.save();
+      }
+    }
+    
     // Update admission status if discharge suggested
     if (dischargeSuggested && admission.canProceedToDischarge) {
       admission.status = 'Discharge Initiated';
@@ -62,13 +101,14 @@ exports.createRound = async (req, res) => {
     }
     
     // Add doctor visit charge
+    const IPDCharge = require('../models/IPDCharge');
     const doctorVisitCharge = new IPDCharge({
       admissionId,
       patientId,
       chargeType: 'Doctor Visit',
       description: `Doctor round by Dr. ${req.user?.name || 'Staff'} on ${new Date().toLocaleDateString()}`,
       quantity: 1,
-      rate: 100, // Configurable
+      rate: 100,
       amount: 100,
       sourceModule: 'DoctorRound',
       sourceId: round._id,
@@ -81,6 +121,7 @@ exports.createRound = async (req, res) => {
       success: true,
       message: 'Round note added successfully',
       round,
+      medications: createdMedications,
       charge: doctorVisitCharge
     });
   } catch (err) {

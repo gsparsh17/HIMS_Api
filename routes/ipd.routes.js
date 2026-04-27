@@ -58,6 +58,14 @@ router.get('/medications/:id', ipdMedicationController.getMedicationById);
 router.patch('/medications/:id/administer', ipdMedicationController.administerMedication);
 router.patch('/medications/:id/skip', ipdMedicationController.skipMedication);
 router.patch('/medications/:id/stop', ipdMedicationController.stopMedication);
+router.get('/medications/pharmacy/requests/:pharmacyId', ipdMedicationController.getPendingPharmacyRequests);
+router.patch('/medications/:id/pharmacy-process', ipdMedicationController.processPharmacyRequest);
+
+// Nurse medication administration routes
+router.get('/medications/nurse/today', ipdMedicationController.getNurseTodaySchedule);
+router.get('/medications/nurse/admission/:admissionId/schedule', ipdMedicationController.getMedicationScheduleForNurse);
+router.patch('/medications/:id/hold', ipdMedicationController.holdMedication);
+router.get('/medications/admission/:admissionId/summary', ipdMedicationController.getMedicationSummary);
 
 // ========== BILLING ROUTES ==========
 router.post('/billing/charges', ipdBillingController.addManualCharge);

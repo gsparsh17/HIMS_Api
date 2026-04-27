@@ -18,19 +18,25 @@ const {
 
 const invoiceController = require('../controllers/invoice.controller');
 
-// Procedure module routes
+// ============== PROCEDURE MODULE ROUTES ==============
 router.post('/procedure', invoiceController.generateProcedureInvoice);
 router.get('/procedures', invoiceController.getProcedureInvoices);
 router.get('/with-procedures', invoiceController.getInvoicesWithProcedures);
 router.put('/:invoiceId/procedures/:procedureIndex/status', invoiceController.updateInvoiceProcedureStatus);
 
-// ✅ Lab Tests module routes
+// ============== LAB TEST MODULE ROUTES ==============
 router.post('/labtest', invoiceController.generateLabTestInvoice);
 router.get('/labtests', invoiceController.getLabTestInvoices);
 router.get('/with-labtests', invoiceController.getInvoicesWithLabTests);
 router.put('/:invoiceId/labtests/:labTestIndex/status', invoiceController.updateInvoiceLabTestStatus);
 
-// Existing routes
+// ============== RADIOLOGY MODULE ROUTES ==============
+router.post('/radiology', invoiceController.generateRadiologyInvoice);
+router.get('/radiology', invoiceController.getRadiologyInvoices);
+router.get('/with-radiology', invoiceController.getInvoicesWithRadiology);
+router.put('/:invoiceId/radiology/:radiologyIndex/status', invoiceController.updateInvoiceRadiologyStatus);
+
+// ============== EXISTING ROUTES ==============
 router.post('/appointment', generateAppointmentInvoice);
 router.post('/pharmacy', generatePharmacyInvoice);
 router.post('/purchase', generatePurchaseInvoice);

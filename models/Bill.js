@@ -15,7 +15,7 @@ const billItemSchema = new mongoose.Schema({
   },
   item_type: {
     type: String,
-    enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Other'],
+    enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Radiology', 'Other'],
     required: true
   },
 
@@ -35,10 +35,24 @@ const billItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId
   },
 
+  // Radiology linking
+  radiology_test_code: {
+    type: String
+  },
+  radiology_test_id: {
+    type: mongoose.Schema.Types.ObjectId
+  },
+
   // Common linking
   prescription_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Prescription'
+  },
+  
+  // IPD linking
+  admission_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'IPDAdmission'
   }
 });
 
@@ -81,8 +95,11 @@ const billSchema = new mongoose.Schema({
   },
   appointment_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Appointment',
-    required: true
+    ref: 'Appointment'
+  },
+  admission_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'IPDAdmission'
   },
   prescription_id: {
     type: mongoose.Schema.Types.ObjectId,
@@ -201,6 +218,7 @@ billSchema.virtual('has_pending_deletion').get(function() {
 // Indexes
 billSchema.index({ patient_id: 1, generated_at: -1 });
 billSchema.index({ appointment_id: 1 });
+billSchema.index({ admission_id: 1 });
 billSchema.index({ prescription_id: 1 });
 billSchema.index({ status: 1 });
 billSchema.index({ 'items.item_type': 1 });
