@@ -45,4 +45,9 @@ const radiologyStaffSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Indexes
+radiologyStaffSchema.index({ employeeId: 1 });
+radiologyStaffSchema.index({ designation: 1 });
+radiologyStaffSchema.index({ is_active: 1 });
+
 module.exports = mongoose.model('RadiologyStaff', radiologyStaffSchema);
