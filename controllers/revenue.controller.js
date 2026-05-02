@@ -33,17 +33,17 @@ const buildDateFilter = (startDate, endDate) => {
   if (startDate && endDate) {
     return {
       $or: [
-        { 
-          created_at: { 
-            $gte: new Date(startDate), 
-            $lte: new Date(endDate + 'T23:59:59.999Z') 
-          } 
+        {
+          created_at: {
+            $gte: new Date(startDate),
+            $lte: new Date(endDate + 'T23:59:59.999Z')
+          }
         },
-        { 
-          createdAt: { 
-            $gte: new Date(startDate), 
-            $lte: new Date(endDate + 'T23:59:59.999Z') 
-          } 
+        {
+          createdAt: {
+            $gte: new Date(startDate),
+            $lte: new Date(endDate + 'T23:59:59.999Z')
+          }
         }
       ]
     };
@@ -275,10 +275,10 @@ const calculateRevenueBifurcation = (invoices, doctorsMap) => {
   let fullTimeSalaryExpenses = 0; // keep 0 unless you later add salary estimation
 
   const procedureMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
-  const labTestMetrics   = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const labTestMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
   const appointmentMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
-  const pharmacyMetrics  = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
-  const otherMetrics     = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const pharmacyMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const otherMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
 
   const pickDoctorId = (inv) => {
     const d =
@@ -549,6 +549,10 @@ async function getLabTestDetails(startDate, endDate, doctorsMap) {
 /**
  * Calculate hospital revenue with dual date field support
  */
+/**
+ * Calculate hospital revenue with dual date field support
+ * INCLUDES Radiology and IPD data integration
+ */
 exports.calculateHospitalRevenue = async (req, res) => {
   try {
     const { pipeline, period } = buildInvoicePipeline(req.query, {
@@ -599,6 +603,156 @@ exports.calculateHospitalRevenue = async (req, res) => {
       doctorsMap.set(doc._id.toString(), doc);
     });
 
+    // ========== FETCH RADIOLOGY DATA ==========
+    const RadiologyRequest = require('../models/RadiologyRequest');
+
+    const radiologyMatch = {
+      requestedDate: { $gte: period.start, $lte: period.end }
+    };
+
+    let radiologyRequests = await RadiologyRequest.find(radiologyMatch)
+      .populate('doctorId', 'firstName lastName revenuePercentage isFullTime department');
+
+    // Apply same filters as invoices
+    const { doctorId, departmentId } = req.query;
+    if (doctorId && doctorId !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.doctorId?._id?.toString() === doctorId
+      );
+    }
+    if (departmentId && departmentId !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.doctorId?.department?._id?.toString() === departmentId
+      );
+    }
+
+    let radiologyRevenue = 0;
+    let radiologyCount = 0;
+    let radiologyBilled = 0;
+    let radiologyPending = 0;
+
+    const radiologyByCategory = {};
+    const radiologyByStatus = {};
+
+    radiologyRequests.forEach(req => {
+      const amount = req.cost || 0;
+      radiologyRevenue += amount;
+      radiologyCount += 1;
+      if (req.is_billed) {
+        radiologyBilled += amount;
+      } else {
+        radiologyPending += amount;
+      }
+
+      // Category breakdown
+      const cat = req.category || 'Other';
+      if (!radiologyByCategory[cat]) {
+        radiologyByCategory[cat] = { category: cat, count: 0, revenue: 0 };
+      }
+      radiologyByCategory[cat].count += 1;
+      radiologyByCategory[cat].revenue += amount;
+
+      // Status breakdown
+      const stat = req.status || 'Pending';
+      if (!radiologyByStatus[stat]) {
+        radiologyByStatus[stat] = { status: stat, count: 0, revenue: 0 };
+      }
+      radiologyByStatus[stat].count += 1;
+      radiologyByStatus[stat].revenue += amount;
+    });
+
+    // Top radiology tests
+    const radiologyTopTests = radiologyRequests
+      .reduce((acc, req) => {
+        const testName = req.testName;
+        if (!acc[testName]) {
+          acc[testName] = { name: testName, count: 0, revenue: 0 };
+        }
+        acc[testName].count += 1;
+        acc[testName].revenue += req.cost || 0;
+        return acc;
+      }, {});
+
+    const topRadiologyTests = Object.values(radiologyTopTests)
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5);
+
+    // ========== FETCH IPD DATA ==========
+    const IPDAdmission = require('../models/IPDAdmission');
+    const IPDCharge = require('../models/IPDCharge');
+
+    const ipdMatch = {
+      admissionDate: { $gte: period.start, $lte: period.end }
+    };
+
+    let ipdAdmissions = await IPDAdmission.find(ipdMatch)
+      .populate('patientId', 'first_name last_name')
+      // .populate('doctorId', 'firstName lastName')
+      .populate('wardId', 'name')
+      .populate('bedId', 'bedNumber bedType');
+
+    let ipdRevenue = 0;
+    let ipdBedCharges = 0;
+    let ipdDoctorVisitCharges = 0;
+    let ipdProcedureCharges = 0;
+    let ipdLabTestCharges = 0;
+    let ipdRadiologyCharges = 0;
+    let ipdPharmacyCharges = 0;
+    let ipdOtherCharges = 0;
+
+    let totalBedDays = 0;
+    let ipdActiveAdmissions = 0;
+    let ipdDischarges = 0;
+
+    ipdAdmissions.forEach(adm => {
+      const admissionDate = new Date(adm.admissionDate);
+      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
+      const bedDays = Math.ceil((dischargeDate - admissionDate) / (1000 * 60 * 60 * 24));
+      totalBedDays += bedDays;
+
+      if (adm.status === 'Admitted' || adm.status === 'Under Treatment') {
+        ipdActiveAdmissions += 1;
+      }
+      if (adm.status === 'Discharged') {
+        ipdDischarges += 1;
+      }
+    });
+
+    const ipdCharges = await IPDCharge.find({
+      admissionId: { $in: ipdAdmissions.map(a => a._id) }
+    });
+
+    ipdCharges.forEach(charge => {
+      const amount = charge.amount || 0;
+      ipdRevenue += amount;
+
+      switch (charge.chargeType) {
+        case 'Bed Charges': ipdBedCharges += amount; break;
+        case 'Doctor Visit': ipdDoctorVisitCharges += amount; break;
+        case 'Procedure': ipdProcedureCharges += amount; break;
+        case 'Lab Test': ipdLabTestCharges += amount; break;
+        case 'Radiology': ipdRadiologyCharges += amount; break;
+        case 'Pharmacy': ipdPharmacyCharges += amount; break;
+        default: ipdOtherCharges += amount; break;
+      }
+    });
+
+    // IPD by ward
+    const ipdByWard = {};
+    ipdAdmissions.forEach(adm => {
+      const wardName = adm.wardId?.name || 'Unknown';
+      if (!ipdByWard[wardName]) {
+        ipdByWard[wardName] = { wardName, admissions: 0, estimatedRevenue: 0 };
+      }
+      ipdByWard[wardName].admissions += 1;
+      const admissionDate = new Date(adm.admissionDate);
+      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
+      const bedDays = Math.ceil((dischargeDate - admissionDate) / (1000 * 60 * 60 * 24));
+      const dailyRate = adm.wardId?.dailyRate || adm.bedId?.dailyRate || 1000;
+      ipdByWard[wardName].estimatedRevenue += dailyRate * bedDays;
+    });
+
+    // ========== EXISTING INVOICE CALCULATIONS ==========
     // Calculate revenue bifurcation with proper doctor shares
     const bifurcation = calculateRevenueBifurcation(invoices, doctorsMap);
 
@@ -670,12 +824,12 @@ exports.calculateHospitalRevenue = async (req, res) => {
       // Get doctor info and calculate earnings
       const doctorId = inv.doctor_id ? inv.doctor_id.toString() : null;
       const doctor = doctorId ? doctorsMap.get(doctorId) : null;
-      
+
       if (doctorId) {
         uniqueDoctors.add(doctorId);
-        
+
         doctorRevenue[doctorId] = (doctorRevenue[doctorId] || 0) + amount;
-        
+
         const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
         doctorEarningsMap[doctorId] = (doctorEarningsMap[doctorId] || 0) + commissionInfo.commission;
 
@@ -688,7 +842,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
 
         const deptId = inv.department_id ? inv.department_id.toString() : 'Unknown';
         departmentRevenue[deptId] = (departmentRevenue[deptId] || 0) + amount;
-        
+
         if (inv.invoice_type === 'Procedure') {
           procedureRevenueByDepartment[deptId] = (procedureRevenueByDepartment[deptId] || 0) + amount;
         }
@@ -709,7 +863,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
       // Daily stats
       const dateValue = inv.computed_date || inv.created_at || inv.createdAt;
       const dateKey = new Date(dateValue).toISOString().split('T')[0];
-      
+
       if (!dailyStats[dateKey]) {
         dailyStats[dateKey] = {
           date: dateKey,
@@ -727,11 +881,11 @@ exports.calculateHospitalRevenue = async (req, res) => {
         };
       }
       dailyStats[dateKey].revenue += amount;
-      
+
       const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
       dailyStats[dateKey].doctorEarnings += commissionInfo.commission;
       dailyStats[dateKey].hospitalShare += commissionInfo.hospitalShare;
-      
+
       if (inv.invoice_type === 'Appointment') {
         dailyStats[dateKey].appointments += 1;
         dailyStats[dateKey].appointmentRevenue += amount;
@@ -797,7 +951,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
       const earnings = doctorEarningsMap[String(id)] || 0;
       const procedureRev = procedureRevenueByDoctor[String(id)] || 0;
       const labTestRev = labTestRevenueByDoctor[String(id)] || 0;
-      
+
       return {
         doctorId: String(id),
         name: d ? `${d.firstName} ${d.lastName || ''}`.trim() : 'Unknown',
@@ -920,7 +1074,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
         actualSalaryExpenses,
         estimatedSalaryExpenses: bifurcation.fullTimeSalaryExpenses,
         netRevenue,
-        
+
         doctorEarnings: bifurcation.doctorEarnings,
         hospitalRevenue: bifurcation.hospitalRevenue,
         totalCommission: bifurcation.totalCommission,
@@ -928,15 +1082,36 @@ exports.calculateHospitalRevenue = async (req, res) => {
         actualSalaryExpenses,
         netHospitalRevenue: bifurcation.netHospitalRevenue,
         actualNetHospitalRevenue: bifurcation.hospitalRevenue - actualSalaryExpenses,
-        
+
         collectionRate: totalRevenue > 0 ? (paidAmount / totalRevenue) * 100 : 0,
         pendingRate: totalRevenue > 0 ? (pendingAmount / totalRevenue) * 100 : 0,
-        
+
         procedureMetrics: bifurcation.procedureMetrics,
         labTestMetrics: bifurcation.labTestMetrics,
         appointmentMetrics: bifurcation.appointmentMetrics,
         pharmacyMetrics: bifurcation.pharmacyMetrics,
-        otherMetrics: bifurcation.otherMetrics
+        otherMetrics: bifurcation.otherMetrics,
+
+        // Radiology summary
+        radiologyRevenue,
+        radiologyCount,
+        radiologyBilled,
+        radiologyPending,
+
+        // IPD summary
+        ipdRevenue,
+        ipdBedCharges,
+        ipdDoctorVisitCharges,
+        ipdProcedureCharges,
+        ipdLabTestCharges,
+        ipdRadiologyCharges,
+        ipdPharmacyCharges,
+        ipdOtherCharges,
+        ipdActiveAdmissions,
+        ipdDischarges,
+        ipdTotalAdmissions: ipdAdmissions.length,
+        // ipdTotalBedDays,
+        ipdAverageLengthOfStay: ipdAdmissions.length > 0 ? (totalBedDays / ipdAdmissions.length).toFixed(1) : 0
       },
       counts: {
         totalInvoices,
@@ -946,7 +1121,14 @@ exports.calculateHospitalRevenue = async (req, res) => {
         labTests: labTestCount,
         uniquePatients: uniquePatients.size,
         uniqueDoctors: uniqueDoctors.size,
-        salariesPaid: salaryExpenses[0]?.salaryCount || 0
+        salariesPaid: salaryExpenses[0]?.salaryCount || 0,
+
+        radiologyCount,
+        radiologyBilledCount: radiologyRequests.filter(r => r.is_billed).length,
+
+        ipdAdmissions: ipdAdmissions.length,
+        ipdActiveAdmissions,
+        ipdDischarges
       },
       breakdown: {
         bySource: {
@@ -1019,6 +1201,33 @@ exports.calculateHospitalRevenue = async (req, res) => {
               revenue: rev,
               percentage: labTestRevenue > 0 ? (rev / labTestRevenue) * 100 : 0
             })).sort((a, b) => b.revenue - a.revenue)
+          },
+          // Radiology source
+          radiology: {
+            amount: radiologyRevenue,
+            percentage: totalRevenue > 0 ? Number(((radiologyRevenue / totalRevenue) * 100).toFixed(2)) : 0,
+            count: radiologyCount,
+            average: radiologyCount > 0 ? Number((radiologyRevenue / radiologyCount).toFixed(2)) : 0,
+            billed: radiologyBilled,
+            pending: radiologyPending,
+            byCategory: Object.values(radiologyByCategory),
+            byStatus: Object.values(radiologyByStatus),
+            topTests: topRadiologyTests
+          },
+          // IPD source
+          ipd: {
+            amount: ipdRevenue,
+            percentage: totalRevenue > 0 ? Number(((ipdRevenue / totalRevenue) * 100).toFixed(2)) : 0,
+            breakdown: {
+              bedCharges: ipdBedCharges,
+              doctorVisits: ipdDoctorVisitCharges,
+              procedures: ipdProcedureCharges,
+              labTests: ipdLabTestCharges,
+              radiology: ipdRadiologyCharges,
+              pharmacy: ipdPharmacyCharges,
+              other: ipdOtherCharges
+            },
+            byWard: Object.values(ipdByWard)
           }
         },
         byStatus: {
@@ -1060,7 +1269,8 @@ exports.calculateHospitalRevenue = async (req, res) => {
           revenue: t.revenue,
           count: t.count,
           averagePrice: t.averagePrice
-        }))
+        })),
+        radiologyTests: topRadiologyTests
       },
       metrics: {
         profitMargin: totalRevenue > 0 ? Number(((netRevenue / totalRevenue) * 100).toFixed(2)) : 0,
@@ -1069,9 +1279,10 @@ exports.calculateHospitalRevenue = async (req, res) => {
         averageDailyRevenue: dailyBreakdown.length > 0 ? Number((totalRevenue / dailyBreakdown.length).toFixed(2)) : 0,
         averageProcedureValue: procedureCount > 0 ? Number((procedureRevenue / procedureCount).toFixed(2)) : 0,
         averageLabTestValue: labTestCount > 0 ? Number((labTestRevenue / labTestCount).toFixed(2)) : 0,
-        busiestDay: dailyBreakdown.reduce((max, day) => (day.revenue > max.revenue ? day : max), {
-          revenue: 0
-        })
+        busiestDay: dailyBreakdown.reduce((max, day) => (day.revenue > max.revenue ? day : max), { revenue: 0 }),
+        averageRadiologyValue: radiologyCount > 0 ? Number((radiologyRevenue / radiologyCount).toFixed(2)) : 0,
+        averageIpdStay: ipdAdmissions.length > 0 ? (totalBedDays / ipdAdmissions.length).toFixed(1) : 0,
+        ipdOccupancyRate: ipdActiveAdmissions > 0 ? (ipdActiveAdmissions / (ipdAdmissions.length || 1) * 100).toFixed(1) : 0
       }
     });
   } catch (error) {
@@ -1082,16 +1293,17 @@ exports.calculateHospitalRevenue = async (req, res) => {
 
 /**
  * Get daily revenue report with proper doctor commission
+ * INCLUDES Radiology and IPD data for the specific day
  */
 exports.getDailyRevenueReport = async (req, res) => {
   try {
     const { date, doctorId, departmentId, invoiceType, paymentMethod } = req.query;
 
     const dateStr = date || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    
+
     const istDate = new Date(`${dateStr}T00:00:00.000+05:30`);
     const istEndDate = new Date(`${dateStr}T23:59:59.999+05:30`);
-    
+
     const startOfDayUTC = new Date(istDate.toISOString());
     const endOfDayUTC = new Date(istEndDate.toISOString());
 
@@ -1124,12 +1336,48 @@ exports.getDailyRevenueReport = async (req, res) => {
       doctorsMap.set(doc._id.toString(), doc);
     });
 
+    // ========== FETCH RADIOLOGY DATA FOR THIS DAY ==========
+    const RadiologyRequest = require('../models/RadiologyRequest');
+
+    const radiologyRequests = await RadiologyRequest.find({
+      requestedDate: { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    })
+      .populate('doctorId', 'firstName lastName revenuePercentage isFullTime')
+      .populate('patientId', 'first_name last_name');
+
+    let radiologyRevenue = 0;
+    let radiologyCount = 0;
+
+    radiologyRequests.forEach(req => {
+      radiologyRevenue += req.cost || 0;
+      radiologyCount += 1;
+    });
+
+    // ========== FETCH IPD DATA FOR THIS DAY ==========
+    const IPDAdmission = require('../models/IPDAdmission');
+    const IPDCharge = require('../models/IPDCharge');
+
+    const ipdAdmissions = await IPDAdmission.find({
+      admissionDate: { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    });
+
+    let ipdRevenue = 0;
+    const ipdCharges = await IPDCharge.find({
+      admissionId: { $in: ipdAdmissions.map(a => a._id) },
+      createdAt: { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    });
+
+    ipdCharges.forEach(charge => {
+      ipdRevenue += charge.amount || 0;
+    });
+
+    // ========== EXISTING INVOICE CALCULATIONS ==========
     let totalRevenue = 0;
     let totalPaid = 0;
     let totalPending = 0;
     let totalDoctorEarnings = 0;
     let totalHospitalShare = 0;
-    
+
     const revenueByType = {
       Appointment: 0,
       Pharmacy: 0,
@@ -1165,7 +1413,7 @@ exports.getDailyRevenueReport = async (req, res) => {
       const amount = invoice.total || 0;
       const paid = invoice.amount_paid || 0;
       const pending = invoice.balance_due || 0;
-      
+
       if (!['Draft', 'Cancelled'].includes(invoice.status)) {
         totalRevenue += amount;
         totalPaid += paid;
@@ -1173,7 +1421,7 @@ exports.getDailyRevenueReport = async (req, res) => {
 
         const doctor = invoice.appointment_id?.doctor_id;
         const commissionInfo = calculateDoctorCommission(doctor, invoice, invoice.invoice_type);
-        
+
         totalDoctorEarnings += commissionInfo.commission;
         totalHospitalShare += commissionInfo.hospitalShare;
 
@@ -1193,7 +1441,7 @@ exports.getDailyRevenueReport = async (req, res) => {
         if (doctor) {
           const doctorId = doctor._id.toString();
           const doctorName = `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim() || 'Unknown';
-          
+
           if (!doctorRevenue[doctorId]) {
             doctorRevenue[doctorId] = {
               doctorId,
@@ -1207,7 +1455,7 @@ exports.getDailyRevenueReport = async (req, res) => {
               specialization: doctor.specialization || 'General'
             };
           }
-          
+
           doctorRevenue[doctorId].revenue += amount;
           doctorRevenue[doctorId].earnings += commissionInfo.commission;
           doctorRevenue[doctorId].commission += commissionInfo.commission;
@@ -1223,13 +1471,13 @@ exports.getDailyRevenueReport = async (req, res) => {
         }
 
         const dateField = invoice.created_at || invoice.createdAt;
-        const istHour = new Date(dateField).toLocaleString('en-US', { 
+        const istHour = new Date(dateField).toLocaleString('en-US', {
           timeZone: 'Asia/Kolkata',
           hour: 'numeric',
-          hour12: false 
+          hour12: false
         });
         const hour = parseInt(istHour);
-        
+
         hourlyDataIST[hour].count += 1;
         hourlyDataIST[hour].revenue += amount;
         hourlyDataIST[hour].doctorEarnings += commissionInfo.commission;
@@ -1287,7 +1535,10 @@ exports.getDailyRevenueReport = async (req, res) => {
         totalDoctorEarnings: Number(totalDoctorEarnings.toFixed(2)),
         totalHospitalShare: Number(totalHospitalShare.toFixed(2)),
         collectionRate: totalRevenue > 0 ? Number(((totalPaid / totalRevenue) * 100).toFixed(2)) : 0,
-        invoiceCount: invoices.length
+        invoiceCount: invoices.length,
+        radiologyRevenue: Number(radiologyRevenue.toFixed(2)),
+        radiologyCount,
+        ipdRevenue: Number(ipdRevenue.toFixed(2))
       },
       breakdown: {
         byType: Object.entries(revenueByType)
@@ -1334,17 +1585,17 @@ exports.getDailyRevenueReport = async (req, res) => {
         const doctor = inv.appointment_id?.doctor_id;
         const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
         const dateField = inv.created_at || inv.createdAt;
-        const istTime = new Date(dateField).toLocaleString('en-IN', { 
+        const istTime = new Date(dateField).toLocaleString('en-IN', {
           timeZone: 'Asia/Kolkata',
           dateStyle: 'full',
           timeStyle: 'long'
         });
-        
+
         return {
           invoiceNumber: inv.invoice_number,
           type: inv.invoice_type,
-          patient: inv.patient_id ? 
-            `${inv.patient_id.first_name || ''} ${inv.patient_id.last_name || ''}`.trim() : 
+          patient: inv.patient_id ?
+            `${inv.patient_id.first_name || ''} ${inv.patient_id.last_name || ''}`.trim() :
             'Walk-in',
           doctor: doctor ?
             `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim() :
@@ -1374,16 +1625,17 @@ exports.getDailyRevenueReport = async (req, res) => {
 
   } catch (error) {
     console.error('Error in getDailyRevenueReport:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Failed to generate daily revenue report',
-      details: error.message 
+      details: error.message
     });
   }
 };
 
 /**
  * Get monthly revenue report with proper doctor commission
+ * INCLUDES Radiology and IPD data for the month
  */
 exports.getMonthlyRevenueReport = async (req, res) => {
   try {
@@ -1409,28 +1661,28 @@ exports.getMonthlyRevenueReport = async (req, res) => {
       .populate('patient_id', 'first_name last_name patient_type')
       .populate({
         path: 'appointment_id',
-        populate: { 
-          path: 'doctor_id', 
-          select: 'firstName lastName department specialization revenuePercentage isFullTime' 
+        populate: {
+          path: 'doctor_id',
+          select: 'firstName lastName department specialization revenuePercentage isFullTime'
         }
       })
       .lean();
 
     // Apply additional filters
     if (doctorId && doctorId !== 'all') {
-      invoices = invoices.filter(inv => 
+      invoices = invoices.filter(inv =>
         inv.appointment_id?.doctor_id?._id?.toString() === doctorId
       );
     }
 
     if (department && department !== 'all') {
-      invoices = invoices.filter(inv => 
+      invoices = invoices.filter(inv =>
         inv.appointment_id?.doctor_id?.department?.toString() === department
       );
     }
 
     if (patientType && patientType !== 'all') {
-      invoices = invoices.filter(inv => 
+      invoices = invoices.filter(inv =>
         inv.patient_id?.patient_type === patientType
       );
     }
@@ -1442,6 +1694,49 @@ exports.getMonthlyRevenueReport = async (req, res) => {
       doctorsMap.set(doc._id.toString(), doc);
     });
 
+    // ========== FETCH RADIOLOGY DATA FOR MONTH ==========
+    const RadiologyRequest = require('../models/RadiologyRequest');
+
+    let radiologyRequests = await RadiologyRequest.find({
+      requestedDate: { $gte: startDate, $lte: endDate }
+    })
+      .populate('doctorId', 'firstName lastName revenuePercentage isFullTime')
+      .populate('patientId', 'first_name last_name');
+
+    let radiologyRevenue = 0;
+    let radiologyCount = 0;
+
+    // Apply filters to radiology data
+    if (doctorId && doctorId !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.doctorId?._id?.toString() === doctorId
+      );
+    }
+
+    radiologyRequests.forEach(req => {
+      radiologyRevenue += req.cost || 0;
+      radiologyCount += 1;
+    });
+
+    // ========== FETCH IPD DATA FOR MONTH ==========
+    const IPDAdmission = require('../models/IPDAdmission');
+    const IPDCharge = require('../models/IPDCharge');
+
+    const ipdAdmissions = await IPDAdmission.find({
+      admissionDate: { $gte: startDate, $lte: endDate }
+    });
+
+    let ipdRevenue = 0;
+    const ipdCharges = await IPDCharge.find({
+      admissionId: { $in: ipdAdmissions.map(a => a._id) },
+      createdAt: { $gte: startDate, $lte: endDate }
+    });
+
+    ipdCharges.forEach(charge => {
+      ipdRevenue += charge.amount || 0;
+    });
+
+    // ========== EXISTING INVOICE CALCULATIONS ==========
     let totalRevenue = 0;
     let appointmentRevenue = 0;
     let pharmacyRevenue = 0;
@@ -1465,7 +1760,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
 
     invoices.forEach((inv) => {
       const amount = inv.total || 0;
-      
+
       let dateField;
       if (inv.created_at) {
         dateField = inv.created_at;
@@ -1476,7 +1771,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
       }
 
       const dateObj = dateField instanceof Date ? dateField : new Date(dateField);
-      
+
       if (isNaN(dateObj.getTime())) {
         console.warn('Invalid date found for invoice:', inv.invoice_number);
         return;
@@ -1514,7 +1809,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
       }
 
       const dateKey = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      
+
       if (!dailyBreakdown[day]) {
         dailyBreakdown[day] = {
           date: dateKey,
@@ -1524,17 +1819,19 @@ exports.getMonthlyRevenueReport = async (req, res) => {
           appointments: 0,
           pharmacy: 0,
           procedures: 0,
-          labTests: 0
+          labTests: 0,
+          radiology: 0
         };
       }
       dailyBreakdown[day].revenue += amount;
       dailyBreakdown[day].doctorEarnings += commissionInfo.commission;
       dailyBreakdown[day].hospitalShare += commissionInfo.hospitalShare;
-      
+
       if (inv.invoice_type === 'Appointment') dailyBreakdown[day].appointments += 1;
       if (inv.invoice_type === 'Pharmacy') dailyBreakdown[day].pharmacy += 1;
       if (inv.invoice_type === 'Procedure') dailyBreakdown[day].procedures += 1;
       if (inv.invoice_type === 'Lab Test') dailyBreakdown[day].labTests += 1;
+      if (inv.invoice_type === 'Radiology') dailyBreakdown[day].radiology += 1;
 
       if (!weeklyBreakdown[week]) {
         weeklyBreakdown[week] = {
@@ -1547,22 +1844,24 @@ exports.getMonthlyRevenueReport = async (req, res) => {
           appointments: 0,
           pharmacy: 0,
           procedures: 0,
-          labTests: 0
+          labTests: 0,
+          radiology: 0
         };
       }
       weeklyBreakdown[week].revenue += amount;
       weeklyBreakdown[week].doctorEarnings += commissionInfo.commission;
       weeklyBreakdown[week].hospitalShare += commissionInfo.hospitalShare;
-      
+
       if (inv.invoice_type === 'Appointment') weeklyBreakdown[week].appointments += 1;
       if (inv.invoice_type === 'Pharmacy') weeklyBreakdown[week].pharmacy += 1;
       if (inv.invoice_type === 'Procedure') weeklyBreakdown[week].procedures += 1;
       if (inv.invoice_type === 'Lab Test') weeklyBreakdown[week].labTests += 1;
+      if (inv.invoice_type === 'Radiology') weeklyBreakdown[week].radiology += 1;
 
       const docId = inv.appointment_id?.doctor_id?._id?.toString();
       if (docId) {
         const doctor = inv.appointment_id.doctor_id;
-        
+
         if (!doctorBreakdown[docId]) {
           doctorBreakdown[docId] = {
             doctorId: docId,
@@ -1572,6 +1871,9 @@ exports.getMonthlyRevenueReport = async (req, res) => {
             commission: 0,
             hospitalShare: 0,
             appointments: 0,
+            procedures: 0,
+            labTests: 0,
+            radiology: 0,
             isFullTime: doctor?.isFullTime || false,
             department: doctor?.department || 'Unknown',
             specialization: doctor?.specialization || 'N/A'
@@ -1582,6 +1884,9 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         doctorBreakdown[docId].commission += commissionInfo.commission;
         doctorBreakdown[docId].hospitalShare += commissionInfo.hospitalShare;
         if (inv.invoice_type === 'Appointment') doctorBreakdown[docId].appointments += 1;
+        if (inv.invoice_type === 'Procedure') doctorBreakdown[docId].procedures += 1;
+        if (inv.invoice_type === 'Lab Test') doctorBreakdown[docId].labTests += 1;
+        if (inv.invoice_type === 'Radiology') doctorBreakdown[docId].radiology += 1;
       }
 
       if (inv.patient_id) {
@@ -1612,7 +1917,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         }
       }
     ]);
-    
+
     const actualSalaryExpenses = salaryExpenses[0]?.totalExpenses || 0;
     const netRevenue = totalRevenue - actualSalaryExpenses;
     const businessDays = Object.keys(dailyBreakdown).length;
@@ -1643,7 +1948,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
       if (!inv.patient_id) return;
       const pId = String(inv.patient_id._id);
       patientVisits[pId] = (patientVisits[pId] || 0) + 1;
-      
+
       let dateField;
       if (inv.created_at) {
         dateField = inv.created_at;
@@ -1652,7 +1957,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
       } else {
         return;
       }
-      
+
       const dateObj = dateField instanceof Date ? dateField : new Date(dateField);
       if (!isNaN(dateObj.getTime())) {
         const t = dateObj.getTime();
@@ -1677,7 +1982,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
     const dailyBreakdownArray = Object.values(dailyBreakdown).sort(
       (a, b) => a.date.localeCompare(b.date)
     );
-    
+
     const weeklyBreakdownArray = Object.values(weeklyBreakdown).sort((a, b) => a.week - b.week);
 
     const totalCollected = Object.values(paymentMethodBreakdown).reduce((s, v) => s + v, 0);
@@ -1712,7 +2017,10 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         netRevenue,
         profitMargin: totalRevenue > 0 ? Number(((netRevenue / totalRevenue) * 100).toFixed(2)) : 0,
         expenseRatio: totalRevenue > 0 ? Number(((actualSalaryExpenses / totalRevenue) * 100).toFixed(2)) : 0,
-        collectionRate: totalRevenue > 0 ? Number(((totalCollected / totalRevenue) * 100).toFixed(2)) : 0
+        collectionRate: totalRevenue > 0 ? Number(((totalCollected / totalRevenue) * 100).toFixed(2)) : 0,
+        radiologyRevenue,
+        radiologyCount,
+        ipdRevenue
       },
       counts: {
         totalInvoices: invoices.length,
@@ -1723,7 +2031,8 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         uniquePatients: Object.keys(patientBreakdown).length,
         uniqueDoctors: Object.keys(doctorBreakdown).length,
         businessDays,
-        salariesPaid: salaryExpenses[0]?.salaryCount || 0
+        salariesPaid: salaryExpenses[0]?.salaryCount || 0,
+        radiologyCount
       },
       breakdown: {
         bySource: {
@@ -1732,7 +2041,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
             percentage: totalRevenue > 0 ? Number(((appointmentRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: appointmentCount,
             average: appointmentCount > 0 ? Number((appointmentRevenue / appointmentCount).toFixed(2)) : 0,
-            doctorEarnings: appointmentRevenue * 0.3, // Estimate
+            doctorEarnings: appointmentRevenue * 0.3,
             hospitalShare: appointmentRevenue * 0.7
           },
           pharmacy: {
@@ -1747,7 +2056,7 @@ exports.getMonthlyRevenueReport = async (req, res) => {
             percentage: totalRevenue > 0 ? Number(((procedureRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: procedureCount,
             average: procedureCount > 0 ? Number((procedureRevenue / procedureCount).toFixed(2)) : 0,
-            doctorEarnings: procedureRevenue * 0.3, // Estimate
+            doctorEarnings: procedureRevenue * 0.3,
             hospitalShare: procedureRevenue * 0.7
           },
           labTests: {
@@ -1755,13 +2064,23 @@ exports.getMonthlyRevenueReport = async (req, res) => {
             percentage: totalRevenue > 0 ? Number(((labTestRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             count: labTestCount,
             average: labTestCount > 0 ? Number((labTestRevenue / labTestCount).toFixed(2)) : 0,
-            doctorEarnings: labTestRevenue * 0.3, // Estimate
+            doctorEarnings: labTestRevenue * 0.3,
             hospitalShare: labTestRevenue * 0.7
           },
           other: {
             amount: otherRevenue,
             percentage: totalRevenue > 0 ? Number(((otherRevenue / totalRevenue) * 100).toFixed(2)) : 0,
             hospitalShare: otherRevenue
+          },
+          radiology: {
+            amount: radiologyRevenue,
+            percentage: totalRevenue > 0 ? Number(((radiologyRevenue / totalRevenue) * 100).toFixed(2)) : 0,
+            count: radiologyCount,
+            average: radiologyCount > 0 ? Number((radiologyRevenue / radiologyCount).toFixed(2)) : 0
+          },
+          ipd: {
+            amount: ipdRevenue,
+            percentage: totalRevenue > 0 ? Number(((ipdRevenue / totalRevenue) * 100).toFixed(2)) : 0
           }
         },
         daily: dailyBreakdownArray,
@@ -1777,15 +2096,17 @@ exports.getMonthlyRevenueReport = async (req, res) => {
         patientVisitFrequency:
           Object.keys(patientBreakdown).length > 0
             ? Number((appointmentCount / Object.keys(patientBreakdown).length).toFixed(2))
-            : 0
+            : 0,
+        averageRadiologyValue: radiologyCount > 0 ? Number((radiologyRevenue / radiologyCount).toFixed(2)) : 0
       },
       trends: {
         weeklyTrend: weeklyBreakdownArray.map((w) => w.revenue),
         sourceTrend: {
-          appointments: dailyBreakdownArray.map((d) => d.appointments),
-          pharmacy: dailyBreakdownArray.map((d) => d.pharmacy),
-          procedures: dailyBreakdownArray.map((d) => d.procedures),
-          labTests: dailyBreakdownArray.map((d) => d.labTests)
+          appointments: dailyBreakdownArray.map((d) => d.appointments || 0),
+          pharmacy: dailyBreakdownArray.map((d) => d.pharmacy || 0),
+          procedures: dailyBreakdownArray.map((d) => d.procedures || 0),
+          labTests: dailyBreakdownArray.map((d) => d.labTests || 0),
+          radiology: dailyBreakdownArray.map((d) => d.radiology || 0)
         }
       }
     });
@@ -1818,7 +2139,7 @@ exports.getDoctorRevenue = async (req, res) => {
 
     const pipeline = [];
 
-    const match = { 
+    const match = {
       $or: [
         { created_at: { $gte: start, $lte: end } },
         { createdAt: { $gte: start, $lte: end } }
@@ -1878,7 +2199,7 @@ exports.getDoctorRevenue = async (req, res) => {
     invoices.forEach((inv) => {
       const amount = inv.total || 0;
       const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
-      
+
       totalRevenue += amount;
       totalCommission += commissionInfo.commission;
       totalHospitalShare += commissionInfo.hospitalShare;
@@ -1954,8 +2275,8 @@ exports.getDoctorRevenue = async (req, res) => {
     });
 
     const dailyBreakdown = Object.entries(dailyRevenue)
-      .map(([d, data]) => ({ 
-        date: d, 
+      .map(([d, data]) => ({
+        date: d,
         revenue: data.revenue,
         commission: data.commission,
         hospitalShare: data.hospitalShare
@@ -2088,7 +2409,7 @@ exports.getDepartmentRevenue = async (req, res) => {
 
     invoices.forEach((inv) => {
       const amount = inv.total || 0;
-      
+
       const doctorId = inv.appointment_info?.doctor_id ? String(inv.appointment_info.doctor_id) : null;
       const doctor = doctorId ? doctorsMap.get(doctorId) : null;
       const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
@@ -2136,8 +2457,8 @@ exports.getDepartmentRevenue = async (req, res) => {
     });
 
     const dailyBreakdown = Object.entries(dailyRevenue)
-      .map(([d, data]) => ({ 
-        date: d, 
+      .map(([d, data]) => ({
+        date: d,
         revenue: data.revenue,
         doctorEarnings: data.doctorEarnings,
         hospitalShare: data.hospitalShare
@@ -2337,7 +2658,7 @@ exports.getDetailedRevenueReport = async (req, res) => {
     const invoicesWithCommission = invoices.map(inv => {
       const doctor = inv.doctor?.id ? doctorsMap.get(inv.doctor.id.toString()) : null;
       const commissionInfo = calculateDoctorCommission(doctor, inv, inv.invoice_type);
-      
+
       return {
         ...inv,
         commission: commissionInfo.commission,
@@ -2391,7 +2712,7 @@ exports.getProcedureRevenueAnalytics = async (req, res) => {
     const { startDate, endDate, departmentId, doctorId, procedureCode, procedureCategory } = req.query;
 
     let startOfDayUTC, endOfDayUTC;
-    
+
     if (startDate && endDate) {
       startOfDayUTC = new Date(startDate);
       startOfDayUTC.setHours(0, 0, 0, 0);
@@ -2424,11 +2745,11 @@ exports.getProcedureRevenueAnalytics = async (req, res) => {
     });
 
     const pipeline = [
-      { 
-        $match: { 
+      {
+        $match: {
           invoice_type: 'Procedure',
           ...dateFilter
-        } 
+        }
       },
       { $unwind: { path: '$procedure_items', preserveNullAndEmptyArrays: false } },
       {
@@ -2456,7 +2777,7 @@ exports.getProcedureRevenueAnalytics = async (req, res) => {
           procedureRevenue: '$procedure_items.total_price',
           procedureQuantity: '$procedure_items.quantity',
           doctorId: { $ifNull: ['$doctor._id', null] },
-          doctorName: { 
+          doctorName: {
             $cond: {
               if: { $and: ['$doctor.firstName', '$doctor.lastName'] },
               then: { $concat: ['$doctor.firstName', ' ', '$doctor.lastName'] },
@@ -2466,37 +2787,37 @@ exports.getProcedureRevenueAnalytics = async (req, res) => {
           isFullTime: { $ifNull: ['$doctor.isFullTime', false] },
           revenuePercentage: { $ifNull: ['$doctor.revenuePercentage', 30] },
           departmentId: '$doctor.department',
-          date: { 
-            $dateToString: { 
-              format: '%Y-%m-%d', 
+          date: {
+            $dateToString: {
+              format: '%Y-%m-%d',
               date: { $ifNull: ['$created_at', '$createdAt'] }
-            } 
+            }
           }
         }
       }
     ];
 
     if (doctorId && doctorId !== 'all' && doctorId !== 'undefined') {
-      pipeline.push({ 
-        $match: { 
-          'appointment.doctor_id': new mongoose.Types.ObjectId(doctorId) 
-        } 
+      pipeline.push({
+        $match: {
+          'appointment.doctor_id': new mongoose.Types.ObjectId(doctorId)
+        }
       });
     }
 
     if (departmentId && departmentId !== 'all' && departmentId !== 'undefined') {
-      pipeline.push({ 
-        $match: { 
-          'doctor.department': new mongoose.Types.ObjectId(departmentId) 
-        } 
+      pipeline.push({
+        $match: {
+          'doctor.department': new mongoose.Types.ObjectId(departmentId)
+        }
       });
     }
 
     if (procedureCode && procedureCode !== 'all') {
-      pipeline.push({ 
-        $match: { 
-          'procedure_items.procedure_code': procedureCode 
-        } 
+      pipeline.push({
+        $match: {
+          'procedure_items.procedure_code': procedureCode
+        }
       });
     }
 
@@ -2520,10 +2841,10 @@ exports.getProcedureRevenueAnalytics = async (req, res) => {
       const doctorId = item.doctorId ? item.doctorId.toString() : 'unknown';
       const isFullTime = item.isFullTime || false;
       const revenuePercentage = item.revenuePercentage || (isFullTime ? 100 : 30);
-      
+
       const commission = isFullTime ? 0 : (revenue * revenuePercentage / 100);
       const hospitalShare = revenue - commission;
-      
+
       totalProcedureRevenue += revenue;
       totalProcedureCount += 1;
       totalDoctorCommission += commission;
@@ -2661,10 +2982,10 @@ exports.getProcedureRevenueAnalytics = async (req, res) => {
 
   } catch (error) {
     console.error('Error in getProcedureRevenueAnalytics:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      stack: error.stack 
+      stack: error.stack
     });
   }
 };
@@ -2677,7 +2998,7 @@ exports.getLabTestRevenueAnalytics = async (req, res) => {
     const { startDate, endDate, departmentId, doctorId, labTestCode, labTestCategory, status } = req.query;
 
     let startOfDayUTC, endOfDayUTC;
-    
+
     if (startDate && endDate) {
       startOfDayUTC = new Date(startDate);
       startOfDayUTC.setHours(0, 0, 0, 0);
@@ -2710,11 +3031,11 @@ exports.getLabTestRevenueAnalytics = async (req, res) => {
     });
 
     const pipeline = [
-      { 
-        $match: { 
+      {
+        $match: {
           invoice_type: 'Lab Test',
           ...dateFilter
-        } 
+        }
       },
       { $unwind: { path: '$lab_test_items', preserveNullAndEmptyArrays: false } },
       {
@@ -2744,7 +3065,7 @@ exports.getLabTestRevenueAnalytics = async (req, res) => {
           labTestUnitPrice: '$lab_test_items.unit_price',
           labTestStatus: '$lab_test_items.status',
           doctorId: { $ifNull: ['$doctor._id', null] },
-          doctorName: { 
+          doctorName: {
             $cond: {
               if: { $and: ['$doctor.firstName', '$doctor.lastName'] },
               then: { $concat: ['$doctor.firstName', ' ', '$doctor.lastName'] },
@@ -2754,45 +3075,45 @@ exports.getLabTestRevenueAnalytics = async (req, res) => {
           isFullTime: { $ifNull: ['$doctor.isFullTime', false] },
           revenuePercentage: { $ifNull: ['$doctor.revenuePercentage', 30] },
           departmentId: '$doctor.department',
-          date: { 
-            $dateToString: { 
-              format: '%Y-%m-%d', 
+          date: {
+            $dateToString: {
+              format: '%Y-%m-%d',
               date: { $ifNull: ['$created_at', '$createdAt'] }
-            } 
+            }
           }
         }
       }
     ];
 
     if (doctorId && doctorId !== 'all' && doctorId !== 'undefined') {
-      pipeline.push({ 
-        $match: { 
-          'appointment.doctor_id': new mongoose.Types.ObjectId(doctorId) 
-        } 
+      pipeline.push({
+        $match: {
+          'appointment.doctor_id': new mongoose.Types.ObjectId(doctorId)
+        }
       });
     }
 
     if (departmentId && departmentId !== 'all' && departmentId !== 'undefined') {
-      pipeline.push({ 
-        $match: { 
-          'doctor.department': new mongoose.Types.ObjectId(departmentId) 
-        } 
+      pipeline.push({
+        $match: {
+          'doctor.department': new mongoose.Types.ObjectId(departmentId)
+        }
       });
     }
 
     if (labTestCode && labTestCode !== 'all') {
-      pipeline.push({ 
-        $match: { 
-          'lab_test_items.lab_test_code': labTestCode 
-        } 
+      pipeline.push({
+        $match: {
+          'lab_test_items.lab_test_code': labTestCode
+        }
       });
     }
 
     if (status && status !== 'all') {
-      pipeline.push({ 
-        $match: { 
-          'lab_test_items.status': status 
-        } 
+      pipeline.push({
+        $match: {
+          'lab_test_items.status': status
+        }
       });
     }
 
@@ -2818,7 +3139,7 @@ exports.getLabTestRevenueAnalytics = async (req, res) => {
       const doctorId = item.doctorId ? item.doctorId.toString() : 'unknown';
       const isFullTime = item.isFullTime || false;
       const revenuePercentage = item.revenuePercentage || (isFullTime ? 100 : 30);
-      
+
       const commission = isFullTime ? 0 : (revenue * revenuePercentage / 100);
       const hospitalShare = revenue - commission;
 
@@ -2980,10 +3301,10 @@ exports.getLabTestRevenueAnalytics = async (req, res) => {
 
   } catch (error) {
     console.error('Error in getLabTestRevenueAnalytics:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      stack: error.stack 
+      stack: error.stack
     });
   }
 };
@@ -2991,9 +3312,9 @@ exports.getLabTestRevenueAnalytics = async (req, res) => {
 // Export functions (these would be similarly updated with commission logic)
 exports.exportRevenueData = async (req, res) => {
   try {
-    const { 
-      startDate, 
-      endDate, 
+    const {
+      startDate,
+      endDate,
       exportType = 'csv',
       includeCommissionSplit = true
     } = req.query;
@@ -3010,9 +3331,9 @@ exports.exportRevenueData = async (req, res) => {
       .populate('patient_id', 'first_name last_name patientId patient_type')
       .populate({
         path: 'appointment_id',
-        populate: { 
-          path: 'doctor_id', 
-          select: 'firstName lastName department revenuePercentage isFullTime specialization' 
+        populate: {
+          path: 'doctor_id',
+          select: 'firstName lastName department revenuePercentage isFullTime specialization'
         }
       })
       .sort({ createdAt: -1 })
@@ -3029,7 +3350,7 @@ exports.exportRevenueData = async (req, res) => {
       const patient = invoice.patient_id;
       const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
       const commissionInfo = calculateDoctorCommission(doctorObj, invoice, invoice.invoice_type);
-      
+
       const dateField = invoice.created_at || invoice.createdAt;
 
       return {
@@ -3052,8 +3373,8 @@ exports.exportRevenueData = async (req, res) => {
         'Balance Due': invoice.balance_due || 0,
         'Status': invoice.status,
         'Payment Method': Array.isArray(invoice.payment_history) && invoice.payment_history.length
-            ? invoice.payment_history[invoice.payment_history.length - 1].method
-            : 'N/A',
+          ? invoice.payment_history[invoice.payment_history.length - 1].method
+          : 'N/A',
         'Services Count': invoice.service_items?.length || 0,
         'Medicines Count': invoice.medicine_items?.length || 0,
         'Procedures Count': invoice.procedure_items?.length || 0,
@@ -3114,7 +3435,7 @@ exports.exportRevenueData = async (req, res) => {
 exports.exportOverview = async (req, res) => {
   try {
     const { exportType = 'csv' } = req.query;
-    
+
     const { pipeline, period } = buildInvoicePipeline(req.query, {
       requireDoctorJoin: true,
       requirePatientJoin: true
@@ -3136,7 +3457,7 @@ exports.exportOverview = async (req, res) => {
     }
 
     const invoices = await Invoice.aggregate(pipeline);
-    
+
     const doctors = await Doctor.find({});
     const doctorsMap = new Map();
     doctors.forEach(doc => {
@@ -3154,7 +3475,7 @@ exports.exportOverview = async (req, res) => {
       'Total Commission': bifurcation.totalCommission,
       'Net Hospital Revenue': bifurcation.netHospitalRevenue,
       'Profit Margin': `${bifurcation.profitMargin?.toFixed(1) || 0}%`,
-      'Collection Rate': invoices.length > 0 
+      'Collection Rate': invoices.length > 0
         ? `${((invoices.reduce((sum, inv) => sum + (inv.amount_paid || 0), 0) / bifurcation.totalRevenue) * 100).toFixed(1)}%`
         : '0%'
     }];
@@ -3199,7 +3520,7 @@ exports.exportOverview = async (req, res) => {
 exports.exportDaily = async (req, res) => {
   try {
     const { date, exportType = 'csv', doctorId, departmentId, invoiceType, paymentMethod } = req.query;
-    
+
     if (!date) {
       return res.status(400).json({ error: 'Date is required for daily export' });
     }
@@ -3207,7 +3528,7 @@ exports.exportDaily = async (req, res) => {
     const dateStr = date;
     const istDate = new Date(`${dateStr}T00:00:00.000+05:30`);
     const istEndDate = new Date(`${dateStr}T23:59:59.999+05:30`);
-    
+
     const startOfDayUTC = new Date(istDate.toISOString());
     const endOfDayUTC = new Date(istEndDate.toISOString());
 
@@ -3242,21 +3563,21 @@ exports.exportDaily = async (req, res) => {
 
     // Apply additional filters in memory
     let filteredInvoices = invoices;
-    
+
     if (doctorId && doctorId !== 'all') {
-      filteredInvoices = filteredInvoices.filter(inv => 
+      filteredInvoices = filteredInvoices.filter(inv =>
         inv.appointment_id?.doctor_id?._id?.toString() === doctorId
       );
     }
 
     if (departmentId && departmentId !== 'all') {
-      filteredInvoices = filteredInvoices.filter(inv => 
+      filteredInvoices = filteredInvoices.filter(inv =>
         inv.appointment_id?.doctor_id?.department?.toString() === departmentId
       );
     }
 
     if (paymentMethod && paymentMethod !== 'all') {
-      filteredInvoices = filteredInvoices.filter(inv => 
+      filteredInvoices = filteredInvoices.filter(inv =>
         inv.payment_history?.some(p => p.method === paymentMethod)
       );
     }
@@ -3277,7 +3598,7 @@ exports.exportDaily = async (req, res) => {
       const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
       const commissionInfo = calculateDoctorCommission(doctorObj, invoice, invoice.invoice_type);
       const dateField = invoice.created_at || invoice.createdAt;
-      const istTime = new Date(dateField).toLocaleString('en-IN', { 
+      const istTime = new Date(dateField).toLocaleString('en-IN', {
         timeZone: 'Asia/Kolkata',
         hour: '2-digit',
         minute: '2-digit',
@@ -3294,8 +3615,8 @@ exports.exportDaily = async (req, res) => {
         'Invoice Number': invoice.invoice_number,
         'Time (IST)': istTime,
         'Type': invoice.invoice_type,
-        'Patient Name': invoice.patient_id ? 
-          `${invoice.patient_id.first_name || ''} ${invoice.patient_id.last_name || ''}`.trim() : 
+        'Patient Name': invoice.patient_id ?
+          `${invoice.patient_id.first_name || ''} ${invoice.patient_id.last_name || ''}`.trim() :
           'Walk-in',
         'Patient ID': invoice.patient_id?.patientId || 'N/A',
         'Patient Type': invoice.patient_id?.patient_type || 'N/A',
@@ -3308,8 +3629,8 @@ exports.exportDaily = async (req, res) => {
         'Amount Paid': invoice.amount_paid || 0,
         'Balance Due': invoice.balance_due || 0,
         'Status': invoice.status,
-        'Payment Method': invoice.payment_history?.length > 0 
-          ? invoice.payment_history[invoice.payment_history.length - 1].method 
+        'Payment Method': invoice.payment_history?.length > 0
+          ? invoice.payment_history[invoice.payment_history.length - 1].method
           : 'N/A',
         'Services Count': invoice.service_items?.length || 0,
         'Medicines Count': invoice.medicine_items?.length || 0,
@@ -3349,7 +3670,7 @@ exports.exportDaily = async (req, res) => {
     if (exportType === 'excel') {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Daily Revenue');
-      
+
       const headers = Object.keys(exportData[0]);
       worksheet.columns = headers.map(header => ({
         header: header,
@@ -3371,7 +3692,7 @@ exports.exportDaily = async (req, res) => {
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=daily_revenue_${dateStr}.xlsx`);
-      
+
       await workbook.xlsx.write(res);
       res.end();
     } else {
@@ -3409,7 +3730,7 @@ exports.exportDaily = async (req, res) => {
 exports.exportMonthly = async (req, res) => {
   try {
     const { year, month, exportType = 'csv', doctorId, departmentId, invoiceType, paymentMethod, patientType } = req.query;
-    
+
     if (!year || !month) {
       return res.status(400).json({ error: 'Year and month are required for monthly export' });
     }
@@ -3433,34 +3754,34 @@ exports.exportMonthly = async (req, res) => {
       .populate('patient_id', 'first_name last_name patientId patient_type')
       .populate({
         path: 'appointment_id',
-        populate: { 
-          path: 'doctor_id', 
-          select: 'firstName lastName department specialization revenuePercentage isFullTime' 
+        populate: {
+          path: 'doctor_id',
+          select: 'firstName lastName department specialization revenuePercentage isFullTime'
         }
       })
       .lean();
 
     // Apply filters
     if (doctorId && doctorId !== 'all') {
-      invoices = invoices.filter(inv => 
+      invoices = invoices.filter(inv =>
         inv.appointment_id?.doctor_id?._id?.toString() === doctorId
       );
     }
 
     if (departmentId && departmentId !== 'all') {
-      invoices = invoices.filter(inv => 
+      invoices = invoices.filter(inv =>
         inv.appointment_id?.doctor_id?.department?.toString() === departmentId
       );
     }
 
     if (patientType && patientType !== 'all') {
-      invoices = invoices.filter(inv => 
+      invoices = invoices.filter(inv =>
         inv.patient_id?.patient_type === patientType
       );
     }
 
     if (paymentMethod && paymentMethod !== 'all') {
-      invoices = invoices.filter(inv => 
+      invoices = invoices.filter(inv =>
         inv.payment_history?.some(p => p.method === paymentMethod)
       );
     }
@@ -3484,7 +3805,7 @@ exports.exportMonthly = async (req, res) => {
       const doctor = invoice.appointment_id?.doctor_id;
       const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
       const commissionInfo = calculateDoctorCommission(doctorObj, invoice, invoice.invoice_type);
-      
+
       let dateField;
       if (invoice.created_at) dateField = invoice.created_at;
       else if (invoice.createdAt) dateField = invoice.createdAt;
@@ -3518,7 +3839,7 @@ exports.exportMonthly = async (req, res) => {
       weeklyData[weekKey].doctorEarnings += commissionInfo.commission;
       weeklyData[weekKey].hospitalShare += commissionInfo.hospitalShare;
       weeklyData[weekKey].invoices += 1;
-      
+
       if (invoice.invoice_type === 'Appointment') weeklyData[weekKey].appointments += 1;
       if (invoice.invoice_type === 'Procedure') weeklyData[weekKey].procedures += 1;
       if (invoice.invoice_type === 'Lab Test') weeklyData[weekKey].labTests += 1;
@@ -3546,7 +3867,7 @@ exports.exportMonthly = async (req, res) => {
     if (exportType === 'excel') {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Monthly Revenue');
-      
+
       worksheet.columns = [
         { header: 'Week', key: 'week', width: 15 },
         { header: 'Days', key: 'days', width: 15 },
@@ -3573,7 +3894,7 @@ exports.exportMonthly = async (req, res) => {
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=monthly_revenue_${targetYear}_${targetMonth}.xlsx`);
-      
+
       await workbook.xlsx.write(res);
       res.end();
     } else {
@@ -3611,7 +3932,7 @@ exports.exportMonthly = async (req, res) => {
 exports.exportDoctor = async (req, res) => {
   try {
     const { doctorId, startDate, endDate, exportType = 'csv', invoiceType } = req.query;
-    
+
     if (!doctorId) {
       return res.status(400).json({ error: 'Doctor ID is required' });
     }
@@ -3632,7 +3953,7 @@ exports.exportDoctor = async (req, res) => {
 
     const pipeline = [];
 
-    const match = { 
+    const match = {
       $or: [
         { created_at: { $gte: start, $lte: end } },
         { createdAt: { $gte: start, $lte: end } }
@@ -3696,8 +4017,8 @@ exports.exportDoctor = async (req, res) => {
         'Date': new Date(dateField).toISOString().split('T')[0],
         'Invoice Number': invoice.invoice_number,
         'Type': invoice.invoice_type,
-        'Patient Name': invoice.patient_info ? 
-          `${invoice.patient_info.first_name || ''} ${invoice.patient_info.last_name || ''}`.trim() : 
+        'Patient Name': invoice.patient_info ?
+          `${invoice.patient_info.first_name || ''} ${invoice.patient_info.last_name || ''}`.trim() :
           'Unknown',
         'Patient ID': invoice.patient_info?.patientId || 'N/A',
         'Total Amount': amount,
@@ -3735,7 +4056,7 @@ exports.exportDoctor = async (req, res) => {
 
     if (exportType === 'excel') {
       const workbook = new ExcelJS.Workbook();
-      
+
       // Info sheet
       const infoSheet = workbook.addWorksheet('Doctor Info');
       infoSheet.columns = [
@@ -3765,7 +4086,7 @@ exports.exportDoctor = async (req, res) => {
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=doctor_${doctor.firstName}_${doctor.lastName}_${Date.now()}.xlsx`);
-      
+
       await workbook.xlsx.write(res);
       res.end();
     } else {
@@ -3803,7 +4124,7 @@ exports.exportDoctor = async (req, res) => {
 exports.exportDepartment = async (req, res) => {
   try {
     const { department, startDate, endDate, exportType = 'csv' } = req.query;
-    
+
     if (!department) {
       return res.status(400).json({ error: 'Department ID is required' });
     }
@@ -3933,7 +4254,7 @@ exports.exportDepartment = async (req, res) => {
 
     if (exportType === 'excel') {
       const workbook = new ExcelJS.Workbook();
-      
+
       // Info sheet
       const infoSheet = workbook.addWorksheet('Department Info');
       infoSheet.columns = [
@@ -3963,7 +4284,7 @@ exports.exportDepartment = async (req, res) => {
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=department_${dept.name.replace(/\s+/g, '_')}_${Date.now()}.xlsx`);
-      
+
       await workbook.xlsx.write(res);
       res.end();
     } else {
@@ -4000,9 +4321,9 @@ exports.exportDepartment = async (req, res) => {
  */
 exports.exportDetailed = async (req, res) => {
   try {
-    const { 
-      startDate, 
-      endDate, 
+    const {
+      startDate,
+      endDate,
       exportType = 'csv',
       doctorId,
       departmentId,
@@ -4046,9 +4367,9 @@ exports.exportDetailed = async (req, res) => {
       .populate('patient_id', 'first_name last_name patientId patient_type')
       .populate({
         path: 'appointment_id',
-        populate: { 
-          path: 'doctor_id', 
-          select: 'firstName lastName department revenuePercentage isFullTime specialization' 
+        populate: {
+          path: 'doctor_id',
+          select: 'firstName lastName department revenuePercentage isFullTime specialization'
         }
       })
       .sort({ created_at: -1, createdAt: -1 })
@@ -4065,9 +4386,9 @@ exports.exportDetailed = async (req, res) => {
       const patient = invoice.patient_id;
       const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
       const commissionInfo = calculateDoctorCommission(doctorObj, invoice, invoice.invoice_type);
-      
+
       const dateField = invoice.created_at || invoice.createdAt;
-      const istDateTime = new Date(dateField).toLocaleString('en-IN', { 
+      const istDateTime = new Date(dateField).toLocaleString('en-IN', {
         timeZone: 'Asia/Kolkata',
         dateStyle: 'short',
         timeStyle: 'medium'
@@ -4142,7 +4463,7 @@ exports.exportDetailed = async (req, res) => {
     if (exportType === 'excel') {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Detailed Revenue');
-      
+
       const headers = Object.keys(exportData[0]);
       worksheet.columns = headers.map(header => ({
         header: header,
@@ -4158,7 +4479,7 @@ exports.exportDetailed = async (req, res) => {
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=detailed_revenue_${startDate || 'all'}_to_${endDate || 'now'}.xlsx`);
-      
+
       await workbook.xlsx.write(res);
       res.end();
     } else if (exportType === 'json') {
@@ -4223,7 +4544,7 @@ exports.exportProcedureRevenue = async (req, res) => {
     const { startDate, endDate, exportType = 'csv', doctorId, departmentId, procedureCode } = req.query;
 
     let startOfDayUTC, endOfDayUTC;
-    
+
     if (startDate && endDate) {
       startOfDayUTC = new Date(startDate);
       startOfDayUTC.setHours(0, 0, 0, 0);
@@ -4281,11 +4602,11 @@ exports.exportProcedureRevenue = async (req, res) => {
           isFullTime: '$doctor.isFullTime',
           revenuePercentage: '$doctor.revenuePercentage',
           departmentId: '$doctor.department',
-          date: { 
-            $dateToString: { 
-              format: '%Y-%m-%d', 
+          date: {
+            $dateToString: {
+              format: '%Y-%m-%d',
               date: { $ifNull: ['$created_at', '$createdAt'] }
-            } 
+            }
           }
         }
       }
@@ -4314,7 +4635,7 @@ exports.exportProcedureRevenue = async (req, res) => {
     const exportData = procedureItems.map(item => {
       const doctor = item.doctorId ? doctorsMap.get(item.doctorId.toString()) : null;
       const commissionInfo = calculateDoctorCommission(doctor, { total: item.procedureRevenue || 0, service_items: [] }, 'Procedure');
-      
+
       return {
         'Date': item.date,
         'Invoice Ref': item.invoice_number || 'N/A',
@@ -4355,7 +4676,7 @@ exports.exportProcedureRevenue = async (req, res) => {
     if (exportType === 'excel') {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Procedure Revenue');
-      
+
       const headers = Object.keys(exportData[0]);
       worksheet.columns = headers.map(header => ({
         header: header,
@@ -4372,7 +4693,7 @@ exports.exportProcedureRevenue = async (req, res) => {
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=procedure_revenue_${startDate || 'all'}_to_${endDate || 'now'}.xlsx`);
-      
+
       await workbook.xlsx.write(res);
       res.end();
     } else {
@@ -4411,7 +4732,7 @@ exports.exportLabTestRevenue = async (req, res) => {
     const { startDate, endDate, exportType = 'csv', doctorId, departmentId, labTestCode, status } = req.query;
 
     let startOfDayUTC, endOfDayUTC;
-    
+
     if (startDate && endDate) {
       startOfDayUTC = new Date(startDate);
       startOfDayUTC.setHours(0, 0, 0, 0);
@@ -4470,11 +4791,11 @@ exports.exportLabTestRevenue = async (req, res) => {
           isFullTime: '$doctor.isFullTime',
           revenuePercentage: '$doctor.revenuePercentage',
           departmentId: '$doctor.department',
-          date: { 
-            $dateToString: { 
-              format: '%Y-%m-%d', 
+          date: {
+            $dateToString: {
+              format: '%Y-%m-%d',
               date: { $ifNull: ['$created_at', '$createdAt'] }
-            } 
+            }
           }
         }
       }
@@ -4507,7 +4828,7 @@ exports.exportLabTestRevenue = async (req, res) => {
     const exportData = labTestItems.map(item => {
       const doctor = item.doctorId ? doctorsMap.get(item.doctorId.toString()) : null;
       const commissionInfo = calculateDoctorCommission(doctor, { total: item.labTestRevenue || 0, service_items: [] }, 'Lab Test');
-      
+
       return {
         'Date': item.date,
         'Invoice Ref': item.invoice_number || 'N/A',
@@ -4550,7 +4871,7 @@ exports.exportLabTestRevenue = async (req, res) => {
     if (exportType === 'excel') {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Lab Test Revenue');
-      
+
       const headers = Object.keys(exportData[0]);
       worksheet.columns = headers.map(header => ({
         header: header,
@@ -4567,7 +4888,7 @@ exports.exportLabTestRevenue = async (req, res) => {
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=labtest_revenue_${startDate || 'all'}_to_${endDate || 'now'}.xlsx`);
-      
+
       await workbook.xlsx.write(res);
       res.end();
     } else {
@@ -4594,6 +4915,987 @@ exports.exportLabTestRevenue = async (req, res) => {
     }
   } catch (error) {
     console.error('Error exporting lab test revenue:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ============== RADIOLOGY REVENUE ANALYTICS ==============
+
+/**
+ * Get radiology revenue analytics with proper doctor commission
+ * Fetches data from RadiologyRequest model
+ */
+exports.getRadiologyRevenueAnalytics = async (req, res) => {
+  try {
+    const { startDate, endDate, departmentId, doctorId, category, status } = req.query;
+
+    let startOfDayUTC, endOfDayUTC;
+
+    if (startDate && endDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(endDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else if (startDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(startDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else {
+      endOfDayUTC = new Date();
+      startOfDayUTC = new Date();
+      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    }
+
+    const dateFilter = {
+      requestedDate: { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    };
+
+    const RadiologyRequest = require('../models/RadiologyRequest');
+    const ImagingTest = require('../models/ImagingTest');
+    const Doctor = require('../models/Doctor');
+
+    // Build match filter
+    const matchFilter = { ...dateFilter };
+
+    if (status && status !== 'all') {
+      matchFilter.status = status;
+    }
+
+    // Get doctors map for commission calculation
+    const doctors = await Doctor.find({});
+    const doctorsMap = new Map();
+    doctors.forEach(doc => {
+      doctorsMap.set(doc._id.toString(), doc);
+    });
+
+    // Fetch radiology requests with population
+    let radiologyRequests = await RadiologyRequest.find(matchFilter)
+      .populate('patientId', 'first_name last_name patientId')
+      .populate('doctorId', 'firstName lastName specialization revenuePercentage isFullTime department')
+      .populate('imagingTestId', 'code name category base_price')
+      .sort({ requestedDate: -1 });
+
+    // Apply additional filters
+    if (doctorId && doctorId !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.doctorId?._id?.toString() === doctorId
+      );
+    }
+
+    if (departmentId && departmentId !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.doctorId?.department?.toString() === departmentId
+      );
+    }
+
+    if (category && category !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.category === category
+      );
+    }
+
+    // Calculate statistics
+    let totalRevenue = 0;
+    let totalRequests = radiologyRequests.length;
+    let totalBilled = 0;
+    let totalPaid = 0;
+    let totalPending = 0;
+
+    const categoryStats = {};
+    const statusStats = {};
+    const doctorStats = {};
+    const patientStats = {};
+    const dailyStats = {};
+    const testStats = {};
+
+    let totalDoctorCommission = 0;
+    let totalHospitalShare = 0;
+
+    radiologyRequests.forEach(req => {
+      const amount = req.cost || 0;
+      const isBilled = req.is_billed || false;
+
+      totalRevenue += amount;
+      if (isBilled) totalBilled += amount;
+
+      // Payment status tracking (from invoice if available)
+      if (req.invoiceId) {
+        totalPaid += amount;
+      } else {
+        totalPending += amount;
+      }
+
+      const doctor = req.doctorId;
+      const doctorObj = doctor ? doctorsMap.get(doctor._id.toString()) : null;
+
+      // Calculate commission (only part-time doctors get commission on radiology)
+      let commission = 0;
+      let hospitalShare = amount;
+
+      if (doctorObj && !doctorObj.isFullTime) {
+        const revenuePercentage = doctorObj.revenuePercentage || 30;
+        commission = (amount * revenuePercentage) / 100;
+        hospitalShare = amount - commission;
+      }
+
+      totalDoctorCommission += commission;
+      totalHospitalShare += hospitalShare;
+
+      // Category breakdown
+      const cat = req.category || 'Other';
+      if (!categoryStats[cat]) {
+        categoryStats[cat] = {
+          category: cat,
+          count: 0,
+          revenue: 0,
+          commission: 0,
+          hospitalShare: 0
+        };
+      }
+      categoryStats[cat].count += 1;
+      categoryStats[cat].revenue += amount;
+      categoryStats[cat].commission += commission;
+      categoryStats[cat].hospitalShare += hospitalShare;
+
+      // Status breakdown
+      const stat = req.status || 'Pending';
+      if (!statusStats[stat]) {
+        statusStats[stat] = {
+          status: stat,
+          count: 0,
+          revenue: 0,
+          commission: 0,
+          hospitalShare: 0
+        };
+      }
+      statusStats[stat].count += 1;
+      statusStats[stat].revenue += amount;
+      statusStats[stat].commission += commission;
+      statusStats[stat].hospitalShare += hospitalShare;
+
+      // Doctor breakdown
+      if (doctor) {
+        const docId = doctor._id.toString();
+        if (!doctorStats[docId]) {
+          doctorStats[docId] = {
+            doctorId: docId,
+            doctorName: `${doctor.firstName} ${doctor.lastName || ''}`.trim(),
+            isFullTime: doctor.isFullTime || false,
+            revenuePercentage: doctor.revenuePercentage || 30,
+            department: doctor.department,
+            specialization: doctor.specialization,
+            count: 0,
+            revenue: 0,
+            commission: 0,
+            hospitalShare: 0
+          };
+        }
+        doctorStats[docId].count += 1;
+        doctorStats[docId].revenue += amount;
+        doctorStats[docId].commission += commission;
+        doctorStats[docId].hospitalShare += hospitalShare;
+      }
+
+      // Patient breakdown
+      if (req.patientId) {
+        const patientId = req.patientId._id?.toString() || req.patientId.toString();
+        if (!patientStats[patientId]) {
+          patientStats[patientId] = {
+            patientId: patientId,
+            patientName: req.patientId.first_name ?
+              `${req.patientId.first_name} ${req.patientId.last_name || ''}`.trim() :
+              'Unknown',
+            count: 0,
+            revenue: 0
+          };
+        }
+        patientStats[patientId].count += 1;
+        patientStats[patientId].revenue += amount;
+      }
+
+      // Test breakdown
+      if (req.imagingTestId) {
+        const testId = req.imagingTestId._id?.toString() || req.imagingTestId.toString();
+        const testCode = req.testCode || req.imagingTestId.code;
+        const testName = req.testName || req.imagingTestId.name;
+
+        if (!testStats[testId]) {
+          testStats[testId] = {
+            testId: testId,
+            testCode: testCode,
+            testName: testName,
+            category: req.category,
+            count: 0,
+            revenue: 0,
+            commission: 0,
+            hospitalShare: 0
+          };
+        }
+        testStats[testId].count += 1;
+        testStats[testId].revenue += amount;
+        testStats[testId].commission += commission;
+        testStats[testId].hospitalShare += hospitalShare;
+      }
+
+      // Daily breakdown
+      const dateKey = new Date(req.requestedDate).toISOString().split('T')[0];
+      if (!dailyStats[dateKey]) {
+        dailyStats[dateKey] = {
+          date: dateKey,
+          count: 0,
+          revenue: 0,
+          commission: 0,
+          hospitalShare: 0,
+          billedCount: 0,
+          pendingCount: 0
+        };
+      }
+      dailyStats[dateKey].count += 1;
+      dailyStats[dateKey].revenue += amount;
+      dailyStats[dateKey].commission += commission;
+      dailyStats[dateKey].hospitalShare += hospitalShare;
+      if (isBilled) {
+        dailyStats[dateKey].billedCount += 1;
+      } else {
+        dailyStats[dateKey].pendingCount += 1;
+      }
+    });
+
+    // Get top performing tests
+    const topTests = Object.values(testStats)
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 10);
+
+    const response = {
+      success: true,
+      period: {
+        start: startDate || startOfDayUTC.toISOString().split('T')[0],
+        end: endDate || endOfDayUTC.toISOString().split('T')[0]
+      },
+      summary: {
+        totalRevenue,
+        totalRequests,
+        totalBilled,
+        collectionRate: totalRevenue > 0 ? (totalPaid / totalRevenue) * 100 : 0,
+        averageValue: totalRequests > 0 ? totalRevenue / totalRequests : 0,
+        totalDoctorCommission,
+        totalHospitalShare,
+        commissionRate: totalRevenue > 0 ? (totalDoctorCommission / totalRevenue) * 100 : 0,
+        pendingRevenue: totalPending,
+        billedRevenue: totalBilled
+      },
+      breakdown: {
+        byCategory: Object.values(categoryStats)
+          .map(c => ({
+            ...c,
+            percentage: totalRevenue > 0 ? (c.revenue / totalRevenue) * 100 : 0
+          }))
+          .sort((a, b) => b.revenue - a.revenue),
+        byStatus: Object.values(statusStats)
+          .map(s => ({
+            ...s,
+            percentage: totalRevenue > 0 ? (s.revenue / totalRevenue) * 100 : 0
+          }))
+          .sort((a, b) => b.revenue - a.revenue),
+        byDoctor: Object.values(doctorStats)
+          .map(d => ({
+            ...d,
+            percentage: totalRevenue > 0 ? (d.revenue / totalRevenue) * 100 : 0
+          }))
+          .sort((a, b) => b.revenue - a.revenue),
+        byPatient: Object.values(patientStats)
+          .sort((a, b) => b.revenue - a.revenue)
+          .slice(0, 10),
+        daily: Object.values(dailyStats).sort((a, b) => a.date.localeCompare(b.date))
+      },
+      topTests
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Error in getRadiologyRevenueAnalytics:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+};
+
+/**
+ * Export Radiology Revenue Report
+ */
+exports.exportRadiologyRevenue = async (req, res) => {
+  try {
+    const { startDate, endDate, exportType = 'csv', doctorId, departmentId, category, status } = req.query;
+
+    let startOfDayUTC, endOfDayUTC;
+
+    if (startDate && endDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(endDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else if (startDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(startDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else {
+      endOfDayUTC = new Date();
+      startOfDayUTC = new Date();
+      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    }
+
+    const dateFilter = {
+      requestedDate: { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    };
+
+    const RadiologyRequest = require('../models/RadiologyRequest');
+
+    const matchFilter = { ...dateFilter };
+    if (status && status !== 'all') matchFilter.status = status;
+
+    let radiologyRequests = await RadiologyRequest.find(matchFilter)
+      .populate('patientId', 'first_name last_name patientId')
+      .populate('doctorId', 'firstName lastName specialization revenuePercentage isFullTime department')
+      .populate('imagingTestId', 'code name category base_price');
+
+    // Apply additional filters
+    if (doctorId && doctorId !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.doctorId?._id?.toString() === doctorId
+      );
+    }
+
+    if (departmentId && departmentId !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.doctorId?.department?.toString() === departmentId
+      );
+    }
+
+    if (category && category !== 'all') {
+      radiologyRequests = radiologyRequests.filter(req =>
+        req.category === category
+      );
+    }
+
+    const exportData = radiologyRequests.map(req => {
+      const doctor = req.doctorId;
+      let commission = 0;
+      let hospitalShare = req.cost || 0;
+
+      if (doctor && !doctor.isFullTime) {
+        const revenuePercentage = doctor.revenuePercentage || 30;
+        commission = ((req.cost || 0) * revenuePercentage) / 100;
+        hospitalShare = (req.cost || 0) - commission;
+      }
+
+      return {
+        'Request Number': req.requestNumber,
+        'Date': new Date(req.requestedDate).toLocaleDateString(),
+        'Patient': req.patientId ? `${req.patientId.first_name} ${req.patientId.last_name || ''}`.trim() : 'Unknown',
+        'Patient ID': req.patientId?.patientId || 'N/A',
+        'Doctor': doctor ? `${doctor.firstName} ${doctor.lastName || ''}`.trim() : 'Unknown',
+        'Doctor Type': doctor?.isFullTime ? 'Full-time' : 'Part-time',
+        'Test Code': req.testCode,
+        'Test Name': req.testName,
+        'Category': req.category,
+        'Status': req.status,
+        'Amount': req.cost || 0,
+        'Doctor Commission': commission,
+        'Hospital Share': hospitalShare,
+        'Is Billed': req.is_billed ? 'Yes' : 'No',
+        'Source Type': req.sourceType,
+        'Priority': req.priority,
+        'Scheduled Date': req.scheduledDate ? new Date(req.scheduledDate).toLocaleDateString() : 'N/A'
+      };
+    });
+
+    // Add summary row
+    const totalRevenue = exportData.reduce((sum, r) => sum + (r.Amount || 0), 0);
+    const totalCommission = exportData.reduce((sum, r) => sum + (r['Doctor Commission'] || 0), 0);
+    const billedCount = exportData.filter(r => r['Is Billed'] === 'Yes').length;
+
+    const summaryRow = {
+      'Request Number': '=== SUMMARY ===',
+      'Date': '',
+      'Patient': '',
+      'Patient ID': '',
+      'Doctor': '',
+      'Doctor Type': '',
+      'Test Code': '',
+      'Test Name': '',
+      'Category': '',
+      'Status': '',
+      'Amount': totalRevenue,
+      'Doctor Commission': totalCommission,
+      'Hospital Share': totalRevenue - totalCommission,
+      'Is Billed': `${billedCount} / ${exportData.length}`,
+      'Source Type': '',
+      'Priority': '',
+      'Scheduled Date': `Period: ${startDate || startOfDayUTC.toISOString().split('T')[0]} to ${endDate || endOfDayUTC.toISOString().split('T')[0]}`
+    };
+
+    exportData.unshift(summaryRow);
+
+    if (exportType === 'excel') {
+      const ExcelJS = require('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Radiology Revenue');
+
+      const headers = Object.keys(exportData[0]);
+      worksheet.columns = headers.map(header => ({
+        header: header,
+        key: header,
+        width: header.includes('Name') ? 30 : 20
+      }));
+
+      exportData.forEach(row => {
+        worksheet.addRow(row);
+      });
+
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(2).font = { bold: true };
+      worksheet.getRow(2).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFF0F0F0' }
+      };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=radiology_revenue_${Date.now()}.xlsx`);
+
+      await workbook.xlsx.write(res);
+      res.end();
+    } else {
+      const headers = Object.keys(exportData[0]);
+      const csvLines = [
+        headers.join(','),
+        ...exportData.map((row) =>
+          headers
+            .map((h) => {
+              const v = row[h] ?? '';
+              const s = String(v);
+              return s.includes(',') || s.includes('"') || s.includes('\n')
+                ? `"${s.replace(/"/g, '""')}"`
+                : s;
+            })
+            .join(',')
+        )
+      ];
+
+      const csvContent = csvLines.join('\n');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=radiology_revenue_${Date.now()}.csv`);
+      return res.send(csvContent);
+    }
+  } catch (error) {
+    console.error('Error exporting radiology revenue:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ============== IPD REVENUE ANALYTICS ==============
+
+/**
+ * Get IPD (In-Patient Department) revenue analytics
+ */
+exports.getIpdRevenueAnalytics = async (req, res) => {
+  try {
+    const { startDate, endDate, departmentId, doctorId, wardId, bedType } = req.query;
+
+    let startOfDayUTC, endOfDayUTC;
+
+    if (startDate && endDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(endDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else if (startDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(startDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else {
+      endOfDayUTC = new Date();
+      startOfDayUTC = new Date();
+      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    }
+
+    const dateFilter = {
+      admissionDate: { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    };
+
+    const IPDAdmission = require('../models/IPDAdmission');
+    const IPDCharge = require('../models/IPDCharge');
+    const Doctor = require('../models/Doctor');
+    const Ward = require('../models/Ward');
+
+    // Fetch IPD admissions with populations
+    let admissions = await IPDAdmission.find({
+      ...dateFilter,
+      status: { $in: ['Admitted', 'Discharged', 'Under Treatment'] }
+    })
+      .populate('patientId', 'first_name last_name patientId')
+      // .populate('doctorId', 'firstName lastName specialization department')
+      .populate('wardId', 'name type dailyRate')
+      .populate('bedId', 'bedNumber bedType dailyRate');
+
+    // Apply additional filters
+    if (doctorId && doctorId !== 'all') {
+      admissions = admissions.filter(adm =>
+        adm.doctorId?._id?.toString() === doctorId
+      );
+    }
+
+    if (departmentId && departmentId !== 'all') {
+      admissions = admissions.filter(adm =>
+        adm.doctorId?.department?.toString() === departmentId
+      );
+    }
+
+    if (wardId && wardId !== 'all') {
+      admissions = admissions.filter(adm =>
+        adm.wardId?._id?.toString() === wardId
+      );
+    }
+
+    if (bedType && bedType !== 'all') {
+      admissions = admissions.filter(adm =>
+        adm.bedId?.bedType === bedType
+      );
+    }
+
+    // Fetch all charges for these admissions
+    const admissionIds = admissions.map(adm => adm._id);
+    let allCharges = [];
+
+    if (admissionIds.length > 0) {
+      allCharges = await IPDCharge.find({
+        admissionId: { $in: admissionIds }
+      });
+    }
+
+    // Calculate statistics
+    let totalRevenue = 0;
+    let bedCharges = 0;
+    let doctorVisitCharges = 0;
+    let procedureCharges = 0;
+    let labTestCharges = 0;
+    let radiologyCharges = 0;
+    let pharmacyCharges = 0;
+    let otherCharges = 0;
+
+    let totalAdmissions = admissions.length;
+    let activeAdmissions = admissions.filter(adm => adm.status === 'Admitted' || adm.status === 'Under Treatment').length;
+    let discharges = admissions.filter(adm => adm.status === 'Discharged').length;
+
+    let totalBedDays = 0;
+    let totalDoctorEarnings = 0;
+    let totalHospitalShare = 0;
+
+    const wardRevenue = {};
+    const doctorRevenue = {};
+    const dailyRevenue = {};
+    const serviceBreakdown = {};
+
+    // Process admissions for bed days and basic stats
+    admissions.forEach(adm => {
+      const admissionDate = new Date(adm.admissionDate);
+      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
+      const bedDays = Math.ceil((dischargeDate - admissionDate) / (1000 * 60 * 60 * 24));
+      totalBedDays += bedDays;
+
+      const dailyRate = adm.wardId?.dailyRate || adm.bedId?.dailyRate || 1000;
+      const estimatedBedCharge = dailyRate * bedDays;
+
+      // Ward revenue breakdown
+      const wardName = adm.wardId?.name || 'Unknown Ward';
+      if (!wardRevenue[wardName]) {
+        wardRevenue[wardName] = {
+          wardName: wardName,
+          admissions: 0,
+          bedDays: 0,
+          estimatedRevenue: 0
+        };
+      }
+      wardRevenue[wardName].admissions += 1;
+      wardRevenue[wardName].bedDays += bedDays;
+      wardRevenue[wardName].estimatedRevenue += estimatedBedCharge;
+    });
+
+    // ========== FIX: Use for-of loop instead of forEach with await ==========
+    // First, collect unique doctor IDs from charges
+    const uniqueDoctorIds = new Set();
+
+    allCharges.forEach(charge => {
+      if (charge.doctorId && charge.chargeType === 'Doctor Visit') {
+        uniqueDoctorIds.add(charge.doctorId.toString());
+      }
+    });
+
+    // Fetch all doctors in one batch query
+    const doctorDocs = await Doctor.find({
+      _id: { $in: Array.from(uniqueDoctorIds) }
+    });
+
+    // Create a map for quick doctor lookup
+    const doctorMap = new Map();
+    doctorDocs.forEach(doc => {
+      doctorMap.set(doc._id.toString(), doc);
+    });
+
+    // Process charges (without await inside loop)
+    allCharges.forEach(charge => {
+      const amount = charge.amount || 0;
+      totalRevenue += amount;
+
+      switch (charge.chargeType) {
+        case 'Bed Charges':
+          bedCharges += amount;
+          if (!serviceBreakdown['Bed Charges']) {
+            serviceBreakdown['Bed Charges'] = { revenue: 0, count: 0 };
+          }
+          serviceBreakdown['Bed Charges'].revenue += amount;
+          serviceBreakdown['Bed Charges'].count += 1;
+          break;
+        case 'Doctor Visit':
+          doctorVisitCharges += amount;
+          if (!serviceBreakdown['Doctor Visits']) {
+            serviceBreakdown['Doctor Visits'] = { revenue: 0, count: 0 };
+          }
+          serviceBreakdown['Doctor Visits'].revenue += amount;
+          serviceBreakdown['Doctor Visits'].count += 1;
+          break;
+        case 'Procedure':
+          procedureCharges += amount;
+          if (!serviceBreakdown['Procedures']) {
+            serviceBreakdown['Procedures'] = { revenue: 0, count: 0 };
+          }
+          serviceBreakdown['Procedures'].revenue += amount;
+          serviceBreakdown['Procedures'].count += 1;
+          break;
+        case 'Lab Test':
+          labTestCharges += amount;
+          if (!serviceBreakdown['Lab Tests']) {
+            serviceBreakdown['Lab Tests'] = { revenue: 0, count: 0 };
+          }
+          serviceBreakdown['Lab Tests'].revenue += amount;
+          serviceBreakdown['Lab Tests'].count += 1;
+          break;
+        case 'Radiology':
+          radiologyCharges += amount;
+          if (!serviceBreakdown['Radiology']) {
+            serviceBreakdown['Radiology'] = { revenue: 0, count: 0 };
+          }
+          serviceBreakdown['Radiology'].revenue += amount;
+          serviceBreakdown['Radiology'].count += 1;
+          break;
+        case 'Pharmacy':
+          pharmacyCharges += amount;
+          if (!serviceBreakdown['Pharmacy']) {
+            serviceBreakdown['Pharmacy'] = { revenue: 0, count: 0 };
+          }
+          serviceBreakdown['Pharmacy'].revenue += amount;
+          serviceBreakdown['Pharmacy'].count += 1;
+          break;
+        default:
+          otherCharges += amount;
+          if (!serviceBreakdown['Other']) {
+            serviceBreakdown['Other'] = { revenue: 0, count: 0 };
+          }
+          serviceBreakdown['Other'].revenue += amount;
+          serviceBreakdown['Other'].count += 1;
+      }
+
+      // Doctor revenue from charges (commission calculation)
+      if (charge.doctorId && charge.chargeType === 'Doctor Visit') {
+        const doctorId = charge.doctorId.toString();
+        const doctor = doctorMap.get(doctorId);
+
+        if (!doctorRevenue[doctorId]) {
+          doctorRevenue[doctorId] = {
+            doctorId: doctorId,
+            doctorName: doctor ? `${doctor.firstName} ${doctor.lastName || ''}`.trim() : 'Unknown',
+            revenue: 0,
+            earnings: 0,
+            count: 0
+          };
+        }
+        doctorRevenue[doctorId].revenue += amount;
+        doctorRevenue[doctorId].count += 1;
+
+        // Commission for part-time doctors
+        if (doctor && !doctor.isFullTime) {
+          const revenuePercentage = doctor.revenuePercentage || 30;
+          const commission = (amount * revenuePercentage) / 100;
+          doctorRevenue[doctorId].earnings += commission;
+          totalDoctorEarnings += commission;
+          totalHospitalShare += amount - commission;
+        } else {
+          totalHospitalShare += amount;
+        }
+      } else {
+        totalHospitalShare += amount;
+      }
+
+      // Daily revenue
+      const chargeDate = new Date(charge.createdAt || charge.created_at || Date.now());
+      const dateKey = chargeDate.toISOString().split('T')[0];
+      if (!dailyRevenue[dateKey]) {
+        dailyRevenue[dateKey] = {
+          date: dateKey,
+          revenue: 0,
+          bedCharges: 0,
+          doctorVisits: 0,
+          procedures: 0,
+          labTests: 0,
+          radiology: 0,
+          pharmacy: 0,
+          other: 0
+        };
+      }
+      dailyRevenue[dateKey].revenue += amount;
+      if (charge.chargeType === 'Bed Charges') dailyRevenue[dateKey].bedCharges += amount;
+      if (charge.chargeType === 'Doctor Visit') dailyRevenue[dateKey].doctorVisits += amount;
+      if (charge.chargeType === 'Procedure') dailyRevenue[dateKey].procedures += amount;
+      if (charge.chargeType === 'Lab Test') dailyRevenue[dateKey].labTests += amount;
+      if (charge.chargeType === 'Radiology') dailyRevenue[dateKey].radiology += amount;
+      if (charge.chargeType === 'Pharmacy') dailyRevenue[dateKey].pharmacy += amount;
+    });
+
+    const response = {
+      success: true,
+      period: {
+        start: startDate || startOfDayUTC.toISOString().split('T')[0],
+        end: endDate || endOfDayUTC.toISOString().split('T')[0]
+      },
+      summary: {
+        totalRevenue,
+        bedCharges,
+        doctorVisitCharges,
+        procedureCharges,
+        labTestCharges,
+        radiologyCharges,
+        pharmacyCharges,
+        otherCharges,
+        totalAdmissions,
+        activeAdmissions,
+        discharges,
+        totalBedDays,
+        averageLengthOfStay: totalAdmissions > 0 ? (totalBedDays / totalAdmissions).toFixed(1) : 0,
+        averageDailyRevenue: Object.keys(dailyRevenue).length > 0 ? totalRevenue / Object.keys(dailyRevenue).length : 0,
+        totalDoctorEarnings,
+        totalHospitalShare
+      },
+      breakdown: {
+        byWard: Object.values(wardRevenue)
+          .map(w => ({
+            ...w,
+            percentage: totalRevenue > 0 ? (w.estimatedRevenue / totalRevenue) * 100 : 0
+          }))
+          .sort((a, b) => b.estimatedRevenue - a.estimatedRevenue),
+        byDoctor: Object.values(doctorRevenue)
+          .sort((a, b) => b.revenue - a.revenue),
+        byService: Object.entries(serviceBreakdown)
+          .map(([service, data]) => ({
+            service,
+            revenue: data.revenue,
+            count: data.count,
+            percentage: totalRevenue > 0 ? (data.revenue / totalRevenue) * 100 : 0
+          }))
+          .sort((a, b) => b.revenue - a.revenue),
+        daily: Object.values(dailyRevenue).sort((a, b) => a.date.localeCompare(b.date))
+      },
+      admissions: admissions.slice(0, 20).map(adm => ({
+        patientName: adm.patientId ? `${adm.patientId.first_name} ${adm.patientId.last_name || ''}`.trim() : 'Unknown',
+        admissionDate: adm.admissionDate,
+        dischargeDate: adm.dischargeDate,
+        doctorName: adm.doctorId ? `${adm.doctorId.firstName} ${adm.doctorId.lastName || ''}`.trim() : 'Unknown',
+        wardName: adm.wardId?.name || 'Unknown',
+        bedNumber: adm.bedId?.bedNumber || 'N/A',
+        bedType: adm.bedId?.bedType || 'N/A',
+        status: adm.status,
+        totalBill: adm.totalBill || 0,
+        paidAmount: adm.paidAmount || 0,
+        balance: (adm.totalBill || 0) - (adm.paidAmount || 0)
+      }))
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Error in getIpdRevenueAnalytics:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+};
+
+/**
+ * Export IPD Revenue Report
+ */
+exports.exportIpdRevenue = async (req, res) => {
+  try {
+    const { startDate, endDate, exportType = 'csv', wardId, bedType } = req.query;
+
+    let startOfDayUTC, endOfDayUTC;
+
+    if (startDate && endDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(endDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else {
+      endOfDayUTC = new Date();
+      startOfDayUTC = new Date();
+      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    }
+
+    const dateFilter = {
+      admissionDate: { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    };
+
+    const IPDAdmission = require('../models/IPDAdmission');
+    const IPDCharge = require('../models/IPDCharge');
+
+    let admissions = await IPDAdmission.find(dateFilter)
+      .populate('patientId', 'first_name last_name patientId')
+      .populate('doctorId', 'firstName lastName')
+      .populate('wardId', 'name')
+      .populate('bedId', 'bedNumber bedType');
+
+    if (wardId && wardId !== 'all') {
+      admissions = admissions.filter(adm => adm.wardId?._id?.toString() === wardId);
+    }
+
+    if (bedType && bedType !== 'all') {
+      admissions = admissions.filter(adm => adm.bedId?.bedType === bedType);
+    }
+
+    const admissionIds = admissions.map(adm => adm._id);
+    let allCharges = [];
+
+    if (admissionIds.length > 0) {
+      allCharges = await IPDCharge.find({
+        admissionId: { $in: admissionIds }
+      });
+    }
+
+    // Group charges by admission
+    const chargesByAdmission = {};
+    allCharges.forEach(charge => {
+      const admId = charge.admissionId.toString();
+      if (!chargesByAdmission[admId]) {
+        chargesByAdmission[admId] = [];
+      }
+      chargesByAdmission[admId].push(charge);
+    });
+
+    const exportData = admissions.map(adm => {
+      const charges = chargesByAdmission[adm._id.toString()] || [];
+      const totalCharges = charges.reduce((sum, c) => sum + (c.amount || 0), 0);
+
+      return {
+        'Admission Number': adm.admissionNumber,
+        'Admission Date': new Date(adm.admissionDate).toLocaleDateString(),
+        'Patient': adm.patientId ? `${adm.patientId.first_name} ${adm.patientId.last_name || ''}`.trim() : 'Unknown',
+        'Patient ID': adm.patientId?.patientId || 'N/A',
+        'Doctor': adm.doctorId ? `${adm.doctorId.firstName} ${adm.doctorId.lastName || ''}`.trim() : 'Unknown',
+        'Ward': adm.wardId?.name || 'Unknown',
+        'Bed Number': adm.bedId?.bedNumber || 'N/A',
+        'Bed Type': adm.bedId?.bedType || 'N/A',
+        'Status': adm.status,
+        'Total Charges': totalCharges,
+        'Paid Amount': adm.paidAmount || 0,
+        'Balance': (totalCharges) - (adm.paidAmount || 0),
+        'Discharge Date': adm.dischargeDate ? new Date(adm.dischargeDate).toLocaleDateString() : 'Active'
+      };
+    });
+
+    // Add summary
+    const totalRevenue = exportData.reduce((sum, r) => sum + (r['Total Charges'] || 0), 0);
+    const totalPaid = exportData.reduce((sum, r) => sum + (r['Paid Amount'] || 0), 0);
+
+    const summaryRow = {
+      'Admission Number': '=== IPD SUMMARY ===',
+      'Admission Date': '',
+      'Patient': '',
+      'Patient ID': '',
+      'Doctor': '',
+      'Ward': '',
+      'Bed Number': '',
+      'Bed Type': '',
+      'Status': '',
+      'Total Charges': totalRevenue,
+      'Paid Amount': totalPaid,
+      'Balance': totalRevenue - totalPaid,
+      'Discharge Date': `Period: ${startDate || startOfDayUTC.toISOString().split('T')[0]} to ${endDate || endOfDayUTC.toISOString().split('T')[0]}`
+    };
+
+    exportData.unshift(summaryRow);
+
+    if (exportType === 'excel') {
+      const ExcelJS = require('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('IPD Revenue');
+
+      const headers = Object.keys(exportData[0]);
+      worksheet.columns = headers.map(header => ({
+        header: header,
+        key: header,
+        width: 20
+      }));
+
+      exportData.forEach(row => {
+        worksheet.addRow(row);
+      });
+
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(2).font = { bold: true };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=ipd_revenue_${Date.now()}.xlsx`);
+
+      await workbook.xlsx.write(res);
+      res.end();
+    } else {
+      const headers = Object.keys(exportData[0]);
+      const csvLines = [
+        headers.join(','),
+        ...exportData.map((row) =>
+          headers
+            .map((h) => {
+              const v = row[h] ?? '';
+              const s = String(v);
+              return s.includes(',') || s.includes('"') || s.includes('\n')
+                ? `"${s.replace(/"/g, '""')}"`
+                : s;
+            })
+            .join(',')
+        )
+      ];
+
+      const csvContent = csvLines.join('\n');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=ipd_revenue_${Date.now()}.csv`);
+      return res.send(csvContent);
+    }
+  } catch (error) {
+    console.error('Error exporting IPD revenue:', error);
     res.status(500).json({ error: error.message });
   }
 };

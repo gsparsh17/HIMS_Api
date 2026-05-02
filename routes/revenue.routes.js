@@ -1,4 +1,3 @@
-// routes/revenue.routes.js
 const express = require('express');
 const router = express.Router();
 
@@ -22,10 +21,18 @@ const {
   exportProcedureRevenue,
 
   getLabTestRevenueAnalytics,
-  exportLabTestRevenue
+  exportLabTestRevenue,
+
+  // ========== NEW RADIOLOGY ANALYTICS ==========
+  getRadiologyRevenueAnalytics,
+  exportRadiologyRevenue,
+
+  // ========== NEW IPD ANALYTICS ==========
+  getIpdRevenueAnalytics,
+  exportIpdRevenue
 } = require('../controllers/revenue.controller');
 
-// Revenue routes
+// ========== BASE REVENUE ROUTES ==========
 router.get('/', calculateHospitalRevenue);          // Overview with all filters
 router.get('/daily', getDailyRevenueReport);        // Daily report
 router.get('/monthly', getMonthlyRevenueReport);    // Monthly report
@@ -33,11 +40,13 @@ router.get('/doctor', getDoctorRevenue);            // Doctor-wise revenue
 router.get('/department', getDepartmentRevenue);    // Department-wise revenue
 router.get('/detailed', getDetailedRevenueReport);  // Detailed transactions (paginated)
 
-// Analytics
+// ========== ANALYTICS ==========
 router.get('/procedures', getProcedureRevenueAnalytics);
 router.get('/labtests', getLabTestRevenueAnalytics);
+router.get('/radiology', getRadiologyRevenueAnalytics);  // NEW
+router.get('/ipd', getIpdRevenueAnalytics);               // NEW
 
-// Export routes
+// ========== EXPORT ROUTES ==========
 router.get('/export', exportRevenueData);
 router.get('/export/overview', exportOverview);
 router.get('/export/daily', exportDaily);
@@ -48,5 +57,7 @@ router.get('/export/detailed', exportDetailed);
 
 router.get('/export/procedures', exportProcedureRevenue);
 router.get('/export/labtests', exportLabTestRevenue);
+router.get('/export/radiology', exportRadiologyRevenue);   // NEW
+router.get('/export/ipd', exportIpdRevenue);               // NEW
 
 module.exports = router;
