@@ -379,7 +379,7 @@ exports.uploadReport = async (req, res) => {
     request.public_id = result.public_id;
     
     if (request.status !== 'Reported') {
-      request.status = 'Reported';
+      request.status = 'Completed';
     }
 
     await request.save();
