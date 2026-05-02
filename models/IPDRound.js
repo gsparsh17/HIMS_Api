@@ -50,20 +50,10 @@ const ipdRoundSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
-  medicationsPrescribed: [{
-    medicineName: String,
-    dosage: String,
-    frequency: String,
-    duration: String
-  }],
-  investigationsOrdered: [{
-    testName: String,
-    urgency: { type: String, enum: ['Routine', 'Urgent', 'Stat'], default: 'Routine' }
-  }],
-  proceduresOrdered: [{
-    procedureName: String,
-    urgency: { type: String, enum: ['Routine', 'Urgent', 'Emergency'], default: 'Routine' }
-  }],
+  prescriptionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Prescription'
+  },
   dischargeSuggested: {
     type: Boolean,
     default: false

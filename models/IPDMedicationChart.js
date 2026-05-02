@@ -93,6 +93,10 @@ const ipdMedicationChartSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'IPDRound'
   },
+  prescriptionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Prescription'
+  },
   medicineId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Medicine'

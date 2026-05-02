@@ -18,9 +18,6 @@ exports.createRound = async (req, res) => {
       diagnosis,
       treatmentPlan,
       advice,
-      medicationsPrescribed, // Array of medications from doctor
-      investigationsOrdered,
-      proceduresOrdered,
       dischargeSuggested,
       nextReviewDate,
       notes
@@ -45,9 +42,6 @@ exports.createRound = async (req, res) => {
       diagnosis,
       treatmentPlan,
       advice,
-      medicationsPrescribed,
-      investigationsOrdered,
-      proceduresOrdered,
       dischargeSuggested,
       nextReviewDate,
       notes,
@@ -56,43 +50,9 @@ exports.createRound = async (req, res) => {
     
     await round.save();
     
-    // Create medication orders from prescribed medications
-    const IPDMedicationChart = require('../models/IPDMedicationChart');
+    // Medication orders are now handled by the prescription controller which is 
+    // called immediately after this round is created by the frontend.
     const createdMedications = [];
-    
-    if (medicationsPrescribed && medicationsPrescribed.length > 0) {
-      for (const med of medicationsPrescribed) {
-        const medicationOrder = new IPDMedicationChart({
-          admissionId,
-          patientId,
-          prescribedBy: doctorId,
-          roundId: round._id,
-          medicineName: med.medicineName,
-          dosage: med.dosage,
-          frequency: med.frequency,
-          duration: med.duration,
-          route: med.route || 'Oral',
-          startDate: new Date(),
-          requiresPharmacyDispense: med.requiresPharmacyDispense || false,
-          createdBy: req.user?._id
-        });
-        
-        await medicationOrder.save();
-        createdMedications.push(medicationOrder);
-        
-        // Create nursing note for new medication
-        const NursingNote = require('../models/NursingNote');
-        const nursingNote = new NursingNote({
-          admissionId,
-          patientId,
-          noteType: 'Medication',
-          note: `New medication prescribed: ${med.medicineName} ${med.dosage} ${med.frequency}`,
-          priority: med.isHighRisk ? 'Important' : 'Normal',
-          createdBy: req.user?._id
-        });
-        await nursingNote.save();
-      }
-    }
     
     // Update admission status if discharge suggested
     if (dischargeSuggested && admission.canProceedToDischarge) {
@@ -137,6 +97,7 @@ exports.getRoundsByAdmission = async (req, res) => {
     
     const rounds = await IPDRound.find({ admissionId })
       .populate('doctorId', 'firstName lastName specialization')
+      .populate('prescriptionId')
       .sort({ roundDateTime: -1 });
     
     res.json({ success: true, rounds });
@@ -153,7 +114,8 @@ exports.getRoundById = async (req, res) => {
     
     const round = await IPDRound.findById(id)
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('admissionId', 'admissionNumber patientId');
+      .populate('admissionId', 'admissionNumber patientId')
+      .populate('prescriptionId');
     
     if (!round) {
       return res.status(404).json({ error: 'Round not found' });

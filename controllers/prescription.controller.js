@@ -25,7 +25,10 @@ async function createLabRequests(prescription, labTestRequests, userId, sourceTy
   const createdRequests = [];
   
   for (const labReq of labTestRequests) {
-    const labTest = await LabTest.findById(labReq.lab_test_id);
+    let labTest = null;
+    if (labReq.lab_test_id) labTest = await LabTest.findById(labReq.lab_test_id);
+    else if (labReq.lab_test_code) labTest = await LabTest.findOne({ code: labReq.lab_test_code });
+    
     if (!labTest) continue;
     
     const labRequest = new LabRequest({
@@ -65,7 +68,10 @@ async function createRadiologyRequests(prescription, radiologyRequests, userId, 
   const createdRequests = [];
   
   for (const radReq of radiologyRequests) {
-    const imagingTest = await ImagingTest.findById(radReq.imaging_test_id);
+    let imagingTest = null;
+    if (radReq.imaging_test_id) imagingTest = await ImagingTest.findById(radReq.imaging_test_id);
+    else if (radReq.imaging_test_code) imagingTest = await ImagingTest.findOne({ code: radReq.imaging_test_code });
+    
     if (!imagingTest) continue;
     
     const radiologyRequest = new RadiologyRequest({
@@ -105,7 +111,10 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
   const createdRequests = [];
   
   for (const procReq of procedureRequests) {
-    const procedure = await Procedure.findById(procReq.procedure_id);
+    let procedure = null;
+    if (procReq.procedure_id) procedure = await Procedure.findById(procReq.procedure_id);
+    else if (procReq.procedure_code) procedure = await Procedure.findOne({ code: procReq.procedure_code });
+    
     if (!procedure) continue;
     
     const procedureRequest = new ProcedureRequest({
@@ -275,11 +284,31 @@ exports.createPrescription = async (req, res) => {
       const convertedMedications = [];
       
       for (const item of processedItems) {
+        // Auto-generate timing based on frequency
+        const timingSlots = [];
+        const freqTimingMap = {
+          'OD': ['08:00'],
+          'BD': ['08:00', '20:00'],
+          'TDS': ['08:00', '14:00', '20:00'],
+          'QDS': ['06:00', '12:00', '18:00', '22:00'],
+          'q4h': ['06:00', '10:00', '14:00', '18:00', '22:00', '02:00'],
+          'q6h': ['06:00', '12:00', '18:00', '00:00'],
+          'q8h': ['06:00', '14:00', '22:00'],
+          'q12h': ['08:00', '20:00'],
+          'Stat': ['now'],
+          'SOS': []
+        };
+        const times = freqTimingMap[item.frequency] || ['08:00'];
+        for (const t of times) {
+          timingSlots.push({ time: t, status: 'Pending' });
+        }
+
         const medicationOrder = new IPDMedicationChart({
           admissionId: ipd_admission_id,
           patientId: patient_id,
           prescribedBy: doctor_id,
           roundId: round_id || null,
+          prescriptionId: prescription._id,
           medicineId: item.medicine_id || null,
           medicineName: item.medicine_name,
           genericName: item.generic_name,
@@ -288,8 +317,10 @@ exports.createPrescription = async (req, res) => {
           frequency: item.frequency,
           duration: item.duration,
           specialInstructions: item.instructions,
-          requiresPharmacyDispense: true,
-          status: 'Pending',
+          timing: timingSlots,
+          requiresPharmacyDispense: false,
+          status: 'Active',
+          startDate: new Date(),
           createdBy: req.user?._id
         });
         
@@ -300,6 +331,12 @@ exports.createPrescription = async (req, res) => {
       prescription.is_converted_to_ipd = true;
       prescription.ipd_medication_ids = convertedMedications;
       await prescription.save();
+    }
+    
+    // Update IPDRound with this prescription
+    if (source_type === 'IPD' && round_id) {
+      const IPDRound = require('../models/IPDRound');
+      await IPDRound.findByIdAndUpdate(round_id, { prescriptionId: prescription._id });
     }
 
     // Populate response
