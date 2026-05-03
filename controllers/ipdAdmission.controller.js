@@ -253,8 +253,9 @@ exports.getAdmissionById = async (req, res) => {
     // Get related data counts
     const rounds = await IPDRound.find({ admissionId: admission._id })
       .populate('doctorId', 'firstName lastName')
+      .populate('prescriptionId')
       .sort({ roundDateTime: -1 })
-      .limit(5);
+      .limit(10);
 
     const nursingNotes = await NursingNote.find({ admissionId: admission._id })
       .populate('nurseId', 'first_name last_name')
