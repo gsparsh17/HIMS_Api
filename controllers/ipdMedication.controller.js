@@ -315,8 +315,9 @@ exports.getNurseTodaySchedule = async (req, res) => {
     // Filter today's timings
     const todaySchedule = medications.map(med => {
       const todaysTimings = (med.timing || []).filter(t => {
-        const timingDate = new Date(t.time);
-        return timingDate >= today && timingDate < tomorrow && t.status === 'Pending';
+        const timingDate = new Date(t.date);
+        timingDate.setHours(0, 0, 0, 0);
+        return timingDate.getTime() === today.getTime() && t.status === 'Pending';
       });
       
       return {
@@ -361,8 +362,9 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
     
     const schedule = medications.map(med => {
       const todaysTimings = (med.timing || []).filter(t => {
-        const timingDate = new Date(t.time);
-        return timingDate >= targetDate && timingDate < nextDate;
+        const timingDate = new Date(t.date);
+        timingDate.setHours(0, 0, 0, 0);
+        return timingDate.getTime() === targetDate.getTime();
       });
       
       return {
@@ -446,11 +448,11 @@ exports.administerMedication = async (req, res) => {
     const nursingNote = new NursingNote({
       admissionId: medication.admissionId,
       patientId: medication.patientId,
-      nurseId: req.user?._id,
+      nurseId: req.user?._id || req.user?.id,
       noteType: 'Medication',
       note: `Medication administered: ${medication.medicineName} ${medication.dosage}. ${remarks || ''}`,
       priority: medication.isHighRisk ? 'Important' : 'Normal',
-      createdBy: req.user?._id
+      createdBy: req.user?._id || req.user?.id
     });
     await nursingNote.save();
 
@@ -489,11 +491,11 @@ exports.skipMedication = async (req, res) => {
     const nursingNote = new NursingNote({
       admissionId: medication.admissionId,
       patientId: medication.patientId,
-      nurseId: req.user?._id,
+      nurseId: req.user?._id || req.user?.id,
       noteType: 'Medication',
       note: `Medication skipped: ${medication.medicineName}. Reason: ${remarks || 'Not specified'}`,
       priority: 'Normal',
-      createdBy: req.user?._id
+      createdBy: req.user?._id || req.user?.id
     });
     await nursingNote.save();
 
@@ -531,11 +533,11 @@ exports.holdMedication = async (req, res) => {
     const nursingNote = new NursingNote({
       admissionId: medication.admissionId,
       patientId: medication.patientId,
-      nurseId: req.user?._id,
+      nurseId: req.user?._id || req.user?.id,
       noteType: 'Medication',
       note: `Medication held: ${medication.medicineName}. Reason: ${remarks || 'Not specified'}`,
       priority: 'Important',
-      createdBy: req.user?._id
+      createdBy: req.user?._id || req.user?.id
     });
     await nursingNote.save();
 

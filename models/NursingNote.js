@@ -14,8 +14,7 @@ const nursingNoteSchema = new mongoose.Schema({
   },
   nurseId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Nurse',
-    required: true
+    ref: 'Nurse'
   },
   noteDateTime: {
     type: Date,

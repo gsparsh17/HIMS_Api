@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 
 const medicationTimingSchema = new mongoose.Schema({
+  date: {
+    type: Date,
+    required: true,
+    default: Date.now
+  },
   time: {
     type: String,
     required: true

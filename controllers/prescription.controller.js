@@ -299,8 +299,20 @@ exports.createPrescription = async (req, res) => {
           'SOS': []
         };
         const times = freqTimingMap[item.frequency] || ['08:00'];
-        for (const t of times) {
-          timingSlots.push({ time: t, status: 'Pending' });
+        const durationValue = parseInt(item.duration) || 1;
+        
+        for (let d = 0; d < durationValue; d++) {
+          const slotDate = new Date();
+          slotDate.setDate(slotDate.getDate() + d);
+          slotDate.setHours(0, 0, 0, 0);
+          
+          for (const t of times) {
+            timingSlots.push({ 
+              date: slotDate,
+              time: t, 
+              status: 'Pending' 
+            });
+          }
         }
 
         const medicationOrder = new IPDMedicationChart({
