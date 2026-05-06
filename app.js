@@ -88,6 +88,7 @@ const externalLabRoutes = require('./routes/externalLab.routes');
 app.use('/api/external-lab', externalLabRoutes);
 app.use("/api/license", licenseRoutes);
 app.use('/api/icd11', require('./routes/icd11.routes.js'));
+app.use("/api/ot", require('./routes/ot.routes.js'));
 
 // Error Handlers
 app.use((req, res, next) => {

@@ -1,8 +1,8 @@
 const User = require('../models/User');
-const Hospital = require('../models/Hospital'); // <- import
+const Hospital = require('../models/Hospital');
 const generateToken = require('../utils/generateToken');
 const crypto = require('crypto');
-const sendEmail = require('../utils/sendEmail'); // We'll create this
+const sendEmail = require('../utils/sendEmail');
 const Doctor = require('../models/Doctor');
 const Staff = require('../models/Staff');
 const Pharmacy = require('../models/Pharmacy');
@@ -10,6 +10,7 @@ const Department = require('../models/Department');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const PathologyStaff = require('../models/PathologyStaff');
+const OTStaff = require('../models/OTStaff'); // Add OT Staff model
 const jwt = require('jsonwebtoken');
 
 cloudinary.config({
@@ -25,12 +26,10 @@ exports.forgotPassword = async (req, res) => {
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Generate token
     const resetToken = crypto.randomBytes(20).toString('hex');
 
-    // Hash token & set expire time
     user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    user.resetPasswordExpire = Date.now() + 15 * 60 * 1000; // 15 minutes
+    user.resetPasswordExpire = Date.now() + 15 * 60 * 1000;
 
     await user.save();
 
@@ -54,12 +53,11 @@ exports.forgotPassword = async (req, res) => {
 exports.demoLogin = async (req, res) => {
   try {
     const { email } = req.body;
-    
+
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    // Get token from Authorization header
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Authentication required - Invalid authorization header format' });
@@ -70,7 +68,6 @@ exports.demoLogin = async (req, res) => {
       return res.status(401).json({ error: 'Authentication required - Token missing' });
     }
 
-    // Verify the token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -85,34 +82,24 @@ exports.demoLogin = async (req, res) => {
       throw jwtError;
     }
 
-    // Check if decoded has the expected structure (using 'id' as per your generateToken function)
     if (!decoded || !decoded.id) {
       return res.status(401).json({ error: 'Invalid token payload' });
     }
 
-    // Find the demo user
     const demoUser = await User.findById(decoded.id);
     if (!demoUser) {
       return res.status(403).json({ error: 'User not found' });
     }
 
-    // if (demoUser.role !== 'demo') {
-    //   return res.status(403).json({ error: 'Only demo users can access this feature' });
-    // }
-
-    // Find the target user by email
     const targetUser = await User.findOne({ email });
     if (!targetUser) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Get hospital info
     const hospital = await Hospital.findOne({});
 
-    // Generate new token for the target user
     const newToken = generateToken(targetUser._id, targetUser.role);
 
-    // Prepare response based on target user's role
     let response = {
       _id: targetUser._id,
       name: targetUser.name,
@@ -128,7 +115,6 @@ exports.demoLogin = async (req, res) => {
       }
     };
 
-    // Add role-specific IDs
     try {
       if (targetUser.role === "doctor") {
         const doctor = await Doctor.findOne({ email: targetUser.email });
@@ -150,9 +136,12 @@ exports.demoLogin = async (req, res) => {
         const pathologyStaff = await PathologyStaff.findOne({ email: targetUser.email });
         response.pathologyStaffId = pathologyStaff?._id;
       }
+      else if (targetUser.role === "ot_staff") {
+        const otStaff = await OTStaff.findOne({ userId: targetUser._id });
+        response.otStaffId = otStaff?._id;
+      }
     } catch (roleError) {
       console.error('Error fetching role-specific data:', roleError);
-      // Continue even if role-specific data fetch fails
     }
 
     res.json(response);
@@ -189,7 +178,6 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
-// Register
 exports.registerUser = async (req, res) => {
   try {
     const {
@@ -206,7 +194,7 @@ exports.registerUser = async (req, res) => {
           resource_type: 'image'
         });
         logoUrl = result.secure_url;
-        fs.unlinkSync(req.file.path); // Clean up local file
+        fs.unlinkSync(req.file.path);
       } catch (uploadErr) {
         console.error('Logo Upload Error:', uploadErr);
       }
@@ -217,10 +205,8 @@ exports.registerUser = async (req, res) => {
 
     const user = await User.create({ name, email, password, role });
 
-    // Only if the role is 'admin', create hospital entry
     if (role === 'admin') {
       try {
-        // Create hospital instance
         const hospital = new Hospital({
           registryNo,
           hospitalName,
@@ -241,17 +227,10 @@ exports.registerUser = async (req, res) => {
           createdBy: user._id
         });
 
-        // Save with validation disabled - this allows pre-save middleware to run first
         await hospital.save({ validateBeforeSave: false });
 
-        // Create departments
-        await Department.create({
-          name: "Administration"
-        });
-        
-        await Department.create({
-          name: "Emergency Department"
-        });
+        await Department.create({ name: "Administration" });
+        await Department.create({ name: "Emergency Department" });
 
       } catch (hospitalErr) {
         console.error('Hospital Creation Error:', hospitalErr);
@@ -275,23 +254,17 @@ exports.registerUser = async (req, res) => {
   }
 };
 
-
-// Login
-// controllers/userController.js - Update the login function
-
-// Login
-// controllers/userController.js - Login function with pathology_staff support
-
-// Login
+// UPDATED LOGIN FUNCTION WITH OT STAFF SUPPORT - FIXED
 exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
     const hospital = await Hospital.findOne({});
-    
+
     if (user && await user.matchPassword(password)) {
-      
-      if(user.role === "doctor") {
+
+      // Doctor role
+      if (user.role === "doctor") {
         const doctor = await Doctor.findOne({ email });
         res.json({
           _id: user._id,
@@ -303,7 +276,9 @@ exports.loginUser = async (req, res) => {
           doctorId: doctor?._id
         });
       }
-      else if(user.role === "staff" || user.role === "registrar" || user.role === "receptionist") {
+
+      // Staff, Registrar, Receptionist roles
+      else if (user.role === "staff" || user.role === "registrar" || user.role === "receptionist") {
         const staff = await Staff.findOne({ email });
         res.json({
           _id: user._id,
@@ -315,7 +290,9 @@ exports.loginUser = async (req, res) => {
           staffId: staff?._id
         });
       }
-      else if(user.role === "nurse") {
+
+      // Nurse role
+      else if (user.role === "nurse") {
         const nurse = await Staff.findOne({ email });
         res.json({
           _id: user._id,
@@ -327,7 +304,9 @@ exports.loginUser = async (req, res) => {
           staffId: nurse?._id
         });
       }
-      else if(user.role === "pharmacy") {
+
+      // Pharmacy role
+      else if (user.role === "pharmacy") {
         const pharmacy = await Pharmacy.findOne({ email });
         res.json({
           _id: user._id,
@@ -339,8 +318,10 @@ exports.loginUser = async (req, res) => {
           pharmacyId: pharmacy?._id
         });
       }
-      else if(user.role === "pathology_staff") {
-        const pathologyStaff = await PathologyStaff.findOne({ email });
+
+      // Pathology Staff role
+      else if (user.role === "pathology_staff") {
+        const pathologyStaff = await PathologyStaff.findOne({ email: email });
         res.json({
           _id: user._id,
           name: user.name,
@@ -351,6 +332,38 @@ exports.loginUser = async (req, res) => {
           pathologyStaffId: pathologyStaff?._id
         });
       }
+
+      // OT STAFF ROLE - FIXED: Search by email instead of userId
+      else if (user.role === "ot_staff") {
+        // Try to find OT Staff by email (since Staff record might have the email)
+        let otStaff = await OTStaff.findOne({ userId: user._id });
+
+        // If not found by userId, try to find by email through Staff collection
+        if (!otStaff) {
+          const staffRecord = await Staff.findOne({ email: user.email });
+          if (staffRecord) {
+            otStaff = await OTStaff.findOne({ userId: staffRecord._id });
+          }
+        }
+
+        // If still not found, try to find by employeeId pattern
+        if (!otStaff) {
+          otStaff = await OTStaff.findOne({ employeeId: { $regex: user.email.split('@')[0], $options: 'i' } });
+        }
+
+        res.json({
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          token: generateToken(user._id, user.role),
+          hospitalID: hospital?._id,
+          otStaffId: otStaff?._id || null,
+          otStaffDesignation: otStaff?.designation || 'OT Staff'
+        });
+      }
+
+      // Default/Admin role
       else {
         res.json({
           _id: user._id,
