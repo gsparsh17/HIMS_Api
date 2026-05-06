@@ -1,5 +1,6 @@
 const Staff = require('../models/Staff');
 const User = require('../models/User');
+const Nurse = require('../models/Nurse');
 
 
 exports.createStaff = async (req, res) => {
@@ -16,7 +17,8 @@ exports.createStaff = async (req, res) => {
       status,
       password,
       aadharNumber,
-      panNumber
+      panNumber,
+      shift
     } = req.body;
 
     // Split full name
@@ -35,6 +37,7 @@ exports.createStaff = async (req, res) => {
       specialization,
       gender:normalizedGender,
       status,
+      shift,
       aadharNumber,
       panNumber,
       joined_at: joiningDate || new Date()
@@ -42,15 +45,30 @@ exports.createStaff = async (req, res) => {
     await staff.save();
 
     if(password) {
-    const user = new User({
-      name: fullName,
-      email,
-      phone,
-      role: "staff",
-      password
-    });
-    await user.save();
+      const user = new User({
+        name: fullName,
+        email,
+        phone,
+        role: "staff",
+        password
+      });
+      await user.save();
     }
+
+    // Sync with Nurse collection
+    if (role && role.toLowerCase().includes('nurse')) {
+      const nurse = new Nurse({
+        first_name: firstName,
+        last_name: lastName,
+        email,
+        phone,
+        department_id: department || null,
+        shift_id: shift || null,
+        joined_at: joiningDate || new Date()
+      });
+      await nurse.save();
+    }
+
     res.status(201).json({ message: 'Staff and user created', staffId: staff._id });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -61,7 +79,7 @@ exports.createStaff = async (req, res) => {
 // Get all staff
 exports.getAllStaff = async (req, res) => {
   try {
-    const staffList = await Staff.find();
+    const staffList = await Staff.find().populate('department').populate('shift');
     res.json(staffList);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -71,7 +89,7 @@ exports.getAllStaff = async (req, res) => {
 // Get staff by ID
 exports.getStaffById = async (req, res) => {
   try {
-    const staff = await Staff.findById(req.params.id);
+    const staff = await Staff.findById(req.params.id).populate('department').populate('shift');
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
     res.json(staff);
   } catch (err) {
@@ -114,7 +132,7 @@ exports.updateStaff = async (req, res) => {
       req.params.id, 
       updateData, 
       { new: true, runValidators: true }
-    );
+    ).populate('department').populate('shift');
 
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
 
@@ -177,6 +195,21 @@ exports.updateStaff = async (req, res) => {
       }
       
       await staff.save();
+    }
+
+    // Sync with Nurse collection if role includes nurse
+    if (staff.role && staff.role.toLowerCase().includes('nurse')) {
+      await Nurse.findOneAndUpdate(
+        { email: staff.email },
+        {
+          first_name: staff.first_name,
+          last_name: staff.last_name,
+          phone: staff.phone,
+          department_id: staff.department || null,
+          shift_id: staff.shift || null
+        },
+        { upsert: true, new: true }
+      );
     }
 
     res.json({ message: 'Staff updated successfully', staff });
