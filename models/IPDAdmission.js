@@ -74,22 +74,27 @@ const ipdAdmissionSchema = new mongoose.Schema({
   provisionalDiagnosis: {
     type: String,
     trim: true
+    // Optional: filled by doctor or during admission
   },
   finalDiagnosis: {
     type: String,
     trim: true
+    // Optional: filled at discharge
   },
   chiefComplaints: {
     type: String,
     trim: true
+    // Optional
   },
   historyOfPresentIllness: {
     type: String,
     trim: true
+    // Optional
   },
   pastMedicalHistory: {
     type: String,
     trim: true
+    // Optional
   },
   attendant: {
     name: { type: String, trim: true },

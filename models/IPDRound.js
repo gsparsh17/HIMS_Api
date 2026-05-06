@@ -58,8 +58,11 @@ const ipdRoundSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  nextReviewDate: {
-    type: Date
+  painScore: {
+    type: Number,
+    min: 0,
+    max: 10,
+    default: 0
   },
   notes: {
     type: String,

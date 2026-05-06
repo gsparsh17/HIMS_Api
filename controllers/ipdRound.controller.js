@@ -19,7 +19,7 @@ exports.createRound = async (req, res) => {
       treatmentPlan,
       advice,
       dischargeSuggested,
-      nextReviewDate,
+      painScore,
       notes
     } = req.body;
     
@@ -43,7 +43,7 @@ exports.createRound = async (req, res) => {
       treatmentPlan,
       advice,
       dischargeSuggested,
-      nextReviewDate,
+      painScore,
       notes,
       createdBy: req.user?._id
     });
