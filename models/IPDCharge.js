@@ -66,7 +66,7 @@ const ipdChargeSchema = new mongoose.Schema({
   },
   sourceModule: {
     type: String,
-    enum: ['Admission', 'Lab', 'Pharmacy', 'Procedure', 'Manual', 'Bed', 'DoctorRound'],
+    enum: ['Admission', 'Lab', 'Pharmacy', 'Procedure', 'Manual', 'Bed', 'DoctorRound', 'OT'],
     required: true
   },
   sourceId: {

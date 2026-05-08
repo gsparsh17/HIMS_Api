@@ -173,7 +173,7 @@ const otRequestSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Generate request number
-otRequestSchema.pre('save', async function(next) {
+otRequestSchema.pre('validate', async function(next) {
   if (this.isNew && !this.requestNumber) {
     const date = new Date();
     const year = date.getFullYear();

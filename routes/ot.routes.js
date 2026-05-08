@@ -73,6 +73,12 @@ router.get('/admission/:admissionId/requests', otController.getRequestsByAdmissi
 router.get('/doctor/:doctorId/requests', otController.getRequestsByDoctor);
 router.get('/dashboard/stats', otController.getDashboardStats);
 
+// ============== REPORT ROUTES ==============
+router.get('/reports/monthly', otController.getMonthlyReports);
+router.get('/reports/procedures', otController.getProcedureStats);
+router.get('/reports/surgeons', otController.getSurgeonStats);
+router.get('/reports/export/:type', otController.exportOTReports);
+
 // ============== OT ROOM UTILITIES (using existing Room model) ==============
 router.get('/ot-rooms', otController.getOTRooms);
 router.get('/ot-rooms/available', otController.getAvailableOTRooms);
