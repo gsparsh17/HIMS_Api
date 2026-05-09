@@ -8,6 +8,7 @@ router.get('/handover/patient-data', controller.getHandoverPatientData);
 router.post('/handover', controller.createHandover);
 router.get('/handover/history/:nurseId', controller.getHandoverHistory);
 router.get('/handover/pending/:nurseId', controller.getPendingHandovers);
+router.get('/handover/current/:nurseId', controller.getCurrentHandovers);
 router.patch('/handover/:id/acknowledge', controller.acknowledgeHandover);
 
 // Basic Shift CRUD

@@ -457,3 +457,30 @@ exports.getPendingHandovers = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+/**
+ * Get current acknowledged handovers for a nurse
+ */
+exports.getCurrentHandovers = async (req, res) => {
+  try {
+    const { nurseId } = req.params;
+
+    // Only get handovers from the last 24 hours to avoid clutter
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    const handovers = await ShiftHandover.find({
+      incomingNurse: nurseId,
+      status: 'Acknowledged',
+      handoverDate: { $gte: yesterday }
+    })
+      .populate('outgoingNurse', 'first_name last_name')
+      .populate('incomingNurse', 'first_name last_name')
+      .sort({ acknowledgedAt: -1, createdAt: -1 });
+
+    res.json({ success: true, handovers });
+  } catch (err) {
+    console.error('Error fetching current handovers:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
