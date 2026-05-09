@@ -1,3 +1,4 @@
+// backend/routes/ipd.routes.js
 const express = require('express');
 const router = express.Router();
 
@@ -18,6 +19,10 @@ router.get('/admissions/:id', ipdAdmissionController.getAdmissionById);
 router.put('/admissions/:id', ipdAdmissionController.updateAdmission);
 router.patch('/admissions/:id/status', ipdAdmissionController.updateAdmissionStatus);
 router.delete('/admissions/:id', ipdAdmissionController.deleteAdmission);
+
+// NEW: Nurse specific routes
+router.post('/admissions/:id/complete-clinical-assessment', ipdAdmissionController.completeClinicalAssessment);
+router.get('/nurse/dashboard', ipdAdmissionController.getNurseDashboardData);
 
 // ========== BED ROUTES ==========
 router.post('/beds', ipdBedController.createBed);
@@ -60,8 +65,6 @@ router.patch('/medications/:id/skip', ipdMedicationController.skipMedication);
 router.patch('/medications/:id/stop', ipdMedicationController.stopMedication);
 router.get('/medications/pharmacy/requests/:pharmacyId', ipdMedicationController.getPendingPharmacyRequests);
 router.patch('/medications/:id/pharmacy-process', ipdMedicationController.processPharmacyRequest);
-
-// Nurse medication administration routes
 router.get('/medications/nurse/today', ipdMedicationController.getNurseTodaySchedule);
 router.get('/medications/nurse/admission/:admissionId/schedule', ipdMedicationController.getMedicationScheduleForNurse);
 router.patch('/medications/:id/hold', ipdMedicationController.holdMedication);
