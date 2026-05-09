@@ -18,7 +18,7 @@ const Prescription = require('../models/Prescription');
 
 // ========== DISCHARGE SUMMARY ==========
 
-// Create/Update discharge summary
+// Create/Update discharge summary - Allow ANY user (doctor/nurse/staff) to save
 exports.saveDischargeSummary = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -48,8 +48,11 @@ exports.saveDischargeSummary = async (req, res) => {
 
     let dischargeSummary = await DischargeSummary.findOne({ admissionId });
     
+    // Determine preparedBy doctor ID (use admission's primary doctor if available)
+    let doctorId = admission.primaryDoctorId;
+    
     if (dischargeSummary) {
-      // Update existing
+      // Update existing - allow any user to update
       Object.assign(dischargeSummary, {
         finalDiagnosis,
         chiefComplaints,
@@ -70,20 +73,6 @@ exports.saveDischargeSummary = async (req, res) => {
         updatedBy: req.user?._id
       });
     } else {
-      // Find doctor associated with logged-in user
-      const Doctor = require('../models/Doctor');
-      let doctorId = null;
-      if (req.user?._id) {
-        const doctor = await Doctor.findOne({ user_id: req.user._id });
-        if (doctor) {
-          doctorId = doctor._id;
-        }
-      }
-      // Fallback to the admission's primary doctor if user is not a doctor or undefined
-      if (!doctorId) {
-        doctorId = admission.primaryDoctorId;
-      }
-
       // Create new
       dischargeSummary = new DischargeSummary({
         admissionId,
@@ -173,204 +162,77 @@ exports.getDischargeRecords = async (req, res) => {
       otRequests,
       prescriptions
     ] = await Promise.all([
-      // All doctor rounds with prescriptions populated
       IPDRound.find({ admissionId })
         .populate('doctorId', 'firstName lastName specialization')
-        .populate({
-          path: 'prescriptionId',
-          populate: [
-            { path: 'items.medicine_id', select: 'name' }
-          ]
-        })
+        .populate({ path: 'prescriptionId', populate: [{ path: 'items.medicine_id', select: 'name' }] })
         .sort({ roundDateTime: 1 }),
-
-      // All vitals
-      IPDVitals.find({ admissionId })
-        .populate('recordedBy', 'first_name last_name')
-        .sort({ recordedAt: 1 }),
-
-      // All nursing notes
-      NursingNote.find({ admissionId })
-        .populate('nurseId', 'first_name last_name')
-        .sort({ noteDateTime: 1 }),
-
-      // All medications
-      IPDMedicationChart.find({ admissionId })
-        .sort({ createdAt: 1 }),
-
-      // All lab requests for this admission
-      LabRequest.find({ admissionId })
-        .populate('doctorId', 'firstName lastName')
-        .populate('labTestId', 'testName')
-        .sort({ requestedDate: 1 }),
-
-      // All radiology requests for this admission
-      RadiologyRequest.find({ admissionId })
-        .populate('doctorId', 'firstName lastName')
-        .sort({ requestedDate: 1 }),
-
-      // All procedure requests for this admission
-      ProcedureRequest.find({ admissionId })
-        .populate('doctorId', 'firstName lastName')
-        .sort({ requestedDate: 1 }),
-
-      // All OT (surgery) requests for this admission
-      OTRequest.find({ admissionId })
-        .populate('doctorId', 'firstName lastName')
-        .populate('primarySurgeonId', 'firstName lastName')
-        .populate('anesthetistId', 'firstName lastName')
-        .sort({ requestedDate: 1 }),
-
-      // All prescriptions linked to this IPD admission
-      Prescription.find({ ipd_admission_id: admissionId })
-        .populate('doctor_id', 'firstName lastName')
-        .sort({ issue_date: 1 })
+      IPDVitals.find({ admissionId }).populate('recordedBy', 'first_name last_name').sort({ recordedAt: 1 }),
+      NursingNote.find({ admissionId }).populate('nurseId', 'first_name last_name').sort({ noteDateTime: 1 }),
+      IPDMedicationChart.find({ admissionId }).sort({ createdAt: 1 }),
+      LabRequest.find({ admissionId }).populate('doctorId', 'firstName lastName').populate('labTestId', 'testName').sort({ requestedDate: 1 }),
+      RadiologyRequest.find({ admissionId }).populate('doctorId', 'firstName lastName').sort({ requestedDate: 1 }),
+      ProcedureRequest.find({ admissionId }).populate('doctorId', 'firstName lastName').sort({ requestedDate: 1 }),
+      OTRequest.find({ admissionId }).populate('doctorId', 'firstName lastName').populate('primarySurgeonId', 'firstName lastName').populate('anesthetistId', 'firstName lastName').sort({ requestedDate: 1 }),
+      Prescription.find({ ipd_admission_id: admissionId }).populate('doctor_id', 'firstName lastName').sort({ issue_date: 1 })
     ]);
 
     // Auto-generate summary text for each section
     const autoFill = {};
 
-    // Chief Complaints from admission + rounds
     const complaints = [admission.chiefComplaints];
-    rounds.forEach(r => {
-      if (r.complaints && !complaints.includes(r.complaints)) {
-        complaints.push(r.complaints);
-      }
-    });
+    rounds.forEach(r => { if (r.complaints && !complaints.includes(r.complaints)) complaints.push(r.complaints); });
     autoFill.chiefComplaints = complaints.filter(Boolean).join('\n');
 
-    // History of Present Illness
     autoFill.historyOfPresentIllness = admission.historyOfPresentIllness || '';
-
-    // Past Medical History
     autoFill.pastMedicalHistory = admission.pastMedicalHistory || '';
 
-    // Final Diagnosis - aggregate all diagnoses from rounds
     const diagnoses = [admission.provisionalDiagnosis];
-    rounds.forEach(r => {
-      if (r.diagnosis && !diagnoses.includes(r.diagnosis)) {
-        diagnoses.push(r.diagnosis);
-      }
-    });
-    prescriptions.forEach(rx => {
-      if (rx.diagnosis && !diagnoses.includes(rx.diagnosis)) {
-        diagnoses.push(rx.diagnosis);
-      }
-    });
+    rounds.forEach(r => { if (r.diagnosis && !diagnoses.includes(r.diagnosis)) diagnoses.push(r.diagnosis); });
+    prescriptions.forEach(rx => { if (rx.diagnosis && !diagnoses.includes(rx.diagnosis)) diagnoses.push(rx.diagnosis); });
     autoFill.finalDiagnosis = diagnoses.filter(Boolean).join('\n');
 
-    // Examination Findings from rounds
     const examFindings = [];
-    rounds.forEach(r => {
-      if (r.examinationFindings) {
-        examFindings.push(`[${new Date(r.roundDateTime).toLocaleDateString()}] Dr. ${r.doctorId?.firstName || ''} ${r.doctorId?.lastName || ''}: ${r.examinationFindings}`);
-      }
-    });
+    rounds.forEach(r => { if (r.examinationFindings) examFindings.push(`[${new Date(r.roundDateTime).toLocaleDateString()}] Dr. ${r.doctorId?.firstName || ''} ${r.doctorId?.lastName || ''}: ${r.examinationFindings}`); });
     autoFill.examinationFindings = examFindings.join('\n');
 
-    // Investigations - Lab Tests + Radiology
     const investigationLines = [];
-    labRequests.forEach(lr => {
-      const resultText = lr.result_value ? ` → Result: ${lr.result_value}${lr.is_abnormal ? ' (ABNORMAL)' : ''}` : '';
-      investigationLines.push(`• [Lab] ${lr.testName} (${lr.status})${resultText} - ${new Date(lr.requestedDate).toLocaleDateString()}`);
-    });
-    radiologyRequests.forEach(rr => {
-      const findingsText = rr.findings ? ` → ${rr.findings}` : '';
-      investigationLines.push(`• [Radiology] ${rr.testName} (${rr.status})${findingsText} - ${new Date(rr.requestedDate).toLocaleDateString()}`);
-    });
+    labRequests.forEach(lr => { investigationLines.push(`• [Lab] ${lr.testName} (${lr.status})${lr.result_value ? ` → Result: ${lr.result_value}${lr.is_abnormal ? ' (ABNORMAL)' : ''}` : ''} - ${new Date(lr.requestedDate).toLocaleDateString()}`); });
+    radiologyRequests.forEach(rr => { investigationLines.push(`• [Radiology] ${rr.testName} (${rr.status})${rr.findings ? ` → ${rr.findings}` : ''} - ${new Date(rr.requestedDate).toLocaleDateString()}`); });
     autoFill.investigations = investigationLines.join('\n');
 
-    // Treatment Given - from rounds treatment plans + medications prescribed
     const treatmentLines = [];
-    rounds.forEach(r => {
-      if (r.treatmentPlan) {
-        treatmentLines.push(`[${new Date(r.roundDateTime).toLocaleDateString()}] ${r.treatmentPlan}`);
-      }
-    });
-    // Add medication summary
+    rounds.forEach(r => { if (r.treatmentPlan) treatmentLines.push(`[${new Date(r.roundDateTime).toLocaleDateString()}] ${r.treatmentPlan}`); });
     const allMeds = [];
-    prescriptions.forEach(rx => {
-      rx.items?.forEach(item => {
-        const medInfo = `${item.medicine_name} ${item.dosage || ''} - ${item.frequency} x ${item.duration}`;
-        if (!allMeds.includes(medInfo)) {
-          allMeds.push(medInfo);
-        }
-      });
-    });
-    medications.forEach(med => {
-      const medInfo = `${med.medicineName} ${med.dosage || ''} - ${med.frequency} (${med.route || 'Oral'})`;
-      if (!allMeds.includes(medInfo)) {
-        allMeds.push(medInfo);
-      }
-    });
-    if (allMeds.length > 0) {
-      treatmentLines.push('\nMedications administered during stay:');
-      allMeds.forEach(m => treatmentLines.push(`• ${m}`));
-    }
+    prescriptions.forEach(rx => { rx.items?.forEach(item => { const medInfo = `${item.medicine_name} ${item.dosage || ''} - ${item.frequency} x ${item.duration}`; if (!allMeds.includes(medInfo)) allMeds.push(medInfo); }); });
+    medications.forEach(med => { const medInfo = `${med.medicineName} ${med.dosage || ''} - ${med.frequency} (${med.route || 'Oral'})`; if (!allMeds.includes(medInfo)) allMeds.push(medInfo); });
+    if (allMeds.length > 0) { treatmentLines.push('\nMedications administered during stay:'); allMeds.forEach(m => treatmentLines.push(`• ${m}`)); }
     autoFill.treatmentGiven = treatmentLines.join('\n');
 
-    // Procedures Done
     const procedureLines = [];
-    procedureRequests.forEach(pr => {
-      const findingsText = pr.findings ? ` - Findings: ${pr.findings}` : '';
-      procedureLines.push(`• ${pr.procedureName} (${pr.status}) - ${new Date(pr.requestedDate).toLocaleDateString()}${findingsText}`);
-    });
+    procedureRequests.forEach(pr => { procedureLines.push(`• ${pr.procedureName} (${pr.status}) - ${new Date(pr.requestedDate).toLocaleDateString()}${pr.findings ? ` - Findings: ${pr.findings}` : ''}`); });
     autoFill.proceduresDone = procedureLines.join('\n');
 
-    // Surgeries Done (from OT)
     const surgeryLines = [];
-    otRequests.forEach(ot => {
-      const surgeon = ot.primarySurgeonId ? `Dr. ${ot.primarySurgeonId.firstName} ${ot.primarySurgeonId.lastName}` : (ot.doctorId ? `Dr. ${ot.doctorId.firstName} ${ot.doctorId.lastName}` : '');
-      const findingsText = ot.findings ? `\n  Findings: ${ot.findings}` : '';
-      const compText = ot.complications ? `\n  Complications: ${ot.complications}` : '';
-      surgeryLines.push(`• ${ot.procedureName} (${ot.status}) - ${new Date(ot.requestedDate).toLocaleDateString()}\n  Surgeon: ${surgeon}${findingsText}${compText}`);
-    });
+    otRequests.forEach(ot => { const surgeon = ot.primarySurgeonId ? `Dr. ${ot.primarySurgeonId.firstName} ${ot.primarySurgeonId.lastName}` : (ot.doctorId ? `Dr. ${ot.doctorId.firstName} ${ot.doctorId.lastName}` : ''); surgeryLines.push(`• ${ot.procedureName} (${ot.status}) - ${new Date(ot.requestedDate).toLocaleDateString()}\n  Surgeon: ${surgeon}${ot.findings ? `\n  Findings: ${ot.findings}` : ''}${ot.complications ? `\n  Complications: ${ot.complications}` : ''}`); });
     autoFill.surgeriesDone = surgeryLines.join('\n');
 
-    // Discharge medications - collect from last round's prescription or all active meds
     const dischargeMeds = [];
-    // Get medications from the last prescription
     if (prescriptions.length > 0) {
       const lastPrescription = prescriptions[prescriptions.length - 1];
-      lastPrescription.items?.forEach(item => {
-        dischargeMeds.push({
-          medicineName: item.medicine_name,
-          dosage: item.dosage || '',
-          frequency: item.frequency || '',
-          duration: item.duration || '',
-          instructions: item.instructions || item.timing || ''
-        });
-      });
+      lastPrescription.items?.forEach(item => { dischargeMeds.push({ medicineName: item.medicine_name, dosage: item.dosage || '', frequency: item.frequency || '', duration: item.duration || '', instructions: item.instructions || item.timing || '' }); });
     }
     autoFill.dischargeMedications = dischargeMeds;
-
-    // Emergency instructions based on diagnosis
     autoFill.emergencyInstructions = 'If you experience any of the following, visit the emergency department immediately:\n• High fever (>101°F) or chills\n• Severe pain unresponsive to prescribed medications\n• Difficulty breathing or chest pain\n• Excessive bleeding or wound discharge\n• Sudden dizziness, confusion, or loss of consciousness';
 
-    res.json({
-      success: true,
-      admission,
-      autoFill,
-      records: {
-        rounds,
-        vitals,
-        nursingNotes,
-        medications,
-        labRequests,
-        radiologyRequests,
-        procedureRequests,
-        otRequests,
-        prescriptions
-      }
-    });
+    res.json({ success: true, admission, autoFill, records: { rounds, vitals, nursingNotes, medications, labRequests, radiologyRequests, procedureRequests, otRequests, prescriptions } });
   } catch (err) {
     console.error('Error fetching discharge records:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-// Finalize discharge summary (after doctor/nurse fills clinical details)
-// This sets status to 'Discharge Summary Pending' for staff to add medication history
+// Doctor/Nurse finalizes discharge summary (clinical details are ready)
+// This sets status to 'Finalized' and admission status to 'Discharge Summary Pending'
 exports.finalizeDischargeSummary = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -381,7 +243,6 @@ exports.finalizeDischargeSummary = async (req, res) => {
       return res.status(404).json({ error: 'Discharge summary not found' });
     }
 
-    // Check if already finalized
     if (dischargeSummary.status === 'Finalized') {
       return res.status(400).json({ error: 'Discharge summary already finalized' });
     }
@@ -392,64 +253,41 @@ exports.finalizeDischargeSummary = async (req, res) => {
     if (!reviewerDoctorId && req.user?._id) {
       const Doctor = require('../models/Doctor');
       const doc = await Doctor.findOne({ user_id: req.user._id });
-      if (doc) {
-        reviewerDoctorId = doc._id;
-      }
+      if (doc) reviewerDoctorId = doc._id;
     }
-    if (!reviewerDoctorId) {
-      reviewerDoctorId = dischargeSummary.preparedBy;
-    }
+    if (!reviewerDoctorId) reviewerDoctorId = dischargeSummary.preparedBy;
 
     dischargeSummary.reviewedBy = reviewerDoctorId;
     dischargeSummary.reviewedAt = new Date();
     dischargeSummary.finalizedAt = new Date();
     await dischargeSummary.save();
 
-    // Update admission status to 'Discharge Summary Pending' (for staff to add medication history)
-    // NOT 'Billing Pending' - that comes after staff completes
     await IPDAdmission.findByIdAndUpdate(admissionId, {
       status: 'Discharge Summary Pending',
       finalDiagnosis: dischargeSummary.finalDiagnosis
     });
 
-    res.json({
-      success: true,
-      message: 'Discharge summary finalized. Awaiting staff to complete medication history.',
-      dischargeSummary
-    });
+    res.json({ success: true, message: 'Discharge summary finalized. Awaiting staff to complete.', dischargeSummary });
   } catch (err) {
     console.error('Error finalizing discharge summary:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-// Staff completes discharge summary (adds medication history, follow-up advice, etc.)
-// This sets status to 'Billing Pending'
+// Staff completes discharge summary (adds medications, follow-up advice, etc.)
+// This sets status to 'StaffCompleted' and admission status to 'Billing Pending'
 exports.staffCompleteDischargeSummary = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const {
-      dischargeMedications,
-      followUpAdvice,
-      followUpDate,
-      emergencyInstructions,
-      dietAdvice,
-      activityAdvice
-    } = req.body;
+    const { dischargeMedications, followUpAdvice, followUpDate, emergencyInstructions, dietAdvice, activityAdvice } = req.body;
 
     const dischargeSummary = await DischargeSummary.findOne({ admissionId });
     if (!dischargeSummary) {
       return res.status(404).json({ error: 'Discharge summary not found' });
     }
 
-    // Check if already staff-completed
     if (dischargeSummary.status === 'StaffCompleted') {
       return res.status(400).json({ error: 'Discharge summary already completed by staff' });
-    }
-
-    // Check if doctor has finalized first
-    if (dischargeSummary.status !== 'Finalized') {
-      return res.status(400).json({ error: 'Doctor must finalize clinical details before staff can complete' });
     }
 
     // Update with staff-entered data
@@ -463,18 +301,33 @@ exports.staffCompleteDischargeSummary = async (req, res) => {
     dischargeSummary.status = 'StaffCompleted';
     await dischargeSummary.save();
 
-    // Update admission status to 'Billing Pending'
-    await IPDAdmission.findByIdAndUpdate(admissionId, {
-      status: 'Billing Pending'
-    });
+    await IPDAdmission.findByIdAndUpdate(admissionId, { status: 'Billing Pending' });
 
-    res.json({
-      success: true,
-      message: 'Discharge summary completed by staff. Ready for billing.',
-      dischargeSummary
-    });
+    res.json({ success: true, message: 'Discharge summary completed by staff. Ready for billing.', dischargeSummary });
   } catch (err) {
     console.error('Error completing discharge summary by staff:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// NEW: Update only discharge medications (any role can call this)
+exports.updateDischargeMedications = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+    const { dischargeMedications } = req.body;
+
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId });
+    if (!dischargeSummary) {
+      return res.status(404).json({ error: 'Discharge summary not found' });
+    }
+
+    dischargeSummary.dischargeMedications = dischargeMedications;
+    dischargeSummary.updatedBy = req.user?._id;
+    await dischargeSummary.save();
+
+    res.json({ success: true, message: 'Discharge medications updated successfully', dischargeMedications: dischargeSummary.dischargeMedications });
+  } catch (err) {
+    console.error('Error updating medications:', err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -485,24 +338,14 @@ exports.staffCompleteDischargeSummary = async (req, res) => {
 exports.initiateDischarge = async (req, res) => {
   try {
     const { admissionId } = req.params;
-
     const admission = await IPDAdmission.findById(admissionId);
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-
-    if (!admission.canProceedToDischarge) {
-      return res.status(400).json({ error: 'Cannot initiate discharge from current status' });
-    }
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    if (!admission.canProceedToDischarge) return res.status(400).json({ error: 'Cannot initiate discharge from current status' });
 
     admission.status = 'Discharge Initiated';
     await admission.save();
 
-    res.json({
-      success: true,
-      message: 'Discharge initiated successfully',
-      admission
-    });
+    res.json({ success: true, message: 'Discharge initiated successfully', admission });
   } catch (err) {
     console.error('Error initiating discharge:', err);
     res.status(500).json({ error: err.message });
@@ -513,27 +356,13 @@ exports.initiateDischarge = async (req, res) => {
 exports.getDischargeChecklist = async (req, res) => {
   try {
     const { admissionId } = req.params;
-
     const admission = await IPDAdmission.findById(admissionId);
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
-    // Check various conditions
     const dischargeSummary = await DischargeSummary.findOne({ admissionId });
-    const pendingLabReports = await LabReport.countDocuments({
-      patientId: admission.patientId,
-      status: { $ne: 'Completed' }
-    });
-    const pendingMedications = await IPDMedicationChart.countDocuments({
-      admissionId,
-      status: 'Active',
-      'timing.status': 'Pending'
-    });
-    const pendingCharges = await IPDCharge.countDocuments({
-      admissionId,
-      isBilled: false
-    });
+    const pendingLabReports = await LabReport.countDocuments({ patientId: admission.patientId, status: { $ne: 'Completed' } });
+    const pendingMedications = await IPDMedicationChart.countDocuments({ admissionId, status: 'Active', 'timing.status': 'Pending' });
+    const pendingCharges = await IPDCharge.countDocuments({ admissionId, isBilled: false });
     const hasUnpaidAmount = admission.dueAmount > 0;
 
     const checklist = {
@@ -546,19 +375,7 @@ exports.getDischargeChecklist = async (req, res) => {
       bedReadyForRelease: true
     };
 
-    const isReadyForDischarge = Object.values(checklist).every(v => v === true);
-
-    res.json({
-      success: true,
-      checklist,
-      isReadyForDischarge,
-      pendingItems: {
-        pendingLabReports,
-        pendingMedications,
-        pendingCharges,
-        dueAmount: admission.dueAmount
-      }
-    });
+    res.json({ success: true, checklist, isReadyForDischarge: Object.values(checklist).every(v => v === true), pendingItems: { pendingLabReports, pendingMedications, pendingCharges, dueAmount: admission.dueAmount } });
   } catch (err) {
     console.error('Error fetching discharge checklist:', err);
     res.status(500).json({ error: err.message });
@@ -572,37 +389,23 @@ exports.completeDischarge = async (req, res) => {
     const { dischargeReason, isLAMA } = req.body;
 
     const admission = await IPDAdmission.findById(admissionId);
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
-    // Verify all discharge requirements
     const dischargeSummary = await DischargeSummary.findOne({ admissionId });
     if (!dischargeSummary || (dischargeSummary.status !== 'Finalized' && dischargeSummary.status !== 'StaffCompleted')) {
       return res.status(400).json({ error: 'Discharge summary not finalized' });
     }
 
-    // Check if payment is settled (unless admin override)
-    if (admission.dueAmount > 0) {
-      return res.status(400).json({ error: 'Payment pending. Please settle dues before discharge.' });
-    }
+    if (admission.dueAmount > 0) return res.status(400).json({ error: 'Payment pending. Please settle dues before discharge.' });
 
-    // Update admission
     admission.status = 'Discharged';
     admission.dischargeDate = new Date();
     admission.dischargeReason = dischargeReason;
     admission.isLAMA = isLAMA || false;
     await admission.save();
 
-    // Release bed
-    if (admission.bedId) {
-      await Bed.findByIdAndUpdate(admission.bedId, {
-        status: 'Cleaning',
-        currentAdmissionId: null
-      });
-    }
+    if (admission.bedId) await Bed.findByIdAndUpdate(admission.bedId, { status: 'Cleaning', currentAdmissionId: null });
 
-    // Generate final invoice if not already generated
     const existingInvoice = await Invoice.findOne({ admission_id: admissionId });
     if (!existingInvoice) {
       const finalInvoice = new Invoice({
@@ -618,11 +421,7 @@ exports.completeDischarge = async (req, res) => {
       await finalInvoice.save();
     }
 
-    res.json({
-      success: true,
-      message: 'Patient discharged successfully',
-      admission
-    });
+    res.json({ success: true, message: 'Patient discharged successfully', admission });
   } catch (err) {
     console.error('Error completing discharge:', err);
     res.status(500).json({ error: err.message });
@@ -633,37 +432,13 @@ exports.completeDischarge = async (req, res) => {
 exports.getDischargeDocuments = async (req, res) => {
   try {
     const { admissionId } = req.params;
+    const admission = await IPDAdmission.findById(admissionId).populate('patientId', 'first_name last_name patientId').populate('primaryDoctorId', 'firstName lastName');
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
-    const admission = await IPDAdmission.findById(admissionId)
-      .populate('patientId', 'first_name last_name patientId')
-      .populate('primaryDoctorId', 'firstName lastName');
-    
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId })
-      .populate('preparedBy', 'firstName lastName')
-      .populate('reviewedBy', 'firstName lastName');
-
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId }).populate('preparedBy', 'firstName lastName').populate('reviewedBy', 'firstName lastName');
     const invoices = await Invoice.find({ admission_id: admissionId });
 
-    res.json({
-      success: true,
-      admission,
-      dischargeSummary,
-      invoices,
-      documents: {
-        dischargeSummary: dischargeSummary || null,
-        finalBill: invoices.find(i => i.status === 'Paid') || null,
-        admissionSlip: {
-          admissionNumber: admission.admissionNumber,
-          admissionDate: admission.admissionDate,
-          patientName: `${admission.patientId?.first_name} ${admission.patientId?.last_name}`,
-          doctorName: `Dr. ${admission.primaryDoctorId?.firstName} ${admission.primaryDoctorId?.lastName}`
-        }
-      }
-    });
+    res.json({ success: true, admission, dischargeSummary, invoices, documents: { dischargeSummary: dischargeSummary || null, finalBill: invoices.find(i => i.status === 'Paid') || null, admissionSlip: { admissionNumber: admission.admissionNumber, admissionDate: admission.admissionDate, patientName: `${admission.patientId?.first_name} ${admission.patientId?.last_name}`, doctorName: `Dr. ${admission.primaryDoctorId?.firstName} ${admission.primaryDoctorId?.lastName}` } } });
   } catch (err) {
     console.error('Error fetching discharge documents:', err);
     res.status(500).json({ error: err.message });

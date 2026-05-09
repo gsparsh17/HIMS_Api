@@ -101,7 +101,7 @@ const dischargeSummarySchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Draft', 'Pending Review', 'Finalized'],
+    enum: ['Draft', 'Pending Review', 'Finalized', 'StaffCompleted'],
     default: 'Draft'
   },
   finalizedAt: {
