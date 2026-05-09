@@ -69,11 +69,25 @@ exports.saveDischargeSummary = async (req, res) => {
         updatedBy: req.user?._id
       });
     } else {
+      // Find doctor associated with logged-in user
+      const Doctor = require('../models/Doctor');
+      let doctorId = null;
+      if (req.user?._id) {
+        const doctor = await Doctor.findOne({ user_id: req.user._id });
+        if (doctor) {
+          doctorId = doctor._id;
+        }
+      }
+      // Fallback to the admission's primary doctor if user is not a doctor or undefined
+      if (!doctorId) {
+        doctorId = admission.primaryDoctorId;
+      }
+
       // Create new
       dischargeSummary = new DischargeSummary({
         admissionId,
         patientId: admission.patientId,
-        preparedBy: req.user?._id,
+        preparedBy: doctorId,
         admissionDate: admission.admissionDate,
         dischargeDate: new Date(),
         finalDiagnosis,
@@ -366,7 +380,20 @@ exports.finalizeDischargeSummary = async (req, res) => {
     }
 
     dischargeSummary.status = 'Finalized';
-    dischargeSummary.reviewedBy = reviewedBy || req.user?._id;
+    
+    let reviewerDoctorId = reviewedBy;
+    if (!reviewerDoctorId && req.user?._id) {
+      const Doctor = require('../models/Doctor');
+      const doc = await Doctor.findOne({ user_id: req.user._id });
+      if (doc) {
+        reviewerDoctorId = doc._id;
+      }
+    }
+    if (!reviewerDoctorId) {
+      reviewerDoctorId = dischargeSummary.preparedBy;
+    }
+
+    dischargeSummary.reviewedBy = reviewerDoctorId;
     dischargeSummary.reviewedAt = new Date();
     dischargeSummary.finalizedAt = new Date();
     await dischargeSummary.save();
