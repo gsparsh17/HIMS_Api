@@ -80,6 +80,7 @@ router.post('/billing/admission/:admissionId/finalize', ipdBillingController.fin
 router.post('/discharge/:admissionId/initiate', ipdDischargeController.initiateDischarge);
 router.post('/discharge/:admissionId/summary', ipdDischargeController.saveDischargeSummary);
 router.get('/discharge/:admissionId/summary', ipdDischargeController.getDischargeSummary);
+router.get('/discharge/:admissionId/records', ipdDischargeController.getDischargeRecords);
 router.post('/discharge/:admissionId/summary/finalize', ipdDischargeController.finalizeDischargeSummary);
 router.get('/discharge/:admissionId/checklist', ipdDischargeController.getDischargeChecklist);
 router.post('/discharge/:admissionId/complete', ipdDischargeController.completeDischarge);
