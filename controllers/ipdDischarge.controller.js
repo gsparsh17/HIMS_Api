@@ -1,3 +1,4 @@
+// backend/controllers/ipdDischarge.controller.js
 const IPDAdmission = require('../models/IPDAdmission');
 const DischargeSummary = require('../models/DischargeSummary');
 const Bed = require('../models/Bed');
@@ -368,7 +369,8 @@ exports.getDischargeRecords = async (req, res) => {
   }
 };
 
-// Finalize discharge summary
+// Finalize discharge summary (after doctor/nurse fills clinical details)
+// This sets status to 'Discharge Summary Pending' for staff to add medication history
 exports.finalizeDischargeSummary = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -377,6 +379,11 @@ exports.finalizeDischargeSummary = async (req, res) => {
     const dischargeSummary = await DischargeSummary.findOne({ admissionId });
     if (!dischargeSummary) {
       return res.status(404).json({ error: 'Discharge summary not found' });
+    }
+
+    // Check if already finalized
+    if (dischargeSummary.status === 'Finalized') {
+      return res.status(400).json({ error: 'Discharge summary already finalized' });
     }
 
     dischargeSummary.status = 'Finalized';
@@ -398,18 +405,76 @@ exports.finalizeDischargeSummary = async (req, res) => {
     dischargeSummary.finalizedAt = new Date();
     await dischargeSummary.save();
 
-    // Update admission status
+    // Update admission status to 'Discharge Summary Pending' (for staff to add medication history)
+    // NOT 'Billing Pending' - that comes after staff completes
+    await IPDAdmission.findByIdAndUpdate(admissionId, {
+      status: 'Discharge Summary Pending',
+      finalDiagnosis: dischargeSummary.finalDiagnosis
+    });
+
+    res.json({
+      success: true,
+      message: 'Discharge summary finalized. Awaiting staff to complete medication history.',
+      dischargeSummary
+    });
+  } catch (err) {
+    console.error('Error finalizing discharge summary:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Staff completes discharge summary (adds medication history, follow-up advice, etc.)
+// This sets status to 'Billing Pending'
+exports.staffCompleteDischargeSummary = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+    const {
+      dischargeMedications,
+      followUpAdvice,
+      followUpDate,
+      emergencyInstructions,
+      dietAdvice,
+      activityAdvice
+    } = req.body;
+
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId });
+    if (!dischargeSummary) {
+      return res.status(404).json({ error: 'Discharge summary not found' });
+    }
+
+    // Check if already staff-completed
+    if (dischargeSummary.status === 'StaffCompleted') {
+      return res.status(400).json({ error: 'Discharge summary already completed by staff' });
+    }
+
+    // Check if doctor has finalized first
+    if (dischargeSummary.status !== 'Finalized') {
+      return res.status(400).json({ error: 'Doctor must finalize clinical details before staff can complete' });
+    }
+
+    // Update with staff-entered data
+    if (dischargeMedications !== undefined) dischargeSummary.dischargeMedications = dischargeMedications;
+    if (followUpAdvice !== undefined) dischargeSummary.followUpAdvice = followUpAdvice;
+    if (followUpDate) dischargeSummary.followUpDate = new Date(followUpDate);
+    if (emergencyInstructions !== undefined) dischargeSummary.emergencyInstructions = emergencyInstructions;
+    if (dietAdvice !== undefined) dischargeSummary.dietAdvice = dietAdvice;
+    if (activityAdvice !== undefined) dischargeSummary.activityAdvice = activityAdvice;
+    
+    dischargeSummary.status = 'StaffCompleted';
+    await dischargeSummary.save();
+
+    // Update admission status to 'Billing Pending'
     await IPDAdmission.findByIdAndUpdate(admissionId, {
       status: 'Billing Pending'
     });
 
     res.json({
       success: true,
-      message: 'Discharge summary finalized',
+      message: 'Discharge summary completed by staff. Ready for billing.',
       dischargeSummary
     });
   } catch (err) {
-    console.error('Error finalizing discharge summary:', err);
+    console.error('Error completing discharge summary by staff:', err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -473,7 +538,7 @@ exports.getDischargeChecklist = async (req, res) => {
 
     const checklist = {
       doctorDischargeAdvice: admission.status === 'Discharge Initiated',
-      dischargeSummaryFinalized: dischargeSummary?.status === 'Finalized',
+      dischargeSummaryFinalized: dischargeSummary?.status === 'Finalized' || dischargeSummary?.status === 'StaffCompleted',
       labReportsCompleted: pendingLabReports === 0,
       medicationsAdministered: pendingMedications === 0,
       chargesBilled: pendingCharges === 0,
@@ -513,7 +578,7 @@ exports.completeDischarge = async (req, res) => {
 
     // Verify all discharge requirements
     const dischargeSummary = await DischargeSummary.findOne({ admissionId });
-    if (!dischargeSummary || dischargeSummary.status !== 'Finalized') {
+    if (!dischargeSummary || (dischargeSummary.status !== 'Finalized' && dischargeSummary.status !== 'StaffCompleted')) {
       return res.status(400).json({ error: 'Discharge summary not finalized' });
     }
 

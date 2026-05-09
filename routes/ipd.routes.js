@@ -20,7 +20,7 @@ router.put('/admissions/:id', ipdAdmissionController.updateAdmission);
 router.patch('/admissions/:id/status', ipdAdmissionController.updateAdmissionStatus);
 router.delete('/admissions/:id', ipdAdmissionController.deleteAdmission);
 
-// NEW: Nurse specific routes
+// Nurse specific routes
 router.post('/admissions/:id/complete-clinical-assessment', ipdAdmissionController.completeClinicalAssessment);
 router.get('/nurse/dashboard', ipdAdmissionController.getNurseDashboardData);
 
@@ -85,6 +85,7 @@ router.post('/discharge/:admissionId/summary', ipdDischargeController.saveDischa
 router.get('/discharge/:admissionId/summary', ipdDischargeController.getDischargeSummary);
 router.get('/discharge/:admissionId/records', ipdDischargeController.getDischargeRecords);
 router.post('/discharge/:admissionId/summary/finalize', ipdDischargeController.finalizeDischargeSummary);
+router.post('/discharge/:admissionId/staff-complete', ipdDischargeController.staffCompleteDischargeSummary); // NEW: Staff completes discharge
 router.get('/discharge/:admissionId/checklist', ipdDischargeController.getDischargeChecklist);
 router.post('/discharge/:admissionId/complete', ipdDischargeController.completeDischarge);
 router.get('/discharge/:admissionId/documents', ipdDischargeController.getDischargeDocuments);
