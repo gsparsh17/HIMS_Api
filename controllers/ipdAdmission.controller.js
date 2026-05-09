@@ -1,3 +1,4 @@
+// backend/controllers/ipdAdmission.controller.js
 const IPDAdmission = require('../models/IPDAdmission');
 const Bed = require('../models/Bed');
 const Ward = require('../models/Ward');
@@ -12,7 +13,6 @@ const DischargeSummary = require('../models/DischargeSummary');
 
 // ========== ADMISSION CRUD ==========
 
-// Create new IPD admission
 // Create new IPD admission
 exports.createAdmission = async (req, res) => {
   try {
@@ -81,7 +81,7 @@ exports.createAdmission = async (req, res) => {
 
     // Create admission
     const admission = new IPDAdmission({
-      admissionNumber, // Manually set the admission number
+      admissionNumber,
       patientId,
       admissionType,
       departmentId,
@@ -100,6 +100,7 @@ exports.createAdmission = async (req, res) => {
       advanceAmount,
       admissionNotes,
       status: 'Admitted',
+      clinicalAssessmentCompleted: false, // Initially false
       createdBy: req.user?._id
     });
 
@@ -154,17 +155,20 @@ exports.getAllAdmissions = async (req, res) => {
       doctorId,
       startDate,
       endDate,
-      search
+      search,
+      clinicalAssessmentCompleted // NEW filter
     } = req.query;
 
     const filter = {};
 
-    // Fix: Handle comma-separated status values
     if (status) {
-      // Split by comma and trim whitespace
       const statusArray = status.split(',').map(s => s.trim());
-      // If there's only one status, use direct match, otherwise use $in operator
       filter.status = statusArray.length === 1 ? statusArray[0] : { $in: statusArray };
+    }
+
+    // NEW: Filter by clinical assessment completion
+    if (clinicalAssessmentCompleted !== undefined) {
+      filter.clinicalAssessmentCompleted = clinicalAssessmentCompleted === 'true';
     }
 
     if (patientId) filter.patientId = patientId;
@@ -190,7 +194,7 @@ exports.getAllAdmissions = async (req, res) => {
     }
 
     const admissions = await IPDAdmission.find(filter)
-      .populate('patientId', 'first_name last_name patientId phone')
+      .populate('patientId', 'first_name last_name patientId phone dob gender')
       .populate('primaryDoctorId', 'firstName lastName specialization')
       .populate('departmentId', 'name')
       .populate('bedId', 'bedNumber bedType')
@@ -250,7 +254,7 @@ exports.getAdmissionById = async (req, res) => {
       return res.status(404).json({ error: 'Admission not found' });
     }
 
-    // Get related data counts
+    // Get related data
     const rounds = await IPDRound.find({ admissionId: admission._id })
       .populate('doctorId', 'firstName lastName')
       .populate('prescriptionId')
@@ -313,6 +317,140 @@ exports.updateAdmission = async (req, res) => {
   }
 };
 
+// NEW: Complete clinical assessment (update clinical details + add initial vitals)
+exports.completeClinicalAssessment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      provisionalDiagnosis,
+      chiefComplaints,
+      historyOfPresentIllness,
+      pastMedicalHistory,
+      recordedBy,
+      temperature,
+      temperatureUnit,
+      pulse,
+      bloodPressure,
+      respiratoryRate,
+      spo2,
+      bloodSugar,
+      weight,
+      height,
+      painScore,
+      remarks
+    } = req.body;
+
+    // Find admission
+    const admission = await IPDAdmission.findById(id);
+    if (!admission) {
+      return res.status(404).json({ error: 'Admission not found' });
+    }
+
+    // Check if already completed
+    if (admission.clinicalAssessmentCompleted) {
+      return res.status(400).json({ error: 'Clinical assessment already completed for this admission' });
+    }
+
+    // Update admission with clinical details
+    admission.provisionalDiagnosis = provisionalDiagnosis || admission.provisionalDiagnosis;
+    admission.chiefComplaints = chiefComplaints || admission.chiefComplaints;
+    admission.historyOfPresentIllness = historyOfPresentIllness || admission.historyOfPresentIllness;
+    admission.pastMedicalHistory = pastMedicalHistory || admission.pastMedicalHistory;
+    
+    // Mark assessment as completed
+    admission.clinicalAssessmentCompleted = true;
+    admission.clinicalAssessmentCompletedAt = new Date();
+    admission.clinicalAssessmentCompletedBy = recordedBy || req.user?._id;
+    
+    await admission.save();
+
+    // Create initial vitals record if any vitals data provided
+    if (temperature || pulse || bloodPressure?.systolic || respiratoryRate || spo2) {
+      const initialVitals = new IPDVitals({
+        admissionId: admission._id,
+        patientId: admission.patientId,
+        recordedBy: recordedBy || req.user?._id,
+        recordedAt: new Date(),
+        temperature: temperature || null,
+        temperatureUnit: temperatureUnit || 'Celsius',
+        pulse: pulse || null,
+        bloodPressure: bloodPressure || { systolic: null, diastolic: null },
+        respiratoryRate: respiratoryRate || null,
+        spo2: spo2 || null,
+        bloodSugar: bloodSugar || null,
+        weight: weight || null,
+        height: height || null,
+        painScore: painScore || null,
+        remarks: remarks || 'Initial assessment vitals'
+      });
+      await initialVitals.save();
+    }
+
+    // Create initial nursing note
+    const initialNote = new NursingNote({
+      admissionId: admission._id,
+      patientId: admission.patientId,
+      nurseId: recordedBy || req.user?._id,
+      noteType: 'Assessment',
+      note: `Initial clinical assessment completed. ${chiefComplaints ? `Chief complaints: ${chiefComplaints}` : ''}`,
+      priority: 'Normal',
+      createdBy: recordedBy || req.user?._id
+    });
+    await initialNote.save();
+
+    res.json({
+      success: true,
+      message: 'Clinical assessment completed successfully',
+      admission
+    });
+  } catch (err) {
+    console.error('Error completing clinical assessment:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// NEW: Get nurse dashboard data
+exports.getNurseDashboardData = async (req, res) => {
+  try {
+    const nurseId = req.user?._id;
+
+    // Get admissions pending clinical assessment
+    const pendingAssessments = await IPDAdmission.find({
+      clinicalAssessmentCompleted: false,
+      status: { $in: ['Admitted', 'Under Treatment'] }
+    })
+      .populate('patientId', 'first_name last_name patientId phone dob gender')
+      .populate('primaryDoctorId', 'firstName lastName specialization')
+      .populate('bedId', 'bedNumber bedType')
+      .populate('wardId', 'name')
+      .sort({ admissionDate: -1 });
+
+    // Get admissions where clinical assessment is completed (assigned patients)
+    const assignedPatients = await IPDAdmission.find({
+      clinicalAssessmentCompleted: true,
+      status: { $in: ['Admitted', 'Under Treatment'] }
+    })
+      .populate('patientId', 'first_name last_name patientId phone dob gender')
+      .populate('primaryDoctorId', 'firstName lastName specialization')
+      .populate('bedId', 'bedNumber bedType')
+      .populate('wardId', 'name')
+      .sort({ admissionDate: -1 });
+
+    res.json({
+      success: true,
+      pendingAssessments,
+      assignedPatients,
+      counts: {
+        pending: pendingAssessments.length,
+        assigned: assignedPatients.length
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching nurse dashboard data:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // Update admission status
 exports.updateAdmissionStatus = async (req, res) => {
   try {
@@ -324,7 +462,6 @@ exports.updateAdmissionStatus = async (req, res) => {
       return res.status(404).json({ error: 'Admission not found' });
     }
 
-    // Status transition validation
     const validTransitions = {
       'Admitted': ['Under Treatment', 'Discharge Initiated'],
       'Under Treatment': ['Discharge Initiated', 'Discharge Summary Pending'],
@@ -355,7 +492,6 @@ exports.updateAdmissionStatus = async (req, res) => {
     admission.updatedBy = req.user?._id;
     await admission.save();
 
-    // If discharged, release the bed
     if (status === 'Discharged' && admission.bedId) {
       await Bed.findByIdAndUpdate(admission.bedId, {
         status: 'Cleaning',
@@ -392,7 +528,6 @@ exports.deleteAdmission = async (req, res) => {
     admission.updatedBy = req.user?._id;
     await admission.save();
 
-    // Release bed if occupied
     if (admission.bedId) {
       await Bed.findByIdAndUpdate(admission.bedId, {
         status: 'Available',
@@ -414,6 +549,11 @@ exports.deleteAdmission = async (req, res) => {
 exports.getDashboardStats = async (req, res) => {
   try {
     const totalAdmitted = await IPDAdmission.countDocuments({
+      status: { $in: ['Admitted', 'Under Treatment'] }
+    });
+
+    const pendingClinicalAssessment = await IPDAdmission.countDocuments({
+      clinicalAssessmentCompleted: false,
       status: { $in: ['Admitted', 'Under Treatment'] }
     });
 
@@ -454,6 +594,7 @@ exports.getDashboardStats = async (req, res) => {
       success: true,
       stats: {
         totalAdmitted,
+        pendingClinicalAssessment,
         dischargeInitiated,
         dischargedToday,
         occupiedBeds,

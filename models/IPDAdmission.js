@@ -1,10 +1,10 @@
+// backend/models/IPDAdmission.js
 const mongoose = require('mongoose');
 
 const ipdAdmissionSchema = new mongoose.Schema({
   admissionNumber: {
     type: String,
     unique: true,
-    // Remove required: true since we generate it automatically
   },
   patientId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -74,27 +74,34 @@ const ipdAdmissionSchema = new mongoose.Schema({
   provisionalDiagnosis: {
     type: String,
     trim: true
-    // Optional: filled by doctor or during admission
   },
   finalDiagnosis: {
     type: String,
     trim: true
-    // Optional: filled at discharge
   },
   chiefComplaints: {
     type: String,
     trim: true
-    // Optional
   },
   historyOfPresentIllness: {
     type: String,
     trim: true
-    // Optional
   },
   pastMedicalHistory: {
     type: String,
     trim: true
-    // Optional
+  },
+  // NEW: Track clinical assessment completion
+  clinicalAssessmentCompleted: {
+    type: Boolean,
+    default: false
+  },
+  clinicalAssessmentCompletedAt: {
+    type: Date
+  },
+  clinicalAssessmentCompletedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
   attendant: {
     name: { type: String, trim: true },
@@ -167,7 +174,7 @@ const ipdAdmissionSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Generate admission number before validate (to ensure it's generated before validation)
+// Generate admission number before validate
 ipdAdmissionSchema.pre('validate', async function(next) {
   if (!this.admissionNumber) {
     try {
@@ -206,5 +213,6 @@ ipdAdmissionSchema.index({ primaryDoctorId: 1, status: 1 });
 ipdAdmissionSchema.index({ admissionDate: -1 });
 ipdAdmissionSchema.index({ bedId: 1, status: 1 });
 ipdAdmissionSchema.index({ admissionNumber: 1 });
+ipdAdmissionSchema.index({ clinicalAssessmentCompleted: 1 });
 
 module.exports = mongoose.model('IPDAdmission', ipdAdmissionSchema);
