@@ -1,4 +1,3 @@
-// backend/models/IPDAdmission.js
 const mongoose = require('mongoose');
 
 const ipdAdmissionSchema = new mongoose.Schema({
@@ -91,7 +90,6 @@ const ipdAdmissionSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
-  // NEW: Track clinical assessment completion
   clinicalAssessmentCompleted: {
     type: Boolean,
     default: false

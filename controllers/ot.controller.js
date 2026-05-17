@@ -3,10 +3,7 @@ const OTStaff = require('../models/OTStaff');
 const OTSchedule = require('../models/OTSchedule');
 const Room = require('../models/Room');
 const IPDAdmission = require('../models/IPDAdmission');
-const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
-const Nurse = require('../models/Nurse');
-const IPDCharge = require('../models/IPDCharge');
 const Procedure = require('../models/Procedure');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
@@ -19,9 +16,14 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// Helper function to get billing controller dynamically
+async function getBillingController() {
+  return require('./billing.controller');
+}
+
 // ============== OT REQUEST CRUD ==============
 
-// Create OT Request (Doctor)
+// Create OT Request (Doctor) - UPDATED: stays in Requested status, no billing yet
 exports.createOTRequest = async (req, res) => {
   try {
     const {
@@ -73,6 +75,9 @@ exports.createOTRequest = async (req, res) => {
       special_instructions: special_instructions || '',
       estimated_duration_minutes: estimated_duration_minutes || 60,
       estimated_cost: estimated_cost,
+      total_cost: estimated_cost,  // Set total_cost = estimated_cost initially
+      paymentStatus: 'Pending',
+      status: 'Requested',  // Initial status - not yet paid
       createdBy: req.user ? req.user._id : undefined
     });
 
@@ -84,7 +89,7 @@ exports.createOTRequest = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'OT request submitted successfully',
+      message: 'OT request submitted successfully. Payment is required before scheduling.',
       data: populated
     });
   } catch (error) {
@@ -93,23 +98,132 @@ exports.createOTRequest = async (req, res) => {
   }
 };
 
-// Get OT requests with filters
+// NEW: Process payment for OT request (like lab tests and procedures)
+exports.processOTPayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { payment_method, amount, reference, notes } = req.body;
+
+    const request = await OTRequest.findById(id)
+      .populate('patientId', 'first_name last_name patientId phone');
+
+    if (!request) {
+      return res.status(404).json({ error: 'OT request not found' });
+    }
+
+    if (request.status === 'Completed') {
+      return res.status(400).json({ error: 'Completed surgeries cannot be billed' });
+    }
+
+    if (request.is_billed) {
+      return res.status(409).json({ error: 'OT request already has a bill' });
+    }
+
+    const paymentAmount = amount || request.total_cost;
+    const finalStatus = paymentAmount >= request.total_cost ? 'Paid' : 'Generated';
+
+    // Create bill items
+    const billItems = [{
+      description: `${request.procedureCode} - ${request.procedureName}`,
+      amount: request.total_cost,
+      quantity: 1,
+      item_type: 'Procedure',
+      procedure_code: request.procedureCode,
+      procedure_id: request._id,
+      prescription_id: null,
+      admission_id: request.admissionId
+    }];
+
+    // Call billing controller to create bill
+    const billingController = await getBillingController();
+
+    // Create a mock request object for billing controller
+    const mockReq = {
+      body: {
+        patient_id: request.patientId,
+        admission_id: request.admissionId,
+        items: billItems,
+        total_amount: request.total_cost,
+        subtotal: request.total_cost,
+        payment_method: payment_method,
+        status: finalStatus,
+        notes: notes || `OT Procedure: ${request.procedureName} - ${request.requestNumber}`
+      },
+      user: req.user
+    };
+
+    const mockRes = {
+      status: function (code) { this.statusCode = code; return this; },
+      json: function (data) { this.data = data; return this; }
+    };
+
+    await billingController.createBill(mockReq, mockRes);
+
+    if (mockRes.data && mockRes.data.success) {
+      const bill = mockRes.data.bill;
+      const invoice = mockRes.data.invoice;
+
+      // Update OT request with billing info
+      request.is_billed = true;
+      request.billId = bill._id;
+      request.invoiceId = invoice?._id;
+      request.paidAmount = finalStatus === 'Paid' ? request.total_cost : paymentAmount;
+      request.dueAmount = request.total_cost - request.paidAmount;
+      request.paymentStatus = finalStatus === 'Paid' ? 'Completed' : 'Partial';
+      request.paymentReceivedAt = new Date();
+      request.paymentReceivedBy = req.user?._id;
+
+      // Update status to move forward
+      if (finalStatus === 'Paid') {
+        request.status = 'Payment Received';
+      } else {
+        request.status = 'Payment Pending';
+      }
+
+      await request.save();
+
+      res.json({
+        success: true,
+        message: `Payment processed successfully. OT request is now ${request.status}.`,
+        bill: bill,
+        invoice: invoice,
+        request: {
+          id: request._id,
+          requestNumber: request.requestNumber,
+          status: request.status,
+          paymentStatus: request.paymentStatus,
+          paidAmount: request.paidAmount,
+          dueAmount: request.dueAmount
+        }
+      });
+    } else {
+      throw new Error(mockRes.data?.error || 'Failed to create bill');
+    }
+  } catch (error) {
+    console.error('Error processing OT payment:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get OT requests with filters - UPDATED to include payment status
 exports.getOTRequests = async (req, res) => {
   try {
-    const { 
-      status, 
-      admissionId, 
-      patientId, 
-      doctorId, 
-      urgency, 
-      startDate, 
-      endDate, 
-      page = 1, 
-      limit = 20 
+    const {
+      status,
+      paymentStatus,
+      admissionId,
+      patientId,
+      doctorId,
+      urgency,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 20
     } = req.query;
 
     const filter = {};
     if (status) filter.status = status;
+    if (paymentStatus) filter.paymentStatus = paymentStatus;
     if (admissionId) filter.admissionId = admissionId;
     if (patientId) filter.patientId = patientId;
     if (doctorId) filter.doctorId = doctorId;
@@ -158,11 +272,11 @@ exports.getOTRequests = async (req, res) => {
   }
 };
 
-// Get OT request by ID
+// Get OT request by ID - UPDATED with payment info
 exports.getOTRequestById = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const request = await OTRequest.findById(id)
       .populate('patientId', 'first_name last_name patientId dob gender phone address')
       .populate('doctorId', 'firstName lastName specialization department')
@@ -175,7 +289,9 @@ exports.getOTRequestById = async (req, res) => {
       .populate('otRoomId', 'room_number type floor status')
       .populate('post_op_wardId', 'name')
       .populate('post_op_roomId', 'room_number')
-      .populate('post_op_bedId', 'bedNumber bedType');
+      .populate('post_op_bedId', 'bedNumber bedType')
+      .populate('billId')
+      .populate('invoiceId');
 
     if (!request) {
       return res.status(404).json({ error: 'OT request not found' });
@@ -188,7 +304,7 @@ exports.getOTRequestById = async (req, res) => {
   }
 };
 
-// Update OT request status (general status update)
+// Update OT request status - UPDATED with validation
 exports.updateOTRequestStatus = async (req, res) => {
   try {
     const { id } = req.params;
@@ -200,8 +316,28 @@ exports.updateOTRequestStatus = async (req, res) => {
     }
 
     const oldStatus = request.status;
+
+    // Validate status transitions
+    const validTransitions = {
+      'Requested': ['Payment Pending', 'Cancelled'],
+      'Payment Pending': ['Payment Received', 'Cancelled'],
+      'Payment Received': ['Approved', 'Cancelled'],
+      'Approved': ['Scheduled', 'Cancelled'],
+      'Scheduled': ['In Progress', 'Cancelled', 'Postponed'],
+      'In Progress': ['Completed', 'Cancelled'],
+      'Completed': [],
+      'Cancelled': [],
+      'Postponed': ['Scheduled', 'Cancelled']
+    };
+
+    if (validTransitions[request.status] && !validTransitions[request.status].includes(status)) {
+      return res.status(400).json({
+        error: `Invalid status transition from ${request.status} to ${status}`
+      });
+    }
+
     request.status = status;
-    
+
     if (status === 'Approved') {
       request.approvedBy = req.user ? req.user._id : undefined;
       request.approvedAt = new Date();
@@ -220,7 +356,7 @@ exports.updateOTRequestStatus = async (req, res) => {
   }
 };
 
-// Assign OT Room and Team (OT Staff)
+// Assign OT Room and Team - UPDATED: requires payment received
 exports.assignOTRoom = async (req, res) => {
   try {
     const { id } = req.params;
@@ -242,8 +378,19 @@ exports.assignOTRoom = async (req, res) => {
       return res.status(404).json({ error: 'OT request not found' });
     }
 
-    if (request.status !== 'Requested' && request.status !== 'Approved') {
-      return res.status(400).json({ error: 'Request cannot be assigned in current status' });
+    // Check if payment is completed before scheduling
+    if (request.paymentStatus !== 'Completed') {
+      return res.status(400).json({
+        error: 'Payment must be completed before scheduling. Please process payment first.',
+        paymentStatus: request.paymentStatus,
+        dueAmount: request.dueAmount
+      });
+    }
+
+    if (request.status !== 'Payment Received' && request.status !== 'Approved') {
+      return res.status(400).json({
+        error: `Request cannot be assigned in current status: ${request.status}`
+      });
     }
 
     // Verify OT room exists and is available
@@ -252,17 +399,13 @@ exports.assignOTRoom = async (req, res) => {
       if (!otRoom) {
         return res.status(404).json({ error: 'OT room not found' });
       }
-      if (otRoom.type !== 'Operation Theater' && otRoom.type !== 'Operation Theater') {
-        // Allow if type includes 'Operation Theater' or room is specifically for OT
-        if (otRoom.type !== 'Operation Theater') {
-          return res.status(400).json({ error: 'Selected room is not an Operation Theater' });
-        }
+      if (otRoom.type !== 'Operation Theater') {
+        return res.status(400).json({ error: 'Selected room is not an Operation Theater' });
       }
       if (otRoom.status !== 'Available') {
         return res.status(400).json({ error: 'OT room is not available' });
       }
-      
-      // Update OT room status to Reserved
+
       await Room.findByIdAndUpdate(otRoomId, { status: 'Reserved' });
     }
 
@@ -321,7 +464,7 @@ exports.assignOTRoom = async (req, res) => {
   }
 };
 
-// Start Surgery
+// Start Surgery - UPDATED: requires payment completed
 exports.startSurgery = async (req, res) => {
   try {
     const { id } = req.params;
@@ -329,6 +472,12 @@ exports.startSurgery = async (req, res) => {
     const request = await OTRequest.findById(id);
     if (!request) {
       return res.status(404).json({ error: 'OT request not found' });
+    }
+
+    if (request.paymentStatus !== 'Completed') {
+      return res.status(400).json({
+        error: 'Payment must be completed before starting surgery'
+      });
     }
 
     if (request.status !== 'Scheduled') {
@@ -390,7 +539,13 @@ exports.completeSurgery = async (req, res) => {
     }
 
     const completedAt = new Date();
-    const actualDuration = Math.round((completedAt - request.startedAt) / 60000); // minutes
+    const actualDuration = Math.round((completedAt - request.startedAt) / 60000);
+
+    // Update final cost if different from estimated
+    if (total_cost && total_cost !== request.total_cost) {
+      request.total_cost = total_cost;
+      request.dueAmount = request.total_cost - request.paidAmount;
+    }
 
     request.status = 'Completed';
     request.completedAt = completedAt;
@@ -404,41 +559,22 @@ exports.completeSurgery = async (req, res) => {
     request.post_op_instructions = post_op_instructions || '';
     request.consumables = consumables || [];
     request.implants = implants || [];
-    request.total_cost = total_cost || request.estimated_cost || 0;
 
     await request.save();
 
     // Update schedule
     await OTSchedule.findOneAndUpdate(
       { requestId: request._id },
-      { 
+      {
         status: 'Completed',
         endTime: completedAt.toLocaleTimeString(),
         duration_minutes: actualDuration
       }
     );
 
-    // Release OT room (set to Cleaning, not Available)
+    // Release OT room
     if (request.otRoomId) {
       await Room.findByIdAndUpdate(request.otRoomId, { status: 'Cleaning' });
-    }
-
-    // Create billing charges if not already billed
-    if (request.total_cost > 0 && !request.is_billed) {
-      const charge = new IPDCharge({
-        admissionId: request.admissionId,
-        patientId: request.patientId,
-        chargeType: 'Procedure',
-        description: `Surgery: ${request.procedureName}`,
-        quantity: 1,
-        rate: request.total_cost,
-        amount: request.total_cost,
-        sourceModule: 'OT',
-        sourceId: request._id,
-        isAutoGenerated: true,
-        addedBy: req.user ? req.user._id : undefined
-      });
-      await charge.save();
     }
 
     res.json({
@@ -455,11 +591,11 @@ exports.completeSurgery = async (req, res) => {
   }
 };
 
-// Cancel OT Request
+// Cancel OT Request - UPDATED to handle refunds
 exports.cancelOTRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const { cancellationReason } = req.body;
+    const { cancellationReason, refundAmount } = req.body;
 
     const request = await OTRequest.findById(id);
     if (!request) {
@@ -475,6 +611,18 @@ exports.cancelOTRequest = async (req, res) => {
     request.cancelledBy = req.user ? req.user._id : undefined;
     request.cancelledAt = new Date();
     request.cancellationReason = cancellationReason || 'No reason provided';
+
+    // Handle refund if payment was made
+    if (request.paidAmount > 0 && refundAmount) {
+      request.paidAmount = request.paidAmount - refundAmount;
+      request.dueAmount = request.total_cost - request.paidAmount;
+
+      if (request.paidAmount === 0) {
+        request.paymentStatus = 'Refunded';
+      } else {
+        request.paymentStatus = 'Partial';
+      }
+    }
 
     await request.save();
 
@@ -527,14 +675,13 @@ exports.uploadSurgeryReport = async (req, res) => {
 
     fs.unlinkSync(req.file.path);
 
-    // Add to attachments array and update report_url
     const attachment = {
       name: req.file.originalname,
       url: result.secure_url,
       uploaded_by: req.user ? req.user._id : undefined,
       uploaded_at: new Date()
     };
-    
+
     request.attachments.push(attachment);
     request.surgery_report_url = result.secure_url;
     await request.save();
@@ -584,39 +731,35 @@ exports.transferPatientPostOp = async (req, res) => {
       return res.status(400).json({ error: 'Only completed surgeries can transfer patient' });
     }
 
-    // Update admission with new ward/room/bed
     const admission = await IPDAdmission.findById(request.admissionId);
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found' });
     }
 
-    // If new bed is provided, update admission
     if (post_op_bedId) {
       const newBed = await require('../models/Bed').findById(post_op_bedId);
       if (newBed && newBed.status !== 'Available') {
         return res.status(400).json({ error: 'Selected bed is not available' });
       }
-      
-      // Release old bed if exists
+
       if (admission.bedId) {
-        await require('../models/Bed').findByIdAndUpdate(admission.bedId, { 
+        await require('../models/Bed').findByIdAndUpdate(admission.bedId, {
           status: 'Available',
-          currentAdmissionId: null 
+          currentAdmissionId: null
         });
       }
-      
-      // Update new bed
+
       await require('../models/Bed').findByIdAndUpdate(post_op_bedId, {
         status: 'Occupied',
         currentAdmissionId: admission._id
       });
-      
+
       admission.bedId = post_op_bedId;
     }
-    
+
     if (post_op_roomId) admission.roomId = post_op_roomId;
     if (post_op_wardId) admission.wardId = post_op_wardId;
-    
+
     await admission.save();
 
     request.post_op_wardId = post_op_wardId || null;
@@ -645,7 +788,7 @@ exports.transferPatientPostOp = async (req, res) => {
   }
 };
 
-// Mark as billed
+// Mark as billed (legacy - kept for compatibility)
 exports.markAsBilled = async (req, res) => {
   try {
     const { id } = req.params;
@@ -672,20 +815,17 @@ exports.markAsBilled = async (req, res) => {
   }
 };
 
-// ============== OT STAFF CRUD ==============
-
-// Create OT Staff
 exports.createOTStaff = async (req, res) => {
   try {
-    const { 
-      userId, 
-      employeeId, 
-      designation, 
-      specializations, 
-      qualification, 
-      experience_years, 
-      is_active, 
-      joined_date 
+    const {
+      userId,
+      employeeId,
+      designation,
+      specializations,
+      qualification,
+      experience_years,
+      is_active,
+      joined_date
     } = req.body;
 
     if (!userId || !employeeId || !designation) {
@@ -836,7 +976,7 @@ exports.deleteOTStaff = async (req, res) => {
 // Get OT Rooms (rooms with type 'Operation Theater')
 exports.getOTRooms = async (req, res) => {
   try {
-    const rooms = await Room.find({ 
+    const rooms = await Room.find({
       $or: [
         { type: 'Operation Theater' },
         { type: { $regex: 'Operation', $options: 'i' } }
@@ -857,7 +997,7 @@ exports.getOTRooms = async (req, res) => {
 // Get Available OT Rooms
 exports.getAvailableOTRooms = async (req, res) => {
   try {
-    const rooms = await Room.find({ 
+    const rooms = await Room.find({
       $or: [
         { type: 'Operation Theater' },
         { type: { $regex: 'Operation', $options: 'i' } }
@@ -909,8 +1049,6 @@ exports.getRequestsByDoctor = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-
-// Get Dashboard Stats
 exports.getDashboardStats = async (req, res) => {
   try {
     const today = new Date();
@@ -920,6 +1058,7 @@ exports.getDashboardStats = async (req, res) => {
 
     const [
       pending,
+      pendingPayment,
       todayScheduled,
       totalRequests,
       completedToday,
@@ -927,6 +1066,7 @@ exports.getDashboardStats = async (req, res) => {
       cancelled
     ] = await Promise.all([
       OTRequest.countDocuments({ status: 'Requested' }),
+      OTRequest.countDocuments({ paymentStatus: 'Pending', status: { $ne: 'Completed' } }),
       OTRequest.countDocuments({
         scheduledDate: { $gte: today, $lt: tomorrow },
         status: { $in: ['Scheduled'] }
@@ -941,17 +1081,13 @@ exports.getDashboardStats = async (req, res) => {
     ]);
 
     const availableRooms = await Room.countDocuments({
-      $or: [
-        { type: 'Operation Theater' },
-        { type: { $regex: 'Operation', $options: 'i' } }
-      ],
+      type: 'Operation Theater',
       status: 'Available'
     });
 
-    // Revenue stats for current month
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59);
-    
+
     const monthlyRevenue = await OTRequest.aggregate([
       {
         $match: {
@@ -971,6 +1107,7 @@ exports.getDashboardStats = async (req, res) => {
       success: true,
       stats: {
         pending,
+        pendingPayment,
         todayScheduled,
         totalRequests,
         completedToday,
@@ -986,7 +1123,7 @@ exports.getDashboardStats = async (req, res) => {
   }
 };
 
-// Get Daily Schedule
+// Get Daily Schedule - UPDATED to show only payment-completed requests
 exports.getDailySchedule = async (req, res) => {
   try {
     const { date } = req.params;
@@ -997,7 +1134,8 @@ exports.getDailySchedule = async (req, res) => {
 
     const requests = await OTRequest.find({
       scheduledDate: { $gte: targetDate, $lt: nextDate },
-      status: { $in: ['Scheduled', 'In Progress', 'Completed'] }
+      status: { $in: ['Scheduled', 'In Progress', 'Completed'] },
+      paymentStatus: 'Completed'  // Only show paid requests
     })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName')
@@ -1183,6 +1321,81 @@ exports.exportOTReports = async (req, res) => {
     res.status(200).send(csv);
   } catch (error) {
     console.error('Error exporting reports:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get requests by admission
+exports.getRequestsByAdmission = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+    const requests = await OTRequest.find({ admissionId })
+      .populate('doctorId', 'firstName lastName')
+      .populate('primarySurgeonId', 'firstName lastName')
+      .populate('otRoomId', 'room_number')
+      .sort({ requestedDate: -1 });
+
+    res.json({ success: true, data: requests });
+  } catch (error) {
+    console.error('Error fetching requests by admission:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get requests by doctor
+exports.getRequestsByDoctor = async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const requests = await OTRequest.find({ doctorId })
+      .populate('patientId', 'first_name last_name patientId')
+      .populate('otRoomId', 'room_number')
+      .sort({ requestedDate: -1 });
+
+    res.json({ success: true, data: requests });
+  } catch (error) {
+    console.error('Error fetching requests by doctor:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get OT Rooms
+exports.getOTRooms = async (req, res) => {
+  try {
+    const rooms = await Room.find({
+      $or: [
+        { type: 'Operation Theater' },
+        { type: { $regex: 'Operation', $options: 'i' } }
+      ]
+    }).populate('wardId', 'name').populate('Department', 'name');
+
+    res.json({
+      success: true,
+      data: rooms,
+      count: rooms.length
+    });
+  } catch (error) {
+    console.error('Error fetching OT rooms:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get Available OT Rooms
+exports.getAvailableOTRooms = async (req, res) => {
+  try {
+    const rooms = await Room.find({
+      $or: [
+        { type: 'Operation Theater' },
+        { type: { $regex: 'Operation', $options: 'i' } }
+      ],
+      status: 'Available'
+    }).populate('wardId', 'name');
+
+    res.json({
+      success: true,
+      data: rooms
+    });
+  } catch (error) {
+    console.error('Error fetching available OT rooms:', error);
     res.status(500).json({ error: error.message });
   }
 };

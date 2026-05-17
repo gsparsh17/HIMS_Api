@@ -97,19 +97,53 @@ const otRequestSchema = new mongoose.Schema({
     ref: 'OTStaff'
   },
   
-  // Status Tracking
+  // Status Tracking - UPDATED with payment status
   status: {
     type: String,
     enum: [
-      'Requested',
-      'Approved',
-      'Scheduled',
-      'In Progress',
-      'Completed',
-      'Cancelled',
-      'Postponed'
+      'Requested',           // Initial request submitted
+      'Payment Pending',     // Awaiting payment before scheduling
+      'Payment Received',    // Payment completed, ready to schedule
+      'Approved',            // Approved by OT department
+      'Scheduled',           // OT room and time assigned
+      'In Progress',         // Surgery started
+      'Completed',           // Surgery completed
+      'Cancelled',           // Cancelled
+      'Postponed'            // Postponed
     ],
     default: 'Requested'
+  },
+  
+  // Payment Tracking - NEW FIELDS
+  paymentStatus: {
+    type: String,
+    enum: ['Pending', 'Partial', 'Completed', 'Refunded', 'Not Required'],
+    default: 'Pending'
+  },
+  paymentAmount: {
+    type: Number,
+    default: 0
+  },
+  paidAmount: {
+    type: Number,
+    default: 0
+  },
+  dueAmount: {
+    type: Number,
+    default: 0
+  },
+  billId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Bill'
+  },
+  invoiceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Invoice'
+  },
+  paymentReceivedAt: Date,
+  paymentReceivedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
   
   // Timeline
@@ -167,10 +201,25 @@ const otRequestSchema = new mongoose.Schema({
   estimated_cost: { type: Number, default: 0 },
   total_cost: { type: Number, default: 0 },
   is_billed: { type: Boolean, default: false },
-  invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
+
+// Calculate due amount before save
+otRequestSchema.pre('save', function(next) {
+  this.dueAmount = this.total_cost - this.paidAmount;
+  
+  // Update payment status based on paid amount
+  if (this.paidAmount >= this.total_cost && this.total_cost > 0) {
+    this.paymentStatus = 'Completed';
+  } else if (this.paidAmount > 0) {
+    this.paymentStatus = 'Partial';
+  } else {
+    this.paymentStatus = 'Pending';
+  }
+  
+  next();
+});
 
 // Generate request number
 otRequestSchema.pre('validate', async function(next) {
@@ -178,10 +227,20 @@ otRequestSchema.pre('validate', async function(next) {
     const date = new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
-    const count = await mongoose.model('OTRequest').countDocuments();
+    const OTRequest = mongoose.model('OTRequest');
+    const count = await OTRequest.countDocuments();
     this.requestNumber = `OT-${year}${month}-${String(count + 1).padStart(4, '0')}`;
   }
   next();
+});
+
+// Virtual for payment status
+otRequestSchema.virtual('isPaymentComplete').get(function() {
+  return this.paymentStatus === 'Completed' || this.paidAmount >= this.total_cost;
+});
+
+otRequestSchema.virtual('canSchedule').get(function() {
+  return this.status === 'Payment Received' || (this.status === 'Approved' && this.isPaymentComplete);
 });
 
 // Indexes
@@ -191,5 +250,7 @@ otRequestSchema.index({ doctorId: 1 });
 otRequestSchema.index({ requestedDate: -1 });
 otRequestSchema.index({ scheduledDate: 1 });
 otRequestSchema.index({ otRoomId: 1 });
+otRequestSchema.index({ paymentStatus: 1 });
+otRequestSchema.index({ status: 1, paymentStatus: 1 });
 
 module.exports = mongoose.model('OTRequest', otRequestSchema);

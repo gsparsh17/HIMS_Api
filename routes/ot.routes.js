@@ -36,6 +36,10 @@ router.post('/requests', otController.createOTRequest);
 router.get('/requests', otController.getOTRequests);
 router.get('/requests/:id', otController.getOTRequestById);
 router.patch('/requests/:id/status', otController.updateOTRequestStatus);
+
+// NEW: Payment route (must come before assign)
+router.post('/requests/:id/payment', otController.processOTPayment);
+
 router.put('/requests/:id/assign', otController.assignOTRoom);
 router.patch('/requests/:id/start', otController.startSurgery);
 router.post('/requests/:id/complete', otController.completeSurgery);
@@ -79,7 +83,7 @@ router.get('/reports/procedures', otController.getProcedureStats);
 router.get('/reports/surgeons', otController.getSurgeonStats);
 router.get('/reports/export/:type', otController.exportOTReports);
 
-// ============== OT ROOM UTILITIES (using existing Room model) ==============
+// ============== OT ROOM UTILITIES ==============
 router.get('/ot-rooms', otController.getOTRooms);
 router.get('/ot-rooms/available', otController.getAvailableOTRooms);
 

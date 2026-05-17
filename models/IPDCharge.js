@@ -66,7 +66,7 @@ const ipdChargeSchema = new mongoose.Schema({
   },
   sourceModule: {
     type: String,
-    enum: ['Admission', 'Lab', 'Pharmacy', 'Procedure', 'Manual', 'Bed', 'DoctorRound', 'OT'],
+    enum: ['Admission', 'Lab', 'Pharmacy', 'Procedure', 'Manual', 'Bed', 'DoctorRound', 'OT', 'Radiology'],
     required: true
   },
   sourceId: {
@@ -76,13 +76,35 @@ const ipdChargeSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // NEW: Track if this charge has been billed
   isBilled: {
     type: Boolean,
     default: false
   },
+  // NEW: Link to the invoice that billed this charge
   invoiceId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Invoice'
+  },
+  // NEW: When this charge was billed
+  billedAt: {
+    type: Date
+  },
+  // NEW: Source reference for cross-module billing tracking
+  sourceReference: {
+    module: {
+      type: String,
+      enum: ['Lab', 'Procedure', 'Radiology', 'Pharmacy', 'Bed', 'DoctorVisit', 'Manual', 'OT']
+    },
+    documentId: {
+      type: mongoose.Schema.Types.ObjectId
+    },
+    invoiceNumber: {
+      type: String
+    },
+    billNumber: {
+      type: String
+    }
   },
   chargeDate: {
     type: Date,
@@ -111,5 +133,7 @@ ipdChargeSchema.pre('save', function(next) {
 ipdChargeSchema.index({ admissionId: 1, chargeType: 1 });
 ipdChargeSchema.index({ patientId: 1, chargeDate: -1 });
 ipdChargeSchema.index({ sourceModule: 1, sourceId: 1 });
+ipdChargeSchema.index({ isBilled: 1 });
+ipdChargeSchema.index({ admissionId: 1, isBilled: 1 });
 
 module.exports = mongoose.model('IPDCharge', ipdChargeSchema);
