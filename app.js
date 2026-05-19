@@ -83,6 +83,8 @@ app.use('/api/labtests', require('./routes/labTest.routes.js'));
 app.use('/api/lab', require('./routes/lab.routes.js'));
 app.use('/api/radiology', require('./routes/radiology.routes.js'));
 const externalLabRoutes = require('./routes/externalLab.routes');
+const emailRoutes = require('./routes/emailRoutes.js');
+app.use('/api/email', emailRoutes);
 
 // Add this with other route registrations
 app.use('/api/external-lab', externalLabRoutes);
