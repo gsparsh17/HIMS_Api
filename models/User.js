@@ -7,7 +7,7 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { 
     type: String, 
-    enum: ['admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy', 'registrar', 'receptionist', 'pathology_staff', 'ot_staff', 'demo'], 
+    enum: ['mediqliq_super_admin', 'admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy', 'registrar', 'receptionist', 'pathology_staff', 'ot_staff', 'demo'], 
     required: true 
   },
   resetPasswordToken: String,

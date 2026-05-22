@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
+const auditLogger = require('./middlewares/auditLogger');
 const app = express();
 
 // --- IMPORTANT: Pre-load all Mongoose models here ---
@@ -10,11 +11,13 @@ require('./models/Doctor');
 require('./models/Patient');
 require('./models/Prescription');
 require('./models/pharmacyInvoiceModel.js');
-require('./models/Supplier.js'); // ADDED: Pre-load the Supplier model
+require('./models/Supplier.js');
+require('./models/AuditLog.js');
 // ... add a require for every model file you have
 
 // Middleware
 app.use(cors());
+app.use(auditLogger({ apiPrefix: '/api' }));
 app.use(express.json());
 app.use(morgan('dev'));
 
@@ -25,6 +28,8 @@ const paymentRoutes = require('./routes/paymentRoutes'); // Make sure path is co
 // This line combines the prefix with the specific route
 app.use('/api/payments', paymentRoutes); // <-- Check this line carefully!
 app.use('/api/auth', require('./routes/auth.routes'));
+app.use('/api/mediqliq', require('./routes/mediqliqSuperAdmin.routes'));
+app.use('/api/audit-logs', require('./routes/auditLog.routes'));
 app.use('/api/patients', require('./routes/patient.routes'));
 app.use('/api/doctors', require('./routes/doctor.routes'));
 app.use('/api/nurses', require('./routes/nurse.routes'));
@@ -97,6 +102,7 @@ app.use((req, res, next) => {
   res.status(404).json({ error: 'Route not found' });
 });
 app.use((err, req, res, next) => {
+  req.auditError = { message: err.message, stack: process.env.NODE_ENV === 'production' ? undefined : err.stack };
   console.error(err.stack);
   res.status(500).json({ error: 'Something went wrong!' });
 });

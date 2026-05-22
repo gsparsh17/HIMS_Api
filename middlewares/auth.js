@@ -86,7 +86,7 @@ exports.verifyToken1 = (req, res, next) => {
 // Protect routes (original function name)
 exports.protect = exports.verifyToken;
 
-// Check if user is admin
+// Check if user is hospital admin or MediQliq super admin
 exports.isAdmin = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({ 
@@ -96,10 +96,30 @@ exports.isAdmin = (req, res, next) => {
   }
 
   // Check if user has admin role
-  if (req.user.role !== 'admin') {
+  if (!['admin', 'mediqliq_super_admin'].includes(req.user.role)) {
     return res.status(403).json({ 
       success: false,
       error: 'Access denied. Admin privileges required.' 
+    });
+  }
+
+  next();
+};
+
+
+// Check if user is MediQliq product super admin
+exports.isMediQliqSuperAdmin = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      error: 'User not authenticated'
+    });
+  }
+
+  if (req.user.role !== 'mediqliq_super_admin') {
+    return res.status(403).json({
+      success: false,
+      error: 'Access denied. MediQliq super admin privileges required.'
     });
   }
 
@@ -114,6 +134,11 @@ exports.authorize = (...roles) => {
         success: false,
         error: 'User not authenticated' 
       });
+    }
+
+    // MediQliq super admin can access role-protected product APIs.
+    if (req.user.role === 'mediqliq_super_admin') {
+      return next();
     }
 
     if (!roles.includes(req.user.role)) {
@@ -136,8 +161,8 @@ exports.hasPermission = (permission) => {
       });
     }
 
-    // Admin has all permissions
-    if (req.user.role === 'admin') {
+    // Admin and MediQliq super admin have all permissions
+    if (req.user.role === 'admin' || req.user.role === 'mediqliq_super_admin') {
       return next();
     }
 
@@ -176,8 +201,8 @@ exports.isOwner = (paramIdField = 'id') => {
       });
     }
 
-    // Admin can access any resource
-    if (req.user.role === 'admin') {
+    // Admin and MediQliq super admin can access any resource
+    if (req.user.role === 'admin' || req.user.role === 'mediqliq_super_admin') {
       return next();
     }
 
@@ -206,7 +231,7 @@ exports.isStaff = (req, res, next) => {
 
   const staffRoles = ['nurse', 'staff', 'pharmacist', 'registrar', 'receptionist', 'pathology_staff'];
   
-  if (req.user.role === 'admin' || staffRoles.includes(req.user.role)) {
+  if (req.user.role === 'admin' || req.user.role === 'mediqliq_super_admin' || staffRoles.includes(req.user.role)) {
     return next();
   }
 
