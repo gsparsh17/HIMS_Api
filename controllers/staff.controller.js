@@ -1,7 +1,143 @@
 const Staff = require('../models/Staff');
 const User = require('../models/User');
 const Nurse = require('../models/Nurse');
-const OTStaff = require('../models/OTStaff'); // Add this line
+const OTStaff = require('../models/OTStaff');
+
+const VALID_USER_ROLES = new Set([
+  'mediqliq_super_admin',
+  'admin',
+  'doctor',
+  'nurse',
+  'staff',
+  'patient',
+  'pharmacy',
+  'registrar',
+  'receptionist',
+  'pathology_staff',
+  'radiology_staff',
+  'ot_staff',
+  'demo',
+  'hr',
+  'hr_manager',
+  'store',
+  'store_manager',
+  'inventory_manager',
+  'accountant'
+]);
+
+const normalizeRole = (value = '') =>
+  String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, ' ')
+    .replace(/-/g, ' ')
+    .replace(/\s+/g, ' ');
+
+const normalizeExplicitUserRole = (value = '') =>
+  String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_')
+    .replace(/\s+/g, '_');
+
+const mapStaffRoleToUserRole = (staffRole, explicitUserRole) => {
+  const explicit = normalizeExplicitUserRole(explicitUserRole);
+
+  if (explicit === 'hr' || explicit === 'hr_manager') {
+    return 'hr';
+  }
+
+  if (
+    explicit === 'store' ||
+    explicit === 'store_manager' ||
+    explicit === 'inventory_manager'
+  ) {
+    return 'store_manager';
+  }
+
+  if (explicit && VALID_USER_ROLES.has(explicit)) {
+    return explicit;
+  }
+
+  const role = normalizeRole(staffRole);
+
+  if (!role) return 'staff';
+
+  if (
+    role === 'hr' ||
+    role === 'hr manager' ||
+    role === 'human resource' ||
+    role === 'human resources' ||
+    role === 'human resource manager' ||
+    role === 'human resources manager'
+  ) {
+    return 'hr';
+  }
+
+  if (
+    role === 'store' ||
+    role === 'store staff' ||
+    role === 'store manager' ||
+    role === 'inventory manager'
+  ) {
+    return 'store_manager';
+  }
+
+  if (
+    role === 'ot staff' ||
+    role === 'ot technician' ||
+    role === 'ot manager' ||
+    role === 'ot nurse' ||
+    role === 'surgical assistant' ||
+    role.includes('ot')
+  ) {
+    return 'ot_staff';
+  }
+
+  if (
+    role === 'pathology staff' ||
+    role === 'lab technician' ||
+    role === 'pathologist' ||
+    role.includes('pathology')
+  ) {
+    return 'pathology_staff';
+  }
+
+  if (
+    role === 'radiology staff' ||
+    role === 'radiologist' ||
+    role === 'xray technician' ||
+    role === 'x ray technician' ||
+    role.includes('radiology')
+  ) {
+    return 'radiology_staff';
+  }
+
+  if (role.includes('nurse')) {
+    return 'nurse';
+  }
+
+  if (role === 'registrar') {
+    return 'registrar';
+  }
+
+  if (role === 'receptionist') {
+    return 'receptionist';
+  }
+
+  if (role === 'accountant') {
+    return 'accountant';
+  }
+
+  if (
+    role === 'pharmacy' ||
+    role === 'pharmacist'
+  ) {
+    return 'pharmacy';
+  }
+
+  return 'staff';
+};
 
 exports.createStaff = async (req, res) => {
   try {
@@ -23,14 +159,23 @@ exports.createStaff = async (req, res) => {
       otSpecializations,
       experienceYears,
       licenseNumber,
-      qualificationDetails
+      qualificationDetails,
+      userRole,
+      user_role
     } = req.body;
+
+    if (!fullName || !String(fullName).trim()) {
+      return res.status(400).json({ error: 'Full name is required' });
+    }
+
+    if (password && !email) {
+      return res.status(400).json({ error: 'Email is required to create login credentials' });
+    }
 
     const [firstName, ...lastNameArr] = fullName.trim().split(' ');
     const lastName = lastNameArr.join(' ');
     const normalizedGender = gender?.toLowerCase();
 
-    // Create staff record
     const staff = new Staff({
       first_name: firstName,
       last_name: lastName,
@@ -46,24 +191,52 @@ exports.createStaff = async (req, res) => {
       panNumber,
       joined_at: joiningDate || new Date()
     });
+
     await staff.save();
 
-    // Create user account if password provided
     if (password) {
-      const user = new User({
-        name: fullName,
-        email,
-        phone,
-        role: "staff",
-        password
-      });
-      await user.save();
+      const targetUserRole = mapStaffRoleToUserRole(role, userRole || user_role);
+
+      let user = await User.findOne({ email });
+
+      if (user) {
+        user.name = fullName;
+        user.phone = phone;
+        user.role = targetUserRole;
+        user.password = password;
+        user.is_active = status ? status === 'Active' : true;
+
+        if (req.user?.hospital_id && !user.hospital_id) {
+          user.hospital_id = req.user.hospital_id;
+        }
+
+        await user.save();
+      } else {
+        user = new User({
+          name: fullName,
+          email,
+          phone,
+          role: targetUserRole,
+          password,
+          hospital_id: req.user?.hospital_id || undefined,
+          is_active: status ? status === 'Active' : true
+        });
+
+        await user.save();
+      }
+
+      staff.user_id = user._id;
+      await staff.save();
     }
 
-    // Create OT Staff record if role is OT Staff
-    if (isOTStaff || role === 'OT Staff' || role === 'OT Technician' || role === 'OT Manager') {
+    if (
+      isOTStaff ||
+      role === 'OT Staff' ||
+      role === 'OT Technician' ||
+      role === 'OT Manager'
+    ) {
       const otStaff = new OTStaff({
-        userId: staff._id,
+        userId: staff.user_id || staff._id,
         employeeId: `OT${String(staff._id).slice(-6)}`,
         designation: role,
         specializations: otSpecializations || [],
@@ -73,10 +246,10 @@ exports.createStaff = async (req, res) => {
         is_active: status === 'Active',
         joined_date: joiningDate || new Date()
       });
+
       await otStaff.save();
     }
 
-    // Sync with Nurse collection if role includes nurse
     if (role && role.toLowerCase().includes('nurse')) {
       const nurse = new Nurse({
         first_name: firstName,
@@ -87,65 +260,70 @@ exports.createStaff = async (req, res) => {
         shift_id: shift || null,
         joined_at: joiningDate || new Date()
       });
+
       await nurse.save();
     }
 
-    res.status(201).json({ message: 'Staff and user created', staffId: staff._id });
+    res.status(201).json({
+      message: 'Staff and user created',
+      staffId: staff._id
+    });
   } catch (err) {
+    console.error('Create staff error:', err);
     res.status(400).json({ error: err.message });
   }
 };
 
-
-// Get all staff
 exports.getAllStaff = async (req, res) => {
   try {
-    const staffList = await Staff.find().populate('department').populate('shift');
+    const staffList = await Staff.find()
+      .populate('department')
+      .populate('shift');
+
     res.json(staffList);
   } catch (err) {
+    console.error('Get all staff error:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-// Get staff by ID
 exports.getStaffById = async (req, res) => {
   try {
-    const staff = await Staff.findById(req.params.id).populate('department').populate('shift');
-    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+    const staff = await Staff.findById(req.params.id)
+      .populate('department')
+      .populate('shift');
+
+    if (!staff) {
+      return res.status(404).json({ error: 'Staff not found' });
+    }
+
     res.json(staff);
   } catch (err) {
+    console.error('Get staff by ID error:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-// Update staff member
-// exports.updateStaff = async (req, res) => {
-//   try {
-//     const staff = await Staff.findByIdAndUpdate(req.params.id, req.body, { new: true });
-//     if (!staff) return res.status(404).json({ error: 'Staff not found' });
-//     res.json(staff);
-//   } catch (err) {
-//     res.status(400).json({ error: err.message });
-//   }
-// };
-
-// Update staff member
-// Update staff member
 exports.updateStaff = async (req, res) => {
   try {
-    const { fullName, email, phone, password, ...otherFields } = req.body;
+    const {
+      fullName,
+      email,
+      phone,
+      password,
+      userRole,
+      user_role,
+      ...otherFields
+    } = req.body;
 
-    // Prepare update data for Staff
     const updateData = { ...otherFields };
 
-    // Handle fullName split into first_name and last_name if provided
     if (fullName) {
       const [firstName, ...lastNameArr] = fullName.trim().split(' ');
       updateData.first_name = firstName;
       updateData.last_name = lastNameArr.join(' ');
     }
 
-    // Update email and phone if provided
     if (email) updateData.email = email;
     if (phone) updateData.phone = phone;
 
@@ -153,90 +331,70 @@ exports.updateStaff = async (req, res) => {
       req.params.id,
       updateData,
       { new: true, runValidators: true }
-    ).populate('department').populate('shift');
+    )
+      .populate('department')
+      .populate('shift');
 
-    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+    if (!staff) {
+      return res.status(404).json({ error: 'Staff not found' });
+    }
 
-    const validRoles = [
-      'nurse',
-      'wardboy',
-      'registrar',
-      'lab technician',
-      'radiologist',
-      'surgeon',
-      'anesthesiologist',
-      'accountant',
-      'cleaner',
-      'security',
-      'ambulance driver',
-      'hr',
-      'staff',
-      'receptionist',
-      'it support',
-      'others',
-      'ot technician',
-      'ot manager',
-      'ot staff',
-      'pathology staff',
-      'lab technician',
-      'pathologist'
-    ];
-
-    // If password is provided, attempt to create or update the User account
     if (password) {
       const staffEmail = email || staff.email;
       const staffPhone = phone || staff.phone;
-      const staffName = fullName || `${staff.first_name} ${staff.last_name}`.trim();
+      const staffName = fullName || `${staff.first_name || ''} ${staff.last_name || ''}`.trim();
 
-      const existingUser = await User.findOne({ email: staffEmail });
-      let targetRole = 'staff';
-
-      if (staff.role) {
-        const lowerRole = staff.role.toLowerCase();
-        // Check if it's an OT related role
-        if (lowerRole === 'ot technician' || lowerRole === 'ot manager' || lowerRole === 'ot staff') {
-          targetRole = 'ot_staff';
-        }
-        // Check if it's a Pathology related role
-        else if (lowerRole === 'pathology staff' || lowerRole === 'lab technician' || lowerRole === 'pathologist') {
-          targetRole = 'pathology_staff';
-        }
-        else {
-          targetRole = validRoles.includes(lowerRole) ? lowerRole : 'staff';
-        }
+      if (!staffEmail) {
+        return res.status(400).json({ error: 'Email is required to create login credentials' });
       }
 
+      let existingUser = null;
+
+      if (staff.user_id) {
+        existingUser = await User.findById(staff.user_id);
+      }
+
+      if (!existingUser) {
+        existingUser = await User.findOne({ email: staffEmail });
+      }
+
+      const targetRole = mapStaffRoleToUserRole(staff.role, userRole || user_role);
+
       if (existingUser) {
-        // Update existing user
         existingUser.password = password;
         existingUser.name = staffName;
+        existingUser.email = staffEmail;
         existingUser.phone = staffPhone;
         existingUser.role = targetRole;
+        existingUser.is_active = staff.status ? staff.status === 'Active' : true;
+
+        if (req.user?.hospital_id && !existingUser.hospital_id) {
+          existingUser.hospital_id = req.user.hospital_id;
+        }
+
         await existingUser.save();
 
-        // Link staff to user
         staff.user_id = existingUser._id;
       } else {
-        // Create new user
         const newUser = new User({
           name: staffName,
           email: staffEmail,
           phone: staffPhone,
           role: targetRole,
-          password
+          password,
+          hospital_id: req.user?.hospital_id || undefined,
+          is_active: staff.status ? staff.status === 'Active' : true
         });
+
         await newUser.save();
 
-        // Link staff to user
         staff.user_id = newUser._id;
       }
 
       await staff.save();
     }
 
-    // Sync with Nurse collection if role includes nurse
     if (staff.role && staff.role.toLowerCase().includes('nurse')) {
-      const Nurse = require('../models/Nurse');
       await Nurse.findOneAndUpdate(
         { email: staff.email },
         {
@@ -250,25 +408,24 @@ exports.updateStaff = async (req, res) => {
       );
     }
 
-    // Sync with OT Staff collection if role is OT related
-    if (staff.role && (
-      staff.role.toLowerCase().includes('ot') ||
-      staff.role.toLowerCase() === 'ot technician' ||
-      staff.role.toLowerCase() === 'ot manager' ||
-      staff.role.toLowerCase() === 'ot staff'
-    )) {
-      const OTStaff = require('../models/OTStaff');
-
-      // Check if OT Staff record exists
-      let otStaff = await OTStaff.findOne({ userId: staff.user_id || staff._id });
+    if (
+      staff.role &&
+      (
+        staff.role.toLowerCase().includes('ot') ||
+        staff.role.toLowerCase() === 'ot technician' ||
+        staff.role.toLowerCase() === 'ot manager' ||
+        staff.role.toLowerCase() === 'ot staff'
+      )
+    ) {
+      let otStaff = await OTStaff.findOne({
+        userId: staff.user_id || staff._id
+      });
 
       if (otStaff) {
-        // Update existing OT Staff record
         otStaff.designation = staff.role;
         otStaff.is_active = staff.status === 'Active';
         await otStaff.save();
       } else if (staff.user_id) {
-        // Create new OT Staff record
         const newOTStaff = new OTStaff({
           userId: staff.user_id,
           employeeId: `OT${String(staff._id).slice(-6)}`,
@@ -279,19 +436,21 @@ exports.updateStaff = async (req, res) => {
           is_active: staff.status === 'Active',
           joined_date: staff.joined_at || new Date()
         });
+
         await newOTStaff.save();
       }
     }
 
-    // Sync with Pathology Staff collection if role is Pathology related
-    if (staff.role && (
-      staff.role.toLowerCase().includes('pathology') ||
-      staff.role.toLowerCase() === 'lab technician' ||
-      staff.role.toLowerCase() === 'pathologist'
-    )) {
+    if (
+      staff.role &&
+      (
+        staff.role.toLowerCase().includes('pathology') ||
+        staff.role.toLowerCase() === 'lab technician' ||
+        staff.role.toLowerCase() === 'pathologist'
+      )
+    ) {
       const PathologyStaff = require('../models/PathologyStaff');
 
-      // Check if Pathology Staff record exists
       let pathologyStaff = await PathologyStaff.findOne({
         $or: [
           { userId: staff.user_id || staff._id },
@@ -300,14 +459,12 @@ exports.updateStaff = async (req, res) => {
       });
 
       if (pathologyStaff) {
-        // Update existing Pathology Staff record
         pathologyStaff.designation = staff.role;
         pathologyStaff.is_active = staff.status === 'Active';
         pathologyStaff.qualification = staff.qualificationDetails || pathologyStaff.qualification;
         pathologyStaff.experience_years = staff.experience_years || pathologyStaff.experience_years;
         await pathologyStaff.save();
       } else if (staff.user_id) {
-        // Create new Pathology Staff record
         const newPathologyStaff = new PathologyStaff({
           userId: staff.user_id,
           employeeId: `PL${String(staff._id).slice(-6)}`,
@@ -319,26 +476,32 @@ exports.updateStaff = async (req, res) => {
           is_active: staff.status === 'Active',
           joined_date: staff.joined_at || new Date()
         });
+
         await newPathologyStaff.save();
       }
     }
 
-    res.json({ message: 'Staff updated successfully', staff });
-
+    res.json({
+      message: 'Staff updated successfully',
+      staff
+    });
   } catch (err) {
     console.error('Update staff error:', err);
     res.status(400).json({ error: err.message });
   }
 };
 
-
-// Delete staff member
 exports.deleteStaff = async (req, res) => {
   try {
     const staff = await Staff.findByIdAndDelete(req.params.id);
-    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+
+    if (!staff) {
+      return res.status(404).json({ error: 'Staff not found' });
+    }
+
     res.json({ message: 'Staff member deleted successfully' });
   } catch (err) {
+    console.error('Delete staff error:', err);
     res.status(500).json({ error: err.message });
   }
 };
