@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Configuration
-const LOG_DIR = 'D:\\backups\\logs';
+const LOG_DIR = 'C:\\Pranshu\\hospital_backups\\logs';
 const LOG_FILE = path.join(LOG_DIR, 'backup_cron.log');
 
 // Ensure log directory exists

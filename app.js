@@ -13,6 +13,16 @@ require('./models/Prescription');
 require('./models/pharmacyInvoiceModel.js');
 require('./models/Supplier.js');
 require('./models/AuditLog.js');
+require('./models/StaffLeaveRequest');
+require('./models/StaffAvailability');
+require('./models/StaffAttendance');
+require('./models/HRStaffProfile');
+require('./models/StoreRequisition');
+require('./models/StoreIssue');
+require('./models/StorePurchaseOrder');
+require('./models/StoreInventoryTransaction');
+require('./models/StoreItem');
+require('./models/StoreCategory');
 // ... add a require for every model file you have
 
 // Middleware
@@ -35,6 +45,10 @@ app.use('/api/doctors', require('./routes/doctor.routes'));
 app.use('/api/nurses', require('./routes/nurse.routes'));
 app.use('/api/staff', require('./routes/staff.routes'));
 app.use('/api/appointments', require('./routes/appointment.routes'));
+// Store management and HR management routes
+app.use('/api/store', require('./routes/store.routes'));
+app.use('/api/hr', require('./routes/hr.routes'));
+
 // app.use('/api/pharmacy', require('./routes/pharmacy.routes'));
 app.use('/api/prescriptions', require('./routes/prescription.routes'));
 app.use('/api/procedurerequests', require('./routes/procedureRequest.routes'));

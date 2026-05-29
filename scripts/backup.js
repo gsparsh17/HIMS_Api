@@ -97,7 +97,7 @@ const MODELS = [
 ];
 
 // Configuration
-const BACKUP_DIR = 'D:\\backups\\hospital_backups';
+const BACKUP_DIR = 'C:\\Pranshu\\hospital_backups';
 const TEMP_DIR = path.join(BACKUP_DIR, 'temp');
 const HOSPITAL_NAME = process.env.HOSPITAL_NAME || 'City_Hospital';
 

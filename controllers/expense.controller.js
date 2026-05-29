@@ -1,5 +1,6 @@
 const Expense = require('../models/Expense');
 const mongoose = require('mongoose');
+const { resolveHospitalId } = require('../utils/hospitalScope');
 
 // -------------------- Helper Functions --------------------
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
@@ -25,13 +26,20 @@ exports.createExpense = async (req, res) => {
       tax_rate,
       receipt_number,
       is_recurring,
-      recurring_frequency
+      recurring_frequency,
+      source_module,
+      source_id,
+      store_purchase_id
     } = req.body;
 
     // Get hospital ID from authenticated user or request
-    const hospitalId = req.user?.hospital_id || req.body.hospital_id;
+    const hospitalId = await resolveHospitalId(req);
     if (!hospitalId) {
       return res.status(400).json({ error: 'Hospital ID is required' });
+    }
+    const createdBy = req.user?._id || req.body.created_by;
+    if (!createdBy) {
+      return res.status(400).json({ error: 'created_by is required when request is not authenticated' });
     }
 
     // Calculate totals
@@ -57,7 +65,10 @@ exports.createExpense = async (req, res) => {
       is_recurring: is_recurring === true || is_recurring === 'true',
       recurring_frequency: is_recurring ? recurring_frequency : undefined,
       hospital_id: hospitalId,
-      created_by: req.user._id
+      created_by: createdBy,
+      source_module: source_module || 'manual',
+      source_id,
+      store_purchase_id
     });
 
     await expense.save();
@@ -88,7 +99,9 @@ exports.getAllExpenses = async (req, res) => {
       endDate,
       search,
       sortBy = 'date',
-      sortOrder = 'desc'
+      sortOrder = 'desc',
+      source_module,
+      store_purchase_id
     } = req.query;
 
     const filter = {};
@@ -103,6 +116,8 @@ exports.getAllExpenses = async (req, res) => {
     if (category && category !== 'all') filter.category = category;
     if (status && status !== 'all') filter.approval_status = status;
     if (payment_status && payment_status !== 'all') filter.payment_status = payment_status;
+    if (source_module && source_module !== 'all') filter.source_module = source_module;
+    if (store_purchase_id) filter.store_purchase_id = store_purchase_id;
 
     // Date range filter
     if (startDate && endDate) {
@@ -140,6 +155,7 @@ exports.getAllExpenses = async (req, res) => {
       Expense.find(filter)
         .populate('created_by', 'name email')
         .populate('approved_by', 'name email')
+        .populate('store_purchase_id', 'po_number supplier_name total_amount status payment_status')
         .sort(sort)
         .limit(limitNum)
         .skip(skip),
@@ -188,7 +204,8 @@ exports.getExpenseById = async (req, res) => {
 
     const expense = await Expense.findById(id)
       .populate('created_by', 'name email')
-      .populate('approved_by', 'name email');
+      .populate('approved_by', 'name email')
+      .populate('store_purchase_id', 'po_number supplier_name total_amount status payment_status');
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
@@ -242,7 +259,8 @@ exports.updateExpense = async (req, res) => {
       { new: true, runValidators: true }
     )
       .populate('created_by', 'name email')
-      .populate('approved_by', 'name email');
+      .populate('approved_by', 'name email')
+      .populate('store_purchase_id', 'po_number supplier_name total_amount status payment_status');
 
     res.json({
       message: 'Expense updated successfully',
@@ -537,6 +555,11 @@ exports.getExpenseSummary = async (req, res) => {
       'Utilities': 0,
       'Staff Salaries': 0,
       'Pharmaceuticals': 0,
+      'Store Purchase': 0,
+      'Inventory': 0,
+      'HR': 0,
+      'Staff Welfare': 0,
+      'Training': 0,
       'Maintenance': 0,
       'Insurance': 0,
       'Rent': 0,
@@ -564,6 +587,9 @@ exports.getExpenseSummary = async (req, res) => {
       detailedByCategory: byCategory,
       salaryExpenses: categoryBreakdown['Staff Salaries'] || 0,
       medicalSupplies: categoryBreakdown['Medical Supplies'] || 0,
+      storePurchases: categoryBreakdown['Store Purchase'] || 0,
+      inventoryExpenses: categoryBreakdown['Inventory'] || 0,
+      hrExpenses: categoryBreakdown['HR'] || 0,
       utilities: categoryBreakdown['Utilities'] || 0,
       otherExpenses: categoryBreakdown['Other'] || 0
     });
@@ -598,7 +624,8 @@ exports.approveExpense = async (req, res) => {
       { new: true, runValidators: true }
     )
       .populate('created_by', 'name email')
-      .populate('approved_by', 'name email');
+      .populate('approved_by', 'name email')
+      .populate('store_purchase_id', 'po_number supplier_name total_amount status payment_status');
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
@@ -663,7 +690,8 @@ exports.updatePaymentStatus = async (req, res) => {
       { new: true, runValidators: true }
     )
       .populate('created_by', 'name email')
-      .populate('approved_by', 'name email');
+      .populate('approved_by', 'name email')
+      .populate('store_purchase_id', 'po_number supplier_name total_amount status payment_status');
 
     res.json({
       message: 'Payment status updated successfully',

@@ -11,6 +11,7 @@ const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const PathologyStaff = require('../models/PathologyStaff');
 const OTStaff = require('../models/OTStaff'); // Add OT Staff model
+const HRStaffProfile = require('../models/HRStaffProfile');
 const jwt = require('jsonwebtoken');
 
 cloudinary.config({
@@ -127,6 +128,12 @@ exports.demoLogin = async (req, res) => {
       else if (targetUser.role === "nurse") {
         const nurse = await Staff.findOne({ email: targetUser.email });
         response.staffId = nurse?._id;
+      }
+      else if (["hr", "hr_manager", "store", "store_manager", "inventory_manager", "accountant"].includes(targetUser.role)) {
+        const hrProfile = await HRStaffProfile.findOne({ email: targetUser.email });
+        response.employeeId = hrProfile?._id;
+        response.employeeCode = hrProfile?.employee_code;
+        response.dashboard = ["store", "store_manager", "inventory_manager"].includes(targetUser.role) ? "store" : "hr";
       }
       else if (targetUser.role === "pharmacy") {
         const pharmacy = await Pharmacy.findOne({ email: targetUser.email });
@@ -302,6 +309,22 @@ exports.loginUser = async (req, res) => {
           token: generateToken(user._id, user.role),
           hospitalID: hospital?._id,
           staffId: nurse?._id
+        });
+      }
+
+      // HR and Store dashboard roles
+      else if (["hr", "hr_manager", "store", "store_manager", "inventory_manager", "accountant"].includes(user.role)) {
+        const hrProfile = await HRStaffProfile.findOne({ email: user.email });
+        res.json({
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          token: generateToken(user._id, user.role),
+          hospitalID: hospital?._id,
+          employeeId: hrProfile?._id,
+          employeeCode: hrProfile?.employee_code,
+          dashboard: ["store", "store_manager", "inventory_manager"].includes(user.role) ? "store" : "hr"
         });
       }
 

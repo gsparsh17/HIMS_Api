@@ -5,7 +5,7 @@ const expenseSchema = new mongoose.Schema({
   expense_number: {
     type: String,
     unique: true,
-    required: true
+    required: false
   },
   date: {
     type: Date,
@@ -22,6 +22,11 @@ const expenseSchema = new mongoose.Schema({
       'Utilities',
       'Staff Salaries',
       'Pharmaceuticals',
+      'Store Purchase',
+      'Inventory',
+      'HR',
+      'Staff Welfare',
+      'Training',
       'Maintenance',
       'Insurance',
       'Rent',
@@ -165,6 +170,15 @@ const expenseSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+
+  // Source module integration. Store purchase receiving can automatically create an expense.
+  source_module: {
+    type: String,
+    enum: ['manual', 'store_purchase', 'salary', 'hr', 'pharmacy', 'maintenance', 'other'],
+    default: 'manual'
+  },
+  source_id: { type: mongoose.Schema.Types.ObjectId },
+  store_purchase_id: { type: mongoose.Schema.Types.ObjectId, ref: 'StorePurchaseOrder' },
   
   // Timestamps
   created_at: {
@@ -222,6 +236,8 @@ expenseSchema.index({ approval_status: 1 });
 expenseSchema.index({ hospital_id: 1, date: -1 });
 expenseSchema.index({ created_by: 1 });
 expenseSchema.index({ is_recurring: 1 });
+expenseSchema.index({ source_module: 1, source_id: 1 });
+expenseSchema.index({ store_purchase_id: 1 });
 
 // Virtual for balance due
 expenseSchema.virtual('balance_due').get(function() {

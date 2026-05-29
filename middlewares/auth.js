@@ -175,6 +175,13 @@ exports.hasPermission = (permission) => {
       registrar: ['register_patients', 'create_appointments'],
       receptionist: ['view_appointments', 'create_appointments'],
       pathology_staff: ['view_lab_tests', 'record_lab_results'],
+      radiology_staff: ['view_radiology_tests', 'record_radiology_results'],
+      ot_staff: ['view_ot_cases', 'record_ot_notes'],
+      store: ['view_store', 'manage_store_inventory'],
+      store_manager: ['view_store', 'manage_store_inventory', 'approve_store_requests'],
+      inventory_manager: ['view_store', 'manage_store_inventory'],
+      hr: ['view_hr', 'manage_attendance'],
+      hr_manager: ['view_hr', 'manage_staff', 'manage_attendance'],
       patient: ['view_own_records']
     };
 
@@ -229,7 +236,7 @@ exports.isStaff = (req, res, next) => {
     });
   }
 
-  const staffRoles = ['nurse', 'staff', 'pharmacist', 'registrar', 'receptionist', 'pathology_staff'];
+  const staffRoles = ['nurse', 'staff', 'pharmacist', 'registrar', 'receptionist', 'pathology_staff', 'radiology_staff', 'ot_staff', 'store', 'store_manager', 'inventory_manager', 'hr', 'hr_manager', 'accountant'];
   
   if (req.user.role === 'admin' || req.user.role === 'mediqliq_super_admin' || staffRoles.includes(req.user.role)) {
     return next();

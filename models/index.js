@@ -10,4 +10,13 @@ require('./Department');
 require('./Hospital');
 require('./AuditLog');
 require('./License');
-// Add a require for every other model you have here
+// Add a require for every other model you have hererequire('./StoreCategory');
+require('./StoreItem');
+require('./StoreInventoryTransaction');
+require('./StorePurchaseOrder');
+require('./StoreIssue');
+require('./StoreRequisition');
+require('./HRStaffProfile');
+require('./StaffAttendance');
+require('./StaffAvailability');
+require('./StaffLeaveRequest');

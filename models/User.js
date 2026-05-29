@@ -7,9 +7,13 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { 
     type: String, 
-    enum: ['mediqliq_super_admin', 'admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy', 'registrar', 'receptionist', 'pathology_staff', 'ot_staff', 'demo'], 
+    enum: ['mediqliq_super_admin', 'admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy', 'registrar', 'receptionist', 'pathology_staff', 'radiology_staff', 'ot_staff', 'demo', 'hr', 'hr_manager', 'store', 'store_manager', 'inventory_manager', 'accountant'], 
     required: true 
   },
+  phone: { type: String },
+  hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital' },
+  staff_profile_id: { type: mongoose.Schema.Types.ObjectId, ref: 'HRStaffProfile' },
+  dashboard_access: [{ type: String }],
   resetPasswordToken: String,
   resetPasswordExpire: Date,
   is_active: { type: Boolean, default: true }
