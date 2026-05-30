@@ -8,11 +8,13 @@ const StoreInventoryTransaction = require('../models/StoreInventoryTransaction')
 const StorePurchaseOrder = require('../models/StorePurchaseOrder');
 const StoreIssue = require('../models/StoreIssue');
 const StoreRequisition = require('../models/StoreRequisition');
+const HRStaffProfile = require('../models/HRStaffProfile');
 const { resolveHospitalId } = require('../utils/hospitalScope');
 
 const STORE_ROLES = ['store', 'store_manager', 'inventory_manager', 'admin', 'mediqliq_super_admin'];
 
 const toNumber = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+const isTruthy = (value) => value === true || value === 'true' || value === 1 || value === '1';
 
 function getUserId(req) {
   return req.user?._id || req.user?.id || req.body?.created_by || null;
@@ -222,11 +224,32 @@ exports.deleteCategory = async (req, res) => {
 
 exports.createItem = async (req, res) => {
   try {
-    const item = await StoreItem.create({
+    const payload = {
       ...req.body,
       hospital_id: await resolveHospitalId(req),
       created_by: getUserId(req)
-    });
+    };
+    if (payload.purchase_cost !== undefined) payload.purchase_cost = toNumber(payload.purchase_cost, 0);
+    
+    const item = await StoreItem.create(payload);
+
+    if (isTruthy(req.body.create_expense) && item.item_type === 'asset' && toNumber(item.purchase_cost, 0) > 0) {
+      const expense = await createLinkedExpense({
+        equipment: item,
+        req,
+        type: 'purchase',
+        amount: item.purchase_cost,
+        vendor: item.preferred_supplier || item.supplier_name,
+        paymentMethod: req.body.payment_method || 'Bank Transfer',
+        receiptNumber: item.invoice_number,
+        description: `Equipment purchase for ${item.name}`,
+        sourceId: item._id
+      });
+      if (expense) {
+        item.purchase_expense_id = expense._id;
+        await item.save();
+      }
+    }
 
     if (toNumber(item.opening_stock, 0) > 0) {
       await createTransaction({
@@ -268,7 +291,7 @@ exports.getItems = async (req, res) => {
     }
 
     const [items, total] = await Promise.all([
-      StoreItem.find(filter).populate('category', 'name code').sort({ name: 1 }).skip(skip).limit(limit),
+      StoreItem.find(filter).populate('category', 'name code').populate('supplier_id').sort({ name: 1 }).skip(skip).limit(limit),
       StoreItem.countDocuments(filter)
     ]);
 
@@ -280,7 +303,7 @@ exports.getItems = async (req, res) => {
 
 exports.getItemById = async (req, res) => {
   try {
-    const item = await StoreItem.findById(req.params.id).populate('category', 'name code');
+    const item = await StoreItem.findById(req.params.id).populate('category', 'name code').populate('supplier_id');
     if (!item) return res.status(404).json({ error: 'Store item not found' });
     res.json(item);
   } catch (error) {
@@ -294,7 +317,7 @@ exports.updateItem = async (req, res) => {
       req.params.id,
       { ...req.body, updated_by: getUserId(req) },
       { new: true, runValidators: true }
-    ).populate('category', 'name code');
+    ).populate('category', 'name code').populate('supplier_id');
     if (!item) return res.status(404).json({ error: 'Store item not found' });
     res.json({ message: 'Store item updated', item });
   } catch (error) {
@@ -667,5 +690,177 @@ exports.getLowStockItems = async (req, res) => {
     res.json(items);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+};
+
+async function createLinkedExpense({ equipment, req, type, amount, vendor, description, paymentMethod, receiptNumber, sourceId }) {
+  const totalAmount = toNumber(amount, 0);
+  if (totalAmount <= 0) return null;
+
+  const hospitalId = equipment.hospital_id || await resolveHospitalId(req);
+  const createdBy = getUserId(req) || equipment.created_by;
+  if (!hospitalId || !createdBy) return null;
+
+  return Expense.create({
+    date: type === 'maintenance' ? new Date() : (equipment.invoice_date || equipment.purchase_date || new Date()),
+    category: type === 'maintenance' ? 'Equipment Maintenance' : 'Equipment Purchase',
+    description: description || `${type === 'maintenance' ? 'Maintenance for' : 'Purchase of'} ${equipment.name} (${equipment.item_code || 'new asset'})`,
+    amount: totalAmount,
+    tax_rate: 0,
+    tax_amount: 0,
+    total_amount: totalAmount,
+    vendor: vendor || equipment.supplier_name || 'Equipment Vendor',
+    payment_method: paymentMethod || 'Bank Transfer',
+    payment_status: 'Pending',
+    department: equipment.department || 'Assets',
+    location: equipment.location,
+    receipt_number: receiptNumber || equipment.invoice_number,
+    receipt_date: equipment.invoice_date,
+    hospital_id: hospitalId,
+    created_by: createdBy,
+    source_module: type === 'maintenance' ? 'equipment_maintenance' : 'equipment_purchase',
+    source_id: sourceId || equipment._id,
+    equipment_id: equipment._id
+  });
+}
+
+exports.updateCondition = async (req, res) => {
+  try {
+    const { condition_status, operational_status, remarks, next_maintenance_due } = req.body;
+    const item = await StoreItem.findById(req.params.id);
+    if (!item || !item.is_active) return res.status(404).json({ error: 'Store item not found' });
+
+    item.condition_status = condition_status || item.condition_status;
+    item.operational_status = operational_status || item.operational_status;
+    item.condition_notes = remarks || item.condition_notes;
+    if (next_maintenance_due !== undefined) item.next_maintenance_due = next_maintenance_due || undefined;
+    item.updated_by = getUserId(req);
+    item.condition_history.push({
+      condition_status: item.condition_status,
+      operational_status: item.operational_status,
+      remarks,
+      checked_by: getUserId(req)
+    });
+    await item.save();
+
+    res.json({ message: 'Equipment condition updated', item });
+  } catch (error) {
+    console.error('Update condition error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.assignItem = async (req, res) => {
+  try {
+    const { assigned_to_employee, department, location, room_no, operational_status = 'In Use' } = req.body;
+    const item = await StoreItem.findById(req.params.id);
+    if (!item || !item.is_active) return res.status(404).json({ error: 'Store item not found' });
+
+    let employeeName = '';
+    if (assigned_to_employee && require('mongoose').Types.ObjectId.isValid(assigned_to_employee)) {
+      const employee = await HRStaffProfile.findById(assigned_to_employee).select('full_name employee_code');
+      employeeName = employee ? `${employee.full_name} (${employee.employee_code})` : '';
+    }
+
+    item.assigned_to_employee = assigned_to_employee || undefined;
+    item.assigned_to_name = employeeName || req.body.assigned_to_name || '';
+    item.department = department || item.department;
+    item.location = location || item.location;
+    item.room_no = room_no || item.room_no;
+    item.operational_status = operational_status;
+    item.assigned_at = assigned_to_employee || req.body.assigned_to_name ? new Date() : undefined;
+    item.updated_by = getUserId(req);
+    await item.save();
+
+    await item.populate('assigned_to_employee', 'full_name employee_code staff_type designation department_name');
+    res.json({ message: 'Equipment assignment updated', item });
+  } catch (error) {
+    console.error('Assign equipment error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.addMaintenanceRecord = async (req, res) => {
+  try {
+    const item = await StoreItem.findById(req.params.id);
+    if (!item || !item.is_active) return res.status(404).json({ error: 'Store item not found' });
+
+    const cost = toNumber(req.body.cost, 0);
+    let expense = null;
+
+    const record = {
+      maintenance_date: req.body.maintenance_date || new Date(),
+      maintenance_type: req.body.maintenance_type || 'Preventive',
+      vendor: req.body.vendor,
+      vendor_phone: req.body.vendor_phone,
+      cost,
+      payment_method: req.body.payment_method || 'Bank Transfer',
+      description: req.body.description,
+      before_condition: item.condition_status,
+      after_condition: req.body.after_condition || item.condition_status,
+      next_due_date: req.body.next_due_date,
+      document_url: req.body.document_url,
+      recorded_by: getUserId(req)
+    };
+
+    if (isTruthy(req.body.create_expense) && cost > 0) {
+      expense = await createLinkedExpense({
+        equipment: item,
+        req,
+        type: 'maintenance',
+        amount: cost,
+        vendor: req.body.vendor,
+        paymentMethod: req.body.payment_method,
+        receiptNumber: req.body.receipt_number,
+        description: req.body.description || `Equipment maintenance for ${item.name}`,
+        sourceId: item._id
+      });
+      if (expense) record.expense_id = expense._id;
+    }
+
+    item.maintenance_records.push(record);
+    if (req.body.after_condition) item.condition_status = req.body.after_condition;
+    if (req.body.operational_status) item.operational_status = req.body.operational_status;
+    if (req.body.next_due_date) item.next_maintenance_due = req.body.next_due_date;
+    item.updated_by = getUserId(req);
+    await item.save();
+
+    res.status(201).json({ message: 'Maintenance record added', item, expense });
+  } catch (error) {
+    console.error('Maintenance record error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.getMaintenanceRecords = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const filter = hospitalId ? { hospital_id: hospitalId, is_active: true } : { is_active: true };
+    if (req.query.item_id && require('mongoose').Types.ObjectId.isValid(req.query.item_id)) {
+      filter._id = new require('mongoose').Types.ObjectId(req.query.item_id);
+    }
+
+    const rows = await StoreItem.aggregate([
+      { $match: filter },
+      { $unwind: '$maintenance_records' },
+      { $sort: { 'maintenance_records.maintenance_date': -1 } },
+      { $limit: Math.min(500, parseInt(req.query.limit || '100', 10)) },
+      {
+        $project: {
+          item_id: '$_id',
+          item_code: '$item_code',
+          name: '$name',
+          category: '$category',
+          department: '$department',
+          location: '$location',
+          record: '$maintenance_records'
+        }
+      }
+    ]);
+
+    res.json({ maintenance: rows });
+  } catch (error) {
+    console.error('Get maintenance records error:', error);
+    res.status(500).json({ error: 'Failed to fetch maintenance records', details: error.message });
   }
 };

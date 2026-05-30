@@ -37,4 +37,10 @@ router.get('/purchase-orders/:id', storeAccess, storeController.getPurchaseOrder
 router.put('/purchase-orders/:id/status', storeAccess, storeController.updatePurchaseOrderStatus);
 router.post('/purchase-orders/:id/receive', storeAccess, storeController.receivePurchaseOrder);
 
+// Equipment & Maintenance extensions
+router.put('/items/:id/condition', storeAccess, storeController.updateCondition);
+router.put('/items/:id/assign', storeAccess, storeController.assignItem);
+router.post('/items/:id/maintenance', storeAccess, storeController.addMaintenanceRecord);
+router.get('/maintenance/records', storeAccess, storeController.getMaintenanceRecords);
+
 module.exports = router;
