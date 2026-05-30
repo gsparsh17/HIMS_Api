@@ -23,6 +23,7 @@ require('./models/StorePurchaseOrder');
 require('./models/StoreInventoryTransaction');
 require('./models/StoreItem');
 require('./models/StoreCategory');
+require('./models/HospitalEquipment');
 // ... add a require for every model file you have
 
 // Middleware
@@ -48,6 +49,7 @@ app.use('/api/appointments', require('./routes/appointment.routes'));
 // Store management and HR management routes
 app.use('/api/store', require('./routes/store.routes'));
 app.use('/api/hr', require('./routes/hr.routes'));
+app.use('/api/equipment', require('./routes/equipment.routes'));
 
 // app.use('/api/pharmacy', require('./routes/pharmacy.routes'));
 app.use('/api/prescriptions', require('./routes/prescription.routes'));

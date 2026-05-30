@@ -22,7 +22,8 @@ const VALID_USER_ROLES = new Set([
   'store',
   'store_manager',
   'inventory_manager',
-  'accountant'
+  'accountant',
+  'equipment_manager'
 ]);
 
 const normalizeRole = (value = '') =>
@@ -55,6 +56,10 @@ const mapStaffRoleToUserRole = (staffRole, explicitUserRole) => {
     return 'store_manager';
   }
 
+  if (explicit === 'equipment_manager') {
+    return 'equipment_manager';
+  }
+
   if (explicit && VALID_USER_ROLES.has(explicit)) {
     return explicit;
   }
@@ -72,6 +77,14 @@ const mapStaffRoleToUserRole = (staffRole, explicitUserRole) => {
     role === 'human resources manager'
   ) {
     return 'hr';
+  }
+
+  if (
+    role === 'equipment' ||
+    role === 'equipment manager' ||
+    role === 'asset manager'
+  ) {
+    return 'equipment_manager';
   }
 
   if (

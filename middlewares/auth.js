@@ -182,7 +182,8 @@ exports.hasPermission = (permission) => {
       inventory_manager: ['view_store', 'manage_store_inventory'],
       hr: ['view_hr', 'manage_attendance'],
       hr_manager: ['view_hr', 'manage_staff', 'manage_attendance'],
-      patient: ['view_own_records']
+      patient: ['view_own_records'],
+      equipment_manager: ['view_equipment', 'manage_equipment']
     };
 
     const userPermissions = rolePermissions[req.user.role] || [];
@@ -236,7 +237,7 @@ exports.isStaff = (req, res, next) => {
     });
   }
 
-  const staffRoles = ['nurse', 'staff', 'pharmacist', 'registrar', 'receptionist', 'pathology_staff', 'radiology_staff', 'ot_staff', 'store', 'store_manager', 'inventory_manager', 'hr', 'hr_manager', 'accountant'];
+  const staffRoles = ['nurse', 'staff', 'pharmacist', 'registrar', 'receptionist', 'pathology_staff', 'radiology_staff', 'ot_staff', 'store', 'store_manager', 'inventory_manager', 'hr', 'hr_manager', 'accountant', 'equipment_manager'];
   
   if (req.user.role === 'admin' || req.user.role === 'mediqliq_super_admin' || staffRoles.includes(req.user.role)) {
     return next();

@@ -129,11 +129,11 @@ exports.demoLogin = async (req, res) => {
         const nurse = await Staff.findOne({ email: targetUser.email });
         response.staffId = nurse?._id;
       }
-      else if (["hr", "hr_manager", "store", "store_manager", "inventory_manager", "accountant"].includes(targetUser.role)) {
+      else if (["hr", "hr_manager", "store", "store_manager", "inventory_manager", "accountant", "equipment_manager"].includes(targetUser.role)) {
         const hrProfile = await HRStaffProfile.findOne({ email: targetUser.email });
         response.employeeId = hrProfile?._id;
         response.employeeCode = hrProfile?.employee_code;
-        response.dashboard = ["store", "store_manager", "inventory_manager"].includes(targetUser.role) ? "store" : "hr";
+        response.dashboard = ["store", "store_manager", "inventory_manager"].includes(targetUser.role) ? "store" : ["hr", "hr_manager"].includes(targetUser.role) ? "hr" : "equipment";
       }
       else if (targetUser.role === "pharmacy") {
         const pharmacy = await Pharmacy.findOne({ email: targetUser.email });
@@ -312,8 +312,7 @@ exports.loginUser = async (req, res) => {
         });
       }
 
-      // HR and Store dashboard roles
-      else if (["hr", "hr_manager", "store", "store_manager", "inventory_manager", "accountant"].includes(user.role)) {
+      else if (["hr", "hr_manager", "store", "store_manager", "inventory_manager", "accountant", "equipment_manager"].includes(user.role)) {
         const hrProfile = await HRStaffProfile.findOne({ email: user.email });
         res.json({
           _id: user._id,
@@ -324,7 +323,7 @@ exports.loginUser = async (req, res) => {
           hospitalID: hospital?._id,
           employeeId: hrProfile?._id,
           employeeCode: hrProfile?.employee_code,
-          dashboard: ["store", "store_manager", "inventory_manager"].includes(user.role) ? "store" : "hr"
+          dashboard: ["store", "store_manager", "inventory_manager"].includes(user.role) ? "store" : ["hr", "hr_manager"].includes(user.role) ? "hr" : "equipment"
         });
       }
 
