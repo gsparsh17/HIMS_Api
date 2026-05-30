@@ -4,6 +4,9 @@ const Sale = require('../models/Sale');
 const MedicineBatch = require('../models/MedicineBatch');
 const Medicine = require('../models/Medicine');
 const Prescription = require('../models/Prescription');
+const IPDMedicationChart = require('../models/IPDMedicationChart');
+const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
+const NursingNote = require('../models/NursingNote');
 const { createUnifiedSale } = require('../services/pharmacyTransaction.service');
 
 // ========== HELPER FUNCTIONS ==========
@@ -15,6 +18,92 @@ const toNumber = (value, fallback = 0) => {
 const roundMoney = (value) => {
   return Number(toNumber(value).toFixed(4));
 };
+
+// Helper function to generate timing slots for IPD medications
+function generateTimingSlots(frequency, durationDays) {
+  const timingSlots = [];
+  const freqTimingMap = {
+    'OD': ['08:00'],
+    'BD': ['08:00', '20:00'],
+    'TDS': ['08:00', '14:00', '20:00'],
+    'QDS': ['06:00', '12:00', '18:00', '22:00'],
+    'q4h': ['06:00', '10:00', '14:00', '18:00', '22:00', '02:00'],
+    'q6h': ['06:00', '12:00', '18:00', '00:00'],
+    'q8h': ['06:00', '14:00', '22:00'],
+    'q12h': ['08:00', '20:00'],
+    'Stat': ['now'],
+    'SOS': []
+  };
+  
+  const times = freqTimingMap[frequency] || ['08:00'];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  for (let d = 0; d < durationDays; d++) {
+    const slotDate = new Date(today);
+    slotDate.setDate(today.getDate() + d);
+    
+    for (const t of times) {
+      timingSlots.push({ 
+        date: slotDate,
+        time: t, 
+        status: 'Pending' 
+      });
+    }
+  }
+  
+  return timingSlots;
+}
+
+// Helper function to add to patient medicine stock
+async function addToPatientMedicineStock(admissionId, patientId, medicineId, batchId, quantity, medicineName, baseUnit, packUnit, unitsPerPack, sellingPricePerBaseUnit, saleId, medicationChartId) {
+  try {
+    let stock = await IPDPatientMedicineStock.findOne({
+      admissionId,
+      patientId,
+      medicineId,
+      batchId
+    });
+
+    if (!stock) {
+      stock = new IPDPatientMedicineStock({
+        admissionId,
+        patientId,
+        medicineId,
+        batchId,
+        medicineName,
+        baseUnit: baseUnit || 'unit',
+        packUnit: packUnit || 'pack',
+        unitsPerPack: unitsPerPack || 1,
+        issuedQtyBaseUnits: 0,
+        administeredQtyBaseUnits: 0,
+        returnedQtyBaseUnits: 0,
+        currentBalanceBaseUnits: 0,
+        sourceSaleIds: [],
+        medicationChartIds: []
+      });
+    }
+
+    stock.issuedQtyBaseUnits += quantity;
+    stock.currentBalanceBaseUnits += quantity;
+    
+    if (saleId && !stock.sourceSaleIds.includes(saleId)) {
+      stock.sourceSaleIds.push(saleId);
+    }
+    
+    if (medicationChartId && !stock.medicationChartIds.includes(medicationChartId)) {
+      stock.medicationChartIds.push(medicationChartId);
+    }
+    
+    stock.lastIssuedAt = new Date();
+    await stock.save();
+    
+    return stock;
+  } catch (error) {
+    console.error('Error adding to patient medicine stock:', error);
+    throw error;
+  }
+}
 
 const getPurchaseOrderDateFilter = (dateFilter) => {
   if (!dateFilter) return null;
@@ -59,6 +148,26 @@ const getMedicineUnitInfo = async (medicineId) => {
     unitsPerPack: Math.max(1, toNumber(medicine?.units_per_pack, 1)),
   };
 };
+
+// Helper function to generate invoice number
+async function generateInvoiceNumber() {
+  const year = new Date().getFullYear();
+  const month = String(new Date().getMonth() + 1).padStart(2, '0');
+  
+  const lastInvoice = await Invoice.findOne({
+    invoice_number: new RegExp(`^INV-${year}${month}`)
+  }).sort({ createdAt: -1 });
+  
+  let sequence = 1;
+  if (lastInvoice && lastInvoice.invoice_number) {
+    const lastSeq = parseInt(lastInvoice.invoice_number.split('-').pop());
+    if (!isNaN(lastSeq)) {
+      sequence = lastSeq + 1;
+    }
+  }
+  
+  return `INV-${year}${month}-${String(sequence).padStart(4, '0')}`;
+}
 
 // ========== PURCHASE ORDER FUNCTIONS ==========
 
@@ -431,37 +540,23 @@ exports.receivePurchaseOrder = async (req, res) => {
 
 // ========== SALES FUNCTIONS ==========
 
-// Helper function to generate invoice number
-async function generateInvoiceNumber() {
-  const year = new Date().getFullYear();
-  const month = String(new Date().getMonth() + 1).padStart(2, '0');
-  
-  const lastInvoice = await Invoice.findOne({
-    invoice_number: new RegExp(`^INV-${year}${month}`)
-  }).sort({ createdAt: -1 });
-  
-  let sequence = 1;
-  if (lastInvoice && lastInvoice.invoice_number) {
-    const lastSeq = parseInt(lastInvoice.invoice_number.split('-').pop());
-    if (!isNaN(lastSeq)) {
-      sequence = lastSeq + 1;
-    }
-  }
-  
-  return `INV-${year}${month}-${String(sequence).padStart(4, '0')}`;
-}
-
 exports.createSale = async (req, res) => {
   try {
+    // Check if we should use unified sale service
     if (process.env.USE_LEGACY_SALE !== 'true') {
-      const result = await createUnifiedSale(req.body, req);
-      return res.status(201).json({
-        success: true,
-        message: 'Sale created successfully',
-        ...result,
-        sale: result.sale,
-        invoice: result.invoice
-      });
+      try {
+        const result = await createUnifiedSale(req.body, req);
+        return res.status(201).json({
+          success: true,
+          message: 'Sale created successfully',
+          ...result,
+          sale: result.sale,
+          invoice: result.invoice
+        });
+      } catch (unifiedError) {
+        console.error('Unified sale creation failed, falling back to legacy:', unifiedError.message);
+        // Fall through to legacy method
+      }
     }
     
     const { 
@@ -471,19 +566,26 @@ exports.createSale = async (req, res) => {
       customer_phone, 
       payment_method, 
       prescription_id,
+      admission_id,
       discount = 0,
       discount_type = 'percentage',
       tax_rate = 0,
       notes = '',
-      subtotal,
-      discount_amount,
-      tax_amount,
-      total_amount
     } = req.body;
     
-    console.log('Sale request body:', req.body);
+    console.log('Sale request body:', JSON.stringify(req.body, null, 2));
     
+    // Validate items
+    if (!items || items.length === 0) {
+      return res.status(400).json({ error: 'No items in sale' });
+    }
+    
+    // Track which medication charts are being dispensed
+    const dispensedMedicationChartIds = [];
+    
+    // Process each item and deduct stock
     for (const item of items) {
+      // Find batch
       const batch = await MedicineBatch.findById(item.batch_id);
       if (!batch) {
         return res.status(400).json({ 
@@ -491,104 +593,227 @@ exports.createSale = async (req, res) => {
         });
       }
       
-      if (batch.quantity < item.quantity) {
+      // Check stock availability
+      const quantityToDeduct = item.quantity_base_units || item.quantity;
+      if (batch.quantity_base_units < quantityToDeduct) {
         return res.status(400).json({ 
-          error: `Insufficient stock for ${item.medicine_name}. Available: ${batch.quantity}, Requested: ${item.quantity}` 
+          error: `Insufficient stock for ${item.medicine_name}. Available: ${batch.quantity_base_units}, Requested: ${quantityToDeduct}` 
         });
       }
       
-      batch.quantity -= item.quantity;
+      // Deduct stock
+      batch.quantity_base_units -= quantityToDeduct;
+      batch.quantity = batch.quantity_base_units;
       await batch.save();
       
+      // Update medicine stock
       await Medicine.findByIdAndUpdate(
         item.medicine_id,
-        { $inc: { stock_quantity: -item.quantity } }
+        { $inc: { stock_quantity: -quantityToDeduct } }
       );
+      
+      // If this is an IPD medication (has ipd_medication_chart_id), track it
+      if (item.ipd_medication_chart_id || item.ipd_medication_id) {
+        const chartId = item.ipd_medication_chart_id || item.ipd_medication_id;
+        dispensedMedicationChartIds.push({
+          chartId,
+          quantity: quantityToDeduct,
+          batchId: item.batch_id,
+          batchNumber: item.batch_number,
+          unitPrice: item.unit_price || item.price_per_base_unit
+        });
+      }
     }
-
-    const calculatedSubtotal = items.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
     
-    let calculatedDiscount = 0;
+    // Update IPD Medication Charts if this is an IPD dispense
+    if (admission_id && dispensedMedicationChartIds.length > 0) {
+      for (const dispensed of dispensedMedicationChartIds) {
+        const medicationChart = await IPDMedicationChart.findById(dispensed.chartId).populate('medicineId');
+        
+        if (medicationChart) {
+          // Update pharmacy request status
+          medicationChart.pharmacyRequest = {
+            ...medicationChart.pharmacyRequest,
+            pharmacyStatus: 'Approved',
+            dispensedFromPharmacy: true,
+            dispensedQuantity: dispensed.quantity,
+            dispensedBatchId: dispensed.batchId,
+            dispensedAt: new Date()
+          };
+          
+          // Update status
+          medicationChart.status = 'Active';
+          
+          // Generate timing slots for nurse administration if not already generated
+          if (!medicationChart.timing || medicationChart.timing.length === 0) {
+            const timingSlots = generateTimingSlots(medicationChart.frequency, medicationChart.duration || 1);
+            medicationChart.timing = timingSlots;
+          }
+          
+          await medicationChart.save();
+          
+          // Add to patient medicine stock
+          await addToPatientMedicineStock(
+            medicationChart.admissionId,
+            medicationChart.patientId,
+            medicationChart.medicineId?._id || medicationChart.medicineId,
+            dispensed.batchId,
+            dispensed.quantity,
+            medicationChart.medicineName,
+            medicationChart.medicineId?.base_unit || 'unit',
+            medicationChart.medicineId?.pack_unit || 'pack',
+            medicationChart.medicineId?.units_per_pack || 1,
+            dispensed.unitPrice || 0,
+            saleId, // Will be set after sale creation
+            medicationChart._id
+          );
+          
+          // Create nursing note for pharmacy dispense
+          const nursingNote = new NursingNote({
+            admissionId: medicationChart.admissionId,
+            patientId: medicationChart.patientId,
+            nurseId: req.user?._id || null,
+            noteType: 'Medication',
+            note: `Pharmacy dispensed ${medicationChart.medicineName} ${medicationChart.dosage} - ${dispensed.quantity} ${medicationChart.medicineId?.base_unit || 'units'} added to patient stock`,
+            priority: 'Normal',
+            createdBy: req.user?._id
+          });
+          await nursingNote.save();
+        }
+      }
+    }
+    
+    // Calculate totals from items (backend calculation)
+    const calculatedSubtotal = items.reduce((sum, item) => {
+      const quantity = item.quantity_base_units || item.quantity;
+      const unitPrice = item.unit_price || item.price_per_base_unit || 0;
+      return sum + (unitPrice * quantity);
+    }, 0);
+    
+    // Calculate discount
+    let calculatedDiscountAmount = 0;
     if (discount_type === 'percentage') {
-      calculatedDiscount = calculatedSubtotal * (discount / 100);
+      calculatedDiscountAmount = calculatedSubtotal * (parseFloat(discount) / 100);
     } else {
-      calculatedDiscount = Math.min(discount, calculatedSubtotal);
+      calculatedDiscountAmount = Math.min(parseFloat(discount), calculatedSubtotal);
     }
     
-    const afterDiscount = calculatedSubtotal - calculatedDiscount;
-    const calculatedTax = afterDiscount * (tax_rate / 100);
-    const calculatedTotal = afterDiscount + calculatedTax;
+    const afterDiscount = calculatedSubtotal - calculatedDiscountAmount;
+    const calculatedTaxAmount = afterDiscount * (parseFloat(tax_rate) / 100);
+    const calculatedTotal = afterDiscount + calculatedTaxAmount;
     
-    const tolerance = 0.01;
-    if (Math.abs(calculatedSubtotal - parseFloat(subtotal)) > tolerance ||
-        Math.abs(calculatedDiscount - parseFloat(discount_amount)) > tolerance ||
-        Math.abs(calculatedTax - parseFloat(tax_amount)) > tolerance ||
-        Math.abs(calculatedTotal - parseFloat(total_amount)) > tolerance) {
-      console.warn('Frontend and backend calculations differ:', {
-        frontend: { subtotal, discount_amount, tax_amount, total_amount },
-        backend: { calculatedSubtotal, calculatedDiscount, calculatedTax, calculatedTotal }
-      });
-    }
-
+    // Round to 2 decimal places
+    const finalSubtotal = Math.round(calculatedSubtotal * 100) / 100;
+    const finalDiscountAmount = Math.round(calculatedDiscountAmount * 100) / 100;
+    const finalTaxAmount = Math.round(calculatedTaxAmount * 100) / 100;
+    const finalTotal = Math.round(calculatedTotal * 100) / 100;
+    
+    console.log('Calculated totals:', {
+      subtotal: finalSubtotal,
+      discountAmount: finalDiscountAmount,
+      taxAmount: finalTaxAmount,
+      total: finalTotal
+    });
+    
+    // Generate invoice number
     const invoiceNumber = await generateInvoiceNumber();
     
+    // Create sale record
     const sale = new Sale({
-      items,
+      items: items.map(item => ({
+        medicine_id: item.medicine_id,
+        batch_id: item.batch_id,
+        medicine_name: item.medicine_name,
+        batch_number: item.batch_number,
+        quantity: item.quantity_base_units || item.quantity,
+        quantity_base_units: item.quantity_base_units || item.quantity,
+        unit_price: item.unit_price || item.price_per_base_unit,
+        base_unit: item.base_unit,
+        pack_unit: item.pack_unit,
+        units_per_pack: item.units_per_pack,
+        total_price: (item.unit_price || item.price_per_base_unit) * (item.quantity_base_units || item.quantity),
+        prescription_item_id: item.prescription_item_id,
+        ipd_medication_id: item.ipd_medication_chart_id || item.ipd_medication_id
+      })),
       patient_id: patient_id || null,
-      customer_name,
-      customer_phone,
-      subtotal: calculatedSubtotal,
-      discount,
-      discount_type,
-      discount_amount: calculatedDiscount,
-      tax_rate,
-      tax: calculatedTax,
-      total_amount: calculatedTotal,
-      payment_method,
+      admission_id: admission_id || null,
+      customer_name: customer_name || 'Walk-in Customer',
+      customer_phone: customer_phone || '',
+      subtotal: finalSubtotal,
+      discount: parseFloat(discount),
+      discount_type: discount_type,
+      discount_amount: finalDiscountAmount,
+      tax_rate: parseFloat(tax_rate),
+      tax: finalTaxAmount,
+      total_amount: finalTotal,
+      payment_method: payment_method || 'Cash',
+      amount_paid: payment_method === 'Pending' ? 0 : finalTotal,
+      balance_due: payment_method === 'Pending' ? finalTotal : 0,
       prescription_id: prescription_id || null,
-      notes,
+      notes: notes || '',
       invoice_number: invoiceNumber,
+      status: payment_method === 'Pending' ? 'Pending' : 'Completed',
     });
     
     await sale.save();
-
+    
+    // Update patient medicine stock with sale ID
+    if (admission_id && dispensedMedicationChartIds.length > 0) {
+      for (const dispensed of dispensedMedicationChartIds) {
+        await IPDPatientMedicineStock.findOneAndUpdate(
+          {
+            admissionId: admission_id,
+            patientId: patient_id,
+            batchId: dispensed.batchId,
+            medicineId: items.find(i => i.batch_id === dispensed.batchId)?.medicine_id
+          },
+          {
+            $addToSet: { sourceSaleIds: sale._id }
+          }
+        );
+      }
+    }
+    
+    // Update prescription if provided
     if (prescription_id) {
       await Prescription.findByIdAndUpdate(prescription_id, { 
         status: 'Completed',
         last_dispensed: new Date()
       });
-
+      
       const prescription = await Prescription.findById(prescription_id);
       if (prescription && prescription.items) {
         const updatedItems = prescription.items.map(item => {
           const saleItem = items.find(si => 
-            si.medicine_name === item.medicine_name || 
-            si.prescription_item?._id?.toString() === item._id.toString()
+            si.prescription_item_id?.toString() === item._id?.toString() ||
+            si.medicine_name === item.medicine_name
           );
           if (saleItem) {
             return {
               ...item.toObject(),
               is_dispensed: true,
-              dispensed_quantity: saleItem.quantity,
+              dispensed_quantity: saleItem.quantity_base_units || saleItem.quantity,
               dispensed_date: new Date()
             };
           }
           return item;
         });
-
+        
         await Prescription.findByIdAndUpdate(prescription_id, {
           items: updatedItems
         });
       }
     }
-
+    
+    // Create invoice
     const invoice = new Invoice({
       invoice_number: invoiceNumber,
       invoice_type: 'Pharmacy',
       patient_id: patient_id || null,
+      admission_id: admission_id || null,
       customer_type: patient_id ? 'Patient' : 'Walk-in',
-      customer_name,
-      customer_phone,
+      customer_name: customer_name || 'Walk-in Customer',
+      customer_phone: customer_phone || '',
       sale_id: sale._id,
       prescription_id: prescription_id || null,
       issue_date: new Date(),
@@ -598,40 +823,44 @@ exports.createSale = async (req, res) => {
         batch_id: item.batch_id,
         medicine_name: item.medicine_name,
         batch_number: item.batch_number,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        total_price: item.unit_price * item.quantity,
-        tax_rate: tax_rate,
-        tax_amount: (item.unit_price * item.quantity) * (tax_rate / 100)
+        quantity: item.quantity_base_units || item.quantity,
+        unit_price: item.unit_price || item.price_per_base_unit,
+        total_price: (item.unit_price || item.price_per_base_unit) * (item.quantity_base_units || item.quantity),
+        tax_rate: parseFloat(tax_rate),
+        tax_amount: ((item.unit_price || item.price_per_base_unit) * (item.quantity_base_units || item.quantity)) * (parseFloat(tax_rate) / 100)
       })),
-      subtotal: calculatedSubtotal,
-      discount: discount,
+      subtotal: finalSubtotal,
+      discount: parseFloat(discount),
       discount_type: discount_type,
-      discount_amount: calculatedDiscount,
-      tax_rate: tax_rate,
-      tax_amount: calculatedTax,
-      total: calculatedTotal,
+      discount_amount: finalDiscountAmount,
+      tax_rate: parseFloat(tax_rate),
+      tax_amount: finalTaxAmount,
+      total: finalTotal,
       status: payment_method === 'Pending' ? 'Pending' : 'Paid',
-      payment_method: payment_method,
-      amount_paid: payment_method === 'Pending' ? 0 : calculatedTotal,
-      balance_due: payment_method === 'Pending' ? calculatedTotal : 0,
+      payment_method: payment_method || 'Cash',
+      amount_paid: payment_method === 'Pending' ? 0 : finalTotal,
+      balance_due: payment_method === 'Pending' ? finalTotal : 0,
       is_pharmacy_sale: true,
       dispensing_date: new Date(),
-      notes: notes,
+      notes: notes || '',
     });
-
+    
     await invoice.save();
-
+    
+    // Update sale with invoice reference
     sale.invoice_id = invoice._id;
     await sale.save();
-
+    
+    // Populate sale for response
     const populatedSale = await Sale.findById(sale._id)
       .populate('patient_id', 'first_name last_name patientId')
+      .populate('admission_id', 'admissionNumber')
       .populate('items.medicine_id', 'name mrp')
       .populate('items.batch_id', 'batch_number expiry_date')
       .lean();
-
+    
     res.status(201).json({
+      success: true,
       message: 'Sale created successfully',
       sale: {
         ...populatedSale,
@@ -643,10 +872,23 @@ exports.createSale = async (req, res) => {
         invoice_number: invoiceNumber,
         total: invoice.total,
         status: invoice.status
-      }
+      },
+      dispensed_medications: dispensedMedicationChartIds.length
     });
+    
   } catch (err) {
     console.error('Error creating sale:', err);
+    
+    // Check for validation errors
+    if (err.name === 'ValidationError') {
+      const errors = Object.values(err.errors).map(e => e.message);
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        details: errors,
+        message: err.message 
+      });
+    }
+    
     res.status(400).json({ 
       error: 'Failed to create sale',
       message: err.message 
@@ -668,6 +910,7 @@ exports.getAllSales = async (req, res) => {
     
     const sales = await Sale.find(filter)
       .populate('patient_id')
+      .populate('admission_id', 'admissionNumber')
       .populate('items.medicine_id')
       .populate('items.batch_id')
       .populate('created_by', 'name')
@@ -823,6 +1066,7 @@ exports.getDailySalesReport = async (req, res) => {
       sale_date: { $gte: startOfDay, $lte: endOfDay }
     })
     .populate('patient_id', 'first_name last_name')
+    .populate('admission_id', 'admissionNumber')
     .populate('items.medicine_id', 'name')
     .sort({ sale_date: -1 });
 

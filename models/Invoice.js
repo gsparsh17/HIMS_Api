@@ -435,7 +435,7 @@ const invoiceSchema = new mongoose.Schema({
     type: Date,
     required: true,
     validate: {
-      validator: function(v) {
+      validator: function (v) {
         return v >= this.issue_date;
       },
       message: 'Due date must be after issue date'
@@ -450,15 +450,34 @@ const invoiceSchema = new mongoose.Schema({
   radiology_items: [radiologyItemSchema],
 
   // Financial details
+  // In the invoice schema, replace the subtotal validator with:
+
   subtotal: {
     type: Number,
     required: true,
     min: [0, 'Subtotal cannot be negative'],
     validate: {
-      validator: function(v) {
-        return v <= this.total;
+      validator: function (v) {
+        // Subtotal should be >= total when discount is applied
+        return v >= this.total;
       },
-      message: 'Subtotal cannot exceed total'
+      message: 'Subtotal cannot be less than total after discount'
+    }
+  },
+
+  // And update the total validator to be more flexible:
+  total: {
+    type: Number,
+    required: true,
+    min: [0, 'Total cannot be negative'],
+    validate: {
+      validator: function (v) {
+        // Calculate expected total: subtotal - discount + tax
+        const expectedTotal = this.subtotal - (this.discount || 0) + (this.tax || 0);
+        // Allow small floating point differences
+        return Math.abs(v - expectedTotal) < 0.01;
+      },
+      message: 'Total must equal subtotal - discount + tax'
     }
   },
   discount: {
@@ -466,7 +485,7 @@ const invoiceSchema = new mongoose.Schema({
     default: 0,
     min: [0, 'Discount cannot be negative'],
     validate: {
-      validator: function(v) {
+      validator: function (v) {
         return v <= this.subtotal;
       },
       message: 'Discount cannot exceed subtotal'
@@ -477,17 +496,6 @@ const invoiceSchema = new mongoose.Schema({
     default: 0,
     min: [0, 'Tax cannot be negative']
   },
-  total: {
-    type: Number,
-    required: true,
-    min: [0, 'Total cannot be negative'],
-    validate: {
-      validator: function(v) {
-        return Math.abs(v - (this.subtotal - this.discount + this.tax)) < 0.01;
-      },
-      message: 'Total must equal subtotal - discount + tax'
-    }
-  },
 
   // Payment tracking
   amount_paid: {
@@ -495,7 +503,7 @@ const invoiceSchema = new mongoose.Schema({
     default: 0,
     min: [0, 'Amount paid cannot be negative'],
     validate: {
-      validator: function(v) {
+      validator: function (v) {
         return v <= this.total;
       },
       message: 'Amount paid cannot exceed total'
@@ -612,7 +620,7 @@ const invoiceSchema = new mongoose.Schema({
   },
   toJSON: {
     virtuals: true,
-    transform: function(doc, ret) {
+    transform: function (doc, ret) {
       if (ret.created_at) {
         ret.created_at_ist = new Date(ret.created_at).toLocaleString('en-IN', {
           timeZone: 'Asia/Kolkata',
@@ -634,7 +642,7 @@ const invoiceSchema = new mongoose.Schema({
 });
 
 // Pre-save middleware
-invoiceSchema.pre('save', function(next) {
+invoiceSchema.pre('save', function (next) {
   this.updated_at = new Date();
 
   if (this.isNew) {
@@ -713,7 +721,7 @@ invoiceSchema.pre('save', function(next) {
 });
 
 // Pre-validate middleware for calculations
-invoiceSchema.pre('validate', function(next) {
+invoiceSchema.pre('validate', function (next) {
   if (
     this.isNew ||
     this.isModified('service_items') ||
@@ -741,12 +749,12 @@ invoiceSchema.pre('validate', function(next) {
 });
 
 // Generate invoice number
-invoiceSchema.pre('save', async function(next) {
+invoiceSchema.pre('save', async function (next) {
   if (this.isNew && !this.invoice_number) {
     try {
       const year = new Date().getFullYear();
       const month = String(new Date().getMonth() + 1).padStart(2, '0');
-      
+
       let prefix = 'INV';
       switch (this.invoice_type) {
         case 'Pharmacy':
@@ -804,12 +812,12 @@ invoiceSchema.pre('save', async function(next) {
 });
 
 // Post-save middleware for logging
-invoiceSchema.post('save', function(doc) {
+invoiceSchema.post('save', function (doc) {
   console.log(`📄 Invoice ${doc.invoice_number} saved at ${new Date().toISOString()}`);
 });
 
 // Virtuals
-invoiceSchema.virtual('total_items').get(function() {
+invoiceSchema.virtual('total_items').get(function () {
   return (this.service_items?.length || 0) +
     (this.medicine_items?.length || 0) +
     (this.procedure_items?.length || 0) +
@@ -817,26 +825,26 @@ invoiceSchema.virtual('total_items').get(function() {
     (this.radiology_items?.length || 0);
 });
 
-invoiceSchema.virtual('is_fully_paid').get(function() {
+invoiceSchema.virtual('is_fully_paid').get(function () {
   return this.amount_paid >= this.total;
 });
 
-invoiceSchema.virtual('pending_procedures_count').get(function() {
+invoiceSchema.virtual('pending_procedures_count').get(function () {
   if (!this.has_procedures) return 0;
   return this.procedure_items?.filter(p => p.status === 'Pending').length || 0;
 });
 
-invoiceSchema.virtual('pending_lab_tests_count').get(function() {
+invoiceSchema.virtual('pending_lab_tests_count').get(function () {
   if (!this.has_lab_tests) return 0;
   return this.lab_test_items?.filter(t => t.status === 'Pending').length || 0;
 });
 
-invoiceSchema.virtual('pending_radiology_count').get(function() {
+invoiceSchema.virtual('pending_radiology_count').get(function () {
   if (!this.has_radiology) return 0;
   return this.radiology_items?.filter(r => r.status === 'Pending' || r.status === 'Approved' || r.status === 'Scheduled').length || 0;
 });
 
-invoiceSchema.virtual('days_overdue').get(function() {
+invoiceSchema.virtual('days_overdue').get(function () {
   if (this.status !== 'Overdue') return 0;
   const today = new Date();
   const dueDate = new Date(this.due_date);
@@ -844,7 +852,7 @@ invoiceSchema.virtual('days_overdue').get(function() {
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 });
 
-invoiceSchema.virtual('created_at_ist').get(function() {
+invoiceSchema.virtual('created_at_ist').get(function () {
   return this.created_at?.toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
     dateStyle: 'full',
@@ -852,12 +860,12 @@ invoiceSchema.virtual('created_at_ist').get(function() {
   });
 });
 
-invoiceSchema.virtual('created_at_utc').get(function() {
+invoiceSchema.virtual('created_at_utc').get(function () {
   return this.created_at?.toISOString();
 });
 
 // Static methods
-invoiceSchema.statics.findByDate = function(date) {
+invoiceSchema.statics.findByDate = function (date) {
   const startDate = new Date(date);
   startDate.setUTCHours(0, 0, 0, 0);
   const endDate = new Date(date);
@@ -867,7 +875,7 @@ invoiceSchema.statics.findByDate = function(date) {
   });
 };
 
-invoiceSchema.statics.findByDateRange = function(startDate, endDate) {
+invoiceSchema.statics.findByDateRange = function (startDate, endDate) {
   const start = new Date(startDate);
   start.setUTCHours(0, 0, 0, 0);
   const end = new Date(endDate);

@@ -8,6 +8,7 @@ const LabTest = require('../models/LabTest');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const ImagingTest = require('../models/ImagingTest');
 const ProcedureRequest = require('../models/ProcedureRequest');
+const Pharmacy = require('../models/Pharmacy');
 const Procedure = require('../models/Procedure');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
@@ -23,14 +24,14 @@ cloudinary.config({
 // Create Lab Requests from prescription
 async function createLabRequests(prescription, labTestRequests, userId, sourceType, admissionId = null) {
   const createdRequests = [];
-  
+
   for (const labReq of labTestRequests) {
     let labTest = null;
     if (labReq.lab_test_id) labTest = await LabTest.findById(labReq.lab_test_id);
     else if (labReq.lab_test_code) labTest = await LabTest.findOne({ code: labReq.lab_test_code });
-    
+
     if (!labTest) continue;
-    
+
     const labRequest = new LabRequest({
       requestNumber: `LAB-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       sourceType: sourceType || 'OPD',
@@ -50,7 +51,7 @@ async function createLabRequests(prescription, labTestRequests, userId, sourceTy
       status: 'Pending',
       createdBy: userId
     });
-    
+
     await labRequest.save();
     createdRequests.push({
       request_id: labRequest._id,
@@ -59,21 +60,21 @@ async function createLabRequests(prescription, labTestRequests, userId, sourceTy
       lab_test_name: labTest.name
     });
   }
-  
+
   return createdRequests;
 }
 
 // Create Radiology Requests from prescription
 async function createRadiologyRequests(prescription, radiologyRequests, userId, sourceType, admissionId = null) {
   const createdRequests = [];
-  
+
   for (const radReq of radiologyRequests) {
     let imagingTest = null;
     if (radReq.imaging_test_id) imagingTest = await ImagingTest.findById(radReq.imaging_test_id);
     else if (radReq.imaging_test_code) imagingTest = await ImagingTest.findOne({ code: radReq.imaging_test_code });
-    
+
     if (!imagingTest) continue;
-    
+
     const radiologyRequest = new RadiologyRequest({
       requestNumber: `RAD-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       sourceType: sourceType || 'OPD',
@@ -93,7 +94,7 @@ async function createRadiologyRequests(prescription, radiologyRequests, userId, 
       status: 'Pending',
       createdBy: userId
     });
-    
+
     await radiologyRequest.save();
     createdRequests.push({
       request_id: radiologyRequest._id,
@@ -102,21 +103,21 @@ async function createRadiologyRequests(prescription, radiologyRequests, userId, 
       imaging_test_name: imagingTest.name
     });
   }
-  
+
   return createdRequests;
 }
 
 // Create Procedure Requests from prescription
 async function createProcedureRequests(prescription, procedureRequests, userId, sourceType, admissionId = null) {
   const createdRequests = [];
-  
+
   for (const procReq of procedureRequests) {
     let procedure = null;
     if (procReq.procedure_id) procedure = await Procedure.findById(procReq.procedure_id);
     else if (procReq.procedure_code) procedure = await Procedure.findOne({ code: procReq.procedure_code });
-    
+
     if (!procedure) continue;
-    
+
     const procedureRequest = new ProcedureRequest({
       requestNumber: `PROC-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       sourceType: sourceType || 'OPD',
@@ -140,7 +141,7 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
       status: 'Pending',
       createdBy: userId
     });
-    
+
     await procedureRequest.save();
     createdRequests.push({
       request_id: procedureRequest._id,
@@ -150,13 +151,106 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
       cost: procedure.base_price
     });
   }
-  
+
   return createdRequests;
 }
 
-// ============== PRESCRIPTION CRUD ==============
+async function createPharmacyRequest(medication) {
+  try {
+    // Find in-house pharmacy
+    const pharmacy = await Pharmacy.findOne({ status: 'Active' });
+    if (!pharmacy) {
+      console.log('No active pharmacy found for medication request');
+      return;
+    }
 
-// Create prescription with integrated lab/radiology/procedure requests
+    const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id}`;
+
+    medication.pharmacyRequest = {
+      requestedToPharmacy: true,
+      requestedAt: new Date(),
+      requestedBy: medication.createdBy,
+      pharmacyId: pharmacy._id,
+      pharmacyRequestNumber: requestNumber,
+      pharmacyStatus: 'Pending'
+    };
+
+    medication.status = 'Requested';
+    await medication.save();
+
+  } catch (error) {
+    console.error('Error creating pharmacy request:', error);
+  }
+}
+
+const { calculateRequiredBaseUnits } = require('../services/pharmacyTransaction.service');
+
+// Helper function to generate timing slots for medication
+function generateTimingSlots(frequency, durationDays) {
+  const timingSlots = [];
+  const freqTimingMap = {
+    'OD': ['08:00'],
+    'BD': ['08:00', '20:00'],
+    'TDS': ['08:00', '14:00', '20:00'],
+    'QDS': ['06:00', '12:00', '18:00', '22:00'],
+    'q4h': ['06:00', '10:00', '14:00', '18:00', '22:00', '02:00'],
+    'q6h': ['06:00', '12:00', '18:00', '00:00'],
+    'q8h': ['06:00', '14:00', '22:00'],
+    'q12h': ['08:00', '20:00'],
+    'Stat': ['now'],
+    'SOS': []
+  };
+
+  const times = freqTimingMap[frequency] || ['08:00'];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  for (let d = 0; d < durationDays; d++) {
+    const slotDate = new Date(today);
+    slotDate.setDate(today.getDate() + d);
+
+    for (const t of times) {
+      timingSlots.push({
+        date: slotDate,
+        time: t,
+        status: 'Pending'
+      });
+    }
+  }
+
+  return timingSlots;
+}
+
+// Helper function to create pharmacy request
+async function createPharmacyRequest(medication) {
+  try {
+    const Pharmacy = require('../models/Pharmacy');
+    // Find in-house pharmacy
+    const pharmacy = await Pharmacy.findOne({ status: 'Active' });
+    if (!pharmacy) {
+      console.log('No active pharmacy found for medication request');
+      return;
+    }
+
+    const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id}`;
+
+    medication.pharmacyRequest = {
+      requestedToPharmacy: true,
+      requestedAt: new Date(),
+      requestedBy: medication.createdBy,
+      pharmacyId: pharmacy._id,
+      pharmacyRequestNumber: requestNumber,
+      pharmacyStatus: 'Pending'
+    };
+
+    medication.status = 'Requested';
+    await medication.save();
+
+  } catch (error) {
+    console.error('Error creating pharmacy request:', error);
+  }
+}
+
 exports.createPrescription = async (req, res) => {
   try {
     const {
@@ -184,9 +278,18 @@ exports.createPrescription = async (req, res) => {
       repeat_count
     } = req.body;
 
-    // Process medication items
+    // Process medication items and calculate required quantities
     const processedItems = items && Array.isArray(items)
-      ? items.map(item => ({
+      ? items.map(item => {
+        // Calculate required quantity base units for IPD
+        const requiredQtyBaseUnits = calculateRequiredBaseUnits({
+          dosage: item.dosage || '',
+          frequency: item.frequency,
+          duration: parseInt(item.duration) || 1,
+          durationUnit: 'Days'
+        });
+
+        return {
           medicine_name: item.medicine_name,
           generic_name: item.generic_name || '',
           medicine_id: item.medicine_id || null,
@@ -195,10 +298,12 @@ exports.createPrescription = async (req, res) => {
           dosage: item.dosage || '',
           frequency: item.frequency,
           duration: item.duration,
-          quantity: item.quantity || 0,
+          quantity: item.quantity || requiredQtyBaseUnits,
+          required_qty_base_units: requiredQtyBaseUnits,
           instructions: item.instructions || '',
           timing: item.timing || 'Anytime'
-        }))
+        };
+      })
       : [];
 
     // Create prescription first
@@ -229,7 +334,7 @@ exports.createPrescription = async (req, res) => {
 
     // Create Lab Requests
     const createdLabRequests = await createLabRequests(
-      prescription, lab_test_requests, req.user?._id, 
+      prescription, lab_test_requests, req.user?._id,
       source_type || 'OPD', ipd_admission_id || null
     );
 
@@ -282,38 +387,36 @@ exports.createPrescription = async (req, res) => {
     // For IPD prescriptions, convert medications to IPD Medication Chart
     if (source_type === 'IPD' && ipd_admission_id && processedItems.length > 0) {
       const convertedMedications = [];
-      
+
       for (const item of processedItems) {
-        // Auto-generate timing based on frequency
-        const timingSlots = [];
-        const freqTimingMap = {
-          'OD': ['08:00'],
-          'BD': ['08:00', '20:00'],
-          'TDS': ['08:00', '14:00', '20:00'],
-          'QDS': ['06:00', '12:00', '18:00', '22:00'],
-          'q4h': ['06:00', '10:00', '14:00', '18:00', '22:00', '02:00'],
-          'q6h': ['06:00', '12:00', '18:00', '00:00'],
-          'q8h': ['06:00', '14:00', '22:00'],
-          'q12h': ['08:00', '20:00'],
-          'Stat': ['now'],
-          'SOS': []
-        };
-        const times = freqTimingMap[item.frequency] || ['08:00'];
-        const durationValue = parseInt(item.duration) || 1;
-        
-        for (let d = 0; d < durationValue; d++) {
-          const slotDate = new Date();
-          slotDate.setDate(slotDate.getDate() + d);
-          slotDate.setHours(0, 0, 0, 0);
-          
-          for (const t of times) {
-            timingSlots.push({ 
-              date: slotDate,
-              time: t, 
-              status: 'Pending' 
-            });
+        // Get medicine details if available
+        let medicineDetails = null;
+        let baseUnit = 'unit';
+        let packUnit = 'pack';
+        let unitsPerPack = 1;
+        let costPerUnit = 0;
+
+        if (item.medicine_id) {
+          medicineDetails = await Medicine.findById(item.medicine_id);
+          if (medicineDetails) {
+            baseUnit = medicineDetails.base_unit || 'unit';
+            packUnit = medicineDetails.pack_unit || 'pack';
+            unitsPerPack = medicineDetails.units_per_pack || 1;
+            costPerUnit = medicineDetails.selling_price || medicineDetails.mrp || 0;
           }
         }
+
+        // Generate timing slots for nurse administration
+        const durationValue = parseInt(item.duration) || 1;
+        const timingSlots = generateTimingSlots(item.frequency, durationValue);
+
+        // Calculate required quantity
+        const requiredQtyBaseUnits = item.required_qty_base_units || calculateRequiredBaseUnits({
+          dosage: item.dosage,
+          frequency: item.frequency,
+          duration: durationValue,
+          durationUnit: 'Days'
+        });
 
         const medicationOrder = new IPDMedicationChart({
           admissionId: ipd_admission_id,
@@ -327,24 +430,43 @@ exports.createPrescription = async (req, res) => {
           route: item.route_of_administration,
           dosage: item.dosage,
           frequency: item.frequency,
-          duration: item.duration,
+          duration: durationValue,
+          durationUnit: 'Days',
           specialInstructions: item.instructions,
           timing: timingSlots,
-          requiresPharmacyDispense: false,
-          status: 'Active',
+          requiredQtyBaseUnits,
+          costPerUnit,
+          totalCost: requiredQtyBaseUnits * costPerUnit,
+          requiresPharmacyDispense: true,
+          status: 'Pending',
           startDate: new Date(),
           createdBy: req.user?._id
         });
-        
+
         await medicationOrder.save();
         convertedMedications.push(medicationOrder._id);
+
+        // Create pharmacy request for this medication
+        await createPharmacyRequest(medicationOrder);
       }
-      
+
       prescription.is_converted_to_ipd = true;
       prescription.ipd_medication_ids = convertedMedications;
       await prescription.save();
+
+      // Create nursing note for new IPD medications
+      const NursingNote = require('../models/NursingNote');
+      const nursingNote = new NursingNote({
+        admissionId: ipd_admission_id,
+        patientId: patient_id,
+        noteType: 'Medication',
+        note: `New IPD prescription created with ${convertedMedications.length} medication(s). Pharmacy requests have been initiated.`,
+        priority: 'Normal',
+        createdBy: req.user?._id
+      });
+      await nursingNote.save();
     }
-    
+
     // Update IPDRound with this prescription
     if (source_type === 'IPD' && round_id) {
       const IPDRound = require('../models/IPDRound');
@@ -365,7 +487,8 @@ exports.createPrescription = async (req, res) => {
       prescription: populatedPrescription,
       lab_requests: createdLabRequests,
       radiology_requests: createdRadiologyRequests,
-      procedure_requests: createdProcedureRequests
+      procedure_requests: createdProcedureRequests,
+      ipd_medications_count: source_type === 'IPD' ? convertedMedications?.length || 0 : 0
     });
   } catch (err) {
     console.error('Error creating prescription:', err);
