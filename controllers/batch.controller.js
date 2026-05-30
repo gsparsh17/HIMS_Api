@@ -28,6 +28,7 @@ exports.getAllBatches = async (req, res) => {
       sortBy = 'expiry_date',
       sortOrder = 'asc',
       medicineId,
+      medicine_id,
       supplier,
       expiryThreshold
     } = req.query;
@@ -35,8 +36,9 @@ exports.getAllBatches = async (req, res) => {
     // Build filter object
     const filter = {};
     
-    if (medicineId) {
-      filter.medicine_id = medicineId;
+    const medFilter = medicineId || medicine_id;
+    if (medFilter) {
+      filter.medicine_id = medFilter;
     }
     
     if (supplier) {

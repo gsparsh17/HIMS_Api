@@ -4,147 +4,72 @@ const Sale = require('../models/Sale');
 const MedicineBatch = require('../models/MedicineBatch');
 const Medicine = require('../models/Medicine');
 const Prescription = require('../models/Prescription');
+const { createUnifiedSale } = require('../services/pharmacyTransaction.service');
 
-// Purchase Order Functions
-// exports.createPurchaseOrder = async (req, res) => {
-//   try {
-//     const purchaseOrder = new PurchaseOrder({
-//       ...req.body,
-//       created_by: req.user._id
-//     });
-    
-//     await purchaseOrder.save();
-//     res.status(201).json(purchaseOrder);
-//   } catch (err) {
-//     res.status(400).json({ error: err.message });
-//   }
-// };
-
-exports.getAllPurchaseOrders = async (req, res) => {
-  try {
-    const { status, page = 1, limit = 10 } = req.query;
-    
-    const filter = {};
-    if (status) filter.status = status;
-    
-    const orders = await PurchaseOrder.find(filter)
-      .populate('supplier_id')
-      .populate('items.medicine_id')
-      .populate('created_by', 'name')
-      .sort({ order_date: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-    
-    const total = await PurchaseOrder.countDocuments(filter);
-    
-    res.json({
-      orders,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// ========== HELPER FUNCTIONS ==========
+const toNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-exports.receivePurchaseOrder = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { received_items } = req.body; // Array of { item_id, quantity_received, batch_number, expiry_date, selling_price }
-    console.log('received_items:', req.body);
-    const order = await PurchaseOrder.findById(id);
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-
-    for (const receivedItem of received_items) {
-      const orderItem = order.items.id(receivedItem.item_id);
-      if (orderItem) {
-        // Create batch with received data
-        const batch = new MedicineBatch({
-          medicine_id: orderItem.medicine_id,
-          batch_number: receivedItem.batch_number || orderItem.batch_number || '',
-          expiry_date: receivedItem.expiry_date || orderItem.expiry_date,
-          quantity: receivedItem.quantity_received || 0,
-          purchase_price: orderItem.unit_cost,
-          selling_price: receivedItem.selling_price || orderItem.selling_price || orderItem.unit_cost,
-          supplier_id: order.supplier_id
-        });
-        await batch.save();
-        
-        // Update medicine stock
-        // await Medicine.findByIdAndUpdate(
-        //   orderItem.medicine_id,
-        //   { $inc: { stock_quantity: receivedItem.quantity_received || 0 } }
-        // );
-
-        // Update order item with received quantity and details
-        orderItem.received = (orderItem.received || 0) + (receivedItem.quantity_received || 0);
-        // Update batch_number, expiry_date, selling_price in the order item if provided
-        if (receivedItem.batch_number) orderItem.batch_number = receivedItem.batch_number;
-        if (receivedItem.expiry_date) orderItem.expiry_date = receivedItem.expiry_date;
-        if (receivedItem.selling_price) orderItem.selling_price = receivedItem.selling_price;
-      }
-    }
-    
-    order.status = 'Received';
-    await order.save();
-    
-    res.json(order);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+const roundMoney = (value) => {
+  return Number(toNumber(value).toFixed(4));
 };
 
-// Sales Functions
-// exports.createSale = async (req, res) => {
-//   try {
-//     const { items, patient_id, customer_name, customer_phone, payment_method } = req.body;
-    
-//     // Check stock and deduct quantities
-//     for (const item of items) {
-//       const batch = await MedicineBatch.findById(item.batch_id);
-//       if (!batch || batch.quantity < item.quantity) {
-//         return res.status(400).json({ 
-//           error: `Insufficient stock for batch ${batch?.batch_number}` 
-//         });
-//       }
-      
-//       batch.quantity -= item.quantity;
-//       await batch.save();
-      
-//       // Update medicine total stock
-//       await Medicine.findByIdAndUpdate(
-//         item.medicine_id,
-//         { $inc: { stock_quantity: -item.quantity } }
-//       );
-//     }
-    
-//     const sale = new Sale({
-//       items,
-//       patient_id,
-//       customer_name,
-//       customer_phone,
-//       payment_method,
-//       created_by: req.user._id
-//     });
-    
-//     await sale.save();
-//     res.status(201).json(sale);
-//   } catch (err) {
-//     res.status(400).json({ error: err.message });
-//   }
-// };
+const getPurchaseOrderDateFilter = (dateFilter) => {
+  if (!dateFilter) return null;
+  const now = new Date();
+  const start = new Date(now);
+  const end = new Date(now);
+  if (dateFilter === 'today') {
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+  } else if (dateFilter === 'week') {
+    const day = now.getDay();
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    start.setDate(now.getDate() + diffToMonday);
+    start.setHours(0, 0, 0, 0);
+    end.setTime(start.getTime());
+    end.setDate(start.getDate() + 6);
+    end.setHours(23, 59, 59, 999);
+  } else if (dateFilter === 'month') {
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+    end.setMonth(start.getMonth() + 1);
+    end.setDate(0);
+    end.setHours(23, 59, 59, 999);
+  } else if (dateFilter === 'quarter') {
+    const quarterStartMonth = Math.floor(now.getMonth() / 3) * 3;
+    start.setMonth(quarterStartMonth, 1);
+    start.setHours(0, 0, 0, 0);
+    end.setMonth(quarterStartMonth + 3, 0);
+    end.setHours(23, 59, 59, 999);
+  } else {
+    return null;
+  }
+  return { $gte: start, $lte: end };
+};
+
+const getMedicineUnitInfo = async (medicineId) => {
+  const medicine = await Medicine.findById(medicineId).select(
+    'units_per_pack pack_unit base_unit mrp selling_price price_per_unit'
+  );
+  return {
+    medicine,
+    unitsPerPack: Math.max(1, toNumber(medicine?.units_per_pack, 1)),
+  };
+};
+
+// ========== PURCHASE ORDER FUNCTIONS ==========
 
 exports.createPurchaseOrder = async (req, res) => {
   try {
     const { supplier_id, items, notes, expected_delivery } = req.body;
 
-    // Calculate totals
     const subtotal = items.reduce((sum, item) => sum + (item.unit_cost * item.quantity), 0);
     const tax = items.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
     const total_amount = subtotal + tax;
 
-    // Create purchase order
     const purchaseOrder = new PurchaseOrder({
       supplier_id,
       items,
@@ -154,19 +79,17 @@ exports.createPurchaseOrder = async (req, res) => {
       notes,
       expected_delivery: expected_delivery ? new Date(expected_delivery) : null,
       status: 'Ordered',
-      // created_by: user_id
     });
     
     await purchaseOrder.save();
 
-    // Create invoice for the purchase order
     const invoice = new Invoice({
       invoice_type: 'Purchase',
       customer_type: 'Supplier',
-      customer_name: 'Supplier Purchase', // Will be populated from supplier data
+      customer_name: 'Supplier Purchase',
       purchase_order_id: purchaseOrder._id,
       issue_date: new Date(),
-      due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+      due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       service_items: items.map(item => ({
         description: `Purchase - ${item.medicine_name || 'Item'}`,
         quantity: item.quantity,
@@ -179,12 +102,10 @@ exports.createPurchaseOrder = async (req, res) => {
       total: total_amount,
       status: 'Issued',
       notes: `Purchase Order: ${purchaseOrder.order_number} - ${notes || ''}`,
-      // created_by: user_id
     });
 
     await invoice.save();
 
-    // Update purchase order with invoice reference
     purchaseOrder.invoice_id = invoice._id;
     await purchaseOrder.save();
 
@@ -203,6 +124,75 @@ exports.createPurchaseOrder = async (req, res) => {
   }
 };
 
+exports.getAllPurchaseOrders = async (req, res) => {
+  try {
+    const {
+      status,
+      page = 1,
+      limit = 10,
+      supplier,
+      date,
+      search,
+      sort = 'order_date',
+      order = 'desc',
+    } = req.query;
+
+    const filter = {};
+    if (status) filter.status = status;
+
+    const dateFilter = getPurchaseOrderDateFilter(date);
+    if (dateFilter) filter.order_date = dateFilter;
+
+    let supplierIds = null;
+    if (supplier) {
+      const Supplier = require('../models/Supplier');
+      const matchingSuppliers = await Supplier.find({
+        name: { $regex: supplier, $options: 'i' },
+      }).select('_id');
+      supplierIds = matchingSuppliers.map((item) => item._id);
+      filter.supplier_id = { $in: supplierIds };
+    }
+
+    if (search) {
+      const Supplier = require('../models/Supplier');
+      const matchingSuppliers = await Supplier.find({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { contactPerson: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } },
+        ],
+      }).select('_id');
+      filter.$or = [
+        { order_number: { $regex: search, $options: 'i' } },
+        { supplier_id: { $in: matchingSuppliers.map((item) => item._id) } },
+      ];
+    }
+
+    const sortDirection = order === 'asc' ? 1 : -1;
+    const allowedSortFields = ['order_date', 'total_amount', 'status', 'createdAt'];
+    const sortField = allowedSortFields.includes(sort) ? sort : 'order_date';
+
+    const orders = await PurchaseOrder.find(filter)
+      .populate('supplier_id')
+      .populate('items.medicine_id')
+      .populate('created_by', 'name')
+      .sort({ [sortField]: sortDirection })
+      .limit(Number(limit))
+      .skip((Number(page) - 1) * Number(limit));
+
+    const total = await PurchaseOrder.countDocuments(filter);
+
+    res.json({
+      orders,
+      totalPages: Math.ceil(total / Number(limit)),
+      currentPage: Number(page),
+      total,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 exports.getPurchaseOrderById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -211,15 +201,269 @@ exports.getPurchaseOrderById = async (req, res) => {
       .populate('items.medicine_id')
       .populate('created_by', 'name');
     if (!order) return res.status(404).json({ error: 'Order not found' });
-    res.json(order);
+    res.json({ order });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-// Create sale with invoice generation
+exports.receivePurchaseOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { received_items = [] } = req.body;
+
+    if (!Array.isArray(received_items) || received_items.length === 0) {
+      return res.status(400).json({
+        error: 'received_items array is required',
+      });
+    }
+
+    const order = await PurchaseOrder.findById(id);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    if (!['Ordered', 'Partially Received'].includes(order.status)) {
+      return res.status(400).json({
+        error: `Cannot receive stock for order with status ${order.status}`,
+      });
+    }
+
+    const createdBatches = [];
+
+    for (const receivedItem of received_items) {
+      const orderItem = order.items.id(receivedItem.item_id);
+
+      if (!orderItem) {
+        return res.status(400).json({
+          error: `Purchase order item not found: ${receivedItem.item_id}`,
+        });
+      }
+
+      const alreadyReceivedPacks = toNumber(orderItem.received, 0);
+      const orderedPacks = toNumber(orderItem.quantity, 0);
+      const pendingPacks = Math.max(0, orderedPacks - alreadyReceivedPacks);
+
+      const receivedPacks = Math.max(
+        0,
+        toNumber(
+          receivedItem.quantity_received_packs ??
+          receivedItem.quantity_received,
+          0
+        )
+      );
+
+      if (receivedPacks <= 0) continue;
+
+      if (receivedPacks > pendingPacks) {
+        return res.status(400).json({
+          error: `Cannot receive ${receivedPacks} packs for ${orderItem.medicine_id}. Pending quantity is ${pendingPacks} packs.`,
+        });
+      }
+
+      const { medicine, unitsPerPack: medicineUnitsPerPack } = await getMedicineUnitInfo(orderItem.medicine_id);
+
+      const unitsPerPack = Math.max(
+        1,
+        toNumber(
+          receivedItem.units_per_pack ??
+          orderItem.units_per_pack ??
+          medicineUnitsPerPack,
+          medicineUnitsPerPack
+        )
+      );
+
+      const quantityBaseUnits = Math.max(
+        0,
+        toNumber(
+          receivedItem.quantity_received_base_units,
+          receivedPacks * unitsPerPack
+        )
+      );
+
+      const batchNumber = String(
+        receivedItem.batch_number ||
+        orderItem.batch_number ||
+        ''
+      ).trim();
+
+      if (!batchNumber) {
+        return res.status(400).json({
+          error: `Batch number is required for ${medicine?.name || orderItem.medicine_id}`,
+        });
+      }
+
+      const expiryDate = receivedItem.expiry_date || orderItem.expiry_date;
+
+      if (!expiryDate) {
+        return res.status(400).json({
+          error: `Expiry date is required for ${medicine?.name || orderItem.medicine_id}`,
+        });
+      }
+
+      const expiry = new Date(expiryDate);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      if (Number.isNaN(expiry.getTime()) || expiry <= today) {
+        return res.status(400).json({
+          error: `Expiry date must be a future date for ${medicine?.name || orderItem.medicine_id}`,
+        });
+      }
+
+      const purchasePricePerPack = roundMoney(
+        receivedItem.purchase_price_per_pack ??
+        receivedItem.purchase_price ??
+        orderItem.unit_cost ??
+        0
+      );
+
+      const sellingPricePerPack = roundMoney(
+        receivedItem.selling_price_per_pack ??
+        receivedItem.selling_price ??
+        orderItem.selling_price ??
+        medicine?.selling_price ??
+        medicine?.price_per_unit ??
+        purchasePricePerPack
+      );
+
+      const mrpPerPack = roundMoney(
+        receivedItem.mrp_per_pack ??
+        orderItem.mrp_per_pack ??
+        medicine?.mrp ??
+        sellingPricePerPack
+      );
+
+      const purchasePricePerBaseUnit = roundMoney(
+        receivedItem.purchase_price_per_base_unit ??
+        purchasePricePerPack / unitsPerPack
+      );
+
+      const sellingPricePerBaseUnit = roundMoney(
+        receivedItem.selling_price_per_base_unit ??
+        sellingPricePerPack / unitsPerPack
+      );
+
+      const batch = new MedicineBatch({
+        medicine_id: orderItem.medicine_id,
+        batch_number: batchNumber,
+        expiry_date: expiry,
+
+        quantity: quantityBaseUnits,
+        quantity_base_units: quantityBaseUnits,
+        opening_quantity_base_units: quantityBaseUnits,
+        units_per_pack: unitsPerPack,
+
+        purchase_price: purchasePricePerPack,
+        selling_price: sellingPricePerPack,
+
+        purchase_price_per_pack: purchasePricePerPack,
+        selling_price_per_pack: sellingPricePerPack,
+        mrp_per_pack: mrpPerPack,
+
+        purchase_price_per_base_unit: purchasePricePerBaseUnit,
+        selling_price_per_base_unit: sellingPricePerBaseUnit,
+
+        supplier_id: order.supplier_id,
+        purchase_date: order.order_date || new Date(),
+        received_date: new Date(),
+        is_active: true,
+      });
+
+      await batch.save();
+      createdBatches.push(batch);
+
+      orderItem.received = alreadyReceivedPacks + receivedPacks;
+      orderItem.batch_number = batchNumber;
+      orderItem.expiry_date = expiry;
+      orderItem.selling_price = sellingPricePerPack;
+      orderItem.units_per_pack = unitsPerPack;
+      orderItem.quantity_base_units = toNumber(orderItem.quantity_base_units, orderedPacks * unitsPerPack);
+      orderItem.received_base_units = toNumber(orderItem.received_base_units, 0) + quantityBaseUnits;
+
+      await Medicine.findByIdAndUpdate(orderItem.medicine_id, {
+        $inc: { stock_quantity: quantityBaseUnits },
+        $set: {
+          units_per_pack: unitsPerPack,
+        },
+      });
+    }
+
+    const totalOrderedPacks = order.items.reduce(
+      (sum, item) => sum + toNumber(item.quantity, 0),
+      0
+    );
+
+    const totalReceivedPacks = order.items.reduce(
+      (sum, item) => sum + toNumber(item.received, 0),
+      0
+    );
+
+    if (totalReceivedPacks <= 0) {
+      order.status = 'Ordered';
+    } else if (totalReceivedPacks < totalOrderedPacks) {
+      order.status = 'Partially Received';
+    } else {
+      order.status = 'Received';
+    }
+
+    order.received_date = order.status === 'Received' ? new Date() : order.received_date;
+    await order.save();
+
+    const populatedOrder = await PurchaseOrder.findById(order._id)
+      .populate('supplier_id')
+      .populate('items.medicine_id')
+      .populate('created_by', 'name');
+
+    res.json({
+      message: 'Purchase order stock received successfully',
+      order: populatedOrder,
+      createdBatches,
+    });
+  } catch (err) {
+    console.error('Error receiving purchase order:', err);
+    res.status(400).json({
+      error: 'Failed to receive purchase order',
+      message: err.message,
+    });
+  }
+};
+
+// ========== SALES FUNCTIONS ==========
+
+// Helper function to generate invoice number
+async function generateInvoiceNumber() {
+  const year = new Date().getFullYear();
+  const month = String(new Date().getMonth() + 1).padStart(2, '0');
+  
+  const lastInvoice = await Invoice.findOne({
+    invoice_number: new RegExp(`^INV-${year}${month}`)
+  }).sort({ createdAt: -1 });
+  
+  let sequence = 1;
+  if (lastInvoice && lastInvoice.invoice_number) {
+    const lastSeq = parseInt(lastInvoice.invoice_number.split('-').pop());
+    if (!isNaN(lastSeq)) {
+      sequence = lastSeq + 1;
+    }
+  }
+  
+  return `INV-${year}${month}-${String(sequence).padStart(4, '0')}`;
+}
+
 exports.createSale = async (req, res) => {
   try {
+    if (process.env.USE_LEGACY_SALE !== 'true') {
+      const result = await createUnifiedSale(req.body, req);
+      return res.status(201).json({
+        success: true,
+        message: 'Sale created successfully',
+        ...result,
+        sale: result.sale,
+        invoice: result.invoice
+      });
+    }
+    
     const { 
       items, 
       patient_id, 
@@ -231,15 +475,14 @@ exports.createSale = async (req, res) => {
       discount_type = 'percentage',
       tax_rate = 0,
       notes = '',
-      subtotal, // From frontend calculation
-      discount_amount, // From frontend calculation
-      tax_amount, // From frontend calculation
-      total_amount // From frontend calculation
+      subtotal,
+      discount_amount,
+      tax_amount,
+      total_amount
     } = req.body;
     
     console.log('Sale request body:', req.body);
     
-    // Validate all items have batches and sufficient stock
     for (const item of items) {
       const batch = await MedicineBatch.findById(item.batch_id);
       if (!batch) {
@@ -254,19 +497,15 @@ exports.createSale = async (req, res) => {
         });
       }
       
-      // Update batch stock
       batch.quantity -= item.quantity;
       await batch.save();
       
-      // Update medicine total stock
       await Medicine.findByIdAndUpdate(
         item.medicine_id,
         { $inc: { stock_quantity: -item.quantity } }
       );
     }
 
-    // Validate totals match frontend calculations (optional security check)
-    // You can choose to trust frontend or recalculate for security
     const calculatedSubtotal = items.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
     
     let calculatedDiscount = 0;
@@ -280,68 +519,48 @@ exports.createSale = async (req, res) => {
     const calculatedTax = afterDiscount * (tax_rate / 100);
     const calculatedTotal = afterDiscount + calculatedTax;
     
-    // Optional: Validate frontend calculations match backend calculations
-    const tolerance = 0.01; // Allow small rounding differences
+    const tolerance = 0.01;
     if (Math.abs(calculatedSubtotal - parseFloat(subtotal)) > tolerance ||
         Math.abs(calculatedDiscount - parseFloat(discount_amount)) > tolerance ||
         Math.abs(calculatedTax - parseFloat(tax_amount)) > tolerance ||
         Math.abs(calculatedTotal - parseFloat(total_amount)) > tolerance) {
-      
       console.warn('Frontend and backend calculations differ:', {
         frontend: { subtotal, discount_amount, tax_amount, total_amount },
         backend: { calculatedSubtotal, calculatedDiscount, calculatedTax, calculatedTotal }
       });
-      
-      // You can either:
-      // 1. Use backend calculations (more secure):
-      // subtotal = calculatedSubtotal;
-      // discount_amount = calculatedDiscount;
-      // tax_amount = calculatedTax;
-      // total_amount = calculatedTotal;
-      
-      // 2. Or return error:
-      // return res.status(400).json({ 
-      //   error: 'Calculation mismatch detected. Please refresh and try again.' 
-      // });
     }
 
-    // Generate invoice number
     const invoiceNumber = await generateInvoiceNumber();
     
-    // Create sale with all financial data
     const sale = new Sale({
       items,
       patient_id: patient_id || null,
       customer_name,
       customer_phone,
-      subtotal: calculatedSubtotal, // Use backend calculation
+      subtotal: calculatedSubtotal,
       discount,
       discount_type,
-      discount_amount: calculatedDiscount, // Use backend calculation
+      discount_amount: calculatedDiscount,
       tax_rate,
-      tax: calculatedTax, // Use backend calculation
-      total_amount: calculatedTotal, // Use backend calculation
+      tax: calculatedTax,
+      total_amount: calculatedTotal,
       payment_method,
       prescription_id: prescription_id || null,
       notes,
       invoice_number: invoiceNumber,
-      // created_by: req.user?._id
     });
     
     await sale.save();
 
-    // Update prescription status if prescription exists
     if (prescription_id) {
       await Prescription.findByIdAndUpdate(prescription_id, { 
         status: 'Completed',
         last_dispensed: new Date()
       });
 
-      // Mark prescription items as dispensed
       const prescription = await Prescription.findById(prescription_id);
       if (prescription && prescription.items) {
         const updatedItems = prescription.items.map(item => {
-          // Check if this item was in the sale
           const saleItem = items.find(si => 
             si.medicine_name === item.medicine_name || 
             si.prescription_item?._id?.toString() === item._id.toString()
@@ -363,7 +582,6 @@ exports.createSale = async (req, res) => {
       }
     }
 
-    // Create invoice for the sale
     const invoice = new Invoice({
       invoice_number: invoiceNumber,
       invoice_type: 'Pharmacy',
@@ -374,7 +592,7 @@ exports.createSale = async (req, res) => {
       sale_id: sale._id,
       prescription_id: prescription_id || null,
       issue_date: new Date(),
-      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       medicine_items: items.map(item => ({
         medicine_id: item.medicine_id,
         batch_id: item.batch_id,
@@ -383,7 +601,7 @@ exports.createSale = async (req, res) => {
         quantity: item.quantity,
         unit_price: item.unit_price,
         total_price: item.unit_price * item.quantity,
-        tax_rate: tax_rate, // Apply same tax rate to all items
+        tax_rate: tax_rate,
         tax_amount: (item.unit_price * item.quantity) * (tax_rate / 100)
       })),
       subtotal: calculatedSubtotal,
@@ -400,23 +618,17 @@ exports.createSale = async (req, res) => {
       is_pharmacy_sale: true,
       dispensing_date: new Date(),
       notes: notes,
-      // dispensed_by: req.user._id,
-      // created_by: req.user._id
     });
 
     await invoice.save();
 
-    // Update sale with invoice reference
     sale.invoice_id = invoice._id;
     await sale.save();
 
-    // Populate sale with related data
     const populatedSale = await Sale.findById(sale._id)
       .populate('patient_id', 'first_name last_name patientId')
       .populate('items.medicine_id', 'name mrp')
       .populate('items.batch_id', 'batch_number expiry_date')
-      // .populate('prescription_id', 'prescription_number')
-      // .populate('created_by', 'name')
       .lean();
 
     res.status(201).json({
@@ -441,27 +653,6 @@ exports.createSale = async (req, res) => {
     });
   }
 };
-
-// Helper function to generate invoice number
-async function generateInvoiceNumber() {
-  const year = new Date().getFullYear();
-  const month = String(new Date().getMonth() + 1).padStart(2, '0');
-  
-  // Get the last invoice number for this month
-  const lastInvoice = await Invoice.findOne({
-    invoice_number: new RegExp(`^INV-${year}${month}`)
-  }).sort({ createdAt: -1 });
-  
-  let sequence = 1;
-  if (lastInvoice && lastInvoice.invoice_number) {
-    const lastSeq = parseInt(lastInvoice.invoice_number.split('-').pop());
-    if (!isNaN(lastSeq)) {
-      sequence = lastSeq + 1;
-    }
-  }
-  
-  return `INV-${year}${month}-${String(sequence).padStart(4, '0')}`;
-}
 
 exports.getAllSales = async (req, res) => {
   try {
@@ -492,37 +683,6 @@ exports.getAllSales = async (req, res) => {
       currentPage: page,
       total
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
-// Get sales statistics
-exports.getSalesStatistics = async (req, res) => {
-  try {
-    const { startDate, endDate } = req.query;
-    
-    const filter = {};
-    if (startDate && endDate) {
-      filter.sale_date = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    }
-    
-    const stats = await Sale.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: null,
-          totalSales: { $sum: 1 },
-          totalRevenue: { $sum: '$total_amount' },
-          averageSale: { $avg: '$total_amount' }
-        }
-      }
-    ]);
-    
-    res.json(stats[0] || { totalSales: 0, totalRevenue: 0, averageSale: 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -590,7 +750,6 @@ exports.getSalesStatistics = async (req, res) => {
   }
 };
 
-// Get daily sales report
 exports.getDailySalesReport = async (req, res) => {
   try {
     const { date } = req.query;
@@ -660,7 +819,6 @@ exports.getDailySalesReport = async (req, res) => {
       }
     ]);
 
-    // Get individual sales for the day
     const dailySales = await Sale.find({
       sale_date: { $gte: startOfDay, $lte: endOfDay }
     })
@@ -683,7 +841,6 @@ exports.getDailySalesReport = async (req, res) => {
   }
 };
 
-// Get monthly sales report
 exports.getMonthlySalesReport = async (req, res) => {
   try {
     const { year, month } = req.query;
@@ -727,7 +884,6 @@ exports.getMonthlySalesReport = async (req, res) => {
       }
     ]);
 
-    // Get top selling medicines for the month
     const topMedicines = await Sale.aggregate([
       {
         $match: {
@@ -775,7 +931,6 @@ exports.getMonthlySalesReport = async (req, res) => {
   }
 };
 
-// Get yearly sales report
 exports.getYearlySalesReport = async (req, res) => {
   try {
     const { year } = req.query;
@@ -816,7 +971,6 @@ exports.getYearlySalesReport = async (req, res) => {
       }
     ]);
 
-    // Monthly breakdown
     const monthlyBreakdown = await Sale.aggregate([
       {
         $match: {
@@ -854,7 +1008,6 @@ exports.getYearlySalesReport = async (req, res) => {
   }
 };
 
-// Get purchase order statistics
 exports.getPurchaseOrderStatistics = async (req, res) => {
   try {
     const { startDate, endDate, status } = req.query;
@@ -933,7 +1086,6 @@ exports.getPurchaseOrderStatistics = async (req, res) => {
   }
 };
 
-// Get revenue comparison (year over year, month over month)
 exports.getRevenueComparison = async (req, res) => {
   try {
     const { period = 'month', compareTo = 'previous' } = req.query;
@@ -951,7 +1103,7 @@ exports.getRevenueComparison = async (req, res) => {
         start: new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1),
         end: new Date(currentDate.getFullYear(), currentDate.getMonth(), 0)
       };
-    } else { // year
+    } else {
       currentPeriod = {
         start: new Date(currentDate.getFullYear(), 0, 1),
         end: new Date(currentDate.getFullYear(), 11, 31)
