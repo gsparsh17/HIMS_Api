@@ -172,6 +172,166 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
   return { staff, nurse, doctor };
 }
 
+async function syncExistingToHR(hospitalId) {
+  const cleanGender = (g) => {
+    const normalized = String(g || '').toLowerCase().trim();
+    if (['male', 'female', 'other', 'prefer_not_to_say'].includes(normalized)) {
+      return normalized;
+    }
+    return undefined;
+  };
+
+  try {
+    // 1. Sync Doctors
+    const doctors = await Doctor.find({}).populate('user_id');
+    for (const doc of doctors) {
+      const email = doc.email?.toLowerCase().trim();
+      if (!email) continue;
+      const existing = await HRStaffProfile.findOne({ email, hospital_id: hospitalId });
+      if (!existing) {
+        await HRStaffProfile.create({
+          doctor_id: doc._id,
+          user_id: doc.user_id?._id || doc.user_id,
+          full_name: `${doc.firstName || ''} ${doc.lastName || ''}`.trim() || 'Unnamed Doctor',
+          first_name: doc.firstName,
+          last_name: doc.lastName,
+          email,
+          phone: doc.phone,
+          gender: cleanGender(doc.gender),
+          date_of_birth: doc.dateOfBirth,
+          address: doc.address,
+          staff_type: 'doctor',
+          designation: 'Doctor',
+          department: doc.department,
+          specialization: doc.specialization,
+          qualification: doc.education,
+          license_number: doc.licenseNumber,
+          joining_date: doc.startDate || doc.joined_at,
+          employment_type: doc.isFullTime ? 'Full Time' : 'Part Time',
+          salary_type: doc.paymentType || 'Salary',
+          salary_amount: doc.amount || 0,
+          aadhar_number: doc.aadharNumber,
+          pan_number: doc.panNumber,
+          login_enabled: !!doc.user_id,
+          hospital_id: hospitalId
+        });
+      } else {
+        let updated = false;
+        if (!existing.doctor_id) { existing.doctor_id = doc._id; updated = true; }
+        if (!existing.user_id && doc.user_id) { existing.user_id = doc.user_id?._id || doc.user_id; updated = true; }
+        if (updated) await existing.save();
+      }
+    }
+
+    // 2. Sync Nurses
+    const nurses = await Nurse.find({});
+    for (const n of nurses) {
+      const email = n.email?.toLowerCase().trim();
+      if (!email) continue;
+      const existing = await HRStaffProfile.findOne({ email, hospital_id: hospitalId });
+      if (!existing) {
+        const u = await User.findOne({ email });
+        await HRStaffProfile.create({
+          nurse_id: n._id,
+          user_id: u?._id,
+          full_name: `${n.first_name || ''} ${n.last_name || ''}`.trim() || 'Unnamed Nurse',
+          first_name: n.first_name,
+          last_name: n.last_name,
+          email,
+          phone: n.phone,
+          staff_type: 'nurse',
+          designation: 'Nurse',
+          department: n.department_id,
+          shift: n.shift_id,
+          joining_date: n.joined_at,
+          login_enabled: !!u,
+          hospital_id: hospitalId
+        });
+      } else {
+        let updated = false;
+        if (!existing.nurse_id) { existing.nurse_id = n._id; updated = true; }
+        if (updated) await existing.save();
+      }
+    }
+
+    // 3. Sync Staff
+    const staffList = await Staff.find({}).populate('user_id');
+    for (const s of staffList) {
+      const email = s.email?.toLowerCase().trim();
+      if (!email) continue;
+      const existing = await HRStaffProfile.findOne({ email, hospital_id: hospitalId });
+      if (!existing) {
+        const staffType = roleFromStaffType(s.role || 'staff');
+        await HRStaffProfile.create({
+          staff_id: s._id,
+          user_id: s.user_id?._id || s.user_id,
+          full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Unnamed Staff',
+          first_name: s.first_name,
+          last_name: s.last_name,
+          email,
+          phone: s.phone,
+          gender: cleanGender(s.gender),
+          staff_type: staffType,
+          designation: s.role || 'Staff',
+          department: s.department,
+          shift: s.shift,
+          joining_date: s.joined_at,
+          employment_status: s.status || 'Active',
+          aadhar_number: s.aadharNumber,
+          pan_number: s.panNumber,
+          login_enabled: !!s.user_id,
+          hospital_id: hospitalId
+        });
+      } else {
+        let updated = false;
+        if (!existing.staff_id) { existing.staff_id = s._id; updated = true; }
+        if (!existing.user_id && s.user_id) { existing.user_id = s.user_id?._id || s.user_id; updated = true; }
+        if (updated) await existing.save();
+      }
+    }
+
+    // 4. Sync Pathology Staff
+    try {
+      const PathologyStaff = require('../models/PathologyStaff');
+      const pathologyList = await PathologyStaff.find({}).populate('user_id');
+      for (const p of pathologyList) {
+        const email = p.email?.toLowerCase().trim();
+        if (!email) continue;
+        const existing = await HRStaffProfile.findOne({ email, hospital_id: hospitalId });
+        if (!existing) {
+          await HRStaffProfile.create({
+            user_id: p.user_id?._id || p.user_id,
+            full_name: `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unnamed Pathology Staff',
+            first_name: p.first_name,
+            last_name: p.last_name,
+            email,
+            phone: p.phone,
+            gender: cleanGender(p.gender),
+            date_of_birth: p.date_of_birth,
+            staff_type: 'pathology_staff',
+            designation: p.role || 'Pathology Staff',
+            department: p.department,
+            joining_date: p.joined_at,
+            employment_status: p.status || 'Active',
+            aadhar_number: p.aadharNumber,
+            pan_number: p.panNumber,
+            login_enabled: !!p.user_id,
+            hospital_id: hospitalId
+          });
+        } else {
+          let updated = false;
+          if (!existing.user_id && p.user_id) { existing.user_id = p.user_id?._id || p.user_id; updated = true; }
+          if (updated) await existing.save();
+        }
+      }
+    } catch (err) {
+      console.error('Error syncing pathology staff:', err);
+    }
+  } catch (error) {
+    console.error('Error in syncExistingToHR:', error);
+  }
+}
+
 exports.hrLogin = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -291,6 +451,7 @@ exports.createEmployee = async (req, res) => {
 exports.getEmployees = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
+    await syncExistingToHR(hospitalId);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
     if (req.query.staff_type) filter.staff_type = req.query.staff_type;
     if (req.query.department) filter.department = req.query.department;
@@ -450,6 +611,7 @@ exports.deactivateEmployee = async (req, res) => {
 exports.getDashboard = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
+    await syncExistingToHR(hospitalId);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
     const today = startOfDay(new Date());
     const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
@@ -512,6 +674,13 @@ exports.markAttendance = async (req, res) => {
     const date = startOfDay(req.body.attendance_date || req.body.date);
     const checkIn = req.body.check_in ? new Date(req.body.check_in) : undefined;
     const checkOut = req.body.check_out ? new Date(req.body.check_out) : undefined;
+    const breakMinutes = toNumber(req.body.break_minutes, 0);
+
+    let totalMinutes = 0;
+    if (checkIn && checkOut) {
+      const diff = Math.max(0, checkOut.getTime() - checkIn.getTime());
+      totalMinutes = Math.max(0, Math.round(diff / 60000) - breakMinutes);
+    }
 
     const attendance = await StaffAttendance.findOneAndUpdate(
       { employee_id: employee._id, attendance_date: date },
@@ -521,7 +690,8 @@ exports.markAttendance = async (req, res) => {
         attendance_date: date,
         check_in: checkIn,
         check_out: checkOut,
-        break_minutes: toNumber(req.body.break_minutes, 0),
+        break_minutes: breakMinutes,
+        total_minutes: totalMinutes,
         status: req.body.status || 'present',
         attendance_source: req.body.attendance_source || 'hr',
         shift: req.body.shift || employee.shift,
@@ -556,15 +726,26 @@ exports.bulkMarkAttendance = async (req, res) => {
         continue;
       }
       const date = startOfDay(record.attendance_date || record.date);
+      const checkIn = record.check_in ? new Date(record.check_in) : undefined;
+      const checkOut = record.check_out ? new Date(record.check_out) : undefined;
+      const breakMinutes = toNumber(record.break_minutes, 0);
+
+      let totalMinutes = 0;
+      if (checkIn && checkOut) {
+        const diff = Math.max(0, checkOut.getTime() - checkIn.getTime());
+        totalMinutes = Math.max(0, Math.round(diff / 60000) - breakMinutes);
+      }
+
       const attendance = await StaffAttendance.findOneAndUpdate(
         { employee_id: employee._id, attendance_date: date },
         {
           employee_id: employee._id,
           user_id: employee.user_id,
           attendance_date: date,
-          check_in: record.check_in ? new Date(record.check_in) : undefined,
-          check_out: record.check_out ? new Date(record.check_out) : undefined,
-          break_minutes: toNumber(record.break_minutes, 0),
+          check_in: checkIn,
+          check_out: checkOut,
+          break_minutes: breakMinutes,
+          total_minutes: totalMinutes,
           status: record.status || 'present',
           attendance_source: record.attendance_source || 'hr',
           shift: record.shift || employee.shift,
@@ -697,6 +878,7 @@ exports.setAvailability = async (req, res) => {
 exports.getAvailability = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
+    await syncExistingToHR(hospitalId);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
     if (req.query.status) filter.availability_status = req.query.status;
     if (req.query.staff_type) filter.staff_type = req.query.staff_type;

@@ -7,7 +7,7 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { 
     type: String, 
-    enum: ['mediqliq_super_admin', 'admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy', 'registrar', 'receptionist', 'pathology_staff', 'radiology_staff', 'ot_staff', 'demo', 'hr', 'hr_manager', 'store', 'store_manager', 'inventory_manager', 'accountant'], 
+    enum: ['mediqliq_super_admin', 'admin', 'doctor', 'nurse', 'staff', 'patient', 'pharmacy', 'registrar', 'receptionist', 'pathology_staff', 'radiology_staff', 'ot_staff', 'demo', 'hr', 'hr_manager', 'store', 'store_manager', 'inventory_manager', 'accountant', 'equipment_manager'], 
     required: true 
   },
   phone: { type: String },
