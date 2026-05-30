@@ -155,34 +155,6 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
   return createdRequests;
 }
 
-async function createPharmacyRequest(medication) {
-  try {
-    // Find in-house pharmacy
-    const pharmacy = await Pharmacy.findOne({ status: 'Active' });
-    if (!pharmacy) {
-      console.log('No active pharmacy found for medication request');
-      return;
-    }
-
-    const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id}`;
-
-    medication.pharmacyRequest = {
-      requestedToPharmacy: true,
-      requestedAt: new Date(),
-      requestedBy: medication.createdBy,
-      pharmacyId: pharmacy._id,
-      pharmacyRequestNumber: requestNumber,
-      pharmacyStatus: 'Pending'
-    };
-
-    medication.status = 'Requested';
-    await medication.save();
-
-  } catch (error) {
-    console.error('Error creating pharmacy request:', error);
-  }
-}
-
 const { calculateRequiredBaseUnits } = require('../services/pharmacyTransaction.service');
 
 // Helper function to generate timing slots for medication
@@ -221,10 +193,9 @@ function generateTimingSlots(frequency, durationDays) {
   return timingSlots;
 }
 
-// Helper function to create pharmacy request
+// Helper function to create pharmacy request (single definition)
 async function createPharmacyRequest(medication) {
   try {
-    const Pharmacy = require('../models/Pharmacy');
     // Find in-house pharmacy
     const pharmacy = await Pharmacy.findOne({ status: 'Active' });
     if (!pharmacy) {
@@ -281,29 +252,28 @@ exports.createPrescription = async (req, res) => {
     // Process medication items and calculate required quantities
     const processedItems = items && Array.isArray(items)
       ? items.map(item => {
-        // Calculate required quantity base units for IPD
-        const requiredQtyBaseUnits = calculateRequiredBaseUnits({
-          dosage: item.dosage || '',
-          frequency: item.frequency,
-          duration: parseInt(item.duration) || 1,
-          durationUnit: 'Days'
-        });
+          const requiredQtyBaseUnits = calculateRequiredBaseUnits({
+            dosage: item.dosage || '',
+            frequency: item.frequency,
+            duration: parseInt(item.duration) || 1,
+            durationUnit: 'Days'
+          });
 
-        return {
-          medicine_name: item.medicine_name,
-          generic_name: item.generic_name || '',
-          medicine_id: item.medicine_id || null,
-          medicine_type: item.medicine_type || 'Tablet',
-          route_of_administration: item.route_of_administration || 'Oral',
-          dosage: item.dosage || '',
-          frequency: item.frequency,
-          duration: item.duration,
-          quantity: item.quantity || requiredQtyBaseUnits,
-          required_qty_base_units: requiredQtyBaseUnits,
-          instructions: item.instructions || '',
-          timing: item.timing || 'Anytime'
-        };
-      })
+          return {
+            medicine_name: item.medicine_name,
+            generic_name: item.generic_name || '',
+            medicine_id: item.medicine_id || null,
+            medicine_type: item.medicine_type || 'Tablet',
+            route_of_administration: item.route_of_administration || 'Oral',
+            dosage: item.dosage || '',
+            frequency: item.frequency,
+            duration: item.duration,
+            quantity: item.quantity || requiredQtyBaseUnits,
+            required_qty_base_units: requiredQtyBaseUnits,
+            instructions: item.instructions || '',
+            timing: item.timing || 'Anytime'
+          };
+        })
       : [];
 
     // Create prescription first
@@ -384,10 +354,10 @@ exports.createPrescription = async (req, res) => {
 
     await prescription.save();
 
+    let convertedMedications = [];
+
     // For IPD prescriptions, convert medications to IPD Medication Chart
     if (source_type === 'IPD' && ipd_admission_id && processedItems.length > 0) {
-      const convertedMedications = [];
-
       for (const item of processedItems) {
         // Get medicine details if available
         let medicineDetails = null;
@@ -488,7 +458,7 @@ exports.createPrescription = async (req, res) => {
       lab_requests: createdLabRequests,
       radiology_requests: createdRadiologyRequests,
       procedure_requests: createdProcedureRequests,
-      ipd_medications_count: source_type === 'IPD' ? convertedMedications?.length || 0 : 0
+      ipd_medications_count: source_type === 'IPD' ? (convertedMedications?.length || 0) : 0
     });
   } catch (err) {
     console.error('Error creating prescription:', err);
