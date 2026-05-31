@@ -33,6 +33,9 @@ router.get('/ipd/search-admissions', ...authChain, operations.searchIPDAdmission
 router.get('/ipd/queue', ...authChain, operations.getIPDQueue);
 router.post('/ipd/dispense', ...authChain, operations.dispenseIPDMedication);
 router.post('/ipd/advance', ...authChain, operations.depositAdvance);
+// Add this to the existing routes in pharmacy.routes.js
+router.get('/ipd/patients', ...authChain, operations.getIPDPatients);
+router.get('/ipd/patient-ledger/:patientId', ...authChain, operations.getPatientPharmacyLedger);
 router.get('/ipd/admissions/:admissionId/file', ...authChain, operations.getAdmissionPharmacyFile);
 router.get('/ipd/admissions/:admissionId/medicine-stock', ...authChain, operations.getAdmissionMedicineStock);
 router.get('/ipd/admissions/:admissionId/advance-ledger', ...authChain, operations.getAdvanceLedger);

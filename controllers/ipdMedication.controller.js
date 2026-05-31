@@ -25,24 +25,24 @@ function generateTimingSlots(frequency, durationDays) {
     'Stat': ['now'],
     'SOS': []
   };
-  
+
   const times = freqTimingMap[frequency] || ['08:00'];
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  
+
   for (let d = 0; d < durationDays; d++) {
     const slotDate = new Date(today);
     slotDate.setDate(today.getDate() + d);
-    
+
     for (const t of times) {
-      timingSlots.push({ 
+      timingSlots.push({
         date: slotDate,
-        time: t, 
-        status: 'Pending' 
+        time: t,
+        status: 'Pending'
       });
     }
   }
-  
+
   return timingSlots;
 }
 
@@ -56,7 +56,7 @@ async function createPharmacyRequest(medication) {
     }
 
     const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id}`;
-    
+
     medication.pharmacyRequest = {
       requestedToPharmacy: true,
       requestedAt: new Date(),
@@ -65,10 +65,10 @@ async function createPharmacyRequest(medication) {
       pharmacyRequestNumber: requestNumber,
       pharmacyStatus: 'Pending'
     };
-    
+
     medication.status = 'Requested';
     await medication.save();
-    
+
   } catch (error) {
     console.error('Error creating pharmacy request:', error);
   }
@@ -114,18 +114,18 @@ async function addToPatientMedicineStock(admissionId, patientId, medicineId, bat
 
   stock.issuedQtyBaseUnits += quantityBaseUnits;
   stock.currentBalanceBaseUnits += quantityBaseUnits;
-  
+
   if (saleId && !stock.sourceSaleIds.includes(saleId)) {
     stock.sourceSaleIds.push(saleId);
   }
-  
+
   if (medicationChartId && !stock.medicationChartIds.includes(medicationChartId)) {
     stock.medicationChartIds.push(medicationChartId);
   }
-  
+
   stock.lastIssuedAt = new Date();
   await stock.save();
-  
+
   return stock;
 }
 
@@ -143,16 +143,16 @@ async function deductFromPatientMedicineStock(admissionId, patientId, medicineId
 
   for (const stock of stocks) {
     if (remainingToDeduct <= 0) break;
-    
+
     const deductAmount = Math.min(stock.currentBalanceBaseUnits, remainingToDeduct);
     stock.administeredQtyBaseUnits += deductAmount;
     stock.currentBalanceBaseUnits -= deductAmount;
     remainingToDeduct -= deductAmount;
-    
+
     if (medicationChartId && !stock.medicationChartIds.includes(medicationChartId)) {
       stock.medicationChartIds.push(medicationChartId);
     }
-    
+
     stock.lastAdministeredAt = new Date();
     await stock.save();
     deducted = true;
@@ -198,7 +198,7 @@ exports.createMedicationOrder = async (req, res) => {
     let baseUnit = 'unit';
     let packUnit = 'pack';
     let unitsPerPack = 1;
-    
+
     if (medicineId) {
       medicineDetails = await Medicine.findById(medicineId);
       if (medicineDetails) {
@@ -274,7 +274,6 @@ exports.createMedicationOrder = async (req, res) => {
   }
 };
 
-// Get medications by admission
 exports.getMedicationsByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -289,7 +288,122 @@ exports.getMedicationsByAdmission = async (req, res) => {
       .populate('pharmacyRequest.pharmacyId', 'name')
       .sort({ startDate: -1 });
 
-    res.json({ success: true, medications });
+    // Get patient medicine stock for this admission
+    const patientStocks = await IPDPatientMedicineStock.find({ admissionId }).populate('medicineId', 'name strength');
+
+    // Helper function to normalize medicine name for comparison
+    const normalizeMedicineName = (name) => {
+      if (!name) return '';
+      return name.toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/\s*mg\s*/g, '')
+        .replace(/\s*ml\s*/g, '')
+        .replace(/\s*g\s*/g, '')
+        .trim();
+    };
+
+    // Create maps for stock lookup
+    const stockByIdMap = {};
+    const stockByNameMap = {};
+    const stockByNormalizedNameMap = {};
+
+    patientStocks.forEach(stock => {
+      const medicineId = stock.medicineId?._id?.toString();
+      const medicineName = stock.medicineName || stock.medicineId?.name;
+      const normalizedName = normalizeMedicineName(medicineName);
+
+      if (medicineId) {
+        stockByIdMap[medicineId] = {
+          currentBalance: stock.currentBalanceBaseUnits,
+          issuedQty: stock.issuedQtyBaseUnits,
+          administeredQty: stock.administeredQtyBaseUnits,
+          returnedQty: stock.returnedQtyBaseUnits,
+          baseUnit: stock.baseUnit || 'unit',
+          stockId: stock._id,
+          medicineName: medicineName,
+          normalizedName: normalizedName
+        };
+      }
+
+      if (medicineName) {
+        stockByNameMap[medicineName] = {
+          currentBalance: stock.currentBalanceBaseUnits,
+          issuedQty: stock.issuedQtyBaseUnits,
+          administeredQty: stock.administeredQtyBaseUnits,
+          returnedQty: stock.returnedQtyBaseUnits,
+          baseUnit: stock.baseUnit || 'unit',
+          stockId: stock._id,
+          medicineName: medicineName
+        };
+
+        stockByNormalizedNameMap[normalizedName] = {
+          currentBalance: stock.currentBalanceBaseUnits,
+          issuedQty: stock.issuedQtyBaseUnits,
+          administeredQty: stock.administeredQtyBaseUnits,
+          returnedQty: stock.returnedQtyBaseUnits,
+          baseUnit: stock.baseUnit || 'unit',
+          stockId: stock._id,
+          medicineName: medicineName
+        };
+      }
+    });
+
+    // Add stock information to each medication
+    const medicationsWithStock = medications.map(med => {
+      const medicineId = med.medicineId?._id?.toString();
+      const medicineName = med.medicineName;
+      const normalizedMedName = normalizeMedicineName(medicineName);
+
+      // Find stock info
+      let stockInfo = null;
+
+      if (medicineId && stockByIdMap[medicineId]) {
+        stockInfo = stockByIdMap[medicineId];
+      } else if (medicineName && stockByNameMap[medicineName]) {
+        stockInfo = stockByNameMap[medicineName];
+      } else if (normalizedMedName && stockByNormalizedNameMap[normalizedMedName]) {
+        stockInfo = stockByNormalizedNameMap[normalizedMedName];
+      } else if (medicineName) {
+        for (const [stockMedName, stock] of Object.entries(stockByNameMap)) {
+          const normalizedStockName = normalizeMedicineName(stockMedName);
+          if (normalizedStockName.includes(normalizedMedName) || normalizedMedName.includes(normalizedStockName)) {
+            stockInfo = stock;
+            break;
+          }
+        }
+      }
+
+      const finalStockInfo = stockInfo || {
+        currentBalance: 0,
+        issuedQty: 0,
+        administeredQty: 0,
+        returnedQty: 0,
+        baseUnit: med.medicineId?.base_unit || 'unit'
+      };
+
+      // Calculate required stock for today's pending doses
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todaysPendingDoses = (med.timing || []).filter(t => {
+        const tDate = t.date ? new Date(t.date) : new Date(t.time);
+        return !isNaN(tDate.getTime()) && tDate.toDateString() === today.toDateString() && t.status === 'Pending';
+      }).length;
+
+      // Calculate required stock = number of pending doses (each dose = 1 base unit)
+      const requiredStockForToday = todaysPendingDoses;
+
+      return {
+        ...med.toObject(),
+        stockInfo: finalStockInfo,
+        todaysPendingDoses,
+        requiredStockForToday,
+        isStockSufficient: finalStockInfo.currentBalance >= requiredStockForToday,
+        stockStatus: finalStockInfo.currentBalance === 0 ? 'No Stock' :
+          finalStockInfo.currentBalance < requiredStockForToday ? 'Low Stock' : 'Sufficient'
+      };
+    });
+
+    res.json({ success: true, medications: medicationsWithStock });
   } catch (err) {
     console.error('Error fetching medications:', err);
     res.status(500).json({ error: err.message });
@@ -316,8 +430,8 @@ exports.getMedicationById = async (req, res) => {
       medicineId: medication.medicineId
     });
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       medication,
       patientStockBalance: patientStock?.currentBalanceBaseUnits || 0
     });
@@ -333,7 +447,7 @@ exports.getMedicationById = async (req, res) => {
 exports.getPendingPharmacyRequests = async (req, res) => {
   try {
     const { pharmacyId } = req.params;
-    
+
     const medications = await IPDMedicationChart.find({
       'pharmacyRequest.requestedToPharmacy': true,
       'pharmacyRequest.pharmacyId': pharmacyId,
@@ -356,36 +470,36 @@ exports.processPharmacyRequest = async (req, res) => {
   try {
     const { id } = req.params;
     const { action, batchId, dispensedQuantity, notes } = req.body;
-    
+
     const medication = await IPDMedicationChart.findById(id).populate('medicineId');
     if (!medication) {
       return res.status(404).json({ error: 'Medication not found' });
     }
-    
+
     if (action === 'approve') {
       if (batchId) {
         const batch = await MedicineBatch.findById(batchId);
         if (!batch) {
           return res.status(404).json({ error: 'Batch not found' });
         }
-        
+
         const dispenseQty = dispensedQuantity || medication.requiredQtyBaseUnits || 1;
-        
+
         if (batch.quantity_base_units < dispenseQty) {
           return res.status(400).json({ error: 'Insufficient stock in batch' });
         }
-        
+
         batch.quantity_base_units -= dispenseQty;
         batch.quantity = batch.quantity_base_units;
         await batch.save();
-        
+
         if (medication.medicineId) {
           await Medicine.findByIdAndUpdate(
             medication.medicineId._id,
             { $inc: { stock_quantity: -dispenseQty } }
           );
         }
-        
+
         await addToPatientMedicineStock(
           medication.admissionId,
           medication.patientId,
@@ -400,35 +514,35 @@ exports.processPharmacyRequest = async (req, res) => {
           null,
           medication._id
         );
-        
+
         medication.pharmacyRequest.dispensedBatchId = batchId;
         medication.pharmacyRequest.dispensedQuantity = dispenseQty;
         medication.pharmacyRequest.dispensedAt = new Date();
         medication.pharmacyRequest.dispensedFromPharmacy = true;
-        
+
         const timingSlots = generateTimingSlots(medication.frequency, medication.duration || 1);
         medication.timing = timingSlots;
       }
-      
+
       medication.pharmacyRequest.pharmacyStatus = 'Approved';
       medication.status = 'Active';
-      
+
     } else if (action === 'reject') {
       medication.pharmacyRequest.pharmacyStatus = 'Rejected';
       medication.status = 'Stopped';
       medication.stoppedReason = `Pharmacy rejected: ${notes || 'Stock not available'}`;
-      
+
     } else if (action === 'out_of_stock') {
       medication.pharmacyRequest.pharmacyStatus = 'OutOfStock';
       medication.pharmacyRequest.pharmacyNotes = notes;
     }
-    
+
     if (notes) {
       medication.pharmacyRequest.pharmacyNotes = notes;
     }
-    
+
     await medication.save();
-    
+
     const nursingNote = new NursingNote({
       admissionId: medication.admissionId,
       patientId: medication.patientId,
@@ -438,7 +552,7 @@ exports.processPharmacyRequest = async (req, res) => {
       createdBy: req.user?._id
     });
     await nursingNote.save();
-    
+
     res.json({
       success: true,
       message: `Pharmacy request ${action}d successfully`,
@@ -459,13 +573,13 @@ exports.getNurseTodaySchedule = async (req, res) => {
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    
+
     const admissions = await IPDAdmission.find({
       status: { $in: ['Admitted', 'Under Treatment'] }
     }).select('_id');
-    
+
     const admissionIds = admissions.map(a => a._id);
-    
+
     const medications = await IPDMedicationChart.find({
       admissionId: { $in: admissionIds },
       status: 'Active',
@@ -475,21 +589,21 @@ exports.getNurseTodaySchedule = async (req, res) => {
       .populate('patientId', 'first_name last_name patientId')
       .populate('prescribedBy', 'firstName lastName')
       .populate('medicineId', 'medicine_name');
-    
+
     const todaySchedule = medications.map(med => {
       const todaysTimings = (med.timing || []).filter(t => {
         const timingDate = new Date(t.date);
         timingDate.setHours(0, 0, 0, 0);
         return timingDate.getTime() === today.getTime() && t.status === 'Pending';
       });
-      
+
       return {
         ...med.toObject(),
         todaysTimings,
         pendingCount: todaysTimings.length
       };
     }).filter(med => med.todaysTimings.length > 0);
-    
+
     res.json({ success: true, schedule: todaySchedule });
   } catch (err) {
     console.error('Error fetching nurse schedule:', err);
@@ -502,7 +616,7 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
   try {
     const { admissionId } = req.params;
     const { date } = req.query;
-    
+
     let targetDate = new Date();
     if (date) {
       targetDate = new Date(date);
@@ -510,7 +624,7 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
     targetDate.setHours(0, 0, 0, 0);
     const nextDate = new Date(targetDate);
     nextDate.setDate(nextDate.getDate() + 1);
-    
+
     const medications = await IPDMedicationChart.find({
       admissionId,
       status: 'Active',
@@ -518,14 +632,14 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
     })
       .populate('prescribedBy', 'firstName lastName')
       .populate('medicineId', 'medicine_name base_unit pack_unit units_per_pack');
-    
+
     const schedule = await Promise.all(medications.map(async (med) => {
       const todaysTimings = (med.timing || []).filter(t => {
         const timingDate = new Date(t.date);
         timingDate.setHours(0, 0, 0, 0);
         return timingDate.getTime() === targetDate.getTime();
       });
-      
+
       let patientStockBalance = 0;
       if (med.medicineId) {
         const stock = await IPDPatientMedicineStock.findOne({
@@ -535,7 +649,7 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
         });
         patientStockBalance = stock?.currentBalanceBaseUnits || 0;
       }
-      
+
       return {
         ...med.toObject(),
         todaysTimings,
@@ -545,7 +659,7 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
         requiredStockForDay: todaysTimings.length
       };
     })).filter(med => med.todaysTimings.length > 0);
-    
+
     res.json({ success: true, schedule, date: targetDate });
   } catch (err) {
     console.error('Error fetching medication schedule:', err);
@@ -574,7 +688,7 @@ exports.administerMedication = async (req, res) => {
     }
 
     const doseQtyBaseUnits = Math.max(1, Math.ceil(parseDoseQty(medication.dosage)));
-    
+
     let stock = null;
     if (medication.medicineId) {
       stock = await IPDPatientMedicineStock.findOne({
@@ -583,13 +697,13 @@ exports.administerMedication = async (req, res) => {
         medicineId: medication.medicineId._id,
         currentBalanceBaseUnits: { $gte: doseQtyBaseUnits }
       });
-      
+
       if (!stock) {
-        return res.status(400).json({ 
-          error: `Insufficient patient medicine stock for ${medication.medicineName}. Required: ${doseQtyBaseUnits}` 
+        return res.status(400).json({
+          error: `Insufficient patient medicine stock for ${medication.medicineName}. Required: ${doseQtyBaseUnits}`
         });
       }
-      
+
       stock.administeredQtyBaseUnits += doseQtyBaseUnits;
       stock.currentBalanceBaseUnits -= doseQtyBaseUnits;
       stock.lastAdministeredAt = new Date();
@@ -600,15 +714,15 @@ exports.administerMedication = async (req, res) => {
     medication.timing[timingIndex].administeredAt = new Date();
     medication.timing[timingIndex].administeredBy = req.user?._id;
     medication.timing[timingIndex].remarks = remarks;
-    
+
     if (witnessedBy) {
       medication.timing[timingIndex].witnessedBy = witnessedBy;
     }
 
-    const allCompleted = medication.timing.every(t => 
+    const allCompleted = medication.timing.every(t =>
       t.status === 'Administered' || t.status === 'Skipped' || t.status === 'Held'
     );
-    
+
     if (allCompleted) {
       medication.status = 'Completed';
     }
@@ -795,9 +909,9 @@ exports.getTodaySchedule = async (req, res) => {
 exports.getMedicationSummary = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    
+
     const medications = await IPDMedicationChart.find({ admissionId });
-    
+
     const summary = {
       total: medications.length,
       active: medications.filter(m => m.status === 'Active').length,
@@ -809,14 +923,14 @@ exports.getMedicationSummary = async (req, res) => {
       totalDosesHeld: 0,
       totalCost: 0
     };
-    
+
     medications.forEach(med => {
       summary.totalDosesAdministered += (med.timing || []).filter(t => t.status === 'Administered').length;
       summary.totalDosesSkipped += (med.timing || []).filter(t => t.status === 'Skipped').length;
       summary.totalDosesHeld += (med.timing || []).filter(t => t.status === 'Held').length;
       summary.totalCost += med.totalCost || 0;
     });
-    
+
     const patientStocks = await IPDPatientMedicineStock.find({ admissionId });
     const stockSummary = {
       totalMedicinesIssued: patientStocks.length,
@@ -825,7 +939,7 @@ exports.getMedicationSummary = async (req, res) => {
       totalUnitsReturned: patientStocks.reduce((sum, s) => sum + s.returnedQtyBaseUnits, 0),
       currentBalance: patientStocks.reduce((sum, s) => sum + s.currentBalanceBaseUnits, 0)
     };
-    
+
     res.json({ success: true, summary, stockSummary });
   } catch (err) {
     console.error('Error fetching medication summary:', err);
@@ -837,12 +951,12 @@ exports.getMedicationSummary = async (req, res) => {
 exports.getPatientMedicineStock = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    
+
     const stocks = await IPDPatientMedicineStock.find({ admissionId })
       .populate('medicineId', 'name base_unit pack_unit units_per_pack')
       .populate('batchId', 'batch_number expiry_date')
       .sort({ createdAt: -1 });
-    
+
     res.json({ success: true, stocks });
   } catch (err) {
     console.error('Error fetching patient medicine stock:', err);

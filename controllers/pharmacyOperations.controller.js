@@ -13,6 +13,7 @@ const InventoryLedger = require('../models/InventoryLedger');
 const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
 const PharmacyReturn = require('../models/PharmacyReturn');
 const Prescription = require('../models/Prescription');
+const Patient = require('../models/Patient');
 const {
   objectIdOrUndefined,
   getHospitalId,
@@ -372,6 +373,191 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
   }, {});
 
   res.json({ success: true, range: { start, end }, totals, summary, entries });
+});
+
+// Add these functions to the existing exports in pharmacyOperations.controller.js
+
+// Get all active IPD patients with their pharmacy balances
+exports.getIPDPatients = asyncHandler(async (req, res) => {
+  const { search = '', status = 'Admitted,Under Treatment', limit = 100 } = req.query;
+  const statusArray = status.split(',').map(s => s.trim());
+  
+  const query = {
+    status: { $in: statusArray }
+  };
+  
+  if (search) {
+    const patients = await Patient.find({
+      $or: [
+        { first_name: { $regex: search, $options: 'i' } },
+        { last_name: { $regex: search, $options: 'i' } },
+        { patientId: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } }
+      ]
+    }).select('_id');
+    
+    query.patientId = { $in: patients.map(p => p._id) };
+  }
+  
+  const admissions = await IPDAdmission.find(query)
+    .populate('patientId', 'first_name last_name patientId phone age gender')
+    .populate('bedId', 'bedNumber bedType')
+    .populate('wardId', 'name')
+    .populate('primaryDoctorId', 'firstName lastName')
+    .sort({ admissionDate: -1 })
+    .limit(Number(limit));
+  
+  // Get pharmacy balances for each admission
+  const patientsWithBalances = await Promise.all(admissions.map(async (admission) => {
+    const pharmacyAdvance = await getAdvanceBalance({ 
+      admissionId: admission._id, 
+      patientId: admission.patientId._id, 
+      walletType: 'PHARMACY_IPD' 
+    });
+    
+    const sharedIpdAdvance = await getAdvanceBalance({ 
+      admissionId: admission._id, 
+      patientId: admission.patientId._id, 
+      walletType: 'IPD_SHARED' 
+    });
+    
+    // Get recent pharmacy sales
+    const recentSales = await Sale.find({ 
+      admission_id: admission._id 
+    }).sort({ sale_date: -1 }).limit(5);
+    
+    const totalSalesAmount = recentSales.reduce((sum, sale) => sum + sale.total_amount, 0);
+    
+    return {
+      ...admission.toObject(),
+      pharmacyAdvance,
+      sharedIpdAdvance,
+      recentSalesCount: recentSales.length,
+      totalSalesAmount,
+      lastSaleDate: recentSales[0]?.sale_date || null
+    };
+  }));
+  
+  res.json({ 
+    success: true, 
+    patients: patientsWithBalances,
+    total: patientsWithBalances.length
+  });
+});
+
+// Get patient's personal pharmacy ledger
+exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
+  const { patientId } = req.params;
+  const { admissionId, startDate, endDate, limit = 50 } = req.query;
+  
+  const patient = await Patient.findById(patientId).select('first_name last_name patientId phone');
+  if (!patient) {
+    return res.status(404).json({ error: 'Patient not found' });
+  }
+  
+  // Build query for admissions
+  const admissionQuery = { patientId: patient._id };
+  if (admissionId) {
+    admissionQuery._id = admissionId;
+  } else {
+    admissionQuery.status = { $in: ['Admitted', 'Under Treatment', 'Discharge Initiated'] };
+  }
+  
+  const admissions = await IPDAdmission.find(admissionQuery)
+    .populate('bedId', 'bedNumber bedType')
+    .populate('wardId', 'name')
+    .sort({ admissionDate: -1 });
+  
+  // Get all pharmacy transactions (sales) for this patient
+  const saleFilter = { patient_id: patient._id };
+  if (startDate && endDate) {
+    saleFilter.sale_date = {
+      $gte: new Date(startDate),
+      $lte: new Date(endDate)
+    };
+  }
+  
+  const sales = await Sale.find(saleFilter)
+    .populate('items.medicine_id', 'name')
+    .populate('admission_id', 'admissionNumber')
+    .sort({ sale_date: -1 })
+    .limit(Number(limit));
+  
+  // Get advance ledger entries
+  const advanceFilters = { patientId: patient._id };
+  if (startDate && endDate) {
+    advanceFilters.createdAt = {
+      $gte: new Date(startDate),
+      $lte: new Date(endDate)
+    };
+  }
+  
+  const advanceLedgers = await PatientAdvanceLedger.find(advanceFilters)
+    .sort({ createdAt: -1 })
+    .limit(Number(limit));
+  
+  // Get pharmacy ledger entries
+  const pharmacyLedgers = await PharmacyLedgerEntry.find({ patientId: patient._id })
+    .sort({ entryDate: -1 })
+    .limit(Number(limit));
+  
+  // Get medicine returns
+  const returns = await PharmacyReturn.find({ patientId: patient._id })
+    .sort({ createdAt: -1 })
+    .limit(Number(limit));
+  
+  // Calculate current balances
+  const currentBalances = {
+    sharedIpdAdvance: 0,
+    pharmacyAdvance: 0,
+    totalSpent: 0,
+    pendingBills: 0
+  };
+  
+  for (const admission of admissions) {
+    const pharmacyAdvance = await getAdvanceBalance({ 
+      admissionId: admission._id, 
+      patientId: patient._id, 
+      walletType: 'PHARMACY_IPD' 
+    });
+    const sharedIpdAdvance = await getAdvanceBalance({ 
+      admissionId: admission._id, 
+      patientId: patient._id, 
+      walletType: 'IPD_SHARED' 
+    });
+    
+    currentBalances.pharmacyAdvance += pharmacyAdvance;
+    currentBalances.sharedIpdAdvance += sharedIpdAdvance;
+  }
+  
+  // Calculate total spent
+  const allSales = await Sale.find({ patient_id: patient._id });
+  currentBalances.totalSpent = allSales.reduce((sum, sale) => sum + sale.total_amount, 0);
+  
+  // Calculate pending bills (sales not fully paid)
+  const pendingSales = await Sale.find({ 
+    patient_id: patient._id,
+    balance_due: { $gt: 0 }
+  });
+  currentBalances.pendingBills = pendingSales.reduce((sum, sale) => sum + sale.balance_due, 0);
+  
+  res.json({
+    success: true,
+    patient,
+    admissions,
+    transactions: {
+      sales,
+      advanceLedgers,
+      pharmacyLedgers,
+      returns
+    },
+    balances: currentBalances,
+    summary: {
+      totalSales: allSales.length,
+      totalReturns: returns.length,
+      lastTransaction: sales[0]?.sale_date || null
+    }
+  });
 });
 
 exports.getDashboard = asyncHandler(async (req, res) => {

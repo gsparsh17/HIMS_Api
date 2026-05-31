@@ -452,6 +452,40 @@ function normalizePayments({ total, payment_method, payments }) {
   }];
 }
 
+// New function to handle payments with overpayment
+function normalizePaymentsWithOverpayment({ total, payment_method, payments, overpayment_amount = 0, overpayment_advance = null }) {
+  let normalizedPayments = [];
+  
+  if (Array.isArray(payments) && payments.length > 0) {
+    normalizedPayments = payments.map(p => ({
+      method: p.method || p.paymentMethod,
+      amount: normalizeMoney(p.amount),
+      reference: p.reference || p.referenceNumber || '',
+      walletType: p.walletType || (p.method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : p.method === 'IPDAdvance' ? 'IPD_SHARED' : null)
+    }));
+  } else {
+    normalizedPayments = [{
+      method: payment_method || 'Cash',
+      amount: normalizeMoney(total),
+      reference: '',
+      walletType: payment_method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : payment_method === 'IPDAdvance' ? 'IPD_SHARED' : null
+    }];
+  }
+
+  // Handle overpayment that should be added to pharmacy advance
+  if (overpayment_amount > 0 && overpayment_advance) {
+    normalizedPayments.push({
+      method: 'PharmacyAdvance',
+      amount: normalizeMoney(overpayment_amount),
+      reference: overpayment_advance.reference || '',
+      walletType: 'PHARMACY_IPD',
+      isOverpayment: true
+    });
+  }
+
+  return normalizedPayments;
+}
+
 async function createUnifiedSale(payload, req) {
   const hospitalId = getHospitalId(req, payload.hospitalId);
   const pharmacyId = objectIdOrUndefined(payload.pharmacyId || payload.pharmacy_id);
@@ -462,14 +496,27 @@ async function createUnifiedSale(payload, req) {
 
   const items = await buildSaleItems(payload.items || [], { honorLooseSale: payload.allowLooseSale !== false });
   const totals = calculateTotals(items, payload);
-  const payments = normalizePayments({ total: totals.total, payment_method: payload.payment_method || payload.paymentMethod, payments: payload.payments });
+  
+  // Use new payment normalization with overpayment support
+  const payments = normalizePaymentsWithOverpayment({ 
+    total: totals.total, 
+    payment_method: payload.payment_method || payload.paymentMethod, 
+    payments: payload.payments,
+    overpayment_amount: payload.overpayment_amount || 0,
+    overpayment_advance: payload.overpayment_advance || null
+  });
+  
   const paidAmount = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
 
   if (paidAmount + 0.01 < totals.total && payload.status !== 'Pending') {
     throw new Error(`Payment amount ${paidAmount} is less than bill total ${totals.total}. Use Pending/Credit or split payment.`);
   }
 
-  for (const p of payments) {
+  // Separate regular payments from overpayment
+  const regularPayments = payments.filter(p => !p.isOverpayment);
+  const overpaymentEntries = payments.filter(p => p.isOverpayment);
+
+  for (const p of regularPayments) {
     if (['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) {
       if (!admissionId || !patientId) throw new Error(`${p.method} can only be used for admitted IPD patients.`);
       const walletType = p.walletType || (p.method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED');
@@ -501,8 +548,8 @@ async function createUnifiedSale(payload, req) {
     total_amount: totals.total,
     amount_paid: paidAmount,
     balance_due: Math.max(0, normalizeMoney(totals.total - paidAmount)),
-    payment_method: payments.length > 1 ? 'Split' : payments[0].method,
-    payments,
+    payment_method: regularPayments.length > 1 ? 'Split' : regularPayments[0]?.method || 'Cash',
+    payments: regularPayments,
     status: payload.status || (paidAmount >= totals.total ? 'Completed' : 'Pending'),
     notes: payload.notes,
     created_by: createdBy
@@ -513,7 +560,8 @@ async function createUnifiedSale(payload, req) {
   await createIpdChargeForSale({ sale, total: totals.total, createdBy });
   await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
-  for (const p of payments) {
+  // Process regular payments (advance deductions)
+  for (const p of regularPayments) {
     if (['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) {
       await createAdvanceLedgerEntry({
         hospitalId,
@@ -533,7 +581,28 @@ async function createUnifiedSale(payload, req) {
     }
   }
 
-  await createPharmacyLedgerForPayments({ payments, sale, hospitalId, pharmacyId, createdBy });
+  // Process overpayment - add to pharmacy advance
+  for (const p of overpaymentEntries) {
+    if (p.method === 'PharmacyAdvance' && admissionId && patientId) {
+      await createAdvanceLedgerEntry({
+        hospitalId,
+        patientId,
+        admissionId,
+        walletType: 'PHARMACY_IPD',
+        transactionType: 'ADVANCE_DEPOSIT',
+        direction: 'CREDIT',
+        amount: p.amount,
+        paymentMethod: p.method,
+        referenceNumber: p.reference,
+        sourceModule: 'Pharmacy',
+        sourceId: sale._id,
+        notes: `Overpayment credited to pharmacy advance from sale ${sale.sale_number}`,
+        createdBy
+      });
+    }
+  }
+
+  await createPharmacyLedgerForPayments({ payments: regularPayments, sale, hospitalId, pharmacyId, createdBy });
 
   if (prescriptionId) {
     const prescription = await require('../models/Prescription').findById(prescriptionId);
@@ -571,7 +640,17 @@ async function createUnifiedSale(payload, req) {
     .populate('items.batch_id', 'batch_number expiry_date')
     .lean();
 
-  return { sale: populatedSale, invoice };
+  // Add overpayment info to response
+  const overpaymentAmount = overpaymentEntries.reduce((sum, p) => sum + p.amount, 0);
+  
+  return { 
+    sale: populatedSale, 
+    invoice,
+    overpayment_advance: overpaymentAmount > 0 ? {
+      amount: overpaymentAmount,
+      credited_to: 'PHARMACY_IPD'
+    } : null
+  };
 }
 
 async function createReturn(payload, req) {
@@ -695,5 +774,6 @@ module.exports = {
   buildSaleItems,
   calculateTotals,
   createUnifiedSale,
-  createReturn
+  createReturn,
+  normalizePaymentsWithOverpayment
 };

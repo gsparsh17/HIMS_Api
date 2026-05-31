@@ -99,9 +99,13 @@ const saleSchema = new mongoose.Schema({
   created_by: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
-  }
+  },
+  // Overpayment tracking fields
+  overpayment_amount: { type: Number, default: 0 },
+  overpayment_credited_to: { type: String, enum: ['PHARMACY_IPD', 'IPD_SHARED', null], default: null }
 }, { timestamps: true });
 
+// Pre-validate middleware
 saleSchema.pre('validate', function(next) {
   this.items = (this.items || []).map((item) => {
     const qty = item.quantity_base_units ?? item.quantity ?? 0;
@@ -120,6 +124,7 @@ saleSchema.pre('validate', function(next) {
   next();
 });
 
+// Pre-save middleware to generate sale number
 saleSchema.pre('save', async function(next) {
   if (this.isNew && !this.sale_number) {
     const count = await mongoose.model('Sale').countDocuments();
@@ -128,6 +133,7 @@ saleSchema.pre('save', async function(next) {
   next();
 });
 
+// Indexes
 saleSchema.index({ sale_date: -1 });
 saleSchema.index({ customer_type: 1, admission_id: 1 });
 saleSchema.index({ source_type: 1 });
