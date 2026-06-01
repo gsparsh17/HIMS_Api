@@ -39,6 +39,19 @@ const patientSchema = new mongoose.Schema({
     type: Date, 
     required: true 
   },
+  age: {
+    type: Number,
+    computed: function() {
+      if (!this.dob) return null;
+      const today = new Date();
+      let age = today.getFullYear() - this.dob.getFullYear();
+      const monthDiff = today.getMonth() - this.dob.getMonth();
+      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < this.dob.getDate())) {
+        age--;
+      }
+      return age;
+    }
+  },
   address: { 
     type: String 
   },
@@ -85,30 +98,130 @@ const patientSchema = new mongoose.Schema({
   },
   patient_type: {
     type: String,
-    enum: ['opd', 'ipd'],
+    enum: ['opd', 'ipd', 'walkin'],
     default: 'ipd',
   },
   aadhaar_number: {
     type: String,
     trim: true,
-    // Removed strict 'required' to allow fallback logic for patients without Aadhaar
     validate: {
       validator: function(v) {
-        if (!v) return true; // Allow empty so fallback logic can run
+        if (!v) return true;
         return /^\d{12}$/.test(v);
       },
       message: 'Aadhaar number must be exactly 12 digits'
     }
   },
+  // NEW: Sponsor/Payer Information
+  sponsor_type: {
+    type: String,
+    enum: ['self', 'ayushman_bharat', 'insurance', 'company_panel', 'government_scheme', 'other'],
+    default: 'self'
+  },
+  sponsor_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Sponsor'
+  },
+  sponsor_name: {
+    type: String,
+    trim: true
+  },
+  sponsor_policy_number: {
+    type: String,
+    trim: true
+  },
+  sponsor_valid_until: {
+    type: Date
+  },
+  // NEW: Walk-in support
+  is_walkin: {
+    type: Boolean,
+    default: false
+  },
+  walkin_created_at: {
+    type: Date
+  },
+  last_pharmacy_visit: {
+    type: Date
+  },
+  // Active admissions tracking for quick pharmacy access
+  active_admissions: [{
+    admission_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'IPDAdmission'
+    },
+    ship_number: String,
+    registration_number: String,
+    ward_name: String,
+    bed_number: String,
+    doctor_name: String,
+    department_name: String,
+    status: {
+      type: String,
+      enum: ['active', 'discharged', 'transferred'],
+      default: 'active'
+    }
+  }],
+  // Pharmacy account summary (denormalized for quick access)
+  pharmacy_outstanding_balance: {
+    type: Number,
+    default: 0
+  },
+  pharmacy_advance_balance: {
+    type: Number,
+    default: 0
+  },
+  last_pharmacy_transaction: {
+    type: Date
+  },
   registered_at: { 
     type: Date, 
     default: Date.now 
   },
+  updated_at: {
+    type: Date,
+    default: Date.now
+  }
+}, {
+  timestamps: { createdAt: 'registered_at', updatedAt: 'updated_at' },
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
 });
+
+// Virtual for full name
+patientSchema.virtual('full_name').get(function() {
+  const parts = [this.first_name];
+  if (this.middle_name) parts.push(this.middle_name);
+  if (this.last_name) parts.push(this.last_name);
+  return parts.join(' ');
+});
+
+// Virtual for display name with salutation
+patientSchema.virtual('display_name').get(function() {
+  const salutation = this.salutation ? `${this.salutation} ` : '';
+  return `${salutation}${this.full_name}`;
+});
+
+// Index for fast pharmacy POS search
+patientSchema.index({ 
+  first_name: 'text', 
+  last_name: 'text', 
+  phone: 'text', 
+  uhid: 'text', 
+  patientId: 'text' 
+});
+
+// Compound indexes for common pharmacy queries
+patientSchema.index({ phone: 1 });
+patientSchema.index({ uhid: 1 });
+patientSchema.index({ patientId: 1 });
+patientSchema.index({ is_walkin: 1, last_pharmacy_visit: -1 });
+patientSchema.index({ sponsor_type: 1, pharmacy_outstanding_balance: -1 });
+patientSchema.index({ 'active_admissions.ship_number': 1 });
+patientSchema.index({ 'active_admissions.status': 1 });
 
 const Hospital = require('./Hospital');
 
-// Helper for the OLD logic (Fallback)
 function generateStructuredPatientId(firstName, lastName, phone, hospitalCode) {
   const date = new Date();
   const year = date.getFullYear().toString().slice(-2);
@@ -120,13 +233,15 @@ function generateStructuredPatientId(firstName, lastName, phone, hospitalCode) {
 
 patientSchema.pre('save', async function (next) {
   try {
+    const now = new Date();
+    this.updated_at = now;
+    
     if (!this.uhid || !this.patientId) {
       const hospital = await Hospital.findOne();
       if (!hospital || !hospital.hospitalID) {
         throw new Error('Hospital ID not found');
       }
 
-      // Try to find existing patient with same name and phone
       const existingPatient = await mongoose.model('Patient').findOne({
         first_name: this.first_name,
         last_name: this.last_name,
@@ -140,7 +255,6 @@ patientSchema.pre('save', async function (next) {
       } else {
         let finalGeneratedId = '';
 
-        // --- CONDITION: If Aadhaar is present, use New Logic ---
         if (this.aadhaar_number && this.aadhaar_number.length === 12) {
           const date = new Date();
           const yymm = `${date.getFullYear().toString().slice(-2)}${(date.getMonth() + 1).toString().padStart(2, '0')}`;
@@ -155,9 +269,7 @@ patientSchema.pre('save', async function (next) {
           }
           const uniqueSuffix = this.aadhaar_number.slice(-8);
           finalGeneratedId = `${hospitalPrefix}${yymm}${uniqueSuffix}`;
-        } 
-        // --- FALLBACK: If Aadhaar is NOT present, use Old Logic ---
-        else {
+        } else {
           finalGeneratedId = generateStructuredPatientId(
             this.first_name,
             this.last_name || '',
@@ -166,7 +278,6 @@ patientSchema.pre('save', async function (next) {
           );
         }
 
-        // Guarantee uniqueness for whichever logic was used
         let isUnique = false;
         let suffixCounter = 0;
         let checkId = finalGeneratedId;
@@ -188,6 +299,11 @@ patientSchema.pre('save', async function (next) {
         this.patientId = checkId; 
         this.hospitalId = hospital.hospitalID;
       }
+    }
+
+    // Set walkin timestamp if applicable
+    if (this.is_walkin && !this.walkin_created_at) {
+      this.walkin_created_at = now;
     }
 
     next();

@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const paymentBreakupSchema = new mongoose.Schema({
   method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'IPDAdvance', 'PharmacyAdvance', 'Credit', 'Pending'],
+    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Credit', 'Pending', 'NoPayment', 'Adjustment'],
     required: true
   },
   amount: { type: Number, required: true, min: 0 },
@@ -11,18 +11,29 @@ const paymentBreakupSchema = new mongoose.Schema({
   walletType: { type: String, enum: ['IPD_SHARED', 'PHARMACY_IPD', null], default: null }
 }, { _id: false });
 
+const saleReturnRefSchema = new mongoose.Schema({
+  return_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PharmacyReturn' },
+  return_number: { type: String },
+  amount: { type: Number, default: 0 },
+  returned_at: { type: Date, default: Date.now }
+}, { _id: false });
+
+const settlementRefSchema = new mongoose.Schema({
+  sale_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
+  amount: { type: Number, default: 0 },
+  settled_at: { type: Date, default: Date.now }
+}, { _id: false });
+
 const saleItemSchema = new mongoose.Schema({
-  medicine_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Medicine',
-    required: true
-  },
-  batch_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'MedicineBatch'
-  },
+  medicine_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Medicine', required: true },
+  batch_id: { type: mongoose.Schema.Types.ObjectId, ref: 'MedicineBatch' },
   medicine_name: { type: String, trim: true },
+  composition: { type: String, trim: true },
+  generic_name: { type: String, trim: true },
+  brand: { type: String, trim: true },
+  hsn_code: { type: String, trim: true },
   batch_number: { type: String, trim: true },
+  expiry_date: { type: Date },
 
   // Base-unit billing. quantity is retained as alias for old screens.
   quantity: { type: Number, required: true, min: 0 },
@@ -39,10 +50,36 @@ const saleItemSchema = new mongoose.Schema({
   gross_amount: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
   discount_amount: { type: Number, default: 0 },
+  taxable_amount: { type: Number, default: 0 },
+  tax_rate: { type: Number, default: 0 },
+  cgst_rate: { type: Number, default: 0 },
+  sgst_rate: { type: Number, default: 0 },
+  cgst_amount: { type: Number, default: 0 },
+  sgst_amount: { type: Number, default: 0 },
+  tax_amount: { type: Number, default: 0 },
   total_price: { type: Number, default: 0 },
+  net_amount: { type: Number, default: 0 },
+
+  // Cost/profit snapshots are stored for audit but should only be shown to Pharmacy Head/Admin.
+  purchase_rate_per_base_unit: { type: Number, default: 0, select: false },
+  purchase_amount: { type: Number, default: 0, select: false },
+  gross_profit: { type: Number, default: 0, select: false },
 
   prescription_item_id: { type: mongoose.Schema.Types.ObjectId },
-  ipd_medication_chart_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDMedicationChart' }
+  ipd_medication_chart_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDMedicationChart' },
+  prescribed_by: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
+  prescribed_by_name: { type: String, trim: true },
+  doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
+  doctor_name: { type: String, trim: true },
+
+  is_own_brand: { type: Boolean, default: false },
+  commission_doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
+  commission_type: { type: String, enum: ['None', 'Percentage', 'Fixed'], default: 'None' },
+  commission_value: { type: Number, default: 0 },
+  commission_amount: { type: Number, default: 0, select: false },
+
+  returned_quantity_base_units: { type: Number, default: 0 },
+  returned_amount: { type: Number, default: 0 }
 });
 
 const saleSchema = new mongoose.Schema({
@@ -59,31 +96,48 @@ const saleSchema = new mongoose.Schema({
     default: 'WalkIn'
   },
   source_type: { type: String, enum: ['DIRECT', 'OPD_PRESCRIPTION', 'IPD_MEDICATION', 'IPD_RETURN_ADJUSTMENT'], default: 'DIRECT' },
-  patient_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Patient'
-  },
+  patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
   admission_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', index: true },
   prescription_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Prescription' },
+  doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', index: true },
+  doctor_name: { type: String, trim: true },
+
+  uhid: { type: String, trim: true, index: true },
+  registration_number: { type: String, trim: true, index: true },
+  ship_no: { type: String, trim: true, index: true },
+  sponsor_type: { type: String, trim: true, default: 'Self' },
+  sponsor_name: { type: String, trim: true, default: 'Self' },
 
   customer_name: { type: String },
   customer_phone: { type: String },
-  sale_date: { type: Date, default: Date.now },
+  sale_date: { type: Date, default: Date.now, index: true },
   items: [saleItemSchema],
+
+  gross_amount: { type: Number, default: 0 },
   subtotal: { type: Number, required: true, default: 0 },
+  item_discount_amount: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
   discount_type: { type: String, enum: ['percentage', 'fixed'], default: 'percentage' },
   discount_amount: { type: Number, default: 0 },
+  taxable_amount: { type: Number, default: 0 },
   discount_reason: { type: String },
   discount_approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   tax_rate: { type: Number, default: 0 },
   tax: { type: Number, default: 0 },
   total_amount: { type: Number, required: true, default: 0 },
+  current_bill_amount: { type: Number, default: 0 },
+
+  previous_outstanding: { type: Number, default: 0 },
   amount_paid: { type: Number, default: 0 },
-  balance_due: { type: Number, default: 0 },
+  settlement_amount: { type: Number, default: 0 },
+  balance_due: { type: Number, default: 0, index: true },
+  closing_outstanding: { type: Number, default: 0 },
+  pharmacy_advance_before: { type: Number, default: 0 },
+  pharmacy_advance_after: { type: Number, default: 0 },
+
   payment_method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'Credit', 'Pending'],
+    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'Credit', 'Pending', 'NoPayment', 'Adjustment'],
     required: true,
     default: 'Cash'
   },
@@ -96,16 +150,20 @@ const saleSchema = new mongoose.Schema({
   prescription_required: { type: Boolean, default: false },
   prescription_details: { type: String },
   notes: { type: String },
-  created_by: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
-  },
-  // Overpayment tracking fields
+  created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
   overpayment_amount: { type: Number, default: 0 },
-  overpayment_credited_to: { type: String, enum: ['PHARMACY_IPD', 'IPD_SHARED', null], default: null }
+  overpayment_credited_to: { type: String, enum: ['PHARMACY_IPD', 'IPD_SHARED', null], default: null },
+  return_amount: { type: Number, default: 0 },
+  net_amount_after_returns: { type: Number, default: 0 },
+  return_refs: [saleReturnRefSchema],
+  settlement_refs: [settlementRefSchema],
+
+  total_purchase_cost: { type: Number, default: 0, select: false },
+  gross_profit: { type: Number, default: 0, select: false },
+  commission_amount: { type: Number, default: 0, select: false }
 }, { timestamps: true });
 
-// Pre-validate middleware
 saleSchema.pre('validate', function(next) {
   this.items = (this.items || []).map((item) => {
     const qty = item.quantity_base_units ?? item.quantity ?? 0;
@@ -117,25 +175,31 @@ saleSchema.pre('validate', function(next) {
     item.rate_per_pack = item.rate_per_pack ?? (item.rate_per_base_unit * item.units_per_pack);
     item.packs = Math.floor(qty / item.units_per_pack);
     item.loose_units = qty % item.units_per_pack;
-    item.gross_amount = Number((qty * item.rate_per_base_unit).toFixed(2));
-    item.total_price = Number((item.gross_amount - (item.discount_amount || 0)).toFixed(2));
+    item.gross_amount = Number((item.gross_amount ?? (qty * item.rate_per_base_unit)).toFixed(2));
+    item.taxable_amount = Number((item.taxable_amount ?? Math.max(0, item.gross_amount - (item.discount_amount || 0))).toFixed(2));
+    item.tax_amount = Number((item.tax_amount ?? item.taxable_amount * ((item.tax_rate || 0) / 100)).toFixed(2));
+    item.cgst_amount = item.cgst_amount ?? Number((item.tax_amount / 2).toFixed(2));
+    item.sgst_amount = item.sgst_amount ?? Number((item.tax_amount / 2).toFixed(2));
+    item.net_amount = Number((item.net_amount ?? (item.taxable_amount + item.tax_amount)).toFixed(2));
+    item.total_price = Number((item.total_price ?? item.net_amount).toFixed(2));
     return item;
   });
+  this.net_amount_after_returns = this.net_amount_after_returns || Math.max(0, (this.total_amount || 0) - (this.return_amount || 0));
   next();
 });
 
-// Pre-save middleware to generate sale number
 saleSchema.pre('save', async function(next) {
   if (this.isNew && !this.sale_number) {
     const count = await mongoose.model('Sale').countDocuments();
-    this.sale_number = `SALE-${Date.now()}-${count + 1}`;
+    this.sale_number = `SH/PC/DII/${String(count + 1).padStart(8, '0')}`;
   }
   next();
 });
 
-// Indexes
 saleSchema.index({ sale_date: -1 });
 saleSchema.index({ customer_type: 1, admission_id: 1 });
 saleSchema.index({ source_type: 1 });
+saleSchema.index({ patient_id: 1, admission_id: 1, sale_date: -1 });
+saleSchema.index({ doctor_id: 1, sale_date: -1 });
 
 module.exports = mongoose.model('Sale', saleSchema);

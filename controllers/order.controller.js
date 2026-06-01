@@ -7,6 +7,10 @@ const Prescription = require('../models/Prescription');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
 const NursingNote = require('../models/NursingNote');
+const Patient = require('../models/Patient');
+const IPDAdmission = require('../models/IPDAdmission');
+const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
+const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const { createUnifiedSale } = require('../services/pharmacyTransaction.service');
 
 // ========== HELPER FUNCTIONS ==========
@@ -16,7 +20,7 @@ const toNumber = (value, fallback = 0) => {
 };
 
 const roundMoney = (value) => {
-  return Number(toNumber(value).toFixed(4));
+  return Number(toNumber(value).toFixed(2));
 };
 
 // Helper function to generate timing slots for IPD medications
@@ -105,6 +109,30 @@ async function addToPatientMedicineStock(admissionId, patientId, medicineId, bat
   }
 }
 
+// Helper function to get advance balance
+async function getAdvanceBalance({ admissionId, patientId, walletType }) {
+  const result = await PatientAdvanceLedger.aggregate([
+    { 
+      $match: { 
+        admissionId: admissionId, 
+        patientId: patientId, 
+        walletType: walletType 
+      } 
+    },
+    {
+      $group: {
+        _id: null,
+        balance: {
+          $sum: {
+            $cond: [{ $eq: ['$direction', 'CREDIT'] }, '$amount', { $multiply: ['$amount', -1] }]
+          }
+        }
+      }
+    }
+  ]);
+  return result[0]?.balance || 0;
+}
+
 const getPurchaseOrderDateFilter = (dateFilter) => {
   if (!dateFilter) return null;
   const now = new Date();
@@ -188,6 +216,7 @@ exports.createPurchaseOrder = async (req, res) => {
       notes,
       expected_delivery: expected_delivery ? new Date(expected_delivery) : null,
       status: 'Ordered',
+      created_by: req.user?._id
     });
 
     await purchaseOrder.save();
@@ -538,385 +567,100 @@ exports.receivePurchaseOrder = async (req, res) => {
   }
 };
 
-// Main createSale function
+exports.getPurchaseOrderStatistics = async (req, res) => {
+  try {
+    const { startDate, endDate, status } = req.query;
+
+    const filter = {};
+    if (startDate && endDate) {
+      filter.order_date = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    if (status) filter.status = status;
+
+    const stats = await PurchaseOrder.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalOrders: { $sum: 1 },
+          totalAmount: { $sum: '$total_amount' },
+          averageOrderValue: { $avg: '$total_amount' },
+          ordersByStatus: {
+            $push: {
+              status: '$status',
+              amount: '$total_amount'
+            }
+          }
+        }
+      },
+      {
+        $unwind: '$ordersByStatus'
+      },
+      {
+        $group: {
+          _id: {
+            status: '$ordersByStatus.status'
+          },
+          totalOrders: { $first: '$totalOrders' },
+          totalAmount: { $first: '$totalAmount' },
+          averageOrderValue: { $first: '$averageOrderValue' },
+          statusCount: { $sum: 1 },
+          statusAmount: { $sum: '$ordersByStatus.amount' }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalOrders: { $first: '$totalOrders' },
+          totalAmount: { $first: '$totalAmount' },
+          averageOrderValue: { $first: '$averageOrderValue' },
+          statusBreakdown: {
+            $push: {
+              status: '$_id.status',
+              count: '$statusCount',
+              amount: '$statusAmount',
+              percentage: {
+                $multiply: [
+                  { $divide: ['$statusCount', '$totalOrders'] },
+                  100
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]);
+
+    res.json(stats[0] || {
+      totalOrders: 0,
+      totalAmount: 0,
+      averageOrderValue: 0,
+      statusBreakdown: []
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== SALE FUNCTIONS (LEGACY - KEPT FOR BACKWARD COMPATIBILITY) ==========
+
 exports.createSale = async (req, res) => {
   try {
-    // Check if we should use unified sale service
-    if (process.env.USE_LEGACY_SALE !== 'true') {
-      try {
-        const result = await createUnifiedSale(req.body, req);
-        return res.status(201).json({
-          success: true,
-          message: 'Sale created successfully',
-          ...result,
-          sale: result.sale,
-          invoice: result.invoice
-        });
-      } catch (unifiedError) {
-        console.error('Unified sale creation failed, falling back to legacy:', unifiedError.message);
-        // Fall through to legacy method
-      }
-    }
-
-    const {
-      items,
-      patient_id,
-      customer_name,
-      customer_phone,
-      payment_method,
-      prescription_id,
-      admission_id,
-      discount = 0,
-      discount_type = 'percentage',
-      tax_rate = 0,
-      notes = '',
-    } = req.body;
-
-    console.log('Sale request body:', JSON.stringify(req.body, null, 2));
-
-    // Validate items
-    if (!items || items.length === 0) {
-      return res.status(400).json({ error: 'No items in sale' });
-    }
-
-    // Track which medication charts are being dispensed
-    const dispensedMedicationChartIds = [];
-    let saleIdForStock = null;
-
-    // Process each item and deduct stock
-    for (const item of items) {
-      // Find batch
-      const batch = await MedicineBatch.findById(item.batch_id);
-      if (!batch) {
-        return res.status(400).json({
-          error: `Batch not found for ${item.medicine_name}`
-        });
-      }
-
-      // Check stock availability
-      const quantityToDeduct = item.quantity_base_units || item.quantity;
-      if (batch.quantity_base_units < quantityToDeduct) {
-        return res.status(400).json({
-          error: `Insufficient stock for ${item.medicine_name}. Available: ${batch.quantity_base_units}, Requested: ${quantityToDeduct}`
-        });
-      }
-
-      // Deduct stock
-      batch.quantity_base_units -= quantityToDeduct;
-      batch.quantity = batch.quantity_base_units;
-      await batch.save();
-
-      // Update medicine stock
-      await Medicine.findByIdAndUpdate(
-        item.medicine_id,
-        { $inc: { stock_quantity: -quantityToDeduct } }
-      );
-
-      // If this is an IPD medication (has ipd_medication_chart_id), track it
-      if (item.ipd_medication_chart_id || item.ipd_medication_id) {
-        const chartId = item.ipd_medication_chart_id || item.ipd_medication_id;
-        dispensedMedicationChartIds.push({
-          chartId,
-          quantity: quantityToDeduct,
-          batchId: item.batch_id,
-          batchNumber: item.batch_number,
-          unitPrice: item.unit_price || item.price_per_base_unit,
-          medicineId: item.medicine_id,
-          medicineName: item.medicine_name,
-          baseUnit: item.base_unit,
-          packUnit: item.pack_unit,
-          unitsPerPack: item.units_per_pack
-        });
-      } else if (admission_id && prescription_id) {
-        // Try to find medication chart by prescription for IPD
-        const medicationChart = await IPDMedicationChart.findOne({
-          prescriptionId: prescription_id,
-          medicineName: item.medicine_name,
-          status: { $in: ['Requested', 'Pending'] }
-        });
-
-        if (medicationChart) {
-          dispensedMedicationChartIds.push({
-            chartId: medicationChart._id,
-            quantity: quantityToDeduct,
-            batchId: item.batch_id,
-            batchNumber: item.batch_number,
-            unitPrice: item.unit_price || item.price_per_base_unit,
-            medicineId: item.medicine_id,
-            medicineName: item.medicine_name,
-            baseUnit: item.base_unit,
-            packUnit: item.pack_unit,
-            unitsPerPack: item.units_per_pack
-          });
-        }
-      }
-    }
-
-    // Calculate totals from items (backend calculation)
-    const calculatedSubtotal = items.reduce((sum, item) => {
-      const quantity = item.quantity_base_units || item.quantity;
-      const unitPrice = item.unit_price || item.price_per_base_unit || 0;
-      return sum + (unitPrice * quantity);
-    }, 0);
-
-    // Calculate discount
-    let calculatedDiscountAmount = 0;
-    if (discount_type === 'percentage') {
-      calculatedDiscountAmount = calculatedSubtotal * (parseFloat(discount) / 100);
-    } else {
-      calculatedDiscountAmount = Math.min(parseFloat(discount), calculatedSubtotal);
-    }
-
-    const afterDiscount = calculatedSubtotal - calculatedDiscountAmount;
-    const calculatedTaxAmount = afterDiscount * (parseFloat(tax_rate) / 100);
-    const calculatedTotal = afterDiscount + calculatedTaxAmount;
-
-    // Round to 2 decimal places
-    const finalSubtotal = Math.round(calculatedSubtotal * 100) / 100;
-    const finalDiscountAmount = Math.round(calculatedDiscountAmount * 100) / 100;
-    const finalTaxAmount = Math.round(calculatedTaxAmount * 100) / 100;
-    const finalTotal = Math.round(calculatedTotal * 100) / 100;
-
-    console.log('Calculated totals:', {
-      subtotal: finalSubtotal,
-      discountAmount: finalDiscountAmount,
-      taxAmount: finalTaxAmount,
-      total: finalTotal
-    });
-
-    // Generate invoice number
-    const invoiceNumber = await generateInvoiceNumber();
-
-    // Create sale record
-    const sale = new Sale({
-      items: items.map(item => ({
-        medicine_id: item.medicine_id,
-        batch_id: item.batch_id,
-        medicine_name: item.medicine_name,
-        batch_number: item.batch_number,
-        quantity: item.quantity_base_units || item.quantity,
-        quantity_base_units: item.quantity_base_units || item.quantity,
-        unit_price: item.unit_price || item.price_per_base_unit,
-        base_unit: item.base_unit,
-        pack_unit: item.pack_unit,
-        units_per_pack: item.units_per_pack,
-        total_price: (item.unit_price || item.price_per_base_unit) * (item.quantity_base_units || item.quantity),
-        prescription_item_id: item.prescription_item_id,
-        ipd_medication_id: item.ipd_medication_chart_id || item.ipd_medication_id
-      })),
-      patient_id: patient_id || null,
-      admission_id: admission_id || null,
-      customer_name: customer_name || 'Walk-in Customer',
-      customer_phone: customer_phone || '',
-      subtotal: finalSubtotal,
-      discount: parseFloat(discount),
-      discount_type: discount_type,
-      discount_amount: finalDiscountAmount,
-      tax_rate: parseFloat(tax_rate),
-      tax: finalTaxAmount,
-      total_amount: finalTotal,
-      payment_method: payment_method || 'Cash',
-      amount_paid: payment_method === 'Pending' ? 0 : finalTotal,
-      balance_due: payment_method === 'Pending' ? finalTotal : 0,
-      prescription_id: prescription_id || null,
-      notes: notes || '',
-      invoice_number: invoiceNumber,
-      status: payment_method === 'Pending' ? 'Pending' : 'Completed',
-    });
-
-    await sale.save();
-    saleIdForStock = sale._id;
-
-    // Update IPD Medication Charts if this is an IPD dispense
-    if (admission_id && dispensedMedicationChartIds.length > 0) {
-      for (const dispensed of dispensedMedicationChartIds) {
-        const medicationChart = await IPDMedicationChart.findById(dispensed.chartId).populate('medicineId');
-
-        if (medicationChart) {
-          // If medication chart doesn't have medicineId, set it from the dispensed item
-          if (!medicationChart.medicineId && dispensed.medicineId) {
-            medicationChart.medicineId = dispensed.medicineId;
-          }
-
-          // Update pharmacy request status
-          medicationChart.pharmacyRequest = {
-            ...medicationChart.pharmacyRequest,
-            requestedToPharmacy: true,
-            pharmacyStatus: 'Approved',
-            dispensedFromPharmacy: true,
-            dispensedQuantity: dispensed.quantity,
-            dispensedBatchId: dispensed.batchId,
-            dispensedAt: new Date()
-          };
-
-          // Update status to Active
-          medicationChart.status = 'Active';
-
-          // Generate timing slots for nurse administration if not already generated
-          if (!medicationChart.timing || medicationChart.timing.length === 0) {
-            const timingSlots = generateTimingSlots(medicationChart.frequency, medicationChart.duration || 1);
-            medicationChart.timing = timingSlots;
-          }
-
-          await medicationChart.save();
-
-          // Add to patient medicine stock
-          await addToPatientMedicineStock(
-            medicationChart.admissionId,
-            medicationChart.patientId,
-            medicationChart.medicineId?._id || dispensed.medicineId,
-            dispensed.batchId,
-            dispensed.quantity,
-            medicationChart.medicineName || dispensed.medicineName,
-            medicationChart.medicineId?.base_unit || dispensed.baseUnit || 'unit',
-            medicationChart.medicineId?.pack_unit || dispensed.packUnit || 'pack',
-            medicationChart.medicineId?.units_per_pack || dispensed.unitsPerPack || 1,
-            dispensed.unitPrice || 0,
-            saleIdForStock,
-            medicationChart._id
-          );
-
-          // Create nursing note for pharmacy dispense
-          const nursingNote = new NursingNote({
-            admissionId: medicationChart.admissionId,
-            patientId: medicationChart.patientId,
-            nurseId: req.user?._id || null,
-            noteType: 'Medication',
-            note: `Pharmacy dispensed ${medicationChart.medicineName} ${medicationChart.dosage} - ${dispensed.quantity} ${medicationChart.medicineId?.base_unit || 'units'} added to patient stock`,
-            priority: 'Normal',
-            createdBy: req.user?._id
-          });
-          await nursingNote.save();
-
-          console.log(`Medication chart ${medicationChart._id} updated to Active with medicineId ${medicationChart.medicineId} and ${dispensed.quantity} units`);
-        }
-      }
-    }
-
-    // Update patient medicine stock with sale ID (for existing stocks)
-    if (admission_id && dispensedMedicationChartIds.length > 0) {
-      for (const dispensed of dispensedMedicationChartIds) {
-        await IPDPatientMedicineStock.findOneAndUpdate(
-          {
-            admissionId: admission_id,
-            patientId: patient_id,
-            batchId: dispensed.batchId,
-            medicineId: dispensed.medicineId
-          },
-          {
-            $addToSet: { sourceSaleIds: saleIdForStock }
-          }
-        );
-      }
-    }
-
-    // Update prescription if provided
-    if (prescription_id) {
-      await Prescription.findByIdAndUpdate(prescription_id, {
-        status: 'Completed',
-        last_dispensed: new Date()
-      });
-
-      const prescription = await Prescription.findById(prescription_id);
-      if (prescription && prescription.items) {
-        const updatedItems = prescription.items.map(item => {
-          const saleItem = items.find(si =>
-            si.prescription_item_id?.toString() === item._id?.toString() ||
-            si.medicine_name === item.medicine_name
-          );
-          if (saleItem) {
-            return {
-              ...item.toObject(),
-              is_dispensed: true,
-              dispensed_quantity: saleItem.quantity_base_units || saleItem.quantity,
-              dispensed_date: new Date()
-            };
-          }
-          return item;
-        });
-
-        await Prescription.findByIdAndUpdate(prescription_id, {
-          items: updatedItems
-        });
-      }
-    }
-
-    // Create invoice
-    const invoice = new Invoice({
-      invoice_number: invoiceNumber,
-      invoice_type: 'Pharmacy',
-      patient_id: patient_id || null,
-      admission_id: admission_id || null,
-      customer_type: patient_id ? 'Patient' : 'Walk-in',
-      customer_name: customer_name || 'Walk-in Customer',
-      customer_phone: customer_phone || '',
-      sale_id: sale._id,
-      prescription_id: prescription_id || null,
-      issue_date: new Date(),
-      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      medicine_items: items.map(item => ({
-        medicine_id: item.medicine_id,
-        batch_id: item.batch_id,
-        medicine_name: item.medicine_name,
-        batch_number: item.batch_number,
-        quantity: item.quantity_base_units || item.quantity,
-        unit_price: item.unit_price || item.price_per_base_unit,
-        total_price: (item.unit_price || item.price_per_base_unit) * (item.quantity_base_units || item.quantity),
-        tax_rate: parseFloat(tax_rate),
-        tax_amount: ((item.unit_price || item.price_per_base_unit) * (item.quantity_base_units || item.quantity)) * (parseFloat(tax_rate) / 100)
-      })),
-      subtotal: finalSubtotal,
-      discount: parseFloat(discount),
-      discount_type: discount_type,
-      discount_amount: finalDiscountAmount,
-      tax_rate: parseFloat(tax_rate),
-      tax_amount: finalTaxAmount,
-      total: finalTotal,
-      status: payment_method === 'Pending' ? 'Pending' : 'Paid',
-      payment_method: payment_method || 'Cash',
-      amount_paid: payment_method === 'Pending' ? 0 : finalTotal,
-      balance_due: payment_method === 'Pending' ? finalTotal : 0,
-      is_pharmacy_sale: true,
-      dispensing_date: new Date(),
-      notes: notes || '',
-    });
-
-    await invoice.save();
-
-    // Update sale with invoice reference
-    sale.invoice_id = invoice._id;
-    await sale.save();
-
-    // Populate sale for response
-    const populatedSale = await Sale.findById(sale._id)
-      .populate('patient_id', 'first_name last_name patientId')
-      .populate('admission_id', 'admissionNumber')
-      .populate('items.medicine_id', 'name mrp')
-      .populate('items.batch_id', 'batch_number expiry_date')
-      .lean();
-
-    res.status(201).json({
+    // Use unified sale service for all transactions
+    const result = await createUnifiedSale(req.body, req);
+    return res.status(201).json({
       success: true,
       message: 'Sale created successfully',
-      sale: {
-        ...populatedSale,
-        invoice_id: invoice._id,
-        invoice_number: invoiceNumber
-      },
-      invoice: {
-        _id: invoice._id,
-        invoice_number: invoiceNumber,
-        total: invoice.total,
-        status: invoice.status
-      },
-      dispensed_medications: dispensedMedicationChartIds.length,
-      medication_status_updated: dispensedMedicationChartIds.length > 0
+      ...result,
+      sale: result.sale,
+      invoice: result.invoice
     });
-
   } catch (err) {
     console.error('Error creating sale:', err);
-
-    // Check for validation errors
+    
     if (err.name === 'ValidationError') {
       const errors = Object.values(err.errors).map(e => e.message);
       return res.status(400).json({
@@ -925,7 +669,7 @@ exports.createSale = async (req, res) => {
         message: err.message
       });
     }
-
+    
     res.status(400).json({
       error: 'Failed to create sale',
       message: err.message
@@ -933,9 +677,306 @@ exports.createSale = async (req, res) => {
   }
 };
 
+// ========== NEW: GET SALE BY ID WITH FULL DETAILS ==========
+exports.getSaleById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const sale = await Sale.findById(id)
+      .populate('patient_id', 'first_name last_name patientId uhid phone dob gender')
+      .populate('admission_id', 'admissionNumber shipNumber status')
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name composition hsn_code gst_rate')
+      .populate('items.batch_id', 'batch_number expiry_date')
+      .populate('created_by', 'name')
+      .lean();
+    
+    if (!sale) {
+      return res.status(404).json({ error: 'Sale not found' });
+    }
+    
+    // Get return information if any
+    const returns = sale.return_refs?.length > 0 
+      ? await PharmacyReturn.find({ _id: { $in: sale.return_refs.map(r => r.return_id) } })
+      : [];
+    
+    res.json({
+      success: true,
+      sale,
+      returns
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== NEW: UPDATE SALE PAYMENT ==========
+exports.updateSalePayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { additional_payment, payment_method, notes } = req.body;
+    
+    const sale = await Sale.findById(id);
+    if (!sale) {
+      return res.status(404).json({ error: 'Sale not found' });
+    }
+    
+    if (sale.status === 'Completed' && sale.balance_due === 0) {
+      return res.status(400).json({ error: 'Sale is already fully paid' });
+    }
+    
+    const newPaymentAmount = Math.min(additional_payment, sale.balance_due);
+    const newPaidAmount = sale.amount_paid + newPaymentAmount;
+    const newBalanceDue = sale.total_amount - newPaidAmount;
+    
+    sale.amount_paid = newPaidAmount;
+    sale.balance_due = Math.max(0, newBalanceDue);
+    sale.status = newBalanceDue === 0 ? 'Completed' : 'Pending';
+    
+    // Add payment to payments array
+    sale.payments.push({
+      method: payment_method,
+      amount: newPaymentAmount,
+      reference: req.body.reference,
+      date: new Date()
+    });
+    
+    await sale.save();
+    
+    // Create ledger entry for payment
+    await PharmacyLedgerEntry.create({
+      hospitalId: req.body.hospitalId || sale.hospitalId,
+      pharmacyId: sale.pharmacy_id,
+      entryType: 'OUTSTANDING_PAYMENT',
+      direction: 'IN',
+      amount: newPaymentAmount,
+      paymentMethod: payment_method,
+      patientId: sale.patient_id,
+      admissionId: sale.admission_id,
+      saleId: sale._id,
+      notes: notes || `Payment received for sale ${sale.sale_number}`,
+      createdBy: req.user?._id
+    });
+    
+    res.json({
+      success: true,
+      message: 'Payment recorded successfully',
+      sale: {
+        _id: sale._id,
+        amount_paid: sale.amount_paid,
+        balance_due: sale.balance_due,
+        status: sale.status
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== NEW: VOID/CANCEL SALE ==========
+exports.voidSale = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    const sale = await Sale.findById(id);
+    if (!sale) {
+      return res.status(404).json({ error: 'Sale not found' });
+    }
+    
+    if (sale.status === 'Cancelled') {
+      return res.status(400).json({ error: 'Sale is already cancelled' });
+    }
+    
+    // Restore stock for each item
+    for (const item of sale.items) {
+      const batch = await MedicineBatch.findById(item.batch_id);
+      if (batch) {
+        batch.quantity_base_units += item.quantity_base_units;
+        batch.quantity = batch.quantity_base_units;
+        await batch.save();
+        
+        await Medicine.findByIdAndUpdate(item.medicine_id, {
+          $inc: { stock_quantity: item.quantity_base_units }
+        });
+      }
+    }
+    
+    sale.status = 'Cancelled';
+    sale.notes = sale.notes + `\n[CANCELLED] ${new Date().toISOString()}: ${reason || 'No reason provided'}`;
+    await sale.save();
+    
+    // Create audit log entry (you may want to use your AuditLog model)
+    console.log(`Sale ${sale.sale_number} cancelled by ${req.user?.name} - Reason: ${reason}`);
+    
+    res.json({
+      success: true,
+      message: 'Sale cancelled successfully',
+      sale: {
+        _id: sale._id,
+        sale_number: sale.sale_number,
+        status: sale.status
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== NEW: GET SALES BY PATIENT ==========
+exports.getSalesByPatient = async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    const { limit = 50, page = 1 } = req.query;
+    
+    const patient = await Patient.findById(patientId).select('first_name last_name patientId uhid');
+    if (!patient) {
+      return res.status(404).json({ error: 'Patient not found' });
+    }
+    
+    const sales = await Sale.find({ patient_id: patientId })
+      .populate('admission_id', 'admissionNumber shipNumber')
+      .populate('doctor_id', 'firstName lastName')
+      .sort({ sale_date: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+    
+    const total = await Sale.countDocuments({ patient_id: patientId });
+    
+    res.json({
+      success: true,
+      patient,
+      sales,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== NEW: GET SALES BY ADMISSION ==========
+exports.getSalesByAdmission = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+    
+    const admission = await IPDAdmission.findById(admissionId)
+      .populate('patientId', 'first_name last_name patientId uhid');
+    
+    if (!admission) {
+      return res.status(404).json({ error: 'Admission not found' });
+    }
+    
+    const sales = await Sale.find({ admission_id: admissionId })
+      .populate('doctor_id', 'firstName lastName')
+      .populate('items.medicine_id', 'name')
+      .sort({ sale_date: -1 });
+    
+    // Calculate totals
+    const totals = sales.reduce((acc, sale) => {
+      acc.totalAmount += sale.total_amount;
+      acc.totalPaid += sale.amount_paid;
+      acc.totalDue += sale.balance_due;
+      return acc;
+    }, { totalAmount: 0, totalPaid: 0, totalDue: 0 });
+    
+    res.json({
+      success: true,
+      admission,
+      sales,
+      totals
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== NEW: GET PENDING PRESCRIPTIONS FOR PHARMACY ==========
+exports.getPendingPrescriptions = async (req, res) => {
+  try {
+    const { limit = 20, page = 1 } = req.query;
+    
+    const prescriptions = await Prescription.find({ 
+      status: 'Active',
+      $or: [
+        { is_dispensed: false },
+        { items: { $elemMatch: { is_dispensed: false } } }
+      ]
+    })
+      .populate('patient_id', 'first_name last_name patientId uhid phone')
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name composition')
+      .sort({ created_at: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+    
+    const total = await Prescription.countDocuments({ 
+      status: 'Active',
+      is_dispensed: false
+    });
+    
+    // Add count of undispensed items per prescription
+    const prescriptionsWithCount = prescriptions.map(pres => {
+      const undispensedItems = pres.items?.filter(item => !item.is_dispensed).length || 0;
+      return {
+        ...pres.toObject(),
+        undispensedItemsCount: undispensedItems,
+        totalItems: pres.items?.length || 0
+      };
+    });
+    
+    res.json({
+      success: true,
+      prescriptions: prescriptionsWithCount,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== NEW: GET RECENT SALES FOR DASHBOARD ==========
+exports.getRecentSales = async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    
+    const recentSales = await Sale.find({})
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('admission_id', 'admissionNumber')
+      .populate('doctor_id', 'firstName lastName')
+      .sort({ sale_date: -1 })
+      .limit(parseInt(limit))
+      .lean();
+    
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    
+    const todaySales = await Sale.aggregate([
+      { $match: { sale_date: { $gte: todayStart } } },
+      { $group: { _id: null, total: { $sum: '$total_amount' }, count: { $sum: 1 } } }
+    ]);
+    
+    res.json({
+      success: true,
+      recentSales,
+      todayStats: {
+        total: todaySales[0]?.total || 0,
+        count: todaySales[0]?.count || 0
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== EXISTING SALE FUNCTIONS (KEPT FOR BACKWARD COMPATIBILITY) ==========
+
 exports.getAllSales = async (req, res) => {
   try {
-    const { startDate, endDate, page = 1, limit = 10 } = req.query;
+    const { startDate, endDate, page = 1, limit = 10, patientId, admissionId, status } = req.query;
 
     const filter = {};
     if (startDate && endDate) {
@@ -944,23 +985,26 @@ exports.getAllSales = async (req, res) => {
         $lte: new Date(endDate)
       };
     }
+    if (patientId) filter.patient_id = patientId;
+    if (admissionId) filter.admission_id = admissionId;
+    if (status) filter.status = status;
 
     const sales = await Sale.find(filter)
       .populate('patient_id')
-      .populate('admission_id', 'admissionNumber')
-      .populate('items.medicine_id')
-      .populate('items.batch_id')
+      .populate('admission_id', 'admissionNumber shipNumber')
+      .populate('items.medicine_id', 'name')
+      .populate('items.batch_id', 'batch_number')
       .populate('created_by', 'name')
       .sort({ sale_date: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
 
     const total = await Sale.countDocuments(filter);
 
     res.json({
       sales,
       totalPages: Math.ceil(total / limit),
-      currentPage: page,
+      currentPage: parseInt(page),
       total
     });
   } catch (err) {
@@ -1283,84 +1327,6 @@ exports.getYearlySalesReport = async (req, res) => {
         monthsWithSales: 0
       },
       monthlyBreakdown
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
-exports.getPurchaseOrderStatistics = async (req, res) => {
-  try {
-    const { startDate, endDate, status } = req.query;
-
-    const filter = {};
-    if (startDate && endDate) {
-      filter.order_date = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    }
-    if (status) filter.status = status;
-
-    const stats = await PurchaseOrder.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: null,
-          totalOrders: { $sum: 1 },
-          totalAmount: { $sum: '$total_amount' },
-          averageOrderValue: { $avg: '$total_amount' },
-          ordersByStatus: {
-            $push: {
-              status: '$status',
-              amount: '$total_amount'
-            }
-          }
-        }
-      },
-      {
-        $unwind: '$ordersByStatus'
-      },
-      {
-        $group: {
-          _id: {
-            status: '$ordersByStatus.status'
-          },
-          totalOrders: { $first: '$totalOrders' },
-          totalAmount: { $first: '$totalAmount' },
-          averageOrderValue: { $first: '$averageOrderValue' },
-          statusCount: { $sum: 1 },
-          statusAmount: { $sum: '$ordersByStatus.amount' }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          totalOrders: { $first: '$totalOrders' },
-          totalAmount: { $first: '$totalAmount' },
-          averageOrderValue: { $first: '$averageOrderValue' },
-          statusBreakdown: {
-            $push: {
-              status: '$_id.status',
-              count: '$statusCount',
-              amount: '$statusAmount',
-              percentage: {
-                $multiply: [
-                  { $divide: ['$statusCount', '$totalOrders'] },
-                  100
-                ]
-              }
-            }
-          }
-        }
-      }
-    ]);
-
-    res.json(stats[0] || {
-      totalOrders: 0,
-      totalAmount: 0,
-      averageOrderValue: 0,
-      statusBreakdown: []
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

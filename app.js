@@ -109,6 +109,8 @@ app.use('/api/lab', require('./routes/lab.routes.js'));
 app.use('/api/radiology', require('./routes/radiology.routes.js'));
 const externalLabRoutes = require('./routes/externalLab.routes');
 const emailRoutes = require('./routes/emailRoutes.js');
+const pharmacyBillRoutes = require('./routes/pharmacyBill.routes');
+app.use('/api/pharmacy-bills', pharmacyBillRoutes);
 app.use('/api/email', emailRoutes);
 
 // Add this with other route registrations

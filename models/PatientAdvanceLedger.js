@@ -7,7 +7,16 @@ const patientAdvanceLedgerSchema = new mongoose.Schema({
   walletType: { type: String, enum: ['IPD_SHARED', 'PHARMACY_IPD'], default: 'IPD_SHARED' },
   transactionType: {
     type: String,
-    enum: ['ADVANCE_DEPOSIT', 'PHARMACY_SALE_DEBIT', 'PHARMACY_RETURN_CREDIT', 'REFUND_PAID', 'MANUAL_ADJUSTMENT', 'OPENING_BALANCE'],
+    enum: [
+      'ADVANCE_DEPOSIT',
+      'PHARMACY_SALE_DEBIT',
+      'PHARMACY_RETURN_CREDIT',
+      'PHARMACY_OVERPAYMENT_CREDIT',
+      'OUTSTANDING_SETTLEMENT_DEBIT',
+      'REFUND_PAID',
+      'MANUAL_ADJUSTMENT',
+      'OPENING_BALANCE'
+    ],
     required: true
   },
   direction: { type: String, enum: ['CREDIT', 'DEBIT'], required: true },

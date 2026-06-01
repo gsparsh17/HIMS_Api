@@ -15,8 +15,58 @@ const billItemSchema = new mongoose.Schema({
   },
   item_type: {
     type: String,
-    enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Radiology', 'Other'],
+    enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Radiology', 'Pharmacy', 'Other'],
     required: true
+  },
+
+  // Medicine/Pharmacy specific fields
+  medicine_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Medicine'
+  },
+  batch_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'MedicineBatch'
+  },
+  medicine_name: {
+    type: String
+  },
+  batch_number: {
+    type: String
+  },
+  expiry_date: {
+    type: Date
+  },
+  base_unit: {
+    type: String,
+    default: 'unit'
+  },
+  quantity_base_units: {
+    type: Number
+  },
+  unit_price: {
+    type: Number
+  },
+  tax_rate: {
+    type: Number,
+    default: 0
+  },
+  tax_amount: {
+    type: Number,
+    default: 0
+  },
+  discount_amount: {
+    type: Number,
+    default: 0
+  },
+
+  // Prescription linking
+  prescription_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Prescription'
+  },
+  prescription_item_id: {
+    type: mongoose.Schema.Types.ObjectId
   },
 
   // Procedure linking
@@ -43,16 +93,19 @@ const billItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId
   },
 
-  // Common linking
-  prescription_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Prescription'
-  },
-  
   // IPD linking
   admission_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'IPDAdmission'
+  },
+
+  // Doctor who prescribed
+  doctor_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Doctor'
+  },
+  doctor_name: {
+    type: String
   }
 });
 
@@ -110,6 +163,12 @@ const billSchema = new mongoose.Schema({
     ref: 'Invoice'
   },
 
+  // Sale reference from pharmacy
+  sale_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Sale'
+  },
+
   total_amount: {
     type: Number,
     required: true
@@ -126,12 +185,32 @@ const billSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  discount_type: {
+    type: String,
+    enum: ['percentage', 'fixed'],
+    default: 'percentage'
+  },
+  discount_reason: {
+    type: String
+  },
 
   payment_method: {
     type: String,
-    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Government Funded Scheme'],
-    required: true
+    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'NoPayment'],
+    required: true,
+    default: 'Pending'
   },
+
+  // Split payment support
+  payments: [{
+    method: {
+      type: String,
+      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance']
+    },
+    amount: Number,
+    reference: String,
+    date: { type: Date, default: Date.now }
+  }],
 
   items: [billItemSchema],
 
@@ -162,7 +241,33 @@ const billSchema = new mongoose.Schema({
   notes: {
     type: String
   },
-  
+
+  // Pharmacy specific fields
+  is_pharmacy_bill: {
+    type: Boolean,
+    default: false
+  },
+  pharmacy_outstanding_before: {
+    type: Number,
+    default: 0
+  },
+  pharmacy_outstanding_after: {
+    type: Number,
+    default: 0
+  },
+  pharmacy_advance_used: {
+    type: Number,
+    default: 0
+  },
+  pharmacy_advance_created: {
+    type: Number,
+    default: 0
+  },
+  advance_balance_after: {
+    type: Number,
+    default: 0
+  },
+
   // Soft delete fields
   is_deleted: {
     type: Boolean,
@@ -200,17 +305,15 @@ billSchema.pre('save', function(next) {
   next();
 });
 
-// Virtual for is_paid
+// Virtuals
 billSchema.virtual('is_paid').get(function() {
   return this.status === 'Paid';
 });
 
-// Virtual for is_fully_paid
 billSchema.virtual('is_fully_paid').get(function() {
   return this.paid_amount >= this.total_amount;
 });
 
-// Virtual for has_pending_deletion
 billSchema.virtual('has_pending_deletion').get(function() {
   return this.deletion_request && this.deletion_request.status === 'pending';
 });
@@ -220,9 +323,11 @@ billSchema.index({ patient_id: 1, generated_at: -1 });
 billSchema.index({ appointment_id: 1 });
 billSchema.index({ admission_id: 1 });
 billSchema.index({ prescription_id: 1 });
+billSchema.index({ sale_id: 1 });
 billSchema.index({ status: 1 });
 billSchema.index({ 'items.item_type': 1 });
 billSchema.index({ is_deleted: 1 });
+billSchema.index({ is_pharmacy_bill: 1 });
 billSchema.index({ 'deletion_request.status': 1 });
 
 module.exports = mongoose.model('Bill', billSchema);

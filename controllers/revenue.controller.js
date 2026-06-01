@@ -1,14 +1,14 @@
-// controllers/revenue.controller.js - COMPLETE UPDATED VERSION
-// All functions updated with proper doctor commission handling
-
 const Salary = require('../models/Salary');
 const Invoice = require('../models/Invoice');
+const Bill = require('../models/Bill');
 const Doctor = require('../models/Doctor');
 const Patient = require('../models/Patient');
 const Department = require('../models/Department');
 const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
-const PDFDocument = require('pdfkit');
+const Medicine = require('../models/Medicine');
+const PharmacyReturn = require('../models/PharmacyReturn');
+const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 
 const toObjectId = (id) => {
   try {
@@ -19,32 +19,18 @@ const toObjectId = (id) => {
   }
 };
 
-/**
- * Helper function to get date field with fallback
- */
 const getDateField = (doc) => {
-  return doc.created_at || doc.createdAt;
+  return doc.created_at || doc.createdAt || doc.issue_date || doc.generated_at;
 };
 
-/**
- * Build date filter that works with both created_at and createdAt
- */
 const buildDateFilter = (startDate, endDate) => {
   if (startDate && endDate) {
     return {
       $or: [
-        {
-          created_at: {
-            $gte: new Date(startDate),
-            $lte: new Date(endDate + 'T23:59:59.999Z')
-          }
-        },
-        {
-          createdAt: {
-            $gte: new Date(startDate),
-            $lte: new Date(endDate + 'T23:59:59.999Z')
-          }
-        }
+        { created_at: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } },
+        { createdAt: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } },
+        { issue_date: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } },
+        { generated_at: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } }
       ]
     };
   } else {
@@ -54,7 +40,9 @@ const buildDateFilter = (startDate, endDate) => {
     return {
       $or: [
         { created_at: { $gte: thirtyDaysAgo, $lte: now } },
-        { createdAt: { $gte: thirtyDaysAgo, $lte: now } }
+        { createdAt: { $gte: thirtyDaysAgo, $lte: now } },
+        { issue_date: { $gte: thirtyDaysAgo, $lte: now } },
+        { generated_at: { $gte: thirtyDaysAgo, $lte: now } }
       ]
     };
   }
@@ -193,17 +181,8 @@ function buildInvoicePipeline(query, opts = {}) {
   };
 }
 
-/**
- * Calculate doctor commission based on doctor type and revenue percentage
- * Only applies commission to consultation fees, not registration fees
- */
 const calculateDoctorCommission = (doctor, invoiceLike, serviceType = 'Appointment') => {
-  const invoice =
-    invoiceLike && typeof invoiceLike === 'object'
-      ? invoiceLike
-      : { total: Number(invoiceLike || 0), service_items: [] };
-
-  const invoiceTotal = Number(invoice.total || 0);
+  const invoiceTotal = Number(invoiceLike?.total || invoiceLike || 0);
 
   if (!doctor) {
     return {
@@ -218,19 +197,16 @@ const calculateDoctorCommission = (doctor, invoiceLike, serviceType = 'Appointme
   }
 
   const isFullTime = !!doctor.isFullTime;
-  const revenuePercentage = Number(
-    doctor.revenuePercentage ?? (isFullTime ? 0 : 30)
-  );
+  const revenuePercentage = Number(doctor.revenuePercentage ?? (isFullTime ? 0 : 30));
 
   let consultationRevenue = 0;
   let registrationRevenue = 0;
 
-  if (Array.isArray(invoice.service_items) && invoice.service_items.length) {
-    invoice.service_items.forEach((item) => {
+  if (Array.isArray(invoiceLike?.service_items) && invoiceLike.service_items.length) {
+    invoiceLike.service_items.forEach((item) => {
       const desc = String(item.description || '').toLowerCase();
       const price = Number(item.total_price || 0);
 
-      // consultation items
       if (desc.includes('consultation')) {
         consultationRevenue += price;
       } else {
@@ -239,7 +215,6 @@ const calculateDoctorCommission = (doctor, invoiceLike, serviceType = 'Appointme
     });
   }
 
-  // Fallback: if appointment has no items split, assume whole total is consult revenue
   if (consultationRevenue === 0 && serviceType === 'Appointment') {
     consultationRevenue = invoiceTotal;
     registrationRevenue = 0;
@@ -262,31 +237,27 @@ const calculateDoctorCommission = (doctor, invoiceLike, serviceType = 'Appointme
   };
 };
 
-/**
- * Enhanced revenue calculation with proper doctor share handling
- */
 const calculateRevenueBifurcation = (invoices, doctorsMap) => {
   let totalRevenue = 0;
-
-  let totalCommission = 0;     // part-time commission total
-  let doctorEarnings = 0;      // for your UI: doctor earnings == totalCommission
-  let hospitalRevenue = 0;     // hospital share (total - commission)
-  let totalSalaryExpenses = 0; // keep 0 unless you later add salary estimation
-  let fullTimeSalaryExpenses = 0; // keep 0 unless you later add salary estimation
+  let totalCommission = 0;
+  let doctorEarnings = 0;
+  let hospitalRevenue = 0;
+  let totalSalaryExpenses = 0;
+  let fullTimeSalaryExpenses = 0;
 
   const procedureMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
   const labTestMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
   const appointmentMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
   const pharmacyMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const radiologyMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
+  const ipdMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
   const otherMetrics = { revenue: 0, commission: 0, hospitalShare: 0, doctorEarnings: 0 };
 
   const pickDoctorId = (inv) => {
-    const d =
-      inv.doctor_id ||
+    const d = inv.doctor_id ||
       inv.appointment_info?.doctor_id ||
       inv.appointment_id?.doctor_id ||
       inv.appointment?.doctor_id;
-
     return d ? d.toString() : null;
   };
 
@@ -296,77 +267,72 @@ const calculateRevenueBifurcation = (invoices, doctorsMap) => {
 
     const doctorId = pickDoctorId(invoice);
     const doctor = doctorId ? doctorsMap.get(doctorId) : null;
-
     const commissionInfo = calculateDoctorCommission(doctor, invoice, invoice.invoice_type);
 
     totalCommission += commissionInfo.commission;
     doctorEarnings += commissionInfo.commission;
-
     hospitalRevenue += commissionInfo.hospitalShare;
 
-    // Metrics by invoice type
-    switch (invoice.invoice_type) {
-      case 'Procedure':
-        procedureMetrics.revenue += amount;
-        procedureMetrics.commission += commissionInfo.commission;
-        procedureMetrics.hospitalShare += commissionInfo.hospitalShare;
-        procedureMetrics.doctorEarnings += commissionInfo.commission;
-        break;
+    const invoiceType = invoice.invoice_type || invoice.source_type || 'Other';
 
-      case 'Lab Test':
-        labTestMetrics.revenue += amount;
-        labTestMetrics.commission += commissionInfo.commission;
-        labTestMetrics.hospitalShare += commissionInfo.hospitalShare;
-        labTestMetrics.doctorEarnings += commissionInfo.commission;
-        break;
-
-      case 'Appointment':
-        appointmentMetrics.revenue += amount;
-        appointmentMetrics.commission += commissionInfo.commission;
-        appointmentMetrics.hospitalShare += commissionInfo.hospitalShare;
-        appointmentMetrics.doctorEarnings += commissionInfo.commission;
-        break;
-
-      case 'Pharmacy':
-        pharmacyMetrics.revenue += amount;
-        pharmacyMetrics.hospitalShare += amount;
-        // pharmacy has no doctor commission
-        break;
-
-      default:
-        otherMetrics.revenue += amount;
-        otherMetrics.commission += commissionInfo.commission;
-        otherMetrics.hospitalShare += commissionInfo.hospitalShare;
-        otherMetrics.doctorEarnings += commissionInfo.commission;
-        break;
+    if (invoiceType === 'Procedure' || invoice.procedure_items?.length > 0) {
+      procedureMetrics.revenue += amount;
+      procedureMetrics.commission += commissionInfo.commission;
+      procedureMetrics.hospitalShare += commissionInfo.hospitalShare;
+      procedureMetrics.doctorEarnings += commissionInfo.commission;
+    } else if (invoiceType === 'Lab Test' || invoice.lab_test_items?.length > 0) {
+      labTestMetrics.revenue += amount;
+      labTestMetrics.commission += commissionInfo.commission;
+      labTestMetrics.hospitalShare += commissionInfo.hospitalShare;
+      labTestMetrics.doctorEarnings += commissionInfo.commission;
+    } else if (invoiceType === 'Appointment') {
+      appointmentMetrics.revenue += amount;
+      appointmentMetrics.commission += commissionInfo.commission;
+      appointmentMetrics.hospitalShare += commissionInfo.hospitalShare;
+      appointmentMetrics.doctorEarnings += commissionInfo.commission;
+    } else if (invoiceType === 'Pharmacy' || invoice.is_pharmacy_sale || invoice.is_pharmacy_bill) {
+      pharmacyMetrics.revenue += amount;
+      pharmacyMetrics.hospitalShare += amount;
+    } else if (invoiceType === 'Radiology') {
+      radiologyMetrics.revenue += amount;
+      radiologyMetrics.commission += commissionInfo.commission;
+      radiologyMetrics.hospitalShare += commissionInfo.hospitalShare;
+      radiologyMetrics.doctorEarnings += commissionInfo.commission;
+    } else if (invoiceType === 'IPD' || invoice.admission_id) {
+      ipdMetrics.revenue += amount;
+      ipdMetrics.commission += commissionInfo.commission;
+      ipdMetrics.hospitalShare += commissionInfo.hospitalShare;
+      ipdMetrics.doctorEarnings += commissionInfo.commission;
+    } else {
+      otherMetrics.revenue += amount;
+      otherMetrics.commission += commissionInfo.commission;
+      otherMetrics.hospitalShare += commissionInfo.hospitalShare;
+      otherMetrics.doctorEarnings += commissionInfo.commission;
     }
   });
 
-  // Net hospital revenue here is hospital share minus estimated salary (currently 0)
   const netHospitalRevenue = hospitalRevenue - fullTimeSalaryExpenses;
 
   return {
     totalRevenue,
-    doctorEarnings,          // ✅ will now be 960 for your case
-    hospitalRevenue,         // ✅ will now be 1240 for your case
-    totalCommission,         // ✅ 960
+    doctorEarnings,
+    hospitalRevenue,
+    totalCommission,
     totalSalaryExpenses,
     partTimeCommission: totalCommission,
     fullTimeSalaryExpenses,
     netHospitalRevenue,
     profitMargin: totalRevenue > 0 ? (netHospitalRevenue / totalRevenue) * 100 : 0,
-
     procedureMetrics,
     labTestMetrics,
     appointmentMetrics,
     pharmacyMetrics,
+    radiologyMetrics,
+    ipdMetrics,
     otherMetrics
   };
 };
 
-/**
- * Get all doctors as a map for efficient lookup
- */
 const getDoctorsMap = async () => {
   const doctors = await Doctor.find({});
   const doctorsMap = new Map();
@@ -5896,6 +5862,783 @@ exports.exportIpdRevenue = async (req, res) => {
     }
   } catch (error) {
     console.error('Error exporting IPD revenue:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+async function getProcedureDetails(startDate, endDate, doctorsMap) {
+  const procedureMatch = { invoice_type: 'Procedure' };
+  if (startDate && endDate) {
+    procedureMatch.$or = [
+      { created_at: { $gte: startDate, $lte: endDate } },
+      { createdAt: { $gte: startDate, $lte: endDate } },
+      { issue_date: { $gte: startDate, $lte: endDate } }
+    ];
+  }
+
+  const procedureDetails = await Invoice.aggregate([
+    { $match: procedureMatch },
+    { $unwind: '$procedure_items' },
+    {
+      $lookup: {
+        from: 'appointments',
+        localField: 'appointment_id',
+        foreignField: '_id',
+        as: 'appointment'
+      }
+    },
+    { $unwind: { path: '$appointment', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'doctors',
+        localField: 'appointment.doctor_id',
+        foreignField: '_id',
+        as: 'doctor'
+      }
+    },
+    { $unwind: { path: '$doctor', preserveNullAndEmptyArrays: true } },
+    {
+      $group: {
+        _id: '$procedure_items.procedure_code',
+        procedureCode: { $first: '$procedure_items.procedure_code' },
+        procedureName: { $first: '$procedure_items.procedure_name' },
+        totalRevenue: { $sum: '$procedure_items.total_price' },
+        count: { $sum: '$procedure_items.quantity' },
+        averagePrice: { $avg: '$procedure_items.unit_price' },
+        doctors: { $push: '$doctor' }
+      }
+    },
+    { $sort: { totalRevenue: -1 } }
+  ]);
+
+  return procedureDetails.map(proc => {
+    let doctorEarnings = 0;
+    let hospitalShare = proc.totalRevenue;
+
+    if (proc.doctors && proc.doctors.length > 0) {
+      const uniqueDoctors = new Map();
+      proc.doctors.forEach(doc => {
+        if (doc && doc._id) {
+          uniqueDoctors.set(doc._id.toString(), doc);
+        }
+      });
+
+      uniqueDoctors.forEach(doc => {
+        const doctor = doctorsMap.get(doc._id.toString());
+        if (doctor && !doctor.isFullTime) {
+          const percentage = doctor.revenuePercentage || 30;
+          const doctorRevenue = proc.totalRevenue / uniqueDoctors.size;
+          const commission = doctorRevenue * percentage / 100;
+          doctorEarnings += commission;
+        }
+      });
+
+      hospitalShare = proc.totalRevenue - doctorEarnings;
+    }
+
+    return {
+      code: proc.procedureCode,
+      name: proc.procedureName,
+      revenue: proc.totalRevenue,
+      count: proc.count,
+      averagePrice: proc.averagePrice,
+      doctorEarnings,
+      hospitalShare
+    };
+  });
+}
+
+async function getLabTestDetails(startDate, endDate, doctorsMap) {
+  const labTestMatch = { invoice_type: 'Lab Test' };
+  if (startDate && endDate) {
+    labTestMatch.$or = [
+      { created_at: { $gte: startDate, $lte: endDate } },
+      { createdAt: { $gte: startDate, $lte: endDate } },
+      { issue_date: { $gte: startDate, $lte: endDate } }
+    ];
+  }
+
+  const labTestDetails = await Invoice.aggregate([
+    { $match: labTestMatch },
+    { $unwind: '$lab_test_items' },
+    {
+      $lookup: {
+        from: 'appointments',
+        localField: 'appointment_id',
+        foreignField: '_id',
+        as: 'appointment'
+      }
+    },
+    { $unwind: { path: '$appointment', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'doctors',
+        localField: 'appointment.doctor_id',
+        foreignField: '_id',
+        as: 'doctor'
+      }
+    },
+    { $unwind: { path: '$doctor', preserveNullAndEmptyArrays: true } },
+    {
+      $group: {
+        _id: '$lab_test_items.lab_test_code',
+        labTestCode: { $first: '$lab_test_items.lab_test_code' },
+        labTestName: { $first: '$lab_test_items.lab_test_name' },
+        totalRevenue: { $sum: '$lab_test_items.total_price' },
+        count: { $sum: '$lab_test_items.quantity' },
+        averagePrice: { $avg: '$lab_test_items.unit_price' },
+        doctors: { $push: '$doctor' }
+      }
+    },
+    { $sort: { totalRevenue: -1 } }
+  ]);
+
+  return labTestDetails.map(test => {
+    let doctorEarnings = 0;
+    let hospitalShare = test.totalRevenue;
+
+    if (test.doctors && test.doctors.length > 0) {
+      const uniqueDoctors = new Map();
+      test.doctors.forEach(doc => {
+        if (doc && doc._id) {
+          uniqueDoctors.set(doc._id.toString(), doc);
+        }
+      });
+
+      uniqueDoctors.forEach(doc => {
+        const doctor = doctorsMap.get(doc._id.toString());
+        if (doctor && !doctor.isFullTime) {
+          const percentage = doctor.revenuePercentage || 30;
+          const doctorRevenue = test.totalRevenue / uniqueDoctors.size;
+          const commission = doctorRevenue * percentage / 100;
+          doctorEarnings += commission;
+        }
+      });
+
+      hospitalShare = test.totalRevenue - doctorEarnings;
+    }
+
+    return {
+      code: test.labTestCode,
+      name: test.labTestName,
+      revenue: test.totalRevenue,
+      count: test.count,
+      averagePrice: test.averagePrice,
+      doctorEarnings,
+      hospitalShare
+    };
+  });
+}
+
+// ========== PHARMACY REVENUE ANALYTICS ==========
+
+exports.getPharmacyRevenueAnalytics = async (req, res) => {
+  try {
+    const { startDate, endDate, medicineId, patientId, paymentMethod, status } = req.query;
+
+    let startOfDayUTC, endOfDayUTC;
+
+    if (startDate && endDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(endDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else {
+      endOfDayUTC = new Date();
+      startOfDayUTC = new Date();
+      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    }
+
+    const dateFilter = {
+      $or: [
+        { sale_date: { $gte: startOfDayUTC, $lte: endOfDayUTC } },
+        { generated_at: { $gte: startOfDayUTC, $lte: endOfDayUTC } },
+        { issue_date: { $gte: startOfDayUTC, $lte: endOfDayUTC } },
+        { created_at: { $gte: startOfDayUTC, $lte: endOfDayUTC } }
+      ]
+    };
+
+    const salesFilter = { ...dateFilter };
+    if (patientId && patientId !== 'all') salesFilter.patient_id = toObjectId(patientId);
+    if (status && status !== 'all') salesFilter.status = status;
+
+    const sales = await Sale.find(salesFilter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('items.medicine_id', 'name category composition')
+      .lean();
+
+    const billFilter = { is_pharmacy_bill: true, ...dateFilter };
+    if (patientId && patientId !== 'all') billFilter.patient_id = toObjectId(patientId);
+    if (status && status !== 'all') billFilter.status = status;
+
+    const bills = await Bill.find(billFilter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('items.medicine_id', 'name category')
+      .lean();
+
+    const invoiceFilter = { is_pharmacy_sale: true, ...dateFilter };
+    if (patientId && patientId !== 'all') invoiceFilter.patient_id = toObjectId(patientId);
+    if (status && status !== 'all') invoiceFilter.status = status;
+
+    const invoices = await Invoice.find(invoiceFilter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('medicine_items.medicine_id', 'name category')
+      .lean();
+
+    const returnFilter = {};
+    if (startDate && endDate) {
+      returnFilter.createdAt = { $gte: startOfDayUTC, $lte: endOfDayUTC };
+    }
+    if (patientId && patientId !== 'all') returnFilter.patientId = toObjectId(patientId);
+
+    const returns = await PharmacyReturn.find(returnFilter).lean();
+
+    let totalRevenue = 0;
+    let totalSales = 0;
+    let totalDiscount = 0;
+    let totalTax = 0;
+    let totalReturns = 0;
+    let netRevenue = 0;
+
+    let cashSales = 0;
+    let cardSales = 0;
+    let upiSales = 0;
+    let insuranceSales = 0;
+    let advanceSales = 0;
+    let pendingSales = 0;
+
+    const medicineRevenue = {};
+    const categoryRevenue = {};
+    const dailyRevenue = {};
+    const patientRevenue = {};
+    const paymentMethodStats = {};
+
+    sales.forEach(sale => {
+      const amount = sale.total_amount || 0;
+      const discount = sale.discount_amount || 0;
+      const tax = sale.tax || 0;
+      const paidAmount = sale.amount_paid || 0;
+
+      totalRevenue += amount;
+      totalSales += 1;
+      totalDiscount += discount;
+      totalTax += tax;
+
+      const paymentMethod = sale.payment_method || 'Unknown';
+      paymentMethodStats[paymentMethod] = (paymentMethodStats[paymentMethod] || 0) + paidAmount;
+
+      if (paymentMethod === 'Cash') cashSales += amount;
+      else if (paymentMethod === 'Card') cardSales += amount;
+      else if (paymentMethod === 'UPI') upiSales += amount;
+      else if (paymentMethod === 'Insurance' || paymentMethod === 'Government Scheme') insuranceSales += amount;
+      else if (paymentMethod === 'IPDAdvance' || paymentMethod === 'PharmacyAdvance') advanceSales += amount;
+      else if (paymentMethod === 'Pending' || paymentMethod === 'NoPayment') pendingSales += amount;
+
+      if (sale.items && sale.items.length > 0) {
+        sale.items.forEach(item => {
+          const medicineName = item.medicine_name || (item.medicine_id?.name) || 'Unknown';
+          const itemAmount = item.net_amount || item.total_price || 0;
+
+          if (!medicineRevenue[medicineName]) {
+            medicineRevenue[medicineName] = {
+              medicineName,
+              quantity: 0,
+              revenue: 0,
+              discount: 0,
+              tax: 0
+            };
+          }
+          medicineRevenue[medicineName].quantity += item.quantity_base_units || item.quantity || 1;
+          medicineRevenue[medicineName].revenue += itemAmount;
+          medicineRevenue[medicineName].discount += item.discount_amount || 0;
+          medicineRevenue[medicineName].tax += item.tax_amount || 0;
+
+          const category = item.medicine_id?.category || 'Uncategorized';
+          if (!categoryRevenue[category]) {
+            categoryRevenue[category] = {
+              category,
+              revenue: 0,
+              quantity: 0,
+              count: 0
+            };
+          }
+          categoryRevenue[category].revenue += itemAmount;
+          categoryRevenue[category].quantity += item.quantity_base_units || item.quantity || 1;
+          categoryRevenue[category].count += 1;
+        });
+      }
+
+      const saleDate = sale.sale_date || sale.createdAt;
+      const dateKey = saleDate ? new Date(saleDate).toISOString().split('T')[0] : 'unknown';
+      if (!dailyRevenue[dateKey]) {
+        dailyRevenue[dateKey] = {
+          date: dateKey,
+          revenue: 0,
+          sales: 0,
+          returns: 0
+        };
+      }
+      dailyRevenue[dateKey].revenue += amount;
+      dailyRevenue[dateKey].sales += 1;
+
+      if (sale.patient_id) {
+        const patientId = sale.patient_id._id?.toString() || sale.patient_id.toString();
+        const patientName = sale.patient_id.first_name ?
+          `${sale.patient_id.first_name} ${sale.patient_id.last_name || ''}`.trim() : 'Unknown';
+
+        if (!patientRevenue[patientId]) {
+          patientRevenue[patientId] = {
+            patientId,
+            patientName,
+            revenue: 0,
+            sales: 0
+          };
+        }
+        patientRevenue[patientId].revenue += amount;
+        patientRevenue[patientId].sales += 1;
+      }
+    });
+
+    bills.forEach(bill => {
+      const amount = bill.total_amount || 0;
+      if (!dailyRevenue[new Date(bill.generated_at).toISOString().split('T')[0]]) {
+        const dateKey = new Date(bill.generated_at).toISOString().split('T')[0];
+        if (!dailyRevenue[dateKey]) {
+          dailyRevenue[dateKey] = {
+            date: dateKey,
+            revenue: 0,
+            sales: 0,
+            returns: 0
+          };
+        }
+      }
+    });
+
+    returns.forEach(returnItem => {
+      const refundAmount = returnItem.totalRefundAmount || 0;
+      totalReturns += refundAmount;
+
+      const returnDate = returnItem.createdAt;
+      const dateKey = returnDate ? new Date(returnDate).toISOString().split('T')[0] : 'unknown';
+      if (dailyRevenue[dateKey]) {
+        dailyRevenue[dateKey].returns += 1;
+        dailyRevenue[dateKey].revenue -= refundAmount;
+      }
+    });
+
+    netRevenue = totalRevenue - totalReturns;
+
+    let totalPurchaseCost = 0;
+    sales.forEach(sale => {
+      if (sale.total_purchase_cost) {
+        totalPurchaseCost += sale.total_purchase_cost;
+      } else if (sale.items) {
+        sale.items.forEach(item => {
+          if (item.purchase_amount) {
+            totalPurchaseCost += item.purchase_amount;
+          }
+        });
+      }
+    });
+    const grossProfit = netRevenue - totalPurchaseCost;
+    const profitMargin = netRevenue > 0 ? (grossProfit / netRevenue) * 100 : 0;
+
+    const response = {
+      success: true,
+      period: {
+        start: startDate || startOfDayUTC.toISOString().split('T')[0],
+        end: endDate || endOfDayUTC.toISOString().split('T')[0]
+      },
+      summary: {
+        totalRevenue: Math.round(totalRevenue * 100) / 100,
+        netRevenue: Math.round(netRevenue * 100) / 100,
+        totalSales,
+        totalReturns: returns.length,
+        totalReturnAmount: Math.round(totalReturns * 100) / 100,
+        totalDiscount: Math.round(totalDiscount * 100) / 100,
+        totalTax: Math.round(totalTax * 100) / 100,
+        totalPurchaseCost: Math.round(totalPurchaseCost * 100) / 100,
+        grossProfit: Math.round(grossProfit * 100) / 100,
+        profitMargin: Math.round(profitMargin * 100) / 100,
+        averageOrderValue: totalSales > 0 ? Math.round((netRevenue / totalSales) * 100) / 100 : 0,
+        cashSales: Math.round(cashSales * 100) / 100,
+        cardSales: Math.round(cardSales * 100) / 100,
+        upiSales: Math.round(upiSales * 100) / 100,
+        insuranceSales: Math.round(insuranceSales * 100) / 100,
+        advanceSales: Math.round(advanceSales * 100) / 100,
+        pendingSales: Math.round(pendingSales * 100) / 100
+      },
+      breakdown: {
+        byMedicine: Object.values(medicineRevenue)
+          .sort((a, b) => b.revenue - a.revenue)
+          .slice(0, 50)
+          .map(m => ({
+            ...m,
+            revenue: Math.round(m.revenue * 100) / 100
+          })),
+        byCategory: Object.values(categoryRevenue)
+          .sort((a, b) => b.revenue - a.revenue)
+          .map(c => ({
+            ...c,
+            revenue: Math.round(c.revenue * 100) / 100,
+            percentage: totalRevenue > 0 ? (c.revenue / totalRevenue) * 100 : 0
+          })),
+        byPaymentMethod: Object.entries(paymentMethodStats)
+          .map(([method, amount]) => ({
+            method,
+            amount: Math.round(amount * 100) / 100,
+            percentage: totalRevenue > 0 ? (amount / totalRevenue) * 100 : 0
+          }))
+          .sort((a, b) => b.amount - a.amount),
+        daily: Object.values(dailyRevenue)
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .map(d => ({
+            ...d,
+            revenue: Math.round(d.revenue * 100) / 100
+          })),
+        byPatient: Object.values(patientRevenue)
+          .sort((a, b) => b.revenue - a.revenue)
+          .slice(0, 20)
+          .map(p => ({
+            ...p,
+            revenue: Math.round(p.revenue * 100) / 100
+          }))
+      },
+      recentTransactions: [...sales, ...bills].slice(0, 20).map(t => ({
+        type: t.sale_number ? 'Sale' : 'Bill',
+        number: t.sale_number || t.invoice_number,
+        date: t.sale_date || t.generated_at,
+        amount: t.total_amount || t.total,
+        status: t.status
+      }))
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Error in getPharmacyRevenueAnalytics:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+};
+
+exports.getMedicineWiseRevenue = async (req, res) => {
+  try {
+    const { startDate, endDate, category, limit = 50 } = req.query;
+
+    let startOfDayUTC, endOfDayUTC;
+
+    if (startDate && endDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(endDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else {
+      endOfDayUTC = new Date();
+      startOfDayUTC = new Date();
+      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    }
+
+    const dateFilter = {
+      sale_date: { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    };
+
+    const sales = await Sale.find(dateFilter)
+      .populate('items.medicine_id', 'name category composition')
+      .lean();
+
+    const medicineStats = {};
+
+    sales.forEach(sale => {
+      if (sale.items && sale.items.length > 0) {
+        sale.items.forEach(item => {
+          const medicineId = item.medicine_id?._id?.toString() || item.medicine_id;
+          const medicineName = item.medicine_name || (item.medicine_id?.name) || 'Unknown';
+          const medicineCategory = item.medicine_id?.category || 'Uncategorized';
+
+          if (category && category !== 'all' && medicineCategory !== category) return;
+
+          const itemAmount = item.net_amount || item.total_price || 0;
+          const quantity = item.quantity_base_units || item.quantity || 1;
+
+          if (!medicineStats[medicineId]) {
+            medicineStats[medicineId] = {
+              medicineId,
+              medicineName,
+              category: medicineCategory,
+              composition: item.medicine_id?.composition || item.composition,
+              totalQuantity: 0,
+              totalRevenue: 0,
+              totalDiscount: 0,
+              totalTax: 0,
+              totalPurchaseCost: 0,
+              saleCount: 0
+            };
+          }
+
+          medicineStats[medicineId].totalQuantity += quantity;
+          medicineStats[medicineId].totalRevenue += itemAmount;
+          medicineStats[medicineId].totalDiscount += item.discount_amount || 0;
+          medicineStats[medicineId].totalTax += item.tax_amount || 0;
+          medicineStats[medicineId].totalPurchaseCost += item.purchase_amount || 0;
+          medicineStats[medicineId].saleCount += 1;
+        });
+      }
+    });
+
+    const medicineArray = Object.values(medicineStats)
+      .map(m => ({
+        ...m,
+        totalRevenue: Math.round(m.totalRevenue * 100) / 100,
+        averagePrice: m.saleCount > 0 ? Math.round((m.totalRevenue / m.saleCount) * 100) / 100 : 0,
+        grossProfit: Math.round((m.totalRevenue - m.totalPurchaseCost) * 100) / 100,
+        profitMargin: m.totalRevenue > 0 ? Math.round(((m.totalRevenue - m.totalPurchaseCost) / m.totalRevenue) * 10000) / 100 : 0
+      }))
+      .sort((a, b) => b.totalRevenue - a.totalRevenue)
+      .slice(0, parseInt(limit));
+
+    const totalRevenue = medicineArray.reduce((sum, m) => sum + m.totalRevenue, 0);
+    const totalQuantity = medicineArray.reduce((sum, m) => sum + m.totalQuantity, 0);
+
+    res.json({
+      success: true,
+      period: {
+        start: startDate || startOfDayUTC.toISOString().split('T')[0],
+        end: endDate || endOfDayUTC.toISOString().split('T')[0]
+      },
+      summary: {
+        totalRevenue: Math.round(totalRevenue * 100) / 100,
+        totalQuantity,
+        uniqueMedicines: medicineArray.length
+      },
+      medicines: medicineArray
+    });
+
+  } catch (error) {
+    console.error('Error in getMedicineWiseRevenue:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+exports.getPharmacyOutstandingReport = async (req, res) => {
+  try {
+    const { patientId, daysOverdue, limit = 50 } = req.query;
+
+    const filter = { is_pharmacy_bill: true, status: { $in: ['Pending', 'Partially Paid'] } };
+    if (patientId && patientId !== 'all') filter.patient_id = toObjectId(patientId);
+
+    const bills = await Bill.find(filter)
+      .populate('patient_id', 'first_name last_name patientId phone')
+      .populate('sale_id', 'sale_number')
+      .sort({ generated_at: -1 })
+      .limit(parseInt(limit));
+
+    const outstandingData = bills.map(bill => {
+      const daysSinceBill = Math.floor((new Date() - new Date(bill.generated_at)) / (1000 * 60 * 60 * 24));
+      let agingCategory = 'Current';
+
+      if (daysSinceBill > 90) agingCategory = '90+ Days';
+      else if (daysSinceBill > 60) agingCategory = '61-90 Days';
+      else if (daysSinceBill > 30) agingCategory = '31-60 Days';
+      else if (daysSinceBill > 15) agingCategory = '16-30 Days';
+      else if (daysSinceBill > 7) agingCategory = '8-15 Days';
+      else agingCategory = '0-7 Days';
+
+      return {
+        billId: bill._id,
+        billNumber: bill.sale_id?.sale_number || bill._id,
+        date: bill.generated_at,
+        patientName: bill.patient_id ? `${bill.patient_id.first_name} ${bill.patient_id.last_name || ''}`.trim() : 'Unknown',
+        patientId: bill.patient_id?.patientId,
+        patientPhone: bill.patient_id?.phone,
+        totalAmount: bill.total_amount,
+        paidAmount: bill.paid_amount,
+        outstandingAmount: bill.balance_due,
+        daysOverdue: daysSinceBill,
+        agingCategory,
+        status: bill.status
+      };
+    }).filter(item => {
+      if (daysOverdue) {
+        if (daysOverdue === '30+') return item.daysOverdue >= 30;
+        if (daysOverdue === '60+') return item.daysOverdue >= 60;
+        if (daysOverdue === '90+') return item.daysOverdue >= 90;
+        return item.daysOverdue >= parseInt(daysOverdue);
+      }
+      return true;
+    });
+
+    const totalOutstanding = outstandingData.reduce((sum, item) => sum + item.outstandingAmount, 0);
+
+    const agingSummary = {
+      '0-7 Days': 0,
+      '8-15 Days': 0,
+      '16-30 Days': 0,
+      '31-60 Days': 0,
+      '61-90 Days': 0,
+      '90+ Days': 0
+    };
+
+    outstandingData.forEach(item => {
+      if (agingSummary[item.agingCategory] !== undefined) {
+        agingSummary[item.agingCategory] += item.outstandingAmount;
+      }
+    });
+
+    res.json({
+      success: true,
+      summary: {
+        totalOutstanding: Math.round(totalOutstanding * 100) / 100,
+        totalBills: outstandingData.length,
+        agingSummary
+      },
+      outstandingBills: outstandingData.map(o => ({
+        ...o,
+        totalAmount: Math.round(o.totalAmount * 100) / 100,
+        paidAmount: Math.round(o.paidAmount * 100) / 100,
+        outstandingAmount: Math.round(o.outstandingAmount * 100) / 100
+      }))
+    });
+
+  } catch (error) {
+    console.error('Error in getPharmacyOutstandingReport:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+exports.exportPharmacyRevenue = async (req, res) => {
+  try {
+    const { startDate, endDate, exportType = 'csv' } = req.query;
+
+    let startOfDayUTC, endOfDayUTC;
+
+    if (startDate && endDate) {
+      startOfDayUTC = new Date(startDate);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC = new Date(endDate);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    } else {
+      endOfDayUTC = new Date();
+      startOfDayUTC = new Date();
+      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
+      startOfDayUTC.setHours(0, 0, 0, 0);
+      endOfDayUTC.setHours(23, 59, 59, 999);
+    }
+
+    const dateFilter = {
+      $or: [
+        { sale_date: { $gte: startOfDayUTC, $lte: endOfDayUTC } },
+        { generated_at: { $gte: startOfDayUTC, $lte: endOfDayUTC } }
+      ]
+    };
+
+    const sales = await Sale.find(dateFilter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('items.medicine_id', 'name category')
+      .lean();
+
+    const exportData = sales.map(sale => ({
+      'Sale Number': sale.sale_number,
+      'Date': new Date(sale.sale_date || sale.createdAt).toLocaleDateString(),
+      'Patient': sale.patient_id ? `${sale.patient_id.first_name} ${sale.patient_id.last_name || ''}`.trim() : 'Walk-in',
+      'Patient ID': sale.patient_id?.patientId || 'N/A',
+      'Items': sale.items?.length || 0,
+      'Subtotal': sale.subtotal || 0,
+      'Discount': sale.discount_amount || 0,
+      'Tax': sale.tax || 0,
+      'Total': sale.total_amount || 0,
+      'Paid': sale.amount_paid || 0,
+      'Balance': sale.balance_due || 0,
+      'Payment Method': sale.payment_method,
+      'Status': sale.status
+    }));
+
+    const totalRevenue = exportData.reduce((sum, s) => sum + (s.Total || 0), 0);
+    const totalPaid = exportData.reduce((sum, s) => sum + (s.Paid || 0), 0);
+
+    const summaryRow = {
+      'Sale Number': '=== SUMMARY ===',
+      'Date': '',
+      'Patient': '',
+      'Patient ID': '',
+      'Items': exportData.length,
+      'Subtotal': 0,
+      'Discount': 0,
+      'Tax': 0,
+      'Total': totalRevenue,
+      'Paid': totalPaid,
+      'Balance': totalRevenue - totalPaid,
+      'Payment Method': '',
+      'Status': `Period: ${startDate || startOfDayUTC.toISOString().split('T')[0]} to ${endDate || endOfDayUTC.toISOString().split('T')[0]}`
+    };
+
+    exportData.unshift(summaryRow);
+
+    if (exportType === 'excel') {
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Pharmacy Revenue');
+
+      const headers = Object.keys(exportData[0]);
+      worksheet.columns = headers.map(header => ({
+        header: header,
+        key: header,
+        width: 20
+      }));
+
+      exportData.forEach(row => {
+        worksheet.addRow(row);
+      });
+
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(2).font = { bold: true };
+      worksheet.getRow(2).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFF0F0F0' }
+      };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=pharmacy_revenue_${Date.now()}.xlsx`);
+
+      await workbook.xlsx.write(res);
+      res.end();
+    } else {
+      const headers = Object.keys(exportData[0]);
+      const csvLines = [
+        headers.join(','),
+        ...exportData.map((row) =>
+          headers
+            .map((h) => {
+              const v = row[h] ?? '';
+              const s = String(v);
+              return s.includes(',') || s.includes('"') || s.includes('\n')
+                ? `"${s.replace(/"/g, '""')}"`
+                : s;
+            })
+            .join(',')
+        )
+      ];
+
+      const csvContent = csvLines.join('\n');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=pharmacy_revenue_${Date.now()}.csv`);
+      return res.send(csvContent);
+    }
+  } catch (error) {
+    console.error('Error exporting pharmacy revenue:', error);
     res.status(500).json({ error: error.message });
   }
 };

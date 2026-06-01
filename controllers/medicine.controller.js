@@ -186,46 +186,84 @@ exports.getLowStockMedicines = async (req, res) => {
   }
 };
 
-// Search medicines
+// Search medicines by brand, generic name, composition/molecule, category, HSN or batch number.
 exports.searchMedicines = async (req, res) => {
   try {
-    const { query } = req.query;
-    console.log('Searching medicines with query:', query);
+    const { query, q, includeBatches = 'true', limit = 20 } = req.query;
+    const searchTerm = String(query || q || '').trim();
 
-    if (!query || query.trim().length < 2) {
+    if (!searchTerm || searchTerm.length < 2) {
       return res.json([]);
     }
 
-    // Clean the query
-    const searchTerm = query.trim();
-    
-    // Create regex pattern - escape special characters
     const escapedTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    
-    const medicines = await Medicine.find({
+    const wordRegex = escapedTerm.split(/\s+/).filter(Boolean).join('|');
+
+    const batchMatches = await MedicineBatch.find({
+      batch_number: { $regex: escapedTerm, $options: 'i' },
+      is_active: true
+    }).select('medicine_id').limit(Number(limit));
+
+    const medicineQuery = {
+      is_active: true,
       $or: [
         { name: { $regex: escapedTerm, $options: 'i' } },
         { generic_name: { $regex: escapedTerm, $options: 'i' } },
         { brand: { $regex: escapedTerm, $options: 'i' } },
         { category: { $regex: escapedTerm, $options: 'i' } },
-        // Also search by individual words for better results
-        { name: { $regex: escapedTerm.split(' ').join('|'), $options: 'i' } }
-      ],
-      is_active: true
-    })
-    .limit(20) // Limit results for performance
-    .select('name generic_name brand strength category price min_stock_level location prescription_required'); // Only return needed fields
+        { composition: { $regex: escapedTerm, $options: 'i' } },
+        { composition_keywords: { $regex: escapedTerm.toLowerCase(), $options: 'i' } },
+        { hsn_code: { $regex: escapedTerm, $options: 'i' } },
+        { name: { $regex: wordRegex, $options: 'i' } },
+        ...(batchMatches.length ? [{ _id: { $in: batchMatches.map(b => b.medicine_id) } }] : [])
+      ]
+    };
 
-    // Disable caching for search
+    const medicines = await Medicine.find(medicineQuery)
+      .limit(Number(limit))
+      .select('name generic_name composition compositions brand strength category hsn_code gst_rate base_unit pack_unit units_per_pack allow_loose_sale min_stock_level location prescription_required is_own_brand manufacturer')
+      .lean();
+
+    if (includeBatches === 'false') {
+      return res.json(medicines);
+    }
+
+    const medicineIds = medicines.map(m => m._id);
+    const batches = await MedicineBatch.find({
+      medicine_id: { $in: medicineIds },
+      is_active: true,
+      quantity_base_units: { $gt: 0 }
+    })
+      .sort({ expiry_date: 1 })
+      .select('medicine_id batch_number expiry_date quantity quantity_base_units units_per_pack selling_price selling_price_per_pack selling_price_per_base_unit mrp_per_pack hsn_code gst_rate')
+      .lean();
+
+    const batchesByMedicine = batches.reduce((acc, batch) => {
+      const key = String(batch.medicine_id);
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(batch);
+      return acc;
+    }, {});
+
+    const rows = medicines.map(medicine => {
+      const medBatches = batchesByMedicine[String(medicine._id)] || [];
+      const stock = medBatches.reduce((sum, batch) => sum + Number(batch.quantity_base_units ?? batch.quantity ?? 0), 0);
+      return {
+        ...medicine,
+        stock_quantity: stock,
+        batch_count: medBatches.length,
+        earliest_expiry: medBatches[0]?.expiry_date || null,
+        batches: medBatches
+      };
+    });
+
     res.set({
       'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Pragma': 'no-cache',
       'Expires': '0'
     });
 
-    console.log(`Found ${medicines.length} medicines`);
-    res.json(medicines);
-    
+    res.json(rows);
   } catch (err) {
     console.error('Error searching medicines:', err);
     res.status(500).json({ error: err.message });

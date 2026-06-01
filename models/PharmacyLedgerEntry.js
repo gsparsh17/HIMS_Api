@@ -6,14 +6,28 @@ const pharmacyLedgerEntrySchema = new mongoose.Schema({
   entryDate: { type: Date, default: Date.now, index: true },
   entryType: {
     type: String,
-    enum: ['SALE', 'RETURN', 'REFUND', 'ADVANCE_RECEIVED', 'ADVANCE_USED', 'PURCHASE_PAYMENT', 'DISCOUNT', 'STOCK_ADJUSTMENT', 'CREDIT_NOTE'],
+    enum: [
+      'SALE',
+      'DUE_CREATED',
+      'OUTSTANDING_PAYMENT',
+      'RETURN',
+      'REFUND',
+      'ADVANCE_RECEIVED',
+      'ADVANCE_USED',
+      'PURCHASE_PAYMENT',
+      'DISCOUNT',
+      'STOCK_ADJUSTMENT',
+      'CREDIT_NOTE',
+      'FINAL_CLEARANCE',
+      'DOCTOR_COMMISSION_ACCRUAL'
+    ],
     required: true
   },
   direction: { type: String, enum: ['IN', 'OUT', 'NON_CASH'], required: true },
   amount: { type: Number, required: true, min: 0 },
   paymentMethod: {
     type: String,
-    enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment', 'Credit'],
+    enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment', 'Credit'],
     default: 'Cash'
   },
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },
@@ -27,6 +41,8 @@ const pharmacyLedgerEntrySchema = new mongoose.Schema({
 }, { timestamps: true });
 
 pharmacyLedgerEntrySchema.index({ entryDate: -1, paymentMethod: 1 });
+pharmacyLedgerEntrySchema.index({ patientId: 1, entryDate: -1 });
 pharmacyLedgerEntrySchema.index({ admissionId: 1, entryDate: -1 });
+pharmacyLedgerEntrySchema.index({ entryType: 1, entryDate: -1 });
 
 module.exports = mongoose.model('PharmacyLedgerEntry', pharmacyLedgerEntrySchema);

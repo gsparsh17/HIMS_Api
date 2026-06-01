@@ -14,6 +14,8 @@ const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
 const PharmacyReturn = require('../models/PharmacyReturn');
 const Prescription = require('../models/Prescription');
 const Patient = require('../models/Patient');
+const Bill = require('../models/Bill');
+const Invoice = require('../models/Invoice');
 const {
   objectIdOrUndefined,
   getHospitalId,
@@ -25,11 +27,36 @@ const {
   calculateTotals,
   calculateRequiredBaseUnits,
   createUnifiedSale,
-  createReturn
+  createReturn,
+  createOutstandingSettlement,
+  getPatientOutstanding,
+  getPatientPharmacySummary
 } = require('../services/pharmacyTransaction.service');
 
 function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+}
+
+function canViewPharmacyCost(req) {
+  const role = String(req.user?.role || req.user?.userType || '').toLowerCase();
+  return ['admin', 'superadmin', 'pharmacy_head', 'pharmacyhead', 'pharmacy-admin', 'pharmacy_admin'].includes(role) || req.query.includeCost === 'true';
+}
+
+function stripCostFields(doc) {
+  const clone = JSON.parse(JSON.stringify(doc));
+  delete clone.total_purchase_cost;
+  delete clone.gross_profit;
+  delete clone.commission_amount;
+  if (Array.isArray(clone.items)) {
+    clone.items = clone.items.map(item => {
+      delete item.purchase_rate_per_base_unit;
+      delete item.purchase_amount;
+      delete item.gross_profit;
+      delete item.commission_amount;
+      return item;
+    });
+  }
+  return clone;
 }
 
 async function getDefaultPharmacyId() {
@@ -100,6 +127,221 @@ exports.quoteSale = asyncHandler(async (req, res) => {
 exports.createSale = asyncHandler(async (req, res) => {
   const result = await createUnifiedSale(req.body, req);
   res.status(201).json({ success: true, message: 'Pharmacy sale completed', ...result });
+});
+
+exports.searchPharmacyPatients = asyncHandler(async (req, res) => {
+  const { q = '', patientType = 'all', limit = 20 } = req.query;
+  const text = String(q).trim();
+  if (text.length < 2) return res.json({ success: true, patients: [] });
+
+  const patientMatch = {
+    $or: [
+      { first_name: { $regex: text, $options: 'i' } },
+      { middle_name: { $regex: text, $options: 'i' } },
+      { last_name: { $regex: text, $options: 'i' } },
+      { patientId: { $regex: text, $options: 'i' } },
+      { uhid: { $regex: text, $options: 'i' } },
+      { phone: { $regex: text, $options: 'i' } }
+    ]
+  };
+
+  const patients = await Patient.find(patientMatch)
+    .select('salutation first_name middle_name last_name patientId uhid phone gender dob patient_type')
+    .limit(Number(limit))
+    .lean();
+
+  const activeAdmissions = await IPDAdmission.find({
+    status: { $nin: ['Discharged', 'Cancelled'] },
+    $or: [
+      { admissionNumber: { $regex: text, $options: 'i' } },
+      { shipNo: { $regex: text, $options: 'i' } },
+      { patientId: { $in: patients.map(p => p._id) } }
+    ]
+  })
+    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone gender dob')
+    .populate('primaryDoctorId', 'firstName lastName name')
+    .populate('bedId', 'bedNumber bedType')
+    .populate('wardId', 'name')
+    .limit(Number(limit))
+    .lean();
+
+  const seen = new Set();
+  const rows = [];
+
+  for (const admission of activeAdmissions) {
+    const patient = admission.patientId;
+    if (!patient) continue;
+    const key = `ipd-${admission._id}`;
+    seen.add(String(patient._id));
+    const balances = await getPatientPharmacySummary({ patientId: patient._id, admissionId: admission._id });
+    rows.push({
+      type: 'IPD',
+      patient,
+      admission,
+      uhid: patient.uhid || patient.patientId,
+      registrationNumber: admission.admissionNumber,
+      shipNo: admission.shipNo || admission.admissionNumber,
+      sponsorType: admission.paymentType || 'Self',
+      doctor: admission.primaryDoctorId,
+      balances,
+      key
+    });
+  }
+
+  if (patientType !== 'ipd') {
+    for (const patient of patients) {
+      if (seen.has(String(patient._id)) && patientType === 'all') continue;
+      const balances = await getPatientPharmacySummary({ patientId: patient._id });
+      rows.push({
+        type: patient.patient_type === 'ipd' ? 'IPD_HISTORY' : 'OPD',
+        patient,
+        admission: null,
+        uhid: patient.uhid || patient.patientId,
+        registrationNumber: patient.patientId,
+        shipNo: null,
+        sponsorType: 'Self',
+        doctor: null,
+        balances,
+        key: `patient-${patient._id}`
+      });
+    }
+  }
+
+  res.json({ success: true, patients: rows.slice(0, Number(limit)) });
+});
+
+exports.getSaleBill = asyncHandler(async (req, res) => {
+  const withCosts = canViewPharmacyCost(req);
+  let query = Sale.findById(req.params.saleId)
+    .populate('patient_id', 'salutation first_name middle_name last_name patientId uhid phone gender dob')
+    .populate('admission_id', 'admissionNumber status paymentType advanceAmount')
+    .populate('doctor_id', 'firstName lastName name')
+    .populate('items.medicine_id', 'name composition generic_name brand hsn_code gst_rate')
+    .populate('items.batch_id', 'batch_number expiry_date')
+    .populate('return_refs.return_id', 'returnNumber totalRefundAmount refundMode createdAt');
+  
+  if (withCosts) query = query.select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount');
+  
+  const sale = await query.lean();
+  if (!sale) return res.status(404).json({ success: false, error: 'Sale bill not found' });
+  
+  // Get associated bill and invoice
+  const bill = await Bill.findOne({ sale_id: sale._id }).lean();
+  const invoice = await Invoice.findOne({ sale_id: sale._id }).lean();
+  
+  const balances = await getPatientPharmacySummary({ patientId: sale.patient_id?._id || sale.patient_id, admissionId: sale.admission_id?._id || sale.admission_id });
+  
+  res.json({ 
+    success: true, 
+    sale: withCosts ? sale : stripCostFields(sale), 
+    bill,
+    invoice,
+    balances, 
+    costVisible: withCosts 
+  });
+});
+
+exports.settleOutstanding = asyncHandler(async (req, res) => {
+  const result = await createOutstandingSettlement(req.body, req);
+  res.status(201).json({ success: true, message: 'Outstanding settlement completed', ...result });
+});
+
+exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
+  const admissionId = objectIdOrUndefined(req.params.admissionId || req.query.admissionId);
+  if (!admissionId) return res.status(400).json({ success: false, error: 'admissionId is required' });
+  
+  const admission = await IPDAdmission.findById(admissionId)
+    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone gender dob')
+    .populate('primaryDoctorId', 'firstName lastName name')
+    .lean();
+  if (!admission) return res.status(404).json({ success: false, error: 'Admission not found' });
+
+  const patientId = admission.patientId?._id || admission.patientId;
+  
+  const [sales, returns, ledgers, bills, invoices, balances] = await Promise.all([
+    Sale.find({ admission_id: admissionId }).sort({ sale_date: 1 }).lean(),
+    PharmacyReturn.find({ admissionId }).sort({ createdAt: 1 }).lean(),
+    PharmacyLedgerEntry.find({ admissionId }).sort({ entryDate: 1 }).lean(),
+    Bill.find({ admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: 1 }).lean(),
+    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: 1 }).lean(),
+    getPatientPharmacySummary({ patientId, admissionId })
+  ]);
+
+  const billRows = sales.map(sale => ({
+    billType: 'SALE',
+    billNumber: sale.sale_number,
+    invoiceNumber: sale.invoice_number,
+    date: sale.sale_date,
+    grossAmount: sale.gross_amount || sale.subtotal,
+    discount: (sale.item_discount_amount || 0) + (sale.discount_amount || 0),
+    tax: sale.tax || 0,
+    totalAmount: sale.total_amount || 0,
+    paidAmount: sale.amount_paid || 0,
+    returnAmount: sale.return_amount || 0,
+    balanceDue: sale.balance_due || 0,
+    closingOutstanding: sale.closing_outstanding || 0
+  }));
+
+  const returnRows = returns.map(ret => ({
+    billType: 'RETURN',
+    billNumber: ret.returnNumber,
+    originalBillNumber: ret.originalSaleNumber,
+    date: ret.createdAt,
+    refundMode: ret.refundMode,
+    totalRefundAmount: ret.totalRefundAmount || 0
+  }));
+
+  const summary = {
+    totalSales: normalizeMoney(sales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0)),
+    totalReturns: normalizeMoney(returns.reduce((sum, r) => sum + Number(r.totalRefundAmount || 0), 0)),
+    totalPaid: normalizeMoney(sales.reduce((sum, s) => sum + Number(s.amount_paid || 0), 0)),
+    totalDue: balances.outstanding,
+    pharmacyAdvanceBalance: balances.pharmacyAdvance,
+    netPayableBeforeDischarge: normalizeMoney(Math.max(0, balances.outstanding - balances.pharmacyAdvance)),
+    refundableAdvance: normalizeMoney(Math.max(0, balances.pharmacyAdvance - balances.outstanding))
+  };
+
+  res.json({ success: true, admission, bills: billRows, returns: returnRows, ledgers, pharmacyBills: bills, pharmacyInvoices: invoices, balances, summary });
+});
+
+exports.getDoctorCommissionReport = asyncHandler(async (req, res) => {
+  const start = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
+  const match = { sale_date: { $gte: start, $lte: end }, 'items.is_own_brand': true };
+  if (req.query.doctorId) match.doctor_id = objectIdOrUndefined(req.query.doctorId);
+  const sales = await Sale.find(match)
+    .select('+commission_amount +items.commission_amount +items.purchase_amount +items.gross_profit')
+    .populate('doctor_id', 'firstName lastName name')
+    .sort({ sale_date: -1 })
+    .lean();
+  const rows = [];
+  for (const sale of sales) {
+    for (const item of sale.items || []) {
+      if (!item.is_own_brand) continue;
+      rows.push({
+        saleNumber: sale.sale_number,
+        saleDate: sale.sale_date,
+        patientName: sale.customer_name,
+        doctorId: item.doctor_id || sale.doctor_id?._id || sale.doctor_id,
+        doctorName: item.doctor_name || sale.doctor_name || sale.doctor_id?.name || [sale.doctor_id?.firstName, sale.doctor_id?.lastName].filter(Boolean).join(' '),
+        medicineName: item.medicine_name,
+        brand: item.brand,
+        quantity: item.quantity_base_units || item.quantity,
+        taxableAmount: item.taxable_amount || 0,
+        commissionType: item.commission_type,
+        commissionValue: item.commission_value,
+        commissionAmount: item.commission_amount || 0
+      });
+    }
+  }
+  const totals = rows.reduce((acc, row) => {
+    acc.salesAmount += Number(row.taxableAmount || 0);
+    acc.commissionAmount += Number(row.commissionAmount || 0);
+    return acc;
+  }, { salesAmount: 0, commissionAmount: 0, rows: rows.length });
+  totals.salesAmount = normalizeMoney(totals.salesAmount);
+  totals.commissionAmount = normalizeMoney(totals.commissionAmount);
+  res.json({ success: true, range: { start, end }, totals, rows });
 });
 
 exports.depositAdvance = asyncHandler(async (req, res) => {
@@ -234,13 +476,15 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
 
   if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found' });
 
-  const [medications, medicineStock, sales, returns, advanceLedgers, pharmacyLedgers] = await Promise.all([
+  const [medications, medicineStock, sales, returns, advanceLedgers, pharmacyLedgers, bills, invoices] = await Promise.all([
     IPDMedicationChart.find({ admissionId }).populate('medicineId', 'name base_unit pack_unit units_per_pack').sort({ startDate: -1 }).lean(),
     IPDPatientMedicineStock.find({ admissionId }).populate('medicineId batchId').sort({ updatedAt: -1 }).lean(),
     Sale.find({ admission_id: admissionId }).populate('items.medicine_id items.batch_id').sort({ sale_date: -1 }).lean(),
     PharmacyReturn.find({ admissionId }).sort({ createdAt: -1 }).lean(),
     PatientAdvanceLedger.find({ admissionId }).sort({ createdAt: -1 }).lean(),
-    PharmacyLedgerEntry.find({ admissionId }).sort({ entryDate: -1 }).lean()
+    PharmacyLedgerEntry.find({ admissionId }).sort({ entryDate: -1 }).lean(),
+    Bill.find({ admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: -1 }).lean(),
+    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: -1 }).lean()
   ]);
 
   const balances = {
@@ -257,7 +501,9 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
     sales,
     returns,
     advanceLedgers,
-    pharmacyLedgers
+    pharmacyLedgers,
+    bills,
+    invoices
   });
 });
 
@@ -329,6 +575,19 @@ exports.dispenseIPDMedication = asyncHandler(async (req, res) => {
 
 exports.createReturn = asyncHandler(async (req, res) => {
   const pharmacyReturn = await createReturn(req.body, req);
+  
+  // Update associated bill if exists
+  if (pharmacyReturn.originalSaleId) {
+    const bill = await Bill.findOne({ sale_id: pharmacyReturn.originalSaleId });
+    if (bill) {
+      // Update bill with return information
+      bill.notes = bill.notes 
+        ? `${bill.notes}\nReturn ${pharmacyReturn.returnNumber}: ₹${pharmacyReturn.totalRefundAmount}`
+        : `Return ${pharmacyReturn.returnNumber}: ₹${pharmacyReturn.totalRefundAmount}`;
+      await bill.save();
+    }
+  }
+  
   res.status(201).json({ success: true, message: 'Medicine return completed', return: pharmacyReturn });
 });
 
@@ -375,8 +634,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
   res.json({ success: true, range: { start, end }, totals, summary, entries });
 });
 
-// Add these functions to the existing exports in pharmacyOperations.controller.js
-
 // Get all active IPD patients with their pharmacy balances
 exports.getIPDPatients = asyncHandler(async (req, res) => {
   const { search = '', status = 'Admitted,Under Treatment', limit = 100 } = req.query;
@@ -407,7 +664,6 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
     .sort({ admissionDate: -1 })
     .limit(Number(limit));
   
-  // Get pharmacy balances for each admission
   const patientsWithBalances = await Promise.all(admissions.map(async (admission) => {
     const pharmacyAdvance = await getAdvanceBalance({ 
       admissionId: admission._id, 
@@ -421,7 +677,6 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
       walletType: 'IPD_SHARED' 
     });
     
-    // Get recent pharmacy sales
     const recentSales = await Sale.find({ 
       admission_id: admission._id 
     }).sort({ sale_date: -1 }).limit(5);
@@ -455,7 +710,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'Patient not found' });
   }
   
-  // Build query for admissions
   const admissionQuery = { patientId: patient._id };
   if (admissionId) {
     admissionQuery._id = admissionId;
@@ -468,7 +722,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .populate('wardId', 'name')
     .sort({ admissionDate: -1 });
   
-  // Get all pharmacy transactions (sales) for this patient
   const saleFilter = { patient_id: patient._id };
   if (startDate && endDate) {
     saleFilter.sale_date = {
@@ -483,7 +736,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .sort({ sale_date: -1 })
     .limit(Number(limit));
   
-  // Get advance ledger entries
   const advanceFilters = { patientId: patient._id };
   if (startDate && endDate) {
     advanceFilters.createdAt = {
@@ -496,17 +748,18 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(Number(limit));
   
-  // Get pharmacy ledger entries
   const pharmacyLedgers = await PharmacyLedgerEntry.find({ patientId: patient._id })
     .sort({ entryDate: -1 })
     .limit(Number(limit));
   
-  // Get medicine returns
   const returns = await PharmacyReturn.find({ patientId: patient._id })
     .sort({ createdAt: -1 })
     .limit(Number(limit));
   
-  // Calculate current balances
+  const bills = await Bill.find({ patient_id: patient._id, is_pharmacy_bill: true })
+    .sort({ generated_at: -1 })
+    .limit(Number(limit));
+  
   const currentBalances = {
     sharedIpdAdvance: 0,
     pharmacyAdvance: 0,
@@ -530,11 +783,9 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     currentBalances.sharedIpdAdvance += sharedIpdAdvance;
   }
   
-  // Calculate total spent
   const allSales = await Sale.find({ patient_id: patient._id });
   currentBalances.totalSpent = allSales.reduce((sum, sale) => sum + sale.total_amount, 0);
   
-  // Calculate pending bills (sales not fully paid)
   const pendingSales = await Sale.find({ 
     patient_id: patient._id,
     balance_due: { $gt: 0 }
@@ -549,12 +800,14 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
       sales,
       advanceLedgers,
       pharmacyLedgers,
-      returns
+      returns,
+      bills
     },
     balances: currentBalances,
     summary: {
       totalSales: allSales.length,
       totalReturns: returns.length,
+      totalBills: bills.length,
       lastTransaction: sales[0]?.sale_date || null
     }
   });
@@ -566,7 +819,7 @@ exports.getDashboard = asyncHandler(async (req, res) => {
   const end = new Date();
   end.setHours(23, 59, 59, 999);
 
-  const [salesAgg, ledgerAgg, pendingIpd, lowStockCount, nearExpiryCount, pendingPO, recentSales, recentReturns] = await Promise.all([
+  const [salesAgg, ledgerAgg, pendingIpd, lowStockCount, nearExpiryCount, pendingPO, recentSales, recentReturns, recentBills, invoiceStats] = await Promise.all([
     Sale.aggregate([
       { $match: { sale_date: { $gte: start, $lte: end } } },
       { $group: { _id: '$customer_type', count: { $sum: 1 }, total: { $sum: '$total_amount' }, discount: { $sum: '$discount_amount' } } }
@@ -580,7 +833,12 @@ exports.getDashboard = asyncHandler(async (req, res) => {
     MedicineBatch.countDocuments({ expiry_date: { $gte: new Date(), $lte: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) }, is_active: true }),
     PurchaseOrder.countDocuments({ status: { $in: ['Draft', 'Ordered', 'Partially Received'] } }),
     Sale.find({}).sort({ sale_date: -1 }).limit(10).populate('patient_id', 'first_name last_name patientId').lean(),
-    PharmacyReturn.find({}).sort({ createdAt: -1 }).limit(10).lean()
+    PharmacyReturn.find({}).sort({ createdAt: -1 }).limit(10).lean(),
+    Bill.find({ is_pharmacy_bill: true }).sort({ generated_at: -1 }).limit(10).populate('patient_id', 'first_name last_name patientId').lean(),
+    Invoice.aggregate([
+      { $match: { is_pharmacy_sale: true, issue_date: { $gte: start, $lte: end } } },
+      { $group: { _id: '$status', count: { $sum: 1 }, total: { $sum: '$total' } } }
+    ])
   ]);
 
   const salesTotals = salesAgg.reduce((acc, row) => {
@@ -611,7 +869,9 @@ exports.getDashboard = asyncHandler(async (req, res) => {
       pendingPurchaseOrders: pendingPO
     },
     recentSales,
-    recentReturns
+    recentReturns,
+    recentBills,
+    invoiceStats
   });
 });
 

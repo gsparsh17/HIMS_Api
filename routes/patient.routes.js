@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const patientController = require('../controllers/patient.controller');
+const { protect, authorize } = require('../middlewares/auth');
 
 // --- Specific routes first (must be before parameterized routes) ---
 
@@ -13,11 +14,40 @@ const storage = multer.diskStorage({
     cb(null, 'uploads/');
   },
   filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); 
+    cb(null, Date.now() + path.extname(file.originalname));
   }
 });
 
 const upload = multer({ storage: storage });
+
+// ========== PHARMACY POS ENHANCED ENDPOINTS (NEW) ==========
+// Search patients for pharmacy POS (initials, UHID, SHIP, phone, registration)
+router.get('/pharmacy/search',
+  // protect, 
+  // authorize('pharmacy', 'pharmacy_head', 'admin', 'registrar'),
+  patientController.searchPatientsForPharmacy
+);
+
+// Get patient pharmacy account summary (outstanding, advance, active admission)
+router.get('/:id/pharmacy-account',
+  // protect,
+  // authorize('pharmacy', 'pharmacy_head', 'admin', 'registrar', 'billing'),
+  patientController.getPatientPharmacyAccount
+);
+
+// Update patient pharmacy balance (used by POS and returns)
+router.patch('/:id/pharmacy-balance',
+  // protect,
+  // authorize('pharmacy', 'pharmacy_head', 'admin'),
+  patientController.updatePatientPharmacyBalance
+);
+
+// Create or update walk-in patient
+router.post('/walkin',
+  // protect,
+  // authorize('pharmacy', 'pharmacy_head', 'admin', 'registrar'),
+  patientController.createOrUpdateWalkinPatient
+);
 
 // Image upload endpoint
 router.post('/upload', upload.single('image'), patientController.uploadPatientImage);
@@ -46,5 +76,8 @@ router.get('/', patientController.getAllPatients);
 router.get('/:id', patientController.getPatientById);
 router.put('/:id', patientController.updatePatient);
 router.delete('/:id', patientController.deletePatient);
+
+// Legacy phone search (keep for backward compatibility)
+router.get('/phone/:phone', patientController.getPatientByPhone);
 
 module.exports = router;

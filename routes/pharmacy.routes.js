@@ -19,6 +19,12 @@ const authChain = process.env.PHARMACY_AUTH_REQUIRED === 'true'
 router.get('/settings', ...authChain, operations.getSettings);
 router.put('/settings', ...authChain, operations.updateSettings);
 
+router.get('/patients/search', ...authChain, operations.searchPharmacyPatients);
+router.post('/settlements/outstanding', ...authChain, operations.settleOutstanding);
+router.get('/sales/:saleId/bill', ...authChain, operations.getSaleBill);
+router.get('/ipd/admissions/:admissionId/final-clearance', ...authChain, operations.getAdmissionFinalClearance);
+router.get('/reports/doctor-commission', ...authChain, operations.getDoctorCommissionReport);
+
 router.get('/dashboard', ...authChain, operations.getDashboard);
 router.get('/analytics/inventory', ...authChain, operations.getInventoryAnalytics);
 router.get('/analytics/purchases', ...authChain, operations.getPurchaseAnalytics);
