@@ -15,7 +15,8 @@ const billItemSchema = new mongoose.Schema({
   },
   item_type: {
     type: String,
-    enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Radiology', 'Pharmacy', 'Other'],
+    enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Radiology', 'Pharmacy', 'Other', 
+           'Registration Fee', 'Admission Fee', 'IPD Advance', 'Advance Payment', 'Miscellaneous'],
     required: true
   },
 

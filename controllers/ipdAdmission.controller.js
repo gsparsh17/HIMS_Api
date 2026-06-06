@@ -9,7 +9,216 @@ const LabReport = require('../models/LabReport');
 const NursingNote = require('../models/NursingNote');
 const IPDVitals = require('../models/IPDVitals');
 const DischargeSummary = require('../models/DischargeSummary');
+const Invoice = require('../models/Invoice');
+const Bill = require('../models/Bill');
+const Doctor = require('../models/Doctor');
+const Department = require('../models/Department');
+const User = require('../models/User');
+const Hospital = require('../models/Hospital');
+const moment = require('moment');
 const mongoose = require('mongoose');
+
+// ========== HELPER: Generate Invoice for Registration Fee ==========
+async function generateRegistrationFeeInvoice(admission, patient, registrationFee, paymentMethod, createdBy) {
+  try {
+    if (!registrationFee || registrationFee <= 0) return null;
+
+    // Create a bill for the registration fee
+    const bill = new Bill({
+      patient_id: patient._id,
+      admission_id: admission._id,
+      total_amount: registrationFee,
+      subtotal: registrationFee,
+      tax_amount: 0,
+      discount: 0,
+      payment_method: paymentMethod || 'Cash',
+      status: 'Paid',
+      paid_amount: registrationFee,
+      balance_due: 0,
+      paid_at: new Date(),
+      items: [{
+        description: `IPD Registration Fee - ${admission.admissionNumber}`,
+        amount: registrationFee,
+        quantity: 1,
+        item_type: 'Other',  // Changed from 'Registration Fee' to 'Other'
+        admission_id: admission._id
+      }],
+      notes: `Registration fee for IPD admission ${admission.admissionNumber}`,
+      created_by: createdBy,
+      is_pharmacy_bill: false
+    });
+
+    await bill.save();
+
+    // Create invoice for the registration fee
+    const invoice = new Invoice({
+      invoice_type: 'IPD Registration',  // New type
+      patient_id: patient._id,
+      admission_id: admission._id,
+      customer_type: 'Patient',
+      customer_name: `${patient.first_name} ${patient.last_name || ''}`.trim(),
+      customer_phone: patient.phone,
+      bill_id: bill._id,
+      issue_date: new Date(),
+      due_date: new Date(),
+      service_items: [{
+        description: `IPD Registration Fee - ${admission.admissionNumber}`,
+        quantity: 1,
+        unit_price: registrationFee,
+        total_price: registrationFee,
+        tax_rate: 0,
+        tax_amount: 0,
+        service_type: 'Other'
+      }],
+      subtotal: registrationFee,
+      discount: 0,
+      tax: 0,
+      total: registrationFee,
+      amount_paid: registrationFee,
+      balance_due: 0,
+      status: 'Paid',
+      notes: `Registration fee for IPD admission ${admission.admissionNumber}`,
+      created_by: createdBy,
+      payment_history: [{
+        amount: registrationFee,
+        method: paymentMethod || 'Cash',
+        date: new Date(),
+        status: 'Completed',
+        collected_by: createdBy
+      }]
+    });
+
+    await invoice.save();
+    bill.invoice_id = invoice._id;
+    await bill.save();
+
+    return { bill, invoice };
+  } catch (error) {
+    console.error('Error generating registration fee invoice:', error);
+    return null;
+  }
+}
+
+// ========== HELPER: Generate Invoice for Admission Fee ==========
+async function generateAdmissionFeeInvoice(admission, patient, admissionFee, paymentMethod, createdBy) {
+  try {
+    if (!admissionFee || admissionFee <= 0) return null;
+
+    const bill = new Bill({
+      patient_id: patient._id,
+      admission_id: admission._id,
+      total_amount: admissionFee,
+      subtotal: admissionFee,
+      tax_amount: 0,
+      discount: 0,
+      payment_method: paymentMethod || 'Cash',
+      status: 'Paid',
+      paid_amount: admissionFee,
+      balance_due: 0,
+      paid_at: new Date(),
+      items: [{
+        description: `IPD Admission Fee - ${admission.admissionNumber}`,
+        amount: admissionFee,
+        quantity: 1,
+        item_type: 'Other',  // Changed from 'Admission Fee' to 'Other'
+        admission_id: admission._id
+      }],
+      notes: `Admission fee for IPD admission ${admission.admissionNumber}`,
+      created_by: createdBy,
+      is_pharmacy_bill: false
+    });
+
+    await bill.save();
+
+    const invoice = new Invoice({
+      invoice_type: 'IPD Admission',  // New type
+      patient_id: patient._id,
+      admission_id: admission._id,
+      customer_type: 'Patient',
+      customer_name: `${patient.first_name} ${patient.last_name || ''}`.trim(),
+      customer_phone: patient.phone,
+      bill_id: bill._id,
+      issue_date: new Date(),
+      due_date: new Date(),
+      service_items: [{
+        description: `IPD Admission Fee - ${admission.admissionNumber}`,
+        quantity: 1,
+        unit_price: admissionFee,
+        total_price: admissionFee,
+        tax_rate: 0,
+        tax_amount: 0,
+        service_type: 'Other'
+      }],
+      subtotal: admissionFee,
+      discount: 0,
+      tax: 0,
+      total: admissionFee,
+      amount_paid: admissionFee,
+      balance_due: 0,
+      status: 'Paid',
+      notes: `Admission fee for IPD admission ${admission.admissionNumber}`,
+      created_by: createdBy,
+      payment_history: [{
+        amount: admissionFee,
+        method: paymentMethod || 'Cash',
+        date: new Date(),
+        status: 'Completed',
+        collected_by: createdBy
+      }]
+    });
+
+    await invoice.save();
+    bill.invoice_id = invoice._id;
+    await bill.save();
+
+    return { bill, invoice };
+  } catch (error) {
+    console.error('Error generating admission fee invoice:', error);
+    return null;
+  }
+}
+
+// ========== HELPER: Create IPD Charge ==========
+async function createIPDCharge({
+  admissionId,
+  patientId,
+  chargeType,
+  description,
+  quantity,
+  rate,
+  sourceModule,
+  sourceId,
+  isAutoGenerated = true,
+  isBilled = false,
+  invoiceId = null,
+  addedBy,
+  notes,
+  chargeDate = new Date()
+}) {
+  const netAmount = (quantity || 1) * (rate || 0);
+
+  const charge = new IPDCharge({
+    admissionId,
+    patientId,
+    chargeType,
+    description,
+    quantity: quantity || 1,
+    rate: rate || 0,
+    amount: netAmount,
+    netAmount,
+    sourceModule,
+    sourceId,
+    isAutoGenerated,
+    isBilled,
+    invoiceId,
+    addedBy,
+    notes,
+    chargeDate
+  });
+
+  await charge.save();
+  return charge;
+}
 
 // ========== ADMISSION CRUD ==========
 
@@ -33,7 +242,13 @@ exports.createAdmission = async (req, res) => {
       sponsorType,
       sponsorName,
       advanceAmount,
-      admissionNotes
+      admissionNotes,
+      // Payment-related fields from frontend
+      registrationFee = 0,
+      admissionFee = 0,
+      registrationFeeMethod = 'Cash',
+      admissionFeeMethod = 'Cash',
+      advancePaymentMethod = 'Cash'
     } = req.body;
 
     // Validate patient exists
@@ -60,6 +275,7 @@ exports.createAdmission = async (req, res) => {
     let bed = null;
     let roomId = null;
     let wardId = null;
+    let dailyBedCharge = 0;
 
     if (bedId) {
       bed = await Bed.findById(bedId).populate('roomId');
@@ -71,7 +287,25 @@ exports.createAdmission = async (req, res) => {
       }
       roomId = bed.roomId?._id;
       wardId = bed.wardId;
+      dailyBedCharge = bed.dailyCharge || 0;
     }
+
+    // Get doctor and department details for population
+    let doctor = null;
+    let department = null;
+
+    if (primaryDoctorId) {
+      doctor = await Doctor.findById(primaryDoctorId).select('firstName lastName specialization');
+    }
+
+    if (departmentId) {
+      department = await Department.findById(departmentId).select('name');
+    }
+
+    // Calculate total initial payment from frontend values
+    const totalInitialPayment = (parseFloat(advanceAmount) || 0) +
+      (parseFloat(registrationFee) || 0) +
+      (parseFloat(admissionFee) || 0);
 
     // Create admission
     const admission = new IPDAdmission({
@@ -97,7 +331,8 @@ exports.createAdmission = async (req, res) => {
       status: 'Admitted',
       clinicalAssessmentCompleted: false,
       createdBy: req.user?._id,
-      pharmacyClearanceStatus: 'pending'
+      pharmacyClearanceStatus: 'pending',
+      paidAmount: totalInitialPayment
     });
 
     await admission.save();
@@ -126,40 +361,311 @@ exports.createAdmission = async (req, res) => {
       }
     });
 
-    // Create admission charge if advance amount
-    if (advanceAmount > 0) {
-      const charge = new IPDCharge({
-        admissionId: admission._id,
-        patientId,
-        chargeType: 'Miscellaneous',
-        description: 'Advance payment received',
-        amount: advanceAmount,
-        netAmount: advanceAmount,
-        sourceModule: 'Admission',
-        sourceId: admission._id,
-        isAutoGenerated: true,
-        addedBy: req.user?._id
-      });
-      await charge.save();
+    // Array to store created invoices
+    const createdInvoices = [];
+    const createdCharges = []; // Only for actual charges (fees, bed charges)
 
-      admission.advanceAmount = advanceAmount;
-      admission.paidAmount = advanceAmount;
-      await admission.save();
+    // 1. Create registration fee invoice if provided by frontend
+    if (registrationFee > 0) {
+      const regInvoice = await generateRegistrationFeeInvoice(
+        admission,
+        patient,
+        parseFloat(registrationFee),
+        registrationFeeMethod,
+        req.user?._id
+      );
+      if (regInvoice) {
+        createdInvoices.push(regInvoice.invoice);
+
+        // Registration Fee IS a charge
+        const regCharge = await createIPDCharge({
+          admissionId: admission._id,
+          patientId,
+          chargeType: 'Miscellaneous',
+          description: `Registration Fee - ${admission.admissionNumber}`,
+          quantity: 1,
+          rate: parseFloat(registrationFee),
+          sourceModule: 'Admission',
+          sourceId: admission._id,
+          isAutoGenerated: true,
+          isBilled: true,
+          invoiceId: regInvoice.invoice._id,
+          addedBy: req.user?._id,
+          notes: 'Registration fee collected at admission'
+        });
+        createdCharges.push(regCharge);
+      }
     }
 
-    res.status(201).json({
+    // 2. Create admission fee invoice if provided by frontend
+    if (admissionFee > 0) {
+      const admInvoice = await generateAdmissionFeeInvoice(
+        admission,
+        patient,
+        parseFloat(admissionFee),
+        admissionFeeMethod,
+        req.user?._id
+      );
+      if (admInvoice) {
+        createdInvoices.push(admInvoice.invoice);
+
+        // Admission Fee IS a charge
+        const admCharge = await createIPDCharge({
+          admissionId: admission._id,
+          patientId,
+          chargeType: 'Miscellaneous',
+          description: `Admission Fee - ${admission.admissionNumber}`,
+          quantity: 1,
+          rate: parseFloat(admissionFee),
+          sourceModule: 'Admission',
+          sourceId: admission._id,
+          isAutoGenerated: true,
+          isBilled: true,
+          invoiceId: admInvoice.invoice._id,
+          addedBy: req.user?._id,
+          notes: 'Admission fee collected at admission'
+        });
+        createdCharges.push(admCharge);
+      }
+    }
+
+    // 3. Create advance payment - Store in Ledger, NOT as IPD Charge
+    if (advanceAmount > 0) {
+      // const advanceInvoice = await generateAdvanceCreditInvoice(
+      //   admission,
+      //   patient,
+      //   parseFloat(advanceAmount),
+      //   advancePaymentMethod,
+      //   req.user?._id
+      // );
+      // if (advanceInvoice) {
+      //   createdInvoices.push(advanceInvoice.invoice);
+
+      // IMPORTANT: DO NOT create IPDCharge for advance payment
+      // Advance is a credit/prepayment, not a charge/debt
+
+      // Instead, create advance ledger entry
+      const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
+      await PatientAdvanceLedger.create({
+        hospitalId: req.user?.hospital_id,
+        patientId: patient._id,
+        admissionId: admission._id,
+        walletType: 'IPD_SHARED',  // or 'IPD_SHARED' based on configuration
+        transactionType: 'ADVANCE_DEPOSIT',
+        direction: 'CREDIT',
+        amount: parseFloat(advanceAmount),
+        paymentMethod: advancePaymentMethod,
+        sourceModule: 'IPD',
+        sourceId: admission._id,
+        balanceAfter: parseFloat(advanceAmount),
+        notes: `Advance payment at admission - ${admission.admissionNumber}`,
+        createdBy: req.user?._id
+      });
+    }
+    console.log('Total initial payment recorded for admission:', totalInitialPayment);
+    console.log('Created invoices for admission:', createdInvoices.map(inv => inv._id));
+    // 4. Create bed charge for first day (if bed is selected) - This IS a charge
+    if (dailyBedCharge > 0 && bedId) {
+      const bedCharge = await createIPDCharge({
+        admissionId: admission._id,
+        patientId,
+        chargeType: 'Bed',
+        description: `Bed Charges - ${bed.bedNumber} (${bed.bedType}) for ${new Date().toLocaleDateString()}`,
+        quantity: 1,
+        rate: dailyBedCharge,
+        sourceModule: 'Bed',
+        sourceId: bed._id,
+        isAutoGenerated: true,
+        isBilled: false,
+        addedBy: req.user?._id,
+        notes: 'First day bed charge',
+        chargeDate: new Date()
+      });
+      createdCharges.push(bedCharge);
+    }
+
+    console.log('Created charges for admission:', createdCharges.map(ch => ch._id));
+
+    // Update admission totals - ONLY from actual charges (not advance)
+    const totalCharges = createdCharges.reduce((sum, c) => sum + c.netAmount, 0);
+    admission.totalBillAmount = totalCharges;
+    admission.dueAmount = totalCharges - (admission.paidAmount || 0);
+    await admission.save();
+
+    // Fetch the complete admission with populated fields for response
+    const populatedAdmission = await IPDAdmission.findById(admission._id)
+      .populate('patientId', 'first_name last_name patientId uhid phone')
+      .populate('primaryDoctorId', 'firstName lastName specialization')
+      .populate('departmentId', 'name')
+      .populate('bedId', 'bedNumber bedType dailyCharge')
+      .populate('wardId', 'name')
+      .populate('roomId', 'room_number type');
+
+    // Prepare response with populated data
+    const responseData = {
       success: true,
       message: 'Patient admitted successfully',
       admission: {
-        _id: admission._id,
-        admissionNumber: admission.admissionNumber,
-        shipNumber: admission.shipNumber,
-        patientId: admission.patientId,
-        status: admission.status
+        _id: populatedAdmission._id,
+        admissionNumber: populatedAdmission.admissionNumber,
+        shipNumber: populatedAdmission.shipNumber,
+        patientId: populatedAdmission.patientId,
+        status: populatedAdmission.status,
+        advanceAmount: populatedAdmission.advanceAmount,
+        paidAmount: populatedAdmission.paidAmount,
+        dueAmount: populatedAdmission.dueAmount,
+        admissionDate: populatedAdmission.admissionDate,
+        admissionFee: admissionFee,
+        registrationFee: registrationFee,
+        totalCharges: totalCharges,
+        // Add populated fields for receipt
+        patient: populatedAdmission.patientId ? {
+          _id: populatedAdmission.patientId._id,
+          first_name: populatedAdmission.patientId.first_name,
+          last_name: populatedAdmission.patientId.last_name,
+          patientId: populatedAdmission.patientId.patientId,
+          uhid: populatedAdmission.patientId.uhid,
+          phone: populatedAdmission.patientId.phone
+        } : null,
+        doctor: populatedAdmission.primaryDoctorId ? {
+          _id: populatedAdmission.primaryDoctorId._id,
+          firstName: populatedAdmission.primaryDoctorId.firstName,
+          lastName: populatedAdmission.primaryDoctorId.lastName,
+          specialization: populatedAdmission.primaryDoctorId.specialization
+        } : null,
+        department: populatedAdmission.departmentId ? {
+          _id: populatedAdmission.departmentId._id,
+          name: populatedAdmission.departmentId.name
+        } : null,
+        bed: populatedAdmission.bedId ? {
+          _id: populatedAdmission.bedId._id,
+          bedNumber: populatedAdmission.bedId.bedNumber,
+          bedType: populatedAdmission.bedId.bedType,
+          dailyCharge: populatedAdmission.bedId.dailyCharge
+        } : null,
+        ward: populatedAdmission.wardId ? {
+          _id: populatedAdmission.wardId._id,
+          name: populatedAdmission.wardId.name
+        } : null
+      }
+    };
+
+    // Add invoice details if created
+    if (createdInvoices.length > 0) {
+      responseData.invoices = createdInvoices.map(inv => ({
+        _id: inv._id,
+        invoice_number: inv.invoice_number,
+        invoice_type: inv.invoice_type,
+        total: inv.total,
+        status: inv.status,
+        download_url: `/api/invoices/${inv._id}/download`
+      }));
+    }
+
+    res.status(201).json(responseData);
+
+  } catch (err) {
+    console.error('Error creating admission:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get admission by ID (enhanced with invoice data)
+exports.getAdmissionById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const admission = await IPDAdmission.findById(id)
+      .populate('patientId', 'first_name last_name patientId uhid phone dob gender blood_group pharmacy_outstanding_balance pharmacy_advance_balance sponsor_type sponsor_name')
+      .populate('primaryDoctorId', 'firstName lastName specialization')
+      .populate('secondaryDoctorIds', 'firstName lastName specialization')
+      .populate('departmentId', 'name')
+      .populate('bedId', 'bedNumber bedType dailyCharge')
+      .populate('roomId', 'room_number type')
+      .populate('wardId', 'name floor type');
+
+    if (!admission) {
+      return res.status(404).json({ error: 'Admission not found' });
+    }
+
+    // Get related data
+    const rounds = await IPDRound.find({ admissionId: admission._id })
+      .populate('doctorId', 'firstName lastName')
+      .populate('prescriptionId')
+      .sort({ roundDateTime: -1 })
+      .limit(10);
+
+    const nursingNotes = await NursingNote.find({ admissionId: admission._id })
+      .populate('nurseId', 'first_name last_name')
+      .sort({ noteDateTime: -1 })
+      .limit(5);
+
+    const vitals = await IPDVitals.find({ admissionId: admission._id })
+      .populate('recordedBy', 'first_name last_name')
+      .sort({ recordedAt: -1 })
+      .limit(10);
+
+    const charges = await IPDCharge.find({ admissionId: admission._id })
+      .sort({ chargeDate: -1 });
+
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId: admission._id });
+
+    // Get invoices for this admission
+    const invoices = await Invoice.find({ admission_id: admission._id })
+      .sort({ issue_date: -1 });
+
+    // Get bills for this admission
+    const bills = await Bill.find({ admission_id: admission._id })
+      .sort({ generated_at: -1 });
+
+    res.json({
+      admission,
+      rounds,
+      nursingNotes,
+      vitals,
+      charges,
+      dischargeSummary,
+      invoices,
+      bills
+    });
+  } catch (err) {
+    console.error('Error fetching admission:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get admission invoice by ID (for printing receipt)
+exports.getAdmissionInvoice = async (req, res) => {
+  try {
+    const { admissionId, invoiceId } = req.params;
+
+    const invoice = await Invoice.findOne({
+      _id: invoiceId,
+      admission_id: admissionId
+    }).populate('patient_id', 'first_name last_name patientId phone address')
+      .populate('admission_id', 'admissionNumber admissionDate bedId wardId');
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    // Get hospital info for receipt
+    const Hospital = require('../models/Hospital');
+    const hospital = await Hospital.findOne();
+
+    res.json({
+      success: true,
+      invoice,
+      hospital: {
+        name: hospital?.hospitalName || 'City Hospital',
+        address: hospital?.address || '',
+        phone: hospital?.contact || '',
+        email: hospital?.email || '',
+        logo: hospital?.logo || ''
       }
     });
   } catch (err) {
-    console.error('Error creating admission:', err);
+    console.error('Error fetching admission invoice:', err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -239,12 +745,18 @@ exports.getAllAdmissions = async (req, res) => {
         { $group: { _id: null, total: { $sum: '$netAmount' } } }
       ]);
 
+      // Get invoices count
+      const invoices = await Invoice.countDocuments({ admission_id: admission._id });
+      const bills = await Bill.countDocuments({ admission_id: admission._id });
+
       return {
         ...admission.toObject(),
         stats: {
           rounds,
           vitals,
-          totalCharges: charges[0]?.total || 0
+          totalCharges: charges[0]?.total || 0,
+          invoices,
+          bills
         }
       };
     }));
@@ -257,60 +769,6 @@ exports.getAllAdmissions = async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching admissions:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-// Get admission by ID (enhanced with pharmacy data)
-exports.getAdmissionById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const admission = await IPDAdmission.findById(id)
-      .populate('patientId', 'first_name last_name patientId uhid phone dob gender blood_group pharmacy_outstanding_balance pharmacy_advance_balance sponsor_type sponsor_name')
-      .populate('primaryDoctorId', 'firstName lastName specialization')
-      .populate('secondaryDoctorIds', 'firstName lastName specialization')
-      .populate('departmentId', 'name')
-      .populate('bedId', 'bedNumber bedType dailyCharge')
-      .populate('roomId', 'room_number type')
-      .populate('wardId', 'name floor type');
-
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-
-    // Get related data
-    const rounds = await IPDRound.find({ admissionId: admission._id })
-      .populate('doctorId', 'firstName lastName')
-      .populate('prescriptionId')
-      .sort({ roundDateTime: -1 })
-      .limit(10);
-
-    const nursingNotes = await NursingNote.find({ admissionId: admission._id })
-      .populate('nurseId', 'first_name last_name')
-      .sort({ noteDateTime: -1 })
-      .limit(5);
-
-    const vitals = await IPDVitals.find({ admissionId: admission._id })
-      .populate('recordedBy', 'first_name last_name')
-      .sort({ recordedAt: -1 })
-      .limit(10);
-
-    const charges = await IPDCharge.find({ admissionId: admission._id })
-      .sort({ chargeDate: -1 });
-
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId: admission._id });
-
-    res.json({
-      admission,
-      rounds,
-      nursingNotes,
-      vitals,
-      charges,
-      dischargeSummary
-    });
-  } catch (err) {
-    console.error('Error fetching admission:', err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -379,11 +837,11 @@ exports.completeClinicalAssessment = async (req, res) => {
     admission.chiefComplaints = chiefComplaints || admission.chiefComplaints;
     admission.historyOfPresentIllness = historyOfPresentIllness || admission.historyOfPresentIllness;
     admission.pastMedicalHistory = pastMedicalHistory || admission.pastMedicalHistory;
-    
+
     admission.clinicalAssessmentCompleted = true;
     admission.clinicalAssessmentCompletedAt = new Date();
     admission.clinicalAssessmentCompletedBy = recordedBy || req.user?._id;
-    
+
     await admission.save();
 
     // Create initial vitals record if any vitals data provided
@@ -610,7 +1068,6 @@ exports.getDashboardStats = async (req, res) => {
       { $group: { _id: null, total: { $sum: { $subtract: ['$totalBillAmount', '$paidAmount'] } } } }
     ]);
 
-    // NEW: Pharmacy clearance stats
     const pendingPharmacyClearance = await IPDAdmission.countDocuments({
       status: { $in: ['Admitted', 'Under Treatment', 'Discharge Initiated', 'Discharge Summary Pending'] },
       pharmacyClearanceStatus: 'pending'
@@ -644,22 +1101,22 @@ exports.getDashboardStats = async (req, res) => {
   }
 };
 
-// ========== NEW: PHARMACY CLEARANCE METHODS ==========
+// ========== PHARMACY CLEARANCE METHODS ==========
 
 // Get admission by SHIP number (for pharmacy lookup)
 exports.getAdmissionByShipNumber = async (req, res) => {
   try {
     const { shipNumber } = req.params;
-    
+
     const admission = await IPDAdmission.findOne({ shipNumber })
       .populate('patientId', 'first_name last_name patientId uhid phone pharmacy_outstanding_balance pharmacy_advance_balance sponsor_type sponsor_name')
       .populate('primaryDoctorId', 'firstName lastName specialization')
       .populate('wardId', 'name');
-    
+
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found with this SHIP number' });
     }
-    
+
     res.json({
       success: true,
       admission: {
@@ -685,36 +1142,36 @@ exports.updatePharmacyClearance = async (req, res) => {
   try {
     const { id } = req.params;
     const { clearanceStatus, finalBalance, notes } = req.body;
-    
+
     const admission = await IPDAdmission.findById(id);
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found' });
     }
-    
+
     const validStatuses = ['pending', 'in_progress', 'cleared', 'exempted'];
     if (!validStatuses.includes(clearanceStatus)) {
       return res.status(400).json({ error: 'Invalid clearance status' });
     }
-    
+
     admission.pharmacyClearanceStatus = clearanceStatus;
     if (finalBalance !== undefined) {
       admission.pharmacyFinalBalance = finalBalance;
     }
-    
+
     if (clearanceStatus === 'cleared') {
       admission.pharmacyClearanceDate = new Date();
       admission.pharmacyClearanceBy = req.user?._id;
     }
-    
+
     await admission.save();
-    
+
     // Update patient's pharmacy outstanding if final balance is provided
     if (finalBalance !== undefined && admission.patientId) {
       await Patient.findByIdAndUpdate(admission.patientId, {
         pharmacy_outstanding_balance: finalBalance
       });
     }
-    
+
     res.json({
       success: true,
       message: `Pharmacy clearance status updated to ${clearanceStatus}`,
@@ -735,7 +1192,7 @@ exports.updatePharmacyClearance = async (req, res) => {
 exports.getPendingPharmacyClearance = async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
-    
+
     const admissions = await IPDAdmission.find({
       status: { $in: ['Discharge Initiated', 'Discharge Summary Pending', 'Billing Pending', 'Payment Pending', 'Ready for Discharge'] },
       pharmacyClearanceStatus: { $in: ['pending', 'in_progress'] }
@@ -746,12 +1203,12 @@ exports.getPendingPharmacyClearance = async (req, res) => {
       .sort({ admissionDate: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
-    
+
     const total = await IPDAdmission.countDocuments({
       status: { $in: ['Discharge Initiated', 'Discharge Summary Pending', 'Billing Pending', 'Payment Pending', 'Ready for Discharge'] },
       pharmacyClearanceStatus: { $in: ['pending', 'in_progress'] }
     });
-    
+
     res.json({
       success: true,
       admissions,

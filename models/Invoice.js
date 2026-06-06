@@ -418,12 +418,14 @@ const invoiceSchema = new mongoose.Schema({
   },
 
   // Invoice Type
-  invoice_type: {
-    type: String,
-    enum: ['Appointment', 'Pharmacy', 'Procedure', 'Lab Test', 'Radiology', 'Mixed', 'Other', 'Purchase'],
-    required: true,
-    index: true
-  },
+// Invoice Type - Add new types
+invoice_type: {
+  type: String,
+  enum: ['Appointment', 'Pharmacy', 'Procedure', 'Lab Test', 'Radiology', 'Mixed', 'Other', 'Purchase', 
+         'IPD Registration', 'IPD Admission', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'IPD Payment'],
+  required: true,
+  index: true
+},
 
   // Dates - All stored in UTC
   issue_date: {
