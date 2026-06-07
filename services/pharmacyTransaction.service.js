@@ -505,7 +505,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
   // Get pharmacy balances before
   let pharmacyOutstandingBefore = 0;
   let pharmacyAdvanceBefore = 0;
-  
+
   if (patientId) {
     const patient = await Patient.findById(patientId);
     if (patient) {
@@ -676,22 +676,22 @@ async function createPharmacyLedgerForPayments({ payments, sale, hospitalId, pha
       createdBy
     });
   }
-  if (sale.discount_amount > 0) {
-    await PharmacyLedgerEntry.create({
-      hospitalId,
-      pharmacyId,
-      entryType: 'DISCOUNT',
-      direction: 'NON_CASH',
-      amount: normalizeMoney(sale.discount_amount),
-      paymentMethod: 'Adjustment',
-      patientId: sale.patient_id,
-      admissionId: sale.admission_id,
-      saleId: sale._id,
-      invoiceId: sale.invoice_id,
-      notes: sale.discount_reason || 'Sale discount',
-      createdBy
-    });
-  }
+  // if (sale.discount_amount > 0) {
+  //   await PharmacyLedgerEntry.create({
+  //     hospitalId,
+  //     pharmacyId,
+  //     entryType: 'DISCOUNT',
+  //     direction: 'NON_CASH',
+  //     amount: normalizeMoney(sale.discount_amount),
+  //     paymentMethod: 'Adjustment',
+  //     patientId: sale.patient_id,
+  //     admissionId: sale.admission_id,
+  //     saleId: sale._id,
+  //     invoiceId: sale.invoice_id,
+  //     notes: sale.discount_reason || 'Sale discount',
+  //     createdBy
+  //   });
+  // }
 }
 
 async function allocatePaymentToOutstanding({ patientId, admissionId, hospitalId, pharmacyId, createdBy, sale, amount, payments }) {
@@ -747,23 +747,72 @@ async function createUnifiedSale(payload, req = {}) {
   const previousOutstanding = await getPatientOutstanding({ patientId, admissionId });
   const previousPharmacyAdvance = await getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD' });
   const noPayment = payload.noPayment === true || payload.pay_nothing === true;
-  const payments = normalizePayments({ total: totals.total, payment_method: payload.payment_method || payload.paymentMethod, payments: payload.payments, noPayment });
-  const totalReceived = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
+
+  // ========== HANDLE PAYMENTS FROM PAYLOAD ==========
+  // Check if overpayment_amount is explicitly provided in payload
+  const explicitOverpaymentAmount = normalizeMoney(payload.overpayment_amount || 0);
+  const explicitOverpaymentAdvance = payload.overpayment_advance || null;
+
+  let payments = [];
+  let totalReceived = 0;
+  let overpaymentToAdvance = 0;
+  let outstandingPaymentAmount = 0;
+
+  if (payload.payments && payload.payments.length > 0) {
+    // Use payments from payload directly
+    payments = payload.payments.map(p => ({
+      method: p.method,
+      amount: normalizeMoney(p.amount),
+      reference: p.reference || null
+    }));
+    totalReceived = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
+
+    // Calculate payment for current bill
+    const paymentForCurrent = Math.min(totalReceived, totals.total);
+    const currentDue = normalizeMoney(Math.max(0, totals.total - paymentForCurrent));
+    const extraTendered = normalizeMoney(Math.max(0, totalReceived - paymentForCurrent));
+
+    // Handle overpayment from explicit payload or calculate
+    if (explicitOverpaymentAmount > 0 && explicitOverpaymentAdvance) {
+      // Use explicit overpayment from frontend
+      overpaymentToAdvance = explicitOverpaymentAmount;
+      outstandingPaymentAmount = normalizeMoney(Math.max(0, extraTendered - overpaymentToAdvance));
+    } else {
+      // Calculate outstanding payment and overpayment
+      const shouldSettleOutstanding = payload.payOutstanding === true || payload.pay_outstanding === true || Number(payload.outstanding_payment_amount || 0) > 0;
+      const requestedOutstandingPayment = shouldSettleOutstanding
+        ? normalizeMoney(payload.outstanding_payment_amount || previousOutstanding)
+        : 0;
+      outstandingPaymentAmount = normalizeMoney(Math.min(extraTendered, requestedOutstandingPayment || extraTendered, previousOutstanding));
+      overpaymentToAdvance = normalizeMoney(Math.max(0, extraTendered - outstandingPaymentAmount));
+    }
+  } else {
+    // Fallback to normal payment calculation
+    payments = normalizePayments({ total: totals.total, payment_method: payload.payment_method || payload.paymentMethod, payments: payload.payments, noPayment });
+    totalReceived = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
+    const paymentForCurrent = Math.min(totalReceived, totals.total);
+    const extraTendered = normalizeMoney(Math.max(0, totalReceived - paymentForCurrent));
+
+    if (explicitOverpaymentAmount > 0 && explicitOverpaymentAdvance) {
+      overpaymentToAdvance = explicitOverpaymentAmount;
+      outstandingPaymentAmount = normalizeMoney(Math.max(0, extraTendered - overpaymentToAdvance));
+    } else {
+      const shouldSettleOutstanding = payload.payOutstanding === true || payload.pay_outstanding === true;
+      outstandingPaymentAmount = shouldSettleOutstanding ? Math.min(extraTendered, previousOutstanding) : 0;
+      overpaymentToAdvance = normalizeMoney(Math.max(0, extraTendered - outstandingPaymentAmount));
+    }
+  }
+
+  // Validate advance payments
+  for (const p of payments) {
+    await validateAdvancePayment({ p, patientId, admissionId });
+  }
+
+  // Calculate final amounts
   const paymentForCurrent = Math.min(totalReceived, totals.total);
   const currentDue = normalizeMoney(Math.max(0, totals.total - paymentForCurrent));
-  const extraTendered = normalizeMoney(Math.max(0, totalReceived - paymentForCurrent));
-
-  const shouldSettleOutstanding = payload.payOutstanding === true || payload.pay_outstanding === true || Number(payload.outstanding_payment_amount || payload.outstandingPaymentAmount || 0) > 0;
-  const requestedOutstandingPayment = shouldSettleOutstanding
-    ? normalizeMoney(payload.outstanding_payment_amount || payload.outstandingPaymentAmount || previousOutstanding)
-    : 0;
-  const outstandingPaymentAmount = normalizeMoney(Math.min(extraTendered, requestedOutstandingPayment || extraTendered, previousOutstanding));
-  const overpaymentToAdvance = normalizeMoney(Math.max(0, extraTendered - outstandingPaymentAmount));
-
   const balanceDue = noPayment ? totals.total : currentDue;
   const saleStatus = balanceDue <= 0 ? 'Completed' : 'Pending';
-
-  for (const p of payments) await validateAdvancePayment({ p, patientId, admissionId });
 
   const sale = await Sale.create({
     hospitalId,
@@ -813,7 +862,9 @@ async function createUnifiedSale(payload, req = {}) {
     payments,
     status: saleStatus,
     notes: payload.notes,
-    created_by: createdBy
+    created_by: createdBy,
+    bill_date: payload.bill_date || new Date(),
+    created_by_name: payload.created_by_name
   });
 
   await deductStockAndCreateLedger({ items, hospitalId, pharmacyId, saleId: sale._id, createdBy });
@@ -822,8 +873,11 @@ async function createUnifiedSale(payload, req = {}) {
   await createIpdChargeForSale({ sale, total: totals.total, createdBy });
   await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
+  // Process payments for current bill
   const currentPaymentBreakup = allocatePaymentsForAmount(payments, paymentForCurrent);
-  for (const p of currentPaymentBreakup) await consumeAdvancePayment({ p, sale, hospitalId, patientId, admissionId, createdBy });
+  for (const p of currentPaymentBreakup) {
+    await consumeAdvancePayment({ p, sale, hospitalId, patientId, admissionId, createdBy });
+  }
   await createPharmacyLedgerForPayments({ payments: currentPaymentBreakup, sale, hospitalId, pharmacyId, createdBy, entryType: 'SALE' });
 
   if (balanceDue > 0) {
@@ -848,7 +902,14 @@ async function createUnifiedSale(payload, req = {}) {
     outstandingAllocation = await allocatePaymentToOutstanding({ patientId, admissionId, hospitalId, pharmacyId, createdBy, sale, amount: outstandingPaymentAmount, payments });
   }
 
+  // ========== HANDLE OVERPAYMENT TO ADVANCE ==========
   if (overpaymentToAdvance > 0 && patientId) {
+    console.log(`Creating advance entry for overpayment: ${overpaymentToAdvance}`);
+
+    // Get the payment method from the first payment that contributed to overpayment
+    const overpaymentSourcePayment = payments.find(p => p.amount > 0) || { method: 'Cash', reference: null };
+
+    // Create advance ledger entry
     await createAdvanceLedgerEntry({
       hospitalId,
       patientId,
@@ -857,29 +918,34 @@ async function createUnifiedSale(payload, req = {}) {
       transactionType: 'PHARMACY_OVERPAYMENT_CREDIT',
       direction: 'CREDIT',
       amount: overpaymentToAdvance,
-      paymentMethod: payments[0]?.method || 'Cash',
-      referenceNumber: payments[0]?.reference,
+      paymentMethod: overpaymentSourcePayment.method,
+      referenceNumber: overpaymentSourcePayment.reference,
       sourceModule: 'Pharmacy',
       sourceId: sale._id,
-      notes: `Round/extra payment credited from ${sale.sale_number}`,
+      notes: `Extra payment credited to pharmacy advance from ${sale.sale_number}`,
       createdBy
     });
+
+    // Create pharmacy ledger entry for the overpayment
     await PharmacyLedgerEntry.create({
       hospitalId,
       pharmacyId,
       entryType: 'ADVANCE_RECEIVED',
-      direction: 'IN',
+      direction: 'NON_CASH',
       amount: overpaymentToAdvance,
-      paymentMethod: payments[0]?.method || 'Cash',
+      paymentMethod: overpaymentSourcePayment.method,
       patientId,
       admissionId,
       saleId: sale._id,
       invoiceId: sale.invoice_id,
-      notes: `Extra payment credited to pharmacy advance for ${sale.sale_number}`,
+      notes: `Extra payment (₹${overpaymentToAdvance}) credited to pharmacy advance for ${sale.sale_number}`,
       createdBy
     });
+
+    console.log(`Successfully created advance entry for ₹${overpaymentToAdvance}`);
   }
 
+  // Update prescription dispensed status
   if (prescriptionId) {
     const prescription = await Prescription.findById(prescriptionId);
     if (prescription) {
@@ -896,6 +962,7 @@ async function createUnifiedSale(payload, req = {}) {
     }
   }
 
+  // Update IPD medication chart
   for (const item of items) {
     if (item.ipd_medication_chart_id) {
       await IPDMedicationChart.findByIdAndUpdate(item.ipd_medication_chart_id, {
@@ -934,71 +1001,153 @@ async function createUnifiedSale(payload, req = {}) {
 }
 
 async function createReturn(payload, req = {}) {
+  console.log('========== CREATE RETURN START ==========');
+  console.log('Creating pharmacy return with payload:', JSON.stringify(payload, null, 2));
+
+  const round2 = (value) =>
+    Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+
+  const clampMoney = (value) => Math.max(0, round2(value));
+
+  const sumMoney = (arr, selector) =>
+    round2((arr || []).reduce((sum, item) => sum + Number(selector(item) || 0), 0));
+
+  const cashRefundModes = ['Cash', 'UPI', 'Card'];
+
+  const idsEqual = (a, b) => {
+    if (!a || !b) return false;
+    return String(a) === String(b);
+  };
+
+  const calculateReturnAccounting = ({
+    currentSubtotal,
+    currentDiscount,
+    returnedTaxable,
+    suppliedDiscountReversal
+  }) => {
+    const subtotalBefore = Number(currentSubtotal || 0);
+    const discountBefore = Number(currentDiscount || 0);
+    const taxableReturned = Number(returnedTaxable || 0);
+    const suppliedDiscount = Number(suppliedDiscountReversal || 0);
+
+    if (suppliedDiscount > 0) {
+      return {
+        returnedGrossBeforeDiscount: round2(taxableReturned + suppliedDiscount),
+        discountReversal: round2(suppliedDiscount)
+      };
+    }
+
+    const discountRatio =
+      subtotalBefore > 0
+        ? discountBefore / subtotalBefore
+        : 0;
+
+    const safeDiscountRatio =
+      discountRatio >= 0 && discountRatio < 1
+        ? discountRatio
+        : 0;
+
+    const returnedGrossBeforeDiscount =
+      safeDiscountRatio < 1
+        ? round2(taxableReturned / (1 - safeDiscountRatio))
+        : round2(taxableReturned);
+
+    return {
+      returnedGrossBeforeDiscount,
+      discountReversal: round2(returnedGrossBeforeDiscount - taxableReturned)
+    };
+  };
+
   const hospitalId = getHospitalId(req, payload.hospitalId);
   const pharmacyId = objectIdOrUndefined(payload.pharmacyId || payload.pharmacy_id);
   const createdBy = getCreatedBy(req);
-  const originalSaleId = objectIdOrUndefined(payload.originalSaleId || payload.original_sale_id || payload.saleId || payload.sale_id);
-  const originalSale = originalSaleId ? await Sale.findById(originalSaleId) : null;
-  const admissionId = objectIdOrUndefined(payload.admission_id || payload.admissionId || originalSale?.admission_id);
-  const patientId = objectIdOrUndefined(payload.patient_id || payload.patientId || originalSale?.patient_id);
 
-  const items = [];
-  for (const raw of payload.items || []) {
-    const medicineId = objectIdOrUndefined(raw.medicineId || raw.medicine_id);
-    const batchId = objectIdOrUndefined(raw.batchId || raw.batch_id);
-    const saleItem = originalSale?.items?.id?.(raw.saleItemId || raw.sale_item_id) || originalSale?.items?.find?.(i => String(i.medicine_id) === String(medicineId) && (!batchId || String(i.batch_id) === String(batchId)));
-    const medicine = medicineId ? await Medicine.findById(medicineId) : null;
-    const batch = batchId ? await MedicineBatch.findById(batchId) : null;
-    const qty = Number(raw.returnedQtyBaseUnits || raw.quantity_base_units || raw.quantity || 0);
-    if (qty <= 0) throw new Error('Return quantity must be greater than zero.');
-    if (saleItem) {
-      const alreadyReturned = Number(saleItem.returned_quantity_base_units || 0);
-      const soldQty = Number(saleItem.quantity_base_units || saleItem.quantity || 0);
-      if (alreadyReturned + qty > soldQty + 0.0001) throw new Error(`Return quantity for ${saleItem.medicine_name} exceeds original sale quantity.`);
-    }
-    if (admissionId && medicineId) {
-      const stock = await IPDPatientMedicineStock.findOne({ admissionId, patientId, medicineId, ...(batchId ? { batchId } : {}) });
-      if (stock && Number(stock.currentBalanceBaseUnits || 0) < qty) throw new Error(`Return quantity for ${stock.medicineName} exceeds patient balance.`);
-    }
-    const ratePerBaseUnit = Number(raw.ratePerBaseUnit || raw.rate_per_base_unit || saleItem?.rate_per_base_unit || batch?.selling_price_per_base_unit || 0);
-    const discountReversal = Number(raw.discountReversal || raw.discount_reversal || 0);
-    const grossAmount = normalizeMoney(qty * ratePerBaseUnit);
-    const taxableAmount = normalizeMoney(Math.max(0, grossAmount - discountReversal));
-    const taxRate = Number(raw.tax_rate ?? raw.taxRate ?? saleItem?.tax_rate ?? medicine?.gst_rate ?? 0);
-    const taxAmount = normalizeMoney(taxableAmount * taxRate / 100);
-    const refundAmount = normalizeMoney(taxableAmount + taxAmount);
-    items.push({
-      saleItemId: saleItem?._id,
-      medicineId,
-      batchId,
-      medicineName: raw.medicineName || raw.medicine_name || saleItem?.medicine_name || medicine?.name || 'Medicine',
-      returnedQtyBaseUnits: qty,
-      baseUnit: raw.baseUnit || raw.base_unit || saleItem?.base_unit || medicine?.base_unit || 'unit',
-      unitsPerPack: Number(raw.unitsPerPack || raw.units_per_pack || saleItem?.units_per_pack || batch?.units_per_pack || medicine?.units_per_pack || 1),
-      ratePerBaseUnit,
-      grossAmount,
-      discountReversal,
-      taxableAmount,
-      taxRate,
-      taxAmount,
-      refundAmount,
-      purchaseRatePerBaseUnit: Number(saleItem?.purchase_rate_per_base_unit || batch?.purchase_price_per_base_unit || 0),
-      condition: raw.condition || 'SEALED_USABLE',
-      restock: raw.restock !== false && (raw.condition || 'SEALED_USABLE') === 'SEALED_USABLE'
-    });
+  const originalSaleId = objectIdOrUndefined(
+    payload.originalSaleId ||
+    payload.original_sale_id ||
+    payload.saleId ||
+    payload.sale_id
+  );
+
+  const originalSale = originalSaleId ? await Sale.findById(originalSaleId) : null;
+
+  const admissionId = objectIdOrUndefined(
+    payload.admission_id ||
+    payload.admissionId ||
+    originalSale?.admission_id
+  );
+
+  const patientId = objectIdOrUndefined(
+    payload.patient_id ||
+    payload.patientId ||
+    originalSale?.patient_id
+  );
+
+  if (!originalSale) {
+    console.error('Original sale not found for ID:', originalSaleId);
+    throw new Error('Original sale not found');
   }
+
+  console.log('Original sale found:', originalSale.sale_number);
+
+  const getOriginalSaleItem = (retItem) => {
+    if (!originalSale?.items) return null;
+
+    if (retItem.saleItemId) {
+      const byId = originalSale.items.id?.(retItem.saleItemId);
+      if (byId) return byId;
+    }
+
+    return originalSale.items.find(i =>
+      idsEqual(i.medicine_id, retItem.medicineId) &&
+      (!retItem.batchId || idsEqual(i.batch_id, retItem.batchId))
+    );
+  };
+
+  const items = (payload.items || []).map(raw => ({
+    saleItemId: raw.saleItemId,
+    medicineId: raw.medicineId,
+    batchId: raw.batchId,
+    medicineName: raw.medicineName,
+    returnedQtyBaseUnits: Number(raw.returnedQtyBaseUnits || 0),
+    baseUnit: raw.baseUnit,
+    unitsPerPack: Number(raw.unitsPerPack || 1),
+    ratePerBaseUnit: round2(raw.ratePerBaseUnit),
+    grossAmount: round2(raw.grossAmount),
+    discountReversal: round2(raw.discountReversal || 0),
+    taxableAmount: round2(raw.taxableAmount || raw.grossAmount || 0),
+    taxRate: Number(raw.taxRate || 0),
+    taxAmount: round2(raw.taxAmount),
+    refundAmount: round2(raw.refundAmount),
+    purchaseRatePerBaseUnit: round2(raw.purchaseRatePerBaseUnit || 0),
+    condition: raw.condition || 'SEALED_USABLE',
+    restock: raw.restock !== false
+  }));
+
+  if (!items.length) {
+    throw new Error('No return items provided');
+  }
+
+  console.log('Processed return items:', JSON.stringify(items, null, 2));
 
   const pharmacyReturn = await PharmacyReturn.create({
     hospitalId,
     pharmacyId,
     originalSaleId,
-    originalInvoiceId: objectIdOrUndefined(payload.originalInvoiceId || payload.original_invoice_id || originalSale?.invoice_id),
+    originalInvoiceId: objectIdOrUndefined(
+      payload.originalInvoiceId ||
+      payload.original_invoice_id ||
+      originalSale?.invoice_id
+    ),
     originalSaleNumber: originalSale?.sale_number,
     patientId,
     admissionId,
-    returnType: payload.returnType || payload.return_type || (admissionId ? 'IPD_UNUSED_MEDICINE' : patientId ? 'OPD_RETURN' : 'WALKIN_RETURN'),
+    returnType:
+      payload.returnType ||
+      payload.return_type ||
+      (admissionId ? 'IPD_UNUSED_MEDICINE' : patientId ? 'OPD_RETURN' : 'WALKIN_RETURN'),
     items,
-    totalRefundAmount: normalizeMoney(items.reduce((sum, item) => sum + item.refundAmount, 0)),
+    totalRefundAmount: sumMoney(items, item => item.refundAmount),
     refundMode: payload.refundMode || payload.refund_mode || 'PharmacyAdvance',
     refundReference: payload.refundReference || payload.refund_reference,
     status: payload.status || 'Completed',
@@ -1006,39 +1155,478 @@ async function createReturn(payload, req = {}) {
     createdBy
   });
 
-  await restockAndCreateLedger({ items: pharmacyReturn.items, hospitalId, pharmacyId, returnId: pharmacyReturn._id, createdBy });
+  console.log('Pharmacy return created:', pharmacyReturn.returnNumber);
+
+  await restockAndCreateLedger({
+    items: pharmacyReturn.items,
+    hospitalId,
+    pharmacyId,
+    returnId: pharmacyReturn._id,
+    createdBy
+  });
 
   if (admissionId && patientId) {
     for (const item of pharmacyReturn.items) {
       await IPDPatientMedicineStock.findOneAndUpdate(
-        { admissionId, patientId, medicineId: item.medicineId, ...(item.batchId ? { batchId: item.batchId } : {}) },
-        { $inc: { returnedQtyBaseUnits: item.returnedQtyBaseUnits, currentBalanceBaseUnits: -item.returnedQtyBaseUnits }, $set: { lastReturnedAt: new Date() } },
-        { new: true }
+        {
+          admissionId,
+          patientId,
+          medicineId: item.medicineId,
+          ...(item.batchId ? { batchId: item.batchId } : {})
+        },
+        {
+          $inc: {
+            returnedQtyBaseUnits: Number(item.returnedQtyBaseUnits || 0),
+            currentBalanceBaseUnits: -Number(item.returnedQtyBaseUnits || 0)
+          },
+          $set: {
+            lastReturnedAt: new Date()
+          }
+        },
+        {
+          new: true,
+          upsert: true
+        }
       );
     }
   }
 
-  const refundAmount = normalizeMoney(pharmacyReturn.totalRefundAmount);
+  const refundAmount = round2(pharmacyReturn.totalRefundAmount);
   const refundMode = pharmacyReturn.refundMode;
 
-  if (originalSale) {
-    for (const retItem of pharmacyReturn.items) {
-      const saleItem = retItem.saleItemId ? originalSale.items.id(retItem.saleItemId) : originalSale.items.find(i => String(i.medicine_id) === String(retItem.medicineId) && (!retItem.batchId || String(i.batch_id) === String(retItem.batchId)));
-      if (saleItem) {
-        saleItem.returned_quantity_base_units = Number(saleItem.returned_quantity_base_units || 0) + Number(retItem.returnedQtyBaseUnits || 0);
-        saleItem.returned_amount = normalizeMoney(Number(saleItem.returned_amount || 0) + Number(retItem.refundAmount || 0));
-      }
+  console.log(`Refund amount: ${refundAmount}, Refund mode: ${refundMode}`);
+
+  for (const retItem of pharmacyReturn.items) {
+    const saleItem = getOriginalSaleItem(retItem);
+
+    if (saleItem) {
+      saleItem.returned_quantity_base_units =
+        Number(saleItem.returned_quantity_base_units || 0) +
+        Number(retItem.returnedQtyBaseUnits || 0);
+
+      saleItem.returned_amount =
+        round2(Number(saleItem.returned_amount || 0) + Number(retItem.refundAmount || 0));
     }
-    originalSale.return_refs = originalSale.return_refs || [];
-    originalSale.return_refs.push({ return_id: pharmacyReturn._id, return_number: pharmacyReturn.returnNumber, amount: refundAmount, returned_at: new Date() });
-    originalSale.return_amount = normalizeMoney(Number(originalSale.return_amount || 0) + refundAmount);
-    originalSale.net_amount_after_returns = normalizeMoney(Math.max(0, Number(originalSale.total_amount || 0) - Number(originalSale.return_amount || 0)));
-    originalSale.balance_due = normalizeMoney(Math.max(0, Number(originalSale.balance_due || 0) - refundAmount));
-    originalSale.status = originalSale.return_amount >= originalSale.total_amount ? 'Refunded' : 'PartiallyReturned';
-    await originalSale.save();
   }
 
-  if (refundAmount > 0 && admissionId && patientId && ['IPDAdvance', 'PharmacyAdvance'].includes(refundMode)) {
+  originalSale.return_refs = originalSale.return_refs || [];
+  originalSale.return_refs.push({
+    return_id: pharmacyReturn._id,
+    return_number: pharmacyReturn.returnNumber,
+    amount: refundAmount,
+    returned_at: new Date()
+  });
+
+  originalSale.return_amount = round2(
+    Number(originalSale.return_amount || 0) + refundAmount
+  );
+
+  originalSale.net_amount_after_returns = clampMoney(
+    Number(originalSale.total_amount || 0) - Number(originalSale.return_amount || 0)
+  );
+
+  originalSale.balance_due = clampMoney(
+    Number(originalSale.balance_due || 0) - refundAmount
+  );
+
+  originalSale.status =
+    Number(originalSale.return_amount || 0) >= Number(originalSale.total_amount || 0)
+      ? 'Refunded'
+      : 'PartiallyReturned';
+
+  await originalSale.save();
+  console.log('Original sale updated');
+
+  let associatedBill = await Bill.findOne({
+    $or: [
+      { sale_id: originalSaleId },
+      { invoice_id: originalSale?.invoice_id },
+      { _id: originalSale?.bill_id }
+    ]
+  });
+
+  let updatedBillDataForResponse = null;
+  let updatedItemsForResponse = [];
+
+  if (associatedBill) {
+    console.log('Found associated bill:', associatedBill._id);
+
+    const totalReturnedAmount = sumMoney(
+      pharmacyReturn.items,
+      item => item.refundAmount
+    );
+
+    const totalReturnedTax = sumMoney(
+      pharmacyReturn.items,
+      item => item.taxAmount
+    );
+
+    const totalReturnedSubtotal = round2(totalReturnedAmount - totalReturnedTax);
+
+    const totalSuppliedDiscountReversal = sumMoney(
+      pharmacyReturn.items,
+      item => item.discountReversal
+    );
+
+    console.log(`Total returned amount: ${totalReturnedAmount}`);
+    console.log(`Total returned tax: ${totalReturnedTax}`);
+    console.log(`Total returned taxable subtotal: ${totalReturnedSubtotal}`);
+    console.log(`Total supplied discount reversal: ${totalSuppliedDiscountReversal}`);
+
+    // Add/update negative return rows in Bill.
+    for (const retItem of pharmacyReturn.items) {
+      const existingBillReturnItem = associatedBill.items?.find(item =>
+        item.item_type === 'Medicine Return' &&
+        idsEqual(item.medicine_id, retItem.medicineId) &&
+        idsEqual(item.batch_id, retItem.batchId)
+      );
+
+      const originalSaleItem = getOriginalSaleItem(retItem);
+      const returnedQty = Number(retItem.returnedQtyBaseUnits || 0);
+      const returnedAmount = round2(retItem.refundAmount);
+      const returnedTax = round2(retItem.taxAmount);
+
+      if (existingBillReturnItem) {
+        const currentReturnAmount = Math.abs(Number(existingBillReturnItem.amount || 0));
+        const currentReturnTax = Math.abs(Number(existingBillReturnItem.tax_amount || 0));
+        const currentQty = Number(existingBillReturnItem.quantity || 0);
+        const currentQtyBase = Number(existingBillReturnItem.quantity_base_units || currentQty || 0);
+
+        const newQty = currentQty + returnedQty;
+        const newQtyBase = currentQtyBase + returnedQty;
+        const newTotalRefund = round2(currentReturnAmount + returnedAmount);
+        const newTotalTax = round2(currentReturnTax + returnedTax);
+
+        existingBillReturnItem.amount = -newTotalRefund;
+        existingBillReturnItem.tax_amount = -newTotalTax;
+        existingBillReturnItem.quantity = newQty;
+        existingBillReturnItem.quantity_base_units = newQtyBase;
+        existingBillReturnItem.unit_price = round2(newTotalRefund / Math.max(newQtyBase, 1));
+        existingBillReturnItem.description = `RETURN: ${retItem.medicineName} (Multiple Returns)`;
+        existingBillReturnItem.return_reference = pharmacyReturn.returnNumber;
+      } else {
+        associatedBill.items.push({
+          description: `RETURN: ${retItem.medicineName} (Return #${pharmacyReturn.returnNumber})`,
+          amount: -returnedAmount,
+          quantity: returnedQty,
+          item_type: 'Medicine Return',
+          medicine_id: retItem.medicineId,
+          batch_id: retItem.batchId,
+          medicine_name: retItem.medicineName,
+          batch_number: originalSaleItem?.batch_number || retItem.batchNumber || retItem.batch_number || 'N/A',
+          expiry_date: originalSaleItem?.expiry_date || retItem.expiryDate || retItem.expiry_date || null,
+          base_unit: retItem.baseUnit,
+          quantity_base_units: returnedQty,
+          unit_price: round2(retItem.ratePerBaseUnit),
+          tax_rate: Number(retItem.taxRate || 0),
+          tax_amount: -returnedTax,
+          discount_amount: 0,
+          return_reference: pharmacyReturn.returnNumber
+        });
+      }
+    }
+
+    if (associatedBill.markModified) {
+      associatedBill.markModified('items');
+    }
+
+    const currentBillSubtotal = Number(associatedBill.subtotal || 0);
+    const currentBillTax = Number(associatedBill.tax_amount || 0);
+    const currentBillTotal = Number(associatedBill.total_amount || 0);
+
+    let currentBillDiscount = Number(
+      associatedBill.discount_amount ||
+      associatedBill.discount ||
+      0
+    );
+
+    if (
+      currentBillDiscount <= 0 &&
+      currentBillSubtotal + currentBillTax > currentBillTotal
+    ) {
+      currentBillDiscount = round2(currentBillSubtotal + currentBillTax - currentBillTotal);
+    }
+
+    const billReturnAccounting = calculateReturnAccounting({
+      currentSubtotal: currentBillSubtotal,
+      currentDiscount: currentBillDiscount,
+      returnedTaxable: totalReturnedSubtotal,
+      suppliedDiscountReversal: totalSuppliedDiscountReversal
+    });
+
+    const newBillSubtotal = clampMoney(
+      currentBillSubtotal - billReturnAccounting.returnedGrossBeforeDiscount
+    );
+
+    const newBillDiscount = clampMoney(
+      currentBillDiscount - billReturnAccounting.discountReversal
+    );
+
+    const newBillTax = clampMoney(currentBillTax - totalReturnedTax);
+
+    const newBillTotal = clampMoney(
+      newBillSubtotal - newBillDiscount + newBillTax
+    );
+
+    associatedBill.subtotal = newBillSubtotal;
+    associatedBill.tax_amount = newBillTax;
+    associatedBill.total_amount = newBillTotal;
+
+    if (associatedBill.discount_amount !== undefined) {
+      associatedBill.discount_amount = newBillDiscount;
+    }
+
+    if (associatedBill.discount !== undefined) {
+      associatedBill.discount = newBillDiscount;
+    }
+
+    if (cashRefundModes.includes(refundMode)) {
+      associatedBill.paid_amount = clampMoney(
+        Number(associatedBill.paid_amount || 0) - totalReturnedAmount
+      );
+    } else if (refundMode === 'PharmacyAdvance') {
+      associatedBill.pharmacy_advance_used = clampMoney(
+        Number(associatedBill.pharmacy_advance_used || 0) - totalReturnedAmount
+      );
+    } else if (refundMode === 'IPDAdvance') {
+      associatedBill.ipd_advance_used = clampMoney(
+        Number(associatedBill.ipd_advance_used || 0) - totalReturnedAmount
+      );
+    }
+
+    if (Number(associatedBill.paid_amount || 0) > Number(associatedBill.total_amount || 0)) {
+      associatedBill.paid_amount = associatedBill.total_amount;
+    }
+
+    associatedBill.balance_due = clampMoney(
+      Number(associatedBill.total_amount || 0) - Number(associatedBill.paid_amount || 0)
+    );
+
+    if (associatedBill.total_amount <= 0 || associatedBill.balance_due <= 0) {
+      associatedBill.status = 'Paid';
+    } else if (associatedBill.paid_amount > 0) {
+      associatedBill.status = 'Partially Paid';
+    } else {
+      associatedBill.status = 'Pending';
+    }
+
+    associatedBill.notes = associatedBill.notes
+      ? `${associatedBill.notes}\nReturn ${pharmacyReturn.returnNumber}: -₹${totalReturnedAmount.toFixed(2)}`
+      : `Return ${pharmacyReturn.returnNumber}: -₹${totalReturnedAmount.toFixed(2)}`;
+
+    associatedBill.return_refs = associatedBill.return_refs || [];
+    associatedBill.return_refs.push({
+      return_id: pharmacyReturn._id,
+      return_number: pharmacyReturn.returnNumber,
+      amount: totalReturnedAmount,
+      taxable_amount: totalReturnedSubtotal,
+      tax_amount: totalReturnedTax,
+      gross_before_discount: billReturnAccounting.returnedGrossBeforeDiscount,
+      discount_reversal: billReturnAccounting.discountReversal,
+      returned_at: new Date()
+    });
+
+    await associatedBill.save();
+    console.log('Bill saved successfully');
+
+    // Update invoice and add/update negative return rows in invoice.medicine_items.
+    const invoiceId = associatedBill.invoice_id || originalSale?.invoice_id;
+    const associatedInvoice = invoiceId ? await Invoice.findById(invoiceId) : null;
+
+    if (associatedInvoice) {
+      console.log('Found associated invoice:', associatedInvoice._id);
+
+      for (const retItem of pharmacyReturn.items) {
+        const existingInvoiceReturnItem = associatedInvoice.medicine_items?.find(item =>
+          item.item_type === 'Medicine Return' &&
+          idsEqual(item.medicine_id, retItem.medicineId) &&
+          idsEqual(item.batch_id, retItem.batchId)
+        );
+
+        const originalSaleItem = getOriginalSaleItem(retItem);
+        const returnedQty = Number(retItem.returnedQtyBaseUnits || 0);
+        const returnedAmount = round2(retItem.refundAmount);
+        const returnedTax = round2(retItem.taxAmount);
+
+        if (existingInvoiceReturnItem) {
+          const currentReturnAmount = Math.abs(Number(existingInvoiceReturnItem.total_price || 0));
+          const currentReturnTax = Math.abs(Number(existingInvoiceReturnItem.tax_amount || 0));
+          const currentQty = Number(existingInvoiceReturnItem.quantity || 0);
+          const currentQtyBase = Number(existingInvoiceReturnItem.quantity_base_units || currentQty || 0);
+
+          const newQty = currentQty + returnedQty;
+          const newQtyBase = currentQtyBase + returnedQty;
+          const newTotalRefund = round2(currentReturnAmount + returnedAmount);
+          const newTotalTax = round2(currentReturnTax + returnedTax);
+
+          existingInvoiceReturnItem.description = `RETURN: ${retItem.medicineName} (Multiple Returns)`;
+          existingInvoiceReturnItem.medicine_name = retItem.medicineName;
+          existingInvoiceReturnItem.quantity = newQty;
+          existingInvoiceReturnItem.quantity_base_units = newQtyBase;
+          existingInvoiceReturnItem.base_unit = retItem.baseUnit || existingInvoiceReturnItem.base_unit;
+          existingInvoiceReturnItem.unit_price = round2(newTotalRefund / Math.max(newQtyBase, 1));
+          existingInvoiceReturnItem.total_price = -newTotalRefund;
+          existingInvoiceReturnItem.tax_amount = -newTotalTax;
+          existingInvoiceReturnItem.tax_rate = Number(retItem.taxRate || 0);
+          existingInvoiceReturnItem.item_type = 'Medicine Return';
+          existingInvoiceReturnItem.is_return = true;
+          existingInvoiceReturnItem.return_reference = pharmacyReturn.returnNumber;
+          existingInvoiceReturnItem.return_id = pharmacyReturn._id;
+          existingInvoiceReturnItem.is_dispensed = false;
+        } else {
+          associatedInvoice.medicine_items.push({
+            medicine_id: retItem.medicineId,
+            batch_id: retItem.batchId,
+            medicine_name: retItem.medicineName,
+            description: `RETURN: ${retItem.medicineName} (Return #${pharmacyReturn.returnNumber})`,
+            batch_number: originalSaleItem?.batch_number || retItem.batchNumber || retItem.batch_number || 'N/A',
+            expiry_date: originalSaleItem?.expiry_date || retItem.expiryDate || retItem.expiry_date || null,
+            quantity: returnedQty,
+            quantity_base_units: returnedQty,
+            base_unit: retItem.baseUnit || 'unit',
+            unit_price: round2(retItem.ratePerBaseUnit),
+            total_price: -returnedAmount,
+            tax_rate: Number(retItem.taxRate || 0),
+            tax_amount: -returnedTax,
+            prescription_required: false,
+            is_dispensed: false,
+            item_type: 'Medicine Return',
+            is_return: true,
+            return_reference: pharmacyReturn.returnNumber,
+            return_id: pharmacyReturn._id
+          });
+        }
+      }
+
+      if (associatedInvoice.markModified) {
+        associatedInvoice.markModified('medicine_items');
+      }
+
+      const currentInvoiceSubtotal = Number(associatedInvoice.subtotal || 0);
+      const currentInvoiceDiscount = Number(associatedInvoice.discount || 0);
+      const currentInvoiceTax = Number(associatedInvoice.tax || 0);
+
+      const invoiceReturnAccounting = calculateReturnAccounting({
+        currentSubtotal: currentInvoiceSubtotal,
+        currentDiscount: currentInvoiceDiscount,
+        returnedTaxable: totalReturnedSubtotal,
+        suppliedDiscountReversal: totalSuppliedDiscountReversal
+      });
+
+      const newInvoiceSubtotal = clampMoney(
+        currentInvoiceSubtotal - invoiceReturnAccounting.returnedGrossBeforeDiscount
+      );
+
+      const newInvoiceDiscount = clampMoney(
+        currentInvoiceDiscount - invoiceReturnAccounting.discountReversal
+      );
+
+      const newInvoiceTax = clampMoney(currentInvoiceTax - totalReturnedTax);
+
+      const newInvoiceTotal = clampMoney(
+        newInvoiceSubtotal - newInvoiceDiscount + newInvoiceTax
+      );
+
+      associatedInvoice.subtotal = newInvoiceSubtotal;
+      associatedInvoice.discount = newInvoiceDiscount;
+      associatedInvoice.tax = newInvoiceTax;
+      associatedInvoice.total = newInvoiceTotal;
+
+      if (cashRefundModes.includes(refundMode)) {
+        associatedInvoice.amount_paid = clampMoney(
+          Number(associatedInvoice.amount_paid || 0) - totalReturnedAmount
+        );
+      }
+
+      if (Number(associatedInvoice.amount_paid || 0) > Number(associatedInvoice.total || 0)) {
+        associatedInvoice.amount_paid = associatedInvoice.total;
+      }
+
+      associatedInvoice.balance_due = clampMoney(
+        Number(associatedInvoice.total || 0) - Number(associatedInvoice.amount_paid || 0)
+      );
+
+      if (associatedInvoice.total <= 0) {
+        associatedInvoice.status = 'Fully Returned';
+      } else if (associatedInvoice.balance_due <= 0) {
+        associatedInvoice.status = 'Paid';
+      } else if (associatedInvoice.amount_paid > 0) {
+        associatedInvoice.status = 'Partial';
+      } else {
+        associatedInvoice.status = 'Pending';
+      }
+
+      associatedInvoice.return_refs = associatedInvoice.return_refs || [];
+      associatedInvoice.return_refs.push({
+        return_id: pharmacyReturn._id,
+        return_number: pharmacyReturn.returnNumber,
+        amount: totalReturnedAmount,
+        taxable_amount: totalReturnedSubtotal,
+        tax_amount: totalReturnedTax,
+        gross_before_discount: invoiceReturnAccounting.returnedGrossBeforeDiscount,
+        discount_reversal: invoiceReturnAccounting.discountReversal,
+        returned_at: new Date()
+      });
+
+      associatedInvoice.notes = associatedInvoice.notes
+        ? `${associatedInvoice.notes}\nReturn ${pharmacyReturn.returnNumber}: -₹${totalReturnedAmount.toFixed(2)}`
+        : `Return ${pharmacyReturn.returnNumber}: -₹${totalReturnedAmount.toFixed(2)}`;
+
+      await associatedInvoice.save();
+      console.log('Invoice saved successfully');
+    } else {
+      console.log('No associated invoice found');
+    }
+
+    const subtotal = round2(associatedBill.subtotal || 0);
+    const discount = round2(associatedBill.discount_amount || associatedBill.discount || 0);
+    const taxableAmount = round2(Math.max(0, subtotal - discount));
+    const tax = round2(associatedBill.tax_amount || 0);
+    const netTotal = round2(taxableAmount + tax);
+    const amountPaid = round2(associatedBill.paid_amount || 0);
+    const balanceDue = round2(Math.max(0, netTotal - amountPaid));
+
+    updatedBillDataForResponse = {
+      billNumber: associatedBill.bill_number || associatedBill.billNumber || originalSale.sale_number,
+      invoiceNumber: associatedBill.invoice_number,
+      subtotal,
+      discount,
+      taxableAmount,
+      tax,
+      netTotal,
+      amountPaid,
+      balanceDue,
+      returnAmount: totalReturnedAmount,
+      refundMode,
+      returnNumber: pharmacyReturn.returnNumber
+    };
+
+    updatedItemsForResponse = (associatedBill.items || []).map(item => ({
+      description: item.description,
+      medicine_name: item.medicine_name || item.description,
+      composition: item.composition || '',
+      quantity: item.quantity_base_units || item.quantity || 1,
+      base_unit: item.base_unit || 'unit',
+      unit_price: round2(item.unit_price || 0),
+      total: round2(item.amount || item.total_price || 0),
+      batch_number: item.batch_number || 'N/A',
+      expiry_date: item.expiry_date || null,
+      tax_rate: Number(item.tax_rate || 0),
+      tax_amount: round2(item.tax_amount || 0),
+      discount_amount: round2(item.discount_amount || 0),
+      isReturned: item.item_type === 'Medicine Return',
+      item_type: item.item_type
+    }));
+  } else {
+    console.log('No associated bill found');
+  }
+
+  if (
+    refundAmount > 0 &&
+    admissionId &&
+    patientId &&
+    ['IPDAdvance', 'PharmacyAdvance'].includes(refundMode)
+  ) {
     await createAdvanceLedgerEntry({
       hospitalId,
       patientId,
@@ -1054,15 +1642,24 @@ async function createReturn(payload, req = {}) {
       notes: `Medicine return ${pharmacyReturn.returnNumber}`,
       createdBy
     });
+
+    console.log('Advance ledger entry created');
   }
 
   await PharmacyLedgerEntry.create({
     hospitalId,
     pharmacyId,
-    entryType: ['Cash', 'UPI', 'Card'].includes(refundMode) ? 'REFUND' : 'RETURN',
-    direction: ['Cash', 'UPI', 'Card'].includes(refundMode) ? 'OUT' : 'NON_CASH',
+    entryType: cashRefundModes.includes(refundMode) ? 'REFUND' : 'RETURN',
+    direction: cashRefundModes.includes(refundMode) ? 'OUT' : 'NON_CASH',
     amount: refundAmount,
-    paymentMethod: refundMode === 'IPDAdvance' ? 'IPDAdvance' : refundMode === 'PharmacyAdvance' ? 'PharmacyAdvance' : refundMode === 'NoRefund' ? 'Adjustment' : refundMode,
+    paymentMethod:
+      refundMode === 'IPDAdvance'
+        ? 'IPDAdvance'
+        : refundMode === 'PharmacyAdvance'
+          ? 'PharmacyAdvance'
+          : refundMode === 'NoRefund'
+            ? 'Adjustment'
+            : refundMode,
     patientId,
     admissionId,
     saleId: originalSale?._id,
@@ -1072,22 +1669,52 @@ async function createReturn(payload, req = {}) {
     createdBy
   });
 
-  // Update associated bill if exists
-  if (originalSale && originalSale.bill_id) {
-    const bill = await Bill.findById(originalSale.bill_id);
-    if (bill) {
-      bill.notes = bill.notes 
-        ? `${bill.notes}\nReturn ${pharmacyReturn.returnNumber}: ₹${refundAmount}`
-        : `Return ${pharmacyReturn.returnNumber}: ₹${refundAmount}`;
-      await bill.save();
-    }
-  }
+  console.log('Pharmacy ledger entry created');
 
   const balances = await getPatientPharmacySummary({ patientId, admissionId });
+
   pharmacyReturn.patientOutstandingAfter = balances.outstanding;
   pharmacyReturn.pharmacyAdvanceAfter = balances.pharmacyAdvance;
+
   await pharmacyReturn.save();
-  return pharmacyReturn;
+
+  const responseReturn = pharmacyReturn.toObject ? pharmacyReturn.toObject() : pharmacyReturn;
+
+  responseReturn.updatedBill = updatedBillDataForResponse;
+  responseReturn.updatedItems = updatedItemsForResponse;
+  responseReturn.originalSaleDate = originalSale.sale_date;
+  responseReturn.originalPaymentMethod = originalSale.payment_method;
+  responseReturn.originalTotal = round2(originalSale.total_amount || 0);
+
+  console.log('========== CREATE RETURN END ==========');
+
+  return responseReturn;
+}
+
+async function getBatchNumber(batchId) {
+  const batch = await MedicineBatch.findById(batchId);
+  return batch?.batch_number || '';
+}
+
+function normalizeMoney(value) {
+  return Number(Number(value).toFixed(2));
+}
+
+// Helper function to get batch number
+async function getBatchNumber(batchId) {
+  const batch = await MedicineBatch.findById(batchId);
+  return batch?.batch_number || '';
+}
+
+// Helper function for currency formatting (for logs/notes only)
+function currency(value) {
+  return `₹${Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
+}
+
+// Helper function to get batch number
+async function getBatchNumber(batchId) {
+  const batch = await MedicineBatch.findById(batchId);
+  return batch?.batch_number || '';
 }
 
 async function createOutstandingSettlement(payload, req = {}) {

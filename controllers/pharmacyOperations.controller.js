@@ -37,6 +37,7 @@ function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
+
 function canViewPharmacyCost(req) {
   const role = String(req.user?.role || req.user?.userType || '').toLowerCase();
   return ['admin', 'superadmin', 'pharmacy_head', 'pharmacyhead', 'pharmacy-admin', 'pharmacy_admin'].includes(role) || req.query.includeCost === 'true';
@@ -251,22 +252,55 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
   if (!admissionId) return res.status(400).json({ success: false, error: 'admissionId is required' });
 
   const admission = await IPDAdmission.findById(admissionId)
-    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone gender dob')
-    .populate('primaryDoctorId', 'firstName lastName name')
+    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone gender dob age')
+    .populate('primaryDoctorId', 'firstName lastName name specialization')
+    .populate({
+      path: 'bedId',
+      select: 'bedNumber bedType dailyCharge status'
+    })
+    .populate({
+      path: 'wardId',
+      select: 'name floor type'
+    })
+    .populate({
+      path: 'roomId',
+      select: 'room_number type'
+    })
     .lean();
+
   if (!admission) return res.status(404).json({ success: false, error: 'Admission not found' });
 
   const patientId = admission.patientId?._id || admission.patientId;
 
-  const [sales, returns, ledgers, bills, invoices, balances] = await Promise.all([
+  // Fetch all required data
+  const [sales, returns, ledgers, bills, invoices] = await Promise.all([
     Sale.find({ admission_id: admissionId }).sort({ sale_date: 1 }).lean(),
     PharmacyReturn.find({ admissionId }).sort({ createdAt: 1 }).lean(),
     PharmacyLedgerEntry.find({ admissionId }).sort({ entryDate: 1 }).lean(),
     Bill.find({ admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: 1 }).lean(),
-    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: 1 }).lean(),
-    getPatientPharmacySummary({ patientId, admissionId })
+    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: 1 }).lean()
   ]);
 
+  // Calculate balances directly using the same logic as getAdmissionPharmacyFile
+  const balances = {
+    IPD_SHARED: await getAdvanceBalance({ admissionId, patientId, walletType: 'IPD_SHARED' }),
+    PHARMACY_IPD: await getAdvanceBalance({ admissionId, patientId, walletType: 'PHARMACY_IPD' })
+  };
+
+  // Calculate total spent from sales
+  const totalSpent = sales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
+
+  // Calculate pending bills (unpaid balance)
+  const pendingBills = sales.reduce((sum, sale) => sum + Number(sale.balance_due || 0), 0);
+
+  // Calculate outstanding = totalSpent - totalPaid - advanceUsed
+  const totalPaid = sales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
+  const totalReturnsAmount = returns.reduce((sum, ret) => sum + Number(ret.totalRefundAmount || 0), 0);
+
+  // Outstanding = Total Sales - Total Paid - Returns - Pharmacy Advance Used
+  const outstanding = Math.max(0, totalSpent - totalPaid - totalReturnsAmount - balances.PHARMACY_IPD);
+
+  // Format bill rows with proper data
   const billRows = sales.map(sale => ({
     billType: 'SALE',
     billNumber: sale.sale_number,
@@ -279,7 +313,18 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     paidAmount: sale.amount_paid || 0,
     returnAmount: sale.return_amount || 0,
     balanceDue: sale.balance_due || 0,
-    closingOutstanding: sale.closing_outstanding || 0
+    closingOutstanding: sale.closing_outstanding || 0,
+    paymentMethod: sale.payment_method,
+    items: (sale.items || []).map(item => ({
+      medicine_name: item.medicine_name,
+      composition: item.composition,
+      quantity: item.quantity_base_units,
+      unit_price: item.unit_price,
+      amount: item.net_amount,
+      batch_number: item.batch_number,
+      expiry_date: item.expiry_date,
+      tax_rate: item.tax_rate
+    }))
   }));
 
   const returnRows = returns.map(ret => ({
@@ -288,20 +333,62 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     originalBillNumber: ret.originalSaleNumber,
     date: ret.createdAt,
     refundMode: ret.refundMode,
-    totalRefundAmount: ret.totalRefundAmount || 0
+    totalRefundAmount: ret.totalRefundAmount || 0,
+    items: ret.items || []
   }));
 
+  // Calculate totals for summary
   const summary = {
-    totalSales: normalizeMoney(sales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0)),
-    totalReturns: normalizeMoney(returns.reduce((sum, r) => sum + Number(r.totalRefundAmount || 0), 0)),
-    totalPaid: normalizeMoney(sales.reduce((sum, s) => sum + Number(s.amount_paid || 0), 0)),
-    totalDue: balances.outstanding,
-    pharmacyAdvanceBalance: balances.pharmacyAdvance,
-    netPayableBeforeDischarge: normalizeMoney(Math.max(0, balances.outstanding - balances.pharmacyAdvance)),
-    refundableAdvance: normalizeMoney(Math.max(0, balances.pharmacyAdvance - balances.outstanding))
+    totalSales: normalizeMoney(totalSpent),
+    totalReturns: normalizeMoney(totalReturnsAmount),
+    totalPaid: normalizeMoney(totalPaid),
+    totalDue: normalizeMoney(outstanding),
+    pharmacyAdvanceBalance: normalizeMoney(balances.PHARMACY_IPD),
+    sharedIpdAdvanceBalance: normalizeMoney(balances.IPD_SHARED),
+    netPayableBeforeDischarge: normalizeMoney(Math.max(0, outstanding)),
+    refundableAdvance: normalizeMoney(Math.max(0, balances.PHARMACY_IPD - outstanding))
   };
 
-  res.json({ success: true, admission, bills: billRows, returns: returnRows, ledgers, pharmacyBills: bills, pharmacyInvoices: invoices, balances, summary });
+  // Format balances to match frontend expected structure
+  const formattedBalances = {
+    IPD_SHARED: balances.IPD_SHARED,
+    PHARMACY_IPD: balances.PHARMACY_IPD,
+    outstanding: outstanding,
+    totalSpent: totalSpent,
+    pendingBills: pendingBills,
+    sharedIpdAdvance: balances.IPD_SHARED,
+    pharmacyAdvance: balances.PHARMACY_IPD
+  };
+
+  // Populate ward and bed names for frontend display
+  const admissionWithDetails = {
+    ...admission,
+    ward_name: admission.wardId?.name || 'N/A',
+    bed_number: admission.bedId?.bedNumber || 'N/A',
+    bed_type: admission.bedId?.bedType || 'N/A',
+    ward_type: admission.wardId?.type || 'N/A',
+    room_number: admission.roomId?.room_number || 'N/A'
+  };
+
+  console.log('Balances calculated:', {
+    IPD_SHARED: balances.IPD_SHARED,
+    PHARMACY_IPD: balances.PHARMACY_IPD,
+    outstanding,
+    totalSpent,
+    totalPaid
+  });
+
+  res.json({
+    success: true,
+    admission: admissionWithDetails,
+    bills: billRows,
+    returns: returnRows,
+    ledgers,
+    pharmacyBills: bills,
+    pharmacyInvoices: invoices,
+    balances: formattedBalances,
+    summary
+  });
 });
 
 exports.getDoctorCommissionReport = asyncHandler(async (req, res) => {
@@ -469,9 +556,20 @@ exports.getIPDQueue = asyncHandler(async (req, res) => {
 exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
   const admissionId = objectIdOrUndefined(req.params.admissionId);
   const admission = await IPDAdmission.findById(admissionId)
-    .populate('patientId', 'first_name last_name patientId uhid phone gender dob')
-    .populate('primaryDoctorId', 'firstName lastName name')
-    .populate('bedId roomId wardId')
+    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone gender dob age')
+    .populate('primaryDoctorId', 'firstName lastName name specialization')
+    .populate({
+      path: 'bedId',
+      select: 'bedNumber bedType dailyCharge status'
+    })
+    .populate({
+      path: 'wardId',
+      select: 'name floor type'
+    })
+    .populate({
+      path: 'roomId',
+      select: 'room_number type'
+    })
     .lean();
 
   if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found' });
@@ -577,16 +675,16 @@ exports.createReturn = asyncHandler(async (req, res) => {
   const pharmacyReturn = await createReturn(req.body, req);
 
   // Update associated bill if exists
-  if (pharmacyReturn.originalSaleId) {
-    const bill = await Bill.findOne({ sale_id: pharmacyReturn.originalSaleId });
-    if (bill) {
-      // Update bill with return information
-      bill.notes = bill.notes
-        ? `${bill.notes}\nReturn ${pharmacyReturn.returnNumber}: ₹${pharmacyReturn.totalRefundAmount}`
-        : `Return ${pharmacyReturn.returnNumber}: ₹${pharmacyReturn.totalRefundAmount}`;
-      await bill.save();
-    }
-  }
+  // if (pharmacyReturn.originalSaleId) {
+  //   const bill = await Bill.findOne({ sale_id: pharmacyReturn.originalSaleId });
+  //   if (bill) {
+  //     // Update bill with return information
+  //     bill.notes = bill.notes
+  //       ? `${bill.notes}\nReturn ${pharmacyReturn.returnNumber}: ₹${pharmacyReturn.totalRefundAmount}`
+  //       : `Return ${pharmacyReturn.returnNumber}: ₹${pharmacyReturn.totalRefundAmount}`;
+  //     await bill.save();
+  //   }
+  // }
 
   res.status(201).json({ success: true, message: 'Medicine return completed', return: pharmacyReturn });
 });
@@ -616,8 +714,16 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
 
   // ========== FETCH LEDGER ENTRIES ==========
   const entries = await PharmacyLedgerEntry.find(match)
-    .populate('patientId', 'first_name last_name patientId uhid')
-    .populate('admissionId', 'admissionNumber')
+    .populate('patientId', 'first_name last_name patientId uhid phone age gender')
+    .populate({
+      path: 'admissionId',
+      select: 'admissionNumber shipNumber bedId wardId roomId status',
+      populate: [
+        { path: 'bedId', select: 'bedNumber bedType dailyCharge' },
+        { path: 'wardId', select: 'name floor type' },
+        { path: 'roomId', select: 'room_number type' }
+      ]
+    })
     .populate({
       path: 'saleId',
       select: 'sale_number invoice_number total_amount'
@@ -644,13 +750,31 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
       referenceNumber = entry.returnId.returnNumber;
     }
 
+    // Extract ward and bed details from populated admission
+    let wardName = null;
+    let bedNumber = null;
+    let wardId = null;
+    let bedId = null;
+
+    if (entry.admissionId) {
+      wardName = entry.admissionId.wardId?.name || null;
+      bedNumber = entry.admissionId.bedId?.bedNumber || null;
+      wardId = entry.admissionId.wardId?._id || null;
+      bedId = entry.admissionId.bedId?._id || null;
+    }
+
     return {
       ...entry,
       saleNumber: entry.saleId?.sale_number || null,
       invoiceNumber: entry.invoiceId?.invoice_number || null,
       returnNumber: entry.returnId?.returnNumber || null,
       referenceNumber: referenceNumber,
-      saleAmount: entry.saleId?.total_amount || null
+      saleAmount: entry.saleId?.total_amount || null,
+      // Add ward and bed details for frontend
+      wardName: wardName,
+      bedNumber: bedNumber,
+      wardId: wardId,
+      bedId: bedId
     };
   });
 
@@ -661,22 +785,53 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
   };
 
   const bills = await Bill.find(billsQuery)
-    .populate('patient_id', 'first_name last_name patientId uhid')
-    .populate('admission_id', 'admissionNumber')
+    .populate('patient_id', 'first_name last_name patientId uhid phone age gender')
+    .populate({
+      path: 'admission_id',
+      select: 'admissionNumber shipNumber bedId wardId roomId status',
+      populate: [
+        { path: 'bedId', select: 'bedNumber bedType dailyCharge' },
+        { path: 'wardId', select: 'name floor type' },
+        { path: 'roomId', select: 'room_number type' }
+      ]
+    })
     .populate('sale_id', 'sale_number invoice_number')
     .populate('invoice_id', 'invoice_number')
-    .populate('items.medicine_id', 'name')
+    .populate('items.medicine_id', 'name composition')
     .sort({ generated_at: -1 })
     .lean();
 
-  // Enrich bills with proper numbers
-  const enrichedBills = bills.map(bill => ({
-    ...bill,
-    bill_number: bill.sale_id?.sale_number || bill.sale_number || bill._id,
-    invoice_number: bill.invoice_id?.invoice_number || bill.invoice_number,
-    patient_name: bill.patient_id ? `${bill.patient_id.first_name || ''} ${bill.patient_id.last_name || ''}`.trim() : 'Walk-in',
-    items_count: bill.items?.length || 0
-  }));
+  // Enrich bills with proper numbers and admission details
+  const enrichedBills = bills.map(bill => {
+    // Extract ward and bed details from populated admission
+    let wardName = null;
+    let bedNumber = null;
+    let wardId = null;
+    let bedId = null;
+    let admissionNumber = null;
+
+    if (bill.admission_id) {
+      wardName = bill.admission_id.wardId?.name || null;
+      bedNumber = bill.admission_id.bedId?.bedNumber || null;
+      wardId = bill.admission_id.wardId?._id || null;
+      bedId = bill.admission_id.bedId?._id || null;
+      admissionNumber = bill.admission_id.admissionNumber || null;
+    }
+
+    return {
+      ...bill,
+      bill_number: bill.sale_id?.sale_number || bill.sale_number || bill._id,
+      invoice_number: bill.invoice_id?.invoice_number || bill.invoice_number,
+      patient_name: bill.patient_id ? `${bill.patient_id.first_name || ''} ${bill.patient_id.last_name || ''}`.trim() : 'Walk-in',
+      items_count: bill.items?.length || 0,
+      // Add ward and bed details for frontend
+      ward_name: wardName,
+      bed_number: bedNumber,
+      ward_id: wardId,
+      bed_id: bedId,
+      admission_number: admissionNumber
+    };
+  });
 
   // Calculate totals from bills
   const billTotals = {
@@ -783,8 +938,8 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     calculatedTotals: totals,
     summary: summary,
     entries: enrichedEntries,
-    bills: enrichedBills,        // NEW: Bills for the date range
-    billTotals: billTotals       // NEW: Summary of bills
+    bills: enrichedBills,        // Bills for the date range with ward/bed details
+    billTotals: billTotals       // Summary of bills
   });
 });
 
@@ -854,7 +1009,6 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
   });
 });
 
-// Get patient's personal pharmacy ledger
 // Get patient's personal pharmacy ledger
 exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
   const { patientId } = req.params;
@@ -1078,6 +1232,150 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
       totalRefunds: totals.totalOUT + totals.totalReturns,
       netBalance: totals.netBalance
     }
+  });
+});
+
+exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
+  const hospitalId = getHospitalId(req, req.body.hospitalId);
+
+  const admissionId = objectIdOrUndefined(
+    req.params.admissionId ||
+    req.body.admissionId ||
+    req.body.admission_id
+  );
+
+  const patientId = objectIdOrUndefined(
+    req.body.patientId ||
+    req.body.patient_id
+  );
+
+  const pharmacyId =
+    objectIdOrUndefined(req.body.pharmacyId || req.body.pharmacy_id) ||
+    await getDefaultPharmacyId();
+
+  const amount = normalizeMoney(req.body.amount);
+  const refundMethod = req.body.refundMethod || req.body.paymentMethod || req.body.payment_method || 'Cash';
+  const referenceNumber =
+    req.body.reference ||
+    req.body.referenceNumber ||
+    req.body.reference_number ||
+    `PH-ADV-REF-${Date.now()}`;
+
+  const notes = req.body.notes || 'Final pharmacy clearance advance refund';
+  const createdBy = getCreatedBy(req);
+
+  if (!admissionId) {
+    return res.status(400).json({
+      success: false,
+      error: 'admissionId is required'
+    });
+  }
+
+  if (!patientId) {
+    return res.status(400).json({
+      success: false,
+      error: 'patientId is required'
+    });
+  }
+
+  if (!pharmacyId) {
+    return res.status(400).json({
+      success: false,
+      error: 'Active pharmacy not found'
+    });
+  }
+
+  if (!amount || amount <= 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Refund amount must be greater than zero'
+    });
+  }
+
+  const currentPharmacyAdvance = await getAdvanceBalance({
+    admissionId,
+    patientId,
+    walletType: 'PHARMACY_IPD'
+  });
+
+  if (currentPharmacyAdvance <= 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'No pharmacy advance balance available for refund'
+    });
+  }
+
+  if (amount > currentPharmacyAdvance + 0.01) {
+    return res.status(400).json({
+      success: false,
+      error: `Refund amount cannot exceed available pharmacy advance balance. Available ${currentPharmacyAdvance}, requested ${amount}`
+    });
+  }
+
+  const summary = await getPatientPharmacySummary({
+    patientId,
+    admissionId
+  });
+
+  if (Number(summary.outstanding || 0) > 0) {
+    return res.status(400).json({
+      success: false,
+      error: `Cannot refund pharmacy advance while pharmacy outstanding exists. Outstanding amount: ${summary.outstanding}`
+    });
+  }
+
+  const advanceLedger = await createAdvanceLedgerEntry({
+    hospitalId,
+    patientId,
+    admissionId,
+    walletType: 'PHARMACY_IPD',
+    transactionType: 'PHARMACY_ADVANCE_REFUND',
+    direction: 'DEBIT',
+    amount,
+    paymentMethod: refundMethod,
+    referenceNumber,
+    sourceModule: 'Pharmacy',
+    sourceId: admissionId,
+    notes,
+    createdBy
+  });
+
+  const pharmacyLedger = await PharmacyLedgerEntry.create({
+    hospitalId,
+    pharmacyId,
+    entryType: 'REFUND',
+    direction: 'OUT',
+    amount: normalizeMoney(amount),
+    paymentMethod: refundMethod,
+    patientId,
+    admissionId,
+    notes: `${notes}. Reference: ${referenceNumber}`,
+    createdBy
+  });
+
+  await Patient.findByIdAndUpdate(patientId, {
+    $set: {
+      pharmacy_advance_balance: Math.max(0, normalizeMoney(advanceLedger.balanceAfter || 0)),
+      last_pharmacy_transaction: new Date()
+    }
+  });
+
+  const balances = await getPatientPharmacySummary({
+    patientId,
+    admissionId
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Pharmacy advance refunded successfully',
+    refundedAmount: amount,
+    refundMethod,
+    referenceNumber,
+    balanceBefore: normalizeMoney(currentPharmacyAdvance),
+    balanceAfter: normalizeMoney(advanceLedger.balanceAfter || 0),
+    advanceLedger,
+    pharmacyLedger,
+    balances
   });
 });
 

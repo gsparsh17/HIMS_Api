@@ -344,10 +344,10 @@ exports.createAdmission = async (req, res) => {
       await bed.save();
     }
 
-    // Update patient with admission info
+    // In createAdmission function, replace the patient update with:
     await Patient.findByIdAndUpdate(patientId, {
       patient_type: 'ipd',
-      $push: {
+      $addToSet: {  // Use $addToSet instead of $push to prevent duplicates
         active_admissions: {
           admission_id: admission._id,
           ship_number: admission.shipNumber,
@@ -358,7 +358,8 @@ exports.createAdmission = async (req, res) => {
           department_name: departmentId,
           status: 'active'
         }
-      }
+      },
+      last_pharmacy_visit: new Date()
     });
 
     // Array to store created invoices

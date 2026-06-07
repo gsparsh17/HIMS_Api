@@ -16,7 +16,7 @@ const billItemSchema = new mongoose.Schema({
   item_type: {
     type: String,
     enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Radiology', 'Pharmacy', 'Other', 
-           'Registration Fee', 'Admission Fee', 'IPD Advance', 'Advance Payment', 'Miscellaneous'],
+           'Registration Fee', 'Admission Fee', 'IPD Advance', 'Advance Payment', 'Miscellaneous', 'Medicine Return'],
     required: true
   },
 
@@ -217,7 +217,7 @@ const billSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['Draft', 'Generated', 'Pending', 'Paid', 'Partially Paid', 'Refunded', 'Cancelled'],
+    enum: ['Draft', 'Generated', 'Pending', 'Paid', 'Partially Paid', 'Refunded', 'Cancelled', 'Partially Returned', 'Fully Returned'],
     default: 'Draft'
   },
   generated_at: {

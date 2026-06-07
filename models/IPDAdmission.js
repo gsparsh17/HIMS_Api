@@ -233,36 +233,7 @@ ipdAdmissionSchema.pre('validate', async function(next) {
   }
 });
 
-// After save, update patient's active admissions array
-ipdAdmissionSchema.post('save', async function(doc) {
-  try {
-    const Patient = mongoose.model('Patient');
-    const Doctor = mongoose.model('Doctor');
-    const Ward = mongoose.model('Ward');
-    
-    const doctor = await Doctor.findById(doc.primaryDoctorId).select('firstName lastName');
-    const ward = await Ward.findById(doc.wardId).select('name');
-    
-    await Patient.findByIdAndUpdate(doc.patientId, {
-      $push: {
-        active_admissions: {
-          admission_id: doc._id,
-          ship_number: doc.shipNumber,
-          registration_number: doc.admissionNumber,
-          ward_name: ward?.name || null,
-          bed_number: doc.bedId,
-          doctor_name: doctor ? `${doctor.firstName} ${doctor.lastName}` : null,
-          department_name: doc.departmentId,
-          status: 'active'
-        }
-      },
-      patient_type: 'ipd',
-      last_pharmacy_visit: new Date()
-    });
-  } catch (err) {
-    console.error('Error updating patient active admissions:', err);
-  }
-});
+// REMOVED: post('save') hook - let controller handle patient update manually
 
 // Update patient when admission status changes to discharged
 ipdAdmissionSchema.post('findOneAndUpdate', async function(doc) {

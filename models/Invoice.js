@@ -96,58 +96,122 @@ const medicineItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Medicine'
   },
+
   batch_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'MedicineBatch'
   },
+
   medicine_name: {
     type: String,
     required: true
   },
+
+  description: {
+    type: String
+  },
+
+  item_type: {
+    type: String,
+    enum: ['Pharmacy', 'Medicine Return'],
+    default: 'Pharmacy'
+  },
+
+  is_return: {
+    type: Boolean,
+    default: false
+  },
+
+  return_reference: {
+    type: String
+  },
+
+  return_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PharmacyReturn'
+  },
+
   batch_number: {
     type: String
   },
+
   expiry_date: {
     type: Date
   },
+
   quantity: {
     type: Number,
     required: true,
     min: [1, 'Quantity must be at least 1']
   },
+
+  quantity_base_units: {
+    type: Number,
+    min: [0, 'Quantity base units cannot be negative']
+  },
+
+  base_unit: {
+    type: String
+  },
+
   unit_price: {
     type: Number,
     required: true,
     min: [0, 'Unit price cannot be negative']
   },
+
   total_price: {
     type: Number,
     required: true,
-    min: [0, 'Total price cannot be negative']
+    validate: {
+      validator: function (v) {
+        if (this.item_type === 'Medicine Return' || this.is_return === true) {
+          return v <= 0;
+        }
+
+        return v >= 0;
+      },
+      message: 'Total price must be positive for pharmacy items and negative for return items'
+    }
   },
+
   tax_rate: {
     type: Number,
     default: 0,
     min: [0, 'Tax rate cannot be negative'],
     max: [100, 'Tax rate cannot exceed 100%']
   },
+
   tax_amount: {
     type: Number,
     default: 0,
-    min: [0, 'Tax amount cannot be negative']
+    validate: {
+      validator: function (v) {
+        if (this.item_type === 'Medicine Return' || this.is_return === true) {
+          return v <= 0;
+        }
+
+        return v >= 0;
+      },
+      message: 'Tax amount must be positive for pharmacy items and negative for return items'
+    }
   },
+
   prescription_required: {
     type: Boolean,
     default: false
   },
+
   prescription_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Prescription'
   },
+
   is_dispensed: {
     type: Boolean,
     default: false
   },
+
   dispensed_at: {
     type: Date
   }
@@ -418,14 +482,14 @@ const invoiceSchema = new mongoose.Schema({
   },
 
   // Invoice Type
-// Invoice Type - Add new types
-invoice_type: {
-  type: String,
-  enum: ['Appointment', 'Pharmacy', 'Procedure', 'Lab Test', 'Radiology', 'Mixed', 'Other', 'Purchase', 
-         'IPD Registration', 'IPD Admission', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'IPD Payment'],
-  required: true,
-  index: true
-},
+  // Invoice Type - Add new types
+  invoice_type: {
+    type: String,
+    enum: ['Appointment', 'Pharmacy', 'Procedure', 'Lab Test', 'Radiology', 'Mixed', 'Other', 'Purchase',
+      'IPD Registration', 'IPD Admission', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'IPD Payment', 'Medicine Return'],
+    required: true,
+    index: true
+  },
 
   // Dates - All stored in UTC
   issue_date: {
@@ -460,10 +524,9 @@ invoice_type: {
     min: [0, 'Subtotal cannot be negative'],
     validate: {
       validator: function (v) {
-        // Subtotal should be >= total when discount is applied
-        return v >= this.total;
+        return v >= (this.discount || 0);
       },
-      message: 'Subtotal cannot be less than total after discount'
+      message: 'Subtotal cannot be less than discount'
     }
   },
 
@@ -520,7 +583,7 @@ invoice_type: {
   // Status
   status: {
     type: String,
-    enum: ['Draft', 'Issued', 'Pending', 'Paid', 'Partial', 'Overdue', 'Cancelled', 'Refunded'],
+    enum: ['Draft', 'Issued', 'Pending', 'Paid', 'Partial', 'Overdue', 'Cancelled', 'Refunded', 'Partially Returned', 'Fully Returned'],
     default: 'Draft',
     index: true
   },
