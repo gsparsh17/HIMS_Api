@@ -29,6 +29,7 @@ require('./models/StorePurchaseOrder');
 require('./models/StoreInventoryTransaction');
 require('./models/StoreItem');
 require('./models/StoreCategory');
+require('./models/EHRBundle');
 // ... add a require for every model file you have
 
 // Middleware
@@ -47,6 +48,7 @@ app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/mediqliq', require('./routes/mediqliqSuperAdmin.routes'));
 app.use('/api/audit-logs', require('./routes/auditLog.routes'));
 app.use('/api/patients', require('./routes/patient.routes'));
+app.use('/api/abha', require('./routes/abha.routes'));
 app.use('/api/doctors', require('./routes/doctor.routes'));
 app.use('/api/nurses', require('./routes/nurse.routes'));
 app.use('/api/staff', require('./routes/staff.routes'));

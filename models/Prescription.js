@@ -123,6 +123,16 @@ const prescriptionSchema = new mongoose.Schema({
   follow_up_date: { type: Date },
   is_repeatable: { type: Boolean, default: false },
   repeat_count: { type: Number, default: 0 },
+
+  abdmRecordLink: {
+    patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
+    abhaNumber: { type: String, index: true },
+    abhaAddress: { type: String, index: true },
+    status: { type: String, enum: ['pending_abha', 'linked', 'ready_for_consent', 'shared'], default: 'pending_abha' },
+    linkedAt: Date,
+    source: String,
+    ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' }
+  },
   created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   
   // Pharmacy Integration
@@ -163,5 +173,7 @@ prescriptionSchema.index({ ipd_admission_id: 1, source_type: 1 });
 prescriptionSchema.index({ 'lab_test_requests.request_id': 1 });
 prescriptionSchema.index({ 'radiology_test_requests.request_id': 1 });
 prescriptionSchema.index({ 'procedure_requests.request_id': 1 });
+prescriptionSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
+prescriptionSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
 
 module.exports = mongoose.model('Prescription', prescriptionSchema);

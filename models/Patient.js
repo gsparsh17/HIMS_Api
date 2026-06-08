@@ -104,6 +104,7 @@ const patientSchema = new mongoose.Schema({
   aadhaar_number: {
     type: String,
     trim: true,
+    select: false,
     validate: {
       validator: function(v) {
         if (!v) return true;
@@ -111,6 +112,62 @@ const patientSchema = new mongoose.Schema({
       },
       message: 'Aadhaar number must be exactly 12 digits'
     }
+  },
+  aadhaar_last4: {
+    type: String,
+    trim: true,
+    select: false
+  },
+  abha: {
+    number: { type: String, trim: true, index: true, sparse: true },
+    address: { type: String, trim: true, lowercase: true, index: true, sparse: true },
+    status: {
+      type: String,
+      enum: ['not_linked', 'otp_sent', 'ACTIVE', 'DEACTIVATED', 'DELETED', 'pending_verification', 'manually_captured'],
+      default: 'not_linked',
+      index: true
+    },
+    type: { type: String, trim: true },
+    kycVerified: { type: Boolean, default: false },
+    registrationMode: {
+      type: String,
+      enum: ['aadhaar_otp', 'mobile_otp', 'manual_capture', 'none'],
+      default: 'none'
+    },
+    linkedAt: Date,
+    lastLinkedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    profile: {
+      firstName: String,
+      middleName: String,
+      lastName: String,
+      dob: String,
+      gender: String,
+      mobileMasked: String,
+      districtName: String,
+      stateName: String,
+      pinCode: String
+    },
+    lastOtpTxnId: String,
+    lastOtpSentAt: Date,
+    mobileVerificationTxnId: String,
+    mobileVerificationStatus: String,
+    mobileVerifiedAt: Date,
+    session: {
+      xToken: { type: String, select: false },
+      refreshToken: { type: String, select: false },
+      expiresAt: Date,
+      refreshExpiresAt: Date
+    },
+    recordLinks: [{
+      recordType: String,
+      recordId: mongoose.Schema.Types.ObjectId,
+      ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' },
+      linkedAt: Date,
+      status: String
+    }],
+    lastRecordLinkSyncAt: Date,
+    lastEhrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' },
+    lastEhrGeneratedAt: Date
   },
   // NEW: Sponsor/Payer Information
   sponsor_type: {
@@ -208,13 +265,18 @@ patientSchema.index({
   last_name: 'text', 
   phone: 'text', 
   uhid: 'text', 
-  patientId: 'text' 
+  patientId: 'text',
+  'abha.number': 'text',
+  'abha.address': 'text'
 });
 
 // Compound indexes for common pharmacy queries
 patientSchema.index({ phone: 1 });
 patientSchema.index({ uhid: 1 });
 patientSchema.index({ patientId: 1 });
+patientSchema.index({ 'abha.number': 1 });
+patientSchema.index({ 'abha.address': 1 });
+patientSchema.index({ 'abha.status': 1 });
 patientSchema.index({ is_walkin: 1, last_pharmacy_visit: -1 });
 patientSchema.index({ sponsor_type: 1, pharmacy_outstanding_balance: -1 });
 patientSchema.index({ 'active_admissions.ship_number': 1 });

@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const AuditLog = require('../models/AuditLog');
 
-const SENSITIVE_KEY_PATTERN = /(password|passcode|token|secret|authorization|cookie|otp|pin|api[_-]?key|refresh|access)/i;
+const SENSITIVE_KEY_PATTERN = /(password|passcode|token|secret|authorization|cookie|otp|pin|api[_-]?key|refresh|access|aadhaar|aadhar|abha|mobile|phone|loginId|x-token)/i;
 const MAX_SERIALIZED_LENGTH = 8000;
 
 function cloneAndRedact(value, depth = 0) {

@@ -194,6 +194,16 @@ const ipdAdmissionSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+
+  abdmRecordLink: {
+    patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
+    abhaNumber: { type: String, index: true },
+    abhaAddress: { type: String, index: true },
+    status: { type: String, enum: ['pending_abha', 'linked', 'ready_for_consent', 'shared'], default: 'pending_abha' },
+    linkedAt: Date,
+    source: String,
+    ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' }
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -286,5 +296,7 @@ ipdAdmissionSchema.index({ shipNumber: 1 });
 ipdAdmissionSchema.index({ clinicalAssessmentCompleted: 1 });
 ipdAdmissionSchema.index({ pharmacyClearanceStatus: 1 });
 ipdAdmissionSchema.index({ status: 1, pharmacyClearanceStatus: 1 });
+ipdAdmissionSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
+ipdAdmissionSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
 
 module.exports = mongoose.model('IPDAdmission', ipdAdmissionSchema);

@@ -669,7 +669,9 @@ exports.getAllPatients = async (req, res) => {
         { last_name: { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } },
         { patientId: { $regex: search, $options: 'i' } },
-        { uhid: { $regex: search, $options: 'i' } }
+        { uhid: { $regex: search, $options: 'i' } },
+        { 'abha.number': { $regex: search, $options: 'i' } },
+        { 'abha.address': { $regex: search, $options: 'i' } }
       ];
     }
     

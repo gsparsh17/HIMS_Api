@@ -39,7 +39,17 @@ const appointmentSchema = new mongoose.Schema({
   actual_start_time: Date, // When the appointment actually started
   actual_end_time: Date,   // When the appointment actually ended
   duration: Number,        // Actual duration in minutes
-  token: { type: String, unique: false } // OPD-YYYYMMDD-001 or IPD-YYYYMMDD-001
+  token: { type: String, unique: false }, // OPD-YYYYMMDD-001 or IPD-YYYYMMDD-001
+
+  abdmRecordLink: {
+    patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
+    abhaNumber: { type: String, index: true },
+    abhaAddress: { type: String, index: true },
+    status: { type: String, enum: ['pending_abha', 'linked', 'ready_for_consent', 'shared'], default: 'pending_abha' },
+    linkedAt: Date,
+    source: String,
+    ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' }
+  },
 });
 
 appointmentSchema.pre('save', async function(next) {

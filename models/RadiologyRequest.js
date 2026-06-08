@@ -165,6 +165,16 @@ const radiologyRequestSchema = new mongoose.Schema({
     type: String
   },
   
+
+  abdmRecordLink: {
+    patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
+    abhaNumber: { type: String, index: true },
+    abhaAddress: { type: String, index: true },
+    status: { type: String, enum: ['pending_abha', 'linked', 'ready_for_consent', 'shared'], default: 'pending_abha' },
+    linkedAt: Date,
+    source: String,
+    ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' }
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -200,5 +210,7 @@ radiologyRequestSchema.index({ doctorId: 1, status: 1 });
 radiologyRequestSchema.index({ status: 1, scheduledDate: 1 });
 radiologyRequestSchema.index({ requestNumber: 1 });
 radiologyRequestSchema.index({ admissionId: 1, sourceType: 'IPD' });
+radiologyRequestSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
+radiologyRequestSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
 
 module.exports = mongoose.model('RadiologyRequest', radiologyRequestSchema);

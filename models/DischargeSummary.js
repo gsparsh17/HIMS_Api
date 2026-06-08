@@ -107,6 +107,16 @@ const dischargeSummarySchema = new mongoose.Schema({
   finalizedAt: {
     type: Date
   },
+
+  abdmRecordLink: {
+    patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
+    abhaNumber: { type: String, index: true },
+    abhaAddress: { type: String, index: true },
+    status: { type: String, enum: ['pending_abha', 'linked', 'ready_for_consent', 'shared'], default: 'pending_abha' },
+    linkedAt: Date,
+    source: String,
+    ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' }
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -123,5 +133,7 @@ const dischargeSummarySchema = new mongoose.Schema({
 dischargeSummarySchema.index({ admissionId: 1 });
 dischargeSummarySchema.index({ patientId: 1, dischargeDate: -1 });
 dischargeSummarySchema.index({ status: 1, preparedBy: 1 });
+dischargeSummarySchema.index({ 'abdmRecordLink.abhaNumber': 1 });
+dischargeSummarySchema.index({ 'abdmRecordLink.abhaAddress': 1 });
 
 module.exports = mongoose.model('DischargeSummary', dischargeSummarySchema);
