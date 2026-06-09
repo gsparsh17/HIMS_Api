@@ -1,9 +1,9 @@
 const mongoose = require('mongoose');
 
 const patientSchema = new mongoose.Schema({
-  patientId: { 
-    type: String, 
-    unique: true 
+  patientId: {
+    type: String,
+    unique: true
   },
   uhid: {
     type: String,
@@ -13,35 +13,35 @@ const patientSchema = new mongoose.Schema({
     type: String,
     enum: ['Mr.', 'Mrs.', 'Ms.', 'Miss', 'Dr.', 'Prof.', 'Baby', 'Master'],
   },
-  first_name: { 
-    type: String, 
-    required: true 
+  first_name: {
+    type: String,
+    required: true
   },
   middle_name: {
     type: String
   },
-  last_name: { 
+  last_name: {
     type: String
   },
-  email: { 
+  email: {
     type: String,
   },
-  phone: { 
-    type: String, 
-    required: true 
+  phone: {
+    type: String,
+    required: true
   },
-  gender: { 
-    type: String, 
-    enum: ['male', 'female', 'other'], 
-    required: true 
+  gender: {
+    type: String,
+    enum: ['male', 'female', 'other'],
+    required: true
   },
-  dob: { 
-    type: Date, 
-    required: true 
+  dob: {
+    type: Date,
+    required: true
   },
   age: {
     type: Number,
-    computed: function() {
+    computed: function () {
       if (!this.dob) return null;
       const today = new Date();
       let age = today.getFullYear() - this.dob.getFullYear();
@@ -52,17 +52,17 @@ const patientSchema = new mongoose.Schema({
       return age;
     }
   },
-  address: { 
-    type: String 
+  address: {
+    type: String
   },
-  city: { 
-    type: String 
+  city: {
+    type: String
   },
-  state: { 
-    type: String 
+  state: {
+    type: String
   },
-  zipCode: { 
-    type: String 
+  zipCode: {
+    type: String
   },
   village: {
     type: String
@@ -76,20 +76,20 @@ const patientSchema = new mongoose.Schema({
   patient_image: {
     type: String
   },
-  emergency_contact: { 
-    type: String 
+  emergency_contact: {
+    type: String
   },
-  emergency_phone: { 
-    type: String 
+  emergency_phone: {
+    type: String
   },
-  medical_history: { 
-    type: String 
+  medical_history: {
+    type: String
   },
-  allergies: { 
-    type: String 
+  allergies: {
+    type: String
   },
-  medications: { 
-    type: String 
+  medications: {
+    type: String
   },
   blood_group: {
     type: String,
@@ -106,7 +106,7 @@ const patientSchema = new mongoose.Schema({
     trim: true,
     select: false,
     validate: {
-      validator: function(v) {
+      validator: function (v) {
         if (!v) return true;
         return /^\d{12}$/.test(v);
       },
@@ -169,7 +169,6 @@ const patientSchema = new mongoose.Schema({
     lastEhrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' },
     lastEhrGeneratedAt: Date
   },
-  // NEW: Sponsor/Payer Information
   sponsor_type: {
     type: String,
     enum: ['self', 'ayushman_bharat', 'insurance', 'company_panel', 'government_scheme', 'other'],
@@ -178,6 +177,11 @@ const patientSchema = new mongoose.Schema({
   sponsor_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Sponsor'
+  },
+  insurance_provider_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'InsuranceProvider',
+    index: true
   },
   sponsor_name: {
     type: String,
@@ -190,7 +194,12 @@ const patientSchema = new mongoose.Schema({
   sponsor_valid_until: {
     type: Date
   },
-  // NEW: Walk-in support
+  insurance_coverage_percentage: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
   is_walkin: {
     type: Boolean,
     default: false
@@ -231,9 +240,9 @@ const patientSchema = new mongoose.Schema({
   last_pharmacy_transaction: {
     type: Date
   },
-  registered_at: { 
-    type: Date, 
-    default: Date.now 
+  registered_at: {
+    type: Date,
+    default: Date.now
   },
   updated_at: {
     type: Date,
@@ -246,7 +255,7 @@ const patientSchema = new mongoose.Schema({
 });
 
 // Virtual for full name
-patientSchema.virtual('full_name').get(function() {
+patientSchema.virtual('full_name').get(function () {
   const parts = [this.first_name];
   if (this.middle_name) parts.push(this.middle_name);
   if (this.last_name) parts.push(this.last_name);
@@ -254,17 +263,17 @@ patientSchema.virtual('full_name').get(function() {
 });
 
 // Virtual for display name with salutation
-patientSchema.virtual('display_name').get(function() {
+patientSchema.virtual('display_name').get(function () {
   const salutation = this.salutation ? `${this.salutation} ` : '';
   return `${salutation}${this.full_name}`;
 });
 
 // Index for fast pharmacy POS search
-patientSchema.index({ 
-  first_name: 'text', 
-  last_name: 'text', 
-  phone: 'text', 
-  uhid: 'text', 
+patientSchema.index({
+  first_name: 'text',
+  last_name: 'text',
+  phone: 'text',
+  uhid: 'text',
   patientId: 'text',
   'abha.number': 'text',
   'abha.address': 'text'
@@ -297,7 +306,7 @@ patientSchema.pre('save', async function (next) {
   try {
     const now = new Date();
     this.updated_at = now;
-    
+
     if (!this.uhid || !this.patientId) {
       const hospital = await Hospital.findOne();
       if (!hospital || !hospital.hospitalID) {
@@ -320,8 +329,8 @@ patientSchema.pre('save', async function (next) {
         if (this.aadhaar_number && this.aadhaar_number.length === 12) {
           const date = new Date();
           const yymm = `${date.getFullYear().toString().slice(-2)}${(date.getMonth() + 1).toString().padStart(2, '0')}`;
-          
-          let hospitalPrefix = 'HS'; 
+
+          let hospitalPrefix = 'HS';
           const hName = hospital.hospitalName || hospital.name;
           if (hName) {
             const words = hName.trim().split(/\s+/).filter(w => w.length > 0);
@@ -346,19 +355,19 @@ patientSchema.pre('save', async function (next) {
 
         while (!isUnique) {
           checkId = suffixCounter === 0 ? finalGeneratedId : `${finalGeneratedId}-${suffixCounter}`;
-          const exists = await mongoose.model('Patient').findOne({ 
-            $or: [{ uhid: checkId }, { patientId: checkId }] 
+          const exists = await mongoose.model('Patient').findOne({
+            $or: [{ uhid: checkId }, { patientId: checkId }]
           });
-          
+
           if (!exists) {
             isUnique = true;
           } else {
             suffixCounter++;
           }
         }
-        
+
         this.uhid = checkId;
-        this.patientId = checkId; 
+        this.patientId = checkId;
         this.hospitalId = hospital.hospitalID;
       }
     }

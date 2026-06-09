@@ -15,6 +15,7 @@ const RadiologyRequest = require('../models/RadiologyRequest');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const OTRequest = require('../models/OTRequest');
 const Prescription = require('../models/Prescription');
+const Sale = require('../models/Sale');
 
 // ========== DISCHARGE SUMMARY ==========
 
@@ -352,7 +353,7 @@ exports.initiateDischarge = async (req, res) => {
   }
 };
 
-// Get discharge checklist
+// Get discharge checklist with deferred payments
 exports.getDischargeChecklist = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -365,24 +366,74 @@ exports.getDischargeChecklist = async (req, res) => {
     const pendingCharges = await IPDCharge.countDocuments({ admissionId, isBilled: false });
     const hasUnpaidAmount = admission.dueAmount > 0;
 
+    // Check deferred payments for this admission
+    const deferredSales = await Sale.find({
+      admission_id: admissionId,
+      payment_deferred: true,
+      status: { $in: ['Pending', 'Partially Paid'] },
+      include_in_discharge_clearance: true
+    });
+
+    const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+    const hasDeferredPayments = totalDeferredAmount > 0;
+
+    // Check for pending bills that are not deferred
+    const pendingBills = await Sale.find({
+      admission_id: admissionId,
+      payment_deferred: { $ne: true },
+      balance_due: { $gt: 0 },
+      status: { $in: ['Pending', 'Partially Paid'] }
+    });
+
+    const totalPendingAmount = pendingBills.reduce((sum, bill) => sum + (bill.balance_due || 0), 0);
+    const hasPendingBills = totalPendingAmount > 0;
+
+    const totalPendingAmountAll = totalPendingAmount + totalDeferredAmount;
+
     const checklist = {
       doctorDischargeAdvice: admission.status === 'Discharge Initiated',
       dischargeSummaryFinalized: dischargeSummary?.status === 'Finalized' || dischargeSummary?.status === 'StaffCompleted',
       labReportsCompleted: pendingLabReports === 0,
       medicationsAdministered: pendingMedications === 0,
       chargesBilled: pendingCharges === 0,
-      paymentSettled: !hasUnpaidAmount,
+      paymentSettled: !hasUnpaidAmount && !hasDeferredPayments && !hasPendingBills,
+      deferredPaymentsSettled: !hasDeferredPayments,
+      pendingBillsSettled: !hasPendingBills,
       bedReadyForRelease: true
     };
 
-    res.json({ success: true, checklist, isReadyForDischarge: Object.values(checklist).every(v => v === true), pendingItems: { pendingLabReports, pendingMedications, pendingCharges, dueAmount: admission.dueAmount } });
+    res.json({
+      success: true,
+      checklist,
+      isReadyForDischarge: Object.values(checklist).every(v => v === true),
+      pendingItems: {
+        pendingLabReports,
+        pendingMedications,
+        pendingCharges,
+        dueAmount: admission.dueAmount,
+        deferredPaymentsCount: deferredSales.length,
+        deferredPaymentsAmount: totalDeferredAmount,
+        pendingBillsCount: pendingBills.length,
+        pendingBillsAmount: totalPendingAmount,
+        totalPendingAmount: totalPendingAmountAll
+      },
+      deferredPayments: deferredSales.map(sale => ({
+        _id: sale._id,
+        sale_number: sale.sale_number,
+        total_amount: sale.total_amount,
+        balance_due: sale.balance_due,
+        sale_date: sale.sale_date,
+        deferral_reason: sale.deferral_reason,
+        items_count: sale.items?.length || 0
+      }))
+    });
   } catch (err) {
     console.error('Error fetching discharge checklist:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-// Complete discharge
+// Complete discharge with deferred payment validation
 exports.completeDischarge = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -396,7 +447,39 @@ exports.completeDischarge = async (req, res) => {
       return res.status(400).json({ error: 'Discharge summary not finalized' });
     }
 
-    if (admission.dueAmount > 0) return res.status(400).json({ error: 'Payment pending. Please settle dues before discharge.' });
+    // Check for deferred payments before discharge
+    const deferredSales = await Sale.find({
+      admission_id: admissionId,
+      payment_deferred: true,
+      status: { $in: ['Pending', 'Partially Paid'] },
+      include_in_discharge_clearance: true
+    });
+
+    const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+
+    // Check for pending bills that are not deferred
+    const pendingBills = await Sale.find({
+      admission_id: admissionId,
+      payment_deferred: { $ne: true },
+      balance_due: { $gt: 0 },
+      status: { $in: ['Pending', 'Partially Paid'] }
+    });
+
+    const totalPendingAmount = pendingBills.reduce((sum, bill) => sum + (bill.balance_due || 0), 0);
+    const totalPendingAll = totalPendingAmount + totalDeferredAmount;
+
+    if (totalPendingAll > 0) {
+      return res.status(400).json({
+        error: 'Payment pending. Please settle all dues including deferred payments before discharge.',
+        pendingAmount: totalPendingAll,
+        deferredAmount: totalDeferredAmount,
+        regularPendingAmount: totalPendingAmount
+      });
+    }
+
+    if (admission.dueAmount > 0) {
+      return res.status(400).json({ error: 'Payment pending. Please settle dues before discharge.' });
+    }
 
     admission.status = 'Discharged';
     admission.dischargeDate = new Date();
@@ -421,7 +504,15 @@ exports.completeDischarge = async (req, res) => {
       await finalInvoice.save();
     }
 
-    res.json({ success: true, message: 'Patient discharged successfully', admission });
+    res.json({
+      success: true,
+      message: 'Patient discharged successfully',
+      admission,
+      clearanceSummary: {
+        deferredPaymentsCleared: deferredSales.length,
+        deferredAmountCleared: totalDeferredAmount
+      }
+    });
   } catch (err) {
     console.error('Error completing discharge:', err);
     res.status(500).json({ error: err.message });
@@ -437,8 +528,38 @@ exports.getDischargeDocuments = async (req, res) => {
 
     const dischargeSummary = await DischargeSummary.findOne({ admissionId }).populate('preparedBy', 'firstName lastName').populate('reviewedBy', 'firstName lastName');
     const invoices = await Invoice.find({ admission_id: admissionId });
+    
+    // Get clearance status including deferred payments
+    const deferredSales = await Sale.find({
+      admission_id: admissionId,
+      payment_deferred: true,
+      status: { $in: ['Pending', 'Partially Paid'] }
+    });
+    const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+    const isCleared = totalDeferredAmount === 0 && admission.dueAmount === 0;
 
-    res.json({ success: true, admission, dischargeSummary, invoices, documents: { dischargeSummary: dischargeSummary || null, finalBill: invoices.find(i => i.status === 'Paid') || null, admissionSlip: { admissionNumber: admission.admissionNumber, admissionDate: admission.admissionDate, patientName: `${admission.patientId?.first_name} ${admission.patientId?.last_name}`, doctorName: `Dr. ${admission.primaryDoctorId?.firstName} ${admission.primaryDoctorId?.lastName}` } } });
+    res.json({
+      success: true,
+      admission,
+      dischargeSummary,
+      invoices,
+      clearanceStatus: {
+        isCleared,
+        deferredAmount: totalDeferredAmount,
+        deferredCount: deferredSales.length,
+        regularDue: admission.dueAmount
+      },
+      documents: {
+        dischargeSummary: dischargeSummary || null,
+        finalBill: invoices.find(i => i.status === 'Paid') || null,
+        admissionSlip: {
+          admissionNumber: admission.admissionNumber,
+          admissionDate: admission.admissionDate,
+          patientName: `${admission.patientId?.first_name} ${admission.patientId?.last_name}`,
+          doctorName: `Dr. ${admission.primaryDoctorId?.firstName} ${admission.primaryDoctorId?.lastName}`
+        }
+      }
+    });
   } catch (err) {
     console.error('Error fetching discharge documents:', err);
     res.status(500).json({ error: err.message });

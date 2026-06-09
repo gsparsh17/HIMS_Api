@@ -16,6 +16,7 @@ const Prescription = require('../models/Prescription');
 const Patient = require('../models/Patient');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
+const IPDCharge = require('../models/IPDCharge')
 const {
   objectIdOrUndefined,
   getHospitalId,
@@ -272,37 +273,34 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
 
   const patientId = admission.patientId?._id || admission.patientId;
 
-  // Fetch all required data
-  const [sales, returns, ledgers, bills, invoices] = await Promise.all([
+  // Fetch all required data including deferred payments
+  const [sales, returns, ledgers, bills, invoices, deferredSales] = await Promise.all([
     Sale.find({ admission_id: admissionId }).sort({ sale_date: 1 }).lean(),
     PharmacyReturn.find({ admissionId }).sort({ createdAt: 1 }).lean(),
     PharmacyLedgerEntry.find({ admissionId }).sort({ entryDate: 1 }).lean(),
     Bill.find({ admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: 1 }).lean(),
-    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: 1 }).lean()
+    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: 1 }).lean(),
+    Sale.find({ admission_id: admissionId, payment_deferred: true, status: 'Pending' }).lean()
   ]);
 
-  // Calculate balances directly using the same logic as getAdmissionPharmacyFile
+  // Calculate balances
   const balances = {
     IPD_SHARED: await getAdvanceBalance({ admissionId, patientId, walletType: 'IPD_SHARED' }),
     PHARMACY_IPD: await getAdvanceBalance({ admissionId, patientId, walletType: 'PHARMACY_IPD' })
   };
 
-  // Calculate total spent from sales
+  // Calculate totals
   const totalSpent = sales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
-
-  // Calculate pending bills (unpaid balance)
-  const pendingBills = sales.reduce((sum, sale) => sum + Number(sale.balance_due || 0), 0);
-
-  // Calculate outstanding = totalSpent - totalPaid - advanceUsed
   const totalPaid = sales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
   const totalReturnsAmount = returns.reduce((sum, ret) => sum + Number(ret.totalRefundAmount || 0), 0);
+  const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
 
-  // Outstanding = Total Sales - Total Paid - Returns - Pharmacy Advance Used
+  // Outstanding = Total Sales - Total Paid - Returns - Pharmacy Advance Used + Deferred Amount
   const outstanding = Math.max(0, totalSpent - totalPaid - totalReturnsAmount - balances.PHARMACY_IPD);
 
-  // Format bill rows with proper data
+  // Format bill rows with deferred indicator
   const billRows = sales.map(sale => ({
-    billType: 'SALE',
+    billType: sale.payment_deferred ? 'DEFERRED' : 'SALE',
     billNumber: sale.sale_number,
     invoiceNumber: sale.invoice_number,
     date: sale.sale_date,
@@ -315,6 +313,8 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     balanceDue: sale.balance_due || 0,
     closingOutstanding: sale.closing_outstanding || 0,
     paymentMethod: sale.payment_method,
+    isDeferred: sale.payment_deferred === true,
+    deferralReason: sale.deferral_reason,
     items: (sale.items || []).map(item => ({
       medicine_name: item.medicine_name,
       composition: item.composition,
@@ -327,40 +327,31 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     }))
   }));
 
-  const returnRows = returns.map(ret => ({
-    billType: 'RETURN',
-    billNumber: ret.returnNumber,
-    originalBillNumber: ret.originalSaleNumber,
-    date: ret.createdAt,
-    refundMode: ret.refundMode,
-    totalRefundAmount: ret.totalRefundAmount || 0,
-    items: ret.items || []
-  }));
-
-  // Calculate totals for summary
+  // Add deferred payments to summary
   const summary = {
     totalSales: normalizeMoney(totalSpent),
     totalReturns: normalizeMoney(totalReturnsAmount),
     totalPaid: normalizeMoney(totalPaid),
     totalDue: normalizeMoney(outstanding),
+    totalDeferred: normalizeMoney(totalDeferredAmount),
     pharmacyAdvanceBalance: normalizeMoney(balances.PHARMACY_IPD),
     sharedIpdAdvanceBalance: normalizeMoney(balances.IPD_SHARED),
-    netPayableBeforeDischarge: normalizeMoney(Math.max(0, outstanding)),
+    netPayableBeforeDischarge: normalizeMoney(Math.max(0, outstanding + totalDeferredAmount)),
     refundableAdvance: normalizeMoney(Math.max(0, balances.PHARMACY_IPD - outstanding))
   };
 
-  // Format balances to match frontend expected structure
   const formattedBalances = {
     IPD_SHARED: balances.IPD_SHARED,
     PHARMACY_IPD: balances.PHARMACY_IPD,
     outstanding: outstanding,
     totalSpent: totalSpent,
-    pendingBills: pendingBills,
+    pendingBills: sales.reduce((sum, s) => sum + (s.balance_due || 0), 0),
     sharedIpdAdvance: balances.IPD_SHARED,
-    pharmacyAdvance: balances.PHARMACY_IPD
+    pharmacyAdvance: balances.PHARMACY_IPD,
+    deferredAmount: totalDeferredAmount,
+    deferredCount: deferredSales.length
   };
 
-  // Populate ward and bed names for frontend display
   const admissionWithDetails = {
     ...admission,
     ward_name: admission.wardId?.name || 'N/A',
@@ -370,14 +361,6 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     room_number: admission.roomId?.room_number || 'N/A'
   };
 
-  console.log('Balances calculated:', {
-    IPD_SHARED: balances.IPD_SHARED,
-    PHARMACY_IPD: balances.PHARMACY_IPD,
-    outstanding,
-    totalSpent,
-    totalPaid
-  });
-
   res.json({
     success: true,
     admission: admissionWithDetails,
@@ -386,8 +369,199 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     ledgers,
     pharmacyBills: bills,
     pharmacyInvoices: invoices,
+    deferredPayments: deferredSales,
     balances: formattedBalances,
     summary
+  });
+});
+
+// ========== DEFERRED PAYMENTS ENDPOINTS ==========
+
+// Get deferred payments by admission ID
+exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
+  const { admissionId } = req.params;
+  
+  if (!admissionId) {
+    return res.status(400).json({ success: false, error: 'admissionId is required' });
+  }
+  
+  const deferredSales = await Sale.find({
+    admission_id: admissionId,
+    payment_deferred: true,
+    status: { $in: ['Pending', 'Partially Paid'] },
+    include_in_discharge_clearance: true
+  })
+    .populate('patient_id', 'first_name last_name patientId uhid phone')
+    .populate('doctor_id', 'firstName lastName')
+    .populate('items.medicine_id', 'name composition')
+    .populate('items.batch_id', 'batch_number expiry_date')
+    .sort({ sale_date: -1 })
+    .lean();
+  
+  const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+  
+  // Get associated bills and invoices for these deferred sales
+  const saleIds = deferredSales.map(s => s._id);
+  const bills = await Bill.find({ sale_id: { $in: saleIds }, is_pharmacy_bill: true }).lean();
+  const invoices = await Invoice.find({ sale_id: { $in: saleIds }, is_pharmacy_sale: true }).lean();
+  
+  res.json({
+    success: true,
+    deferredPayments: deferredSales,
+    totalDeferredAmount,
+    deferredCount: deferredSales.length,
+    bills,
+    invoices
+  });
+});
+
+// Get all deferred payments across admissions (for dashboard)
+exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
+  const { startDate, endDate, admissionId, patientId, limit = 100 } = req.query;
+  
+  const query = {
+    payment_deferred: true,
+    status: { $in: ['Pending', 'Partially Paid'] }
+  };
+  
+  if (admissionId) query.admission_id = admissionId;
+  if (patientId) query.patient_id = patientId;
+  
+  if (startDate || endDate) {
+    query.sale_date = {};
+    if (startDate) query.sale_date.$gte = new Date(startDate);
+    if (endDate) query.sale_date.$lte = new Date(endDate);
+  }
+  
+  const deferredSales = await Sale.find(query)
+    .populate('patient_id', 'first_name last_name patientId uhid phone')
+    .populate('admission_id', 'admissionNumber shipNumber status')
+    .populate('doctor_id', 'firstName lastName')
+    .populate('items.medicine_id', 'name composition')
+    .sort({ sale_date: -1 })
+    .limit(Number(limit))
+    .lean();
+  
+  const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+  
+  res.json({
+    success: true,
+    deferredPayments: deferredSales,
+    totalDeferredAmount,
+    deferredCount: deferredSales.length
+  });
+});
+
+// Settle a deferred payment (mark as paid)
+exports.settleDeferredPayment = asyncHandler(async (req, res) => {
+  const { saleId } = req.params;
+  const { paymentMethod = 'Cash', reference, collected_by } = req.body;
+  
+  const sale = await Sale.findById(saleId);
+  if (!sale) {
+    return res.status(404).json({ success: false, error: 'Sale not found' });
+  }
+  
+  if (!sale.payment_deferred) {
+    return res.status(400).json({ success: false, error: 'This sale is not a deferred payment' });
+  }
+  
+  if (sale.status === 'Completed') {
+    return res.status(400).json({ success: false, error: 'Sale is already completed' });
+  }
+  
+  const amountToPay = sale.balance_due;
+  const paidAmount = sale.amount_paid + amountToPay;
+  
+  // Update sale
+  sale.amount_paid = paidAmount;
+  sale.balance_due = 0;
+  sale.status = 'Completed';
+  sale.payment_method = paymentMethod;
+  sale.payment_deferred = false;
+  sale.settled_at = new Date();
+  
+  // Add payment record
+  sale.payments = sale.payments || [];
+  sale.payments.push({
+    method: paymentMethod,
+    amount: amountToPay,
+    reference: reference,
+    date: new Date(),
+    collected_by: collected_by
+  });
+  
+  await sale.save();
+  
+  // Update associated invoice
+  if (sale.invoice_id) {
+    const invoice = await Invoice.findById(sale.invoice_id);
+    if (invoice) {
+      invoice.amount_paid = (invoice.amount_paid || 0) + amountToPay;
+      invoice.balance_due = invoice.total - invoice.amount_paid;
+      invoice.status = invoice.balance_due <= 0 ? 'Paid' : 'Partial';
+      await invoice.save();
+    }
+  }
+  
+  // Update associated bill
+  if (sale.bill_id) {
+    const bill = await Bill.findById(sale.bill_id);
+    if (bill) {
+      bill.paid_amount = (bill.paid_amount || 0) + amountToPay;
+      bill.balance_due = bill.total_amount - bill.paid_amount;
+      bill.status = bill.balance_due <= 0 ? 'Paid' : 'Partially Paid';
+      await bill.save();
+    }
+  }
+  
+  // Update patient outstanding balance
+  if (sale.patient_id) {
+    await Patient.findByIdAndUpdate(sale.patient_id, {
+      $inc: { pharmacy_outstanding_balance: -amountToPay }
+    });
+  }
+  
+  // Update IPD charge if applicable
+  if (sale.admission_id && sale.patient_id) {
+    const ipdCharge = await IPDCharge.findOne({
+      admissionId: sale.admission_id,
+      sourceId: sale._id,
+      sourceModule: 'Pharmacy'
+    });
+    if (ipdCharge && !ipdCharge.isBilled) {
+      ipdCharge.isBilled = true;
+      ipdCharge.billedAt = new Date();
+      await ipdCharge.save();
+    }
+  }
+  
+  // Create payment ledger entry
+  await PharmacyLedgerEntry.create({
+    hospitalId: sale.hospitalId,
+    pharmacyId: sale.pharmacy_id,
+    entryType: 'OUTSTANDING_PAYMENT',
+    direction: 'IN',
+    amount: amountToPay,
+    paymentMethod: paymentMethod,
+    patientId: sale.patient_id,
+    admissionId: sale.admission_id,
+    saleId: sale._id,
+    invoiceId: sale.invoice_id,
+    notes: `Deferred payment settled via ${paymentMethod}. Reference: ${reference || 'N/A'}`,
+    createdBy: collected_by || getCreatedBy(req)
+  });
+  
+  res.json({
+    success: true,
+    message: 'Deferred payment settled successfully',
+    sale: {
+      _id: sale._id,
+      sale_number: sale.sale_number,
+      amount_paid: sale.amount_paid,
+      balance_due: sale.balance_due,
+      status: sale.status
+    }
   });
 });
 
@@ -574,7 +748,7 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
 
   if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found' });
 
-  const [medications, medicineStock, sales, returns, advanceLedgers, pharmacyLedgers, bills, invoices] = await Promise.all([
+  const [medications, medicineStock, sales, returns, advanceLedgers, pharmacyLedgers, bills, invoices, deferredSales] = await Promise.all([
     IPDMedicationChart.find({ admissionId }).populate('medicineId', 'name base_unit pack_unit units_per_pack').sort({ startDate: -1 }).lean(),
     IPDPatientMedicineStock.find({ admissionId }).populate('medicineId batchId').sort({ updatedAt: -1 }).lean(),
     Sale.find({ admission_id: admissionId }).populate('items.medicine_id items.batch_id').sort({ sale_date: -1 }).lean(),
@@ -582,13 +756,16 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
     PatientAdvanceLedger.find({ admissionId }).sort({ createdAt: -1 }).lean(),
     PharmacyLedgerEntry.find({ admissionId }).sort({ entryDate: -1 }).lean(),
     Bill.find({ admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: -1 }).lean(),
-    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: -1 }).lean()
+    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: -1 }).lean(),
+    Sale.find({ admission_id: admissionId, payment_deferred: true, status: 'Pending' }).sort({ sale_date: -1 }).lean()
   ]);
 
   const balances = {
     IPD_SHARED: await getAdvanceBalance({ admissionId, patientId: admission.patientId?._id, walletType: 'IPD_SHARED' }),
     PHARMACY_IPD: await getAdvanceBalance({ admissionId, patientId: admission.patientId?._id, walletType: 'PHARMACY_IPD' })
   };
+
+  const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
 
   res.json({
     success: true,
@@ -601,7 +778,9 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
     advanceLedgers,
     pharmacyLedgers,
     bills,
-    invoices
+    invoices,
+    deferredPayments: deferredSales,
+    totalDeferredAmount
   });
 });
 
@@ -673,19 +852,6 @@ exports.dispenseIPDMedication = asyncHandler(async (req, res) => {
 
 exports.createReturn = asyncHandler(async (req, res) => {
   const pharmacyReturn = await createReturn(req.body, req);
-
-  // Update associated bill if exists
-  // if (pharmacyReturn.originalSaleId) {
-  //   const bill = await Bill.findOne({ sale_id: pharmacyReturn.originalSaleId });
-  //   if (bill) {
-  //     // Update bill with return information
-  //     bill.notes = bill.notes
-  //       ? `${bill.notes}\nReturn ${pharmacyReturn.returnNumber}: ₹${pharmacyReturn.totalRefundAmount}`
-  //       : `Return ${pharmacyReturn.returnNumber}: ₹${pharmacyReturn.totalRefundAmount}`;
-  //     await bill.save();
-  //   }
-  // }
-
   res.status(201).json({ success: true, message: 'Medicine return completed', return: pharmacyReturn });
 });
 
@@ -938,8 +1104,8 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     calculatedTotals: totals,
     summary: summary,
     entries: enrichedEntries,
-    bills: enrichedBills,        // Bills for the date range with ward/bed details
-    billTotals: billTotals       // Summary of bills
+    bills: enrichedBills,
+    billTotals: billTotals
   });
 });
 
@@ -986,8 +1152,18 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
       walletType: 'IPD_SHARED'
     });
 
+    // Also fetch deferred payments for this patient
+    const deferredPayments = await Sale.find({
+      admission_id: admission._id,
+      payment_deferred: true,
+      status: 'Pending'
+    });
+
+    const totalDeferredAmount = deferredPayments.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+
     const recentSales = await Sale.find({
-      admission_id: admission._id
+      admission_id: admission._id,
+      payment_deferred: { $ne: true }
     }).sort({ sale_date: -1 }).limit(5);
 
     const totalSalesAmount = recentSales.reduce((sum, sale) => sum + sale.total_amount, 0);
@@ -996,6 +1172,8 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
       ...admission.toObject(),
       pharmacyAdvance,
       sharedIpdAdvance,
+      totalDeferredAmount,
+      deferredCount: deferredPayments.length,
       recentSalesCount: recentSales.length,
       totalSalesAmount,
       lastSaleDate: recentSales[0]?.sale_date || null
@@ -1039,6 +1217,7 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     };
   }
 
+  // Include deferred payments in sales list
   const sales = await Sale.find(saleFilter)
     .populate('items.medicine_id', 'name')
     .populate('admission_id', 'admissionNumber')
@@ -1058,7 +1237,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(Number(limit));
 
-  // Enhanced pharmacy ledger query with populated references
   const pharmacyLedgerQuery = { patientId: patient._id };
   if (startDate && endDate) {
     pharmacyLedgerQuery.entryDate = {
@@ -1095,13 +1273,11 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
   };
 
   const enrichedPharmacyLedgers = pharmacyLedgers.map(entry => {
-    // Add reference numbers
     const referenceNumber = entry.saleId?.sale_number ||
       entry.saleId?.invoice_number ||
       entry.invoiceId?.invoice_number ||
       entry.returnId?.returnNumber || null;
 
-    // Calculate running totals
     const amount = Math.abs(entry.amount);
     if (entry.entryType === 'RETURN') {
       totals.totalReturns += amount;
@@ -1130,7 +1306,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(Number(limit));
 
-  // Get bills by multiple criteria
   const saleIds = sales.filter(s => s._id).map(s => s._id);
   const billsQuery = {
     $or: [
@@ -1165,7 +1340,8 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     sharedIpdAdvance: 0,
     pharmacyAdvance: 0,
     totalSpent: 0,
-    pendingBills: 0
+    pendingBills: 0,
+    totalDeferred: 0
   };
 
   for (const admission of admissions) {
@@ -1187,13 +1363,16 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
   const allSales = await Sale.find({ patient_id: patient._id });
   currentBalances.totalSpent = allSales.reduce((sum, sale) => sum + sale.total_amount, 0);
 
+  const deferredSales = allSales.filter(sale => sale.payment_deferred === true);
+  currentBalances.totalDeferred = deferredSales.reduce((sum, sale) => sum + sale.balance_due, 0);
+
   const pendingSales = await Sale.find({
     patient_id: patient._id,
-    balance_due: { $gt: 0 }
+    balance_due: { $gt: 0 },
+    payment_deferred: { $ne: true }
   });
   currentBalances.pendingBills = pendingSales.reduce((sum, sale) => sum + sale.balance_due, 0);
 
-  // Also add pending from bills that are not fully paid
   const pendingBillsAmount = enrichedBills
     .filter(b => b.status !== 'Paid' && b.status !== 'Cancelled')
     .reduce((sum, b) => sum + (b.balance_due || (b.total_amount - b.paid_amount)), 0);
@@ -1216,15 +1395,17 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     admissions,
     transactions: {
       sales,
+      deferredSales,
       advanceLedgers,
       pharmacyLedgers: enrichedPharmacyLedgers,
       returns,
       bills: enrichedBills
     },
-    totals,  // Add totals here
+    totals,
     balances: currentBalances,
     summary: {
       totalSales: allSales.length,
+      totalDeferred: deferredSales.length,
       totalReturns: returns.length,
       totalBills: enrichedBills.length,
       lastTransaction: sales[0]?.sale_date || null,
@@ -1385,7 +1566,7 @@ exports.getDashboard = asyncHandler(async (req, res) => {
   const end = new Date();
   end.setHours(23, 59, 59, 999);
 
-  const [salesAgg, ledgerAgg, pendingIpd, lowStockCount, nearExpiryCount, pendingPO, recentSales, recentReturns, recentBills, invoiceStats] = await Promise.all([
+  const [salesAgg, ledgerAgg, pendingIpd, lowStockCount, nearExpiryCount, pendingPO, recentSales, recentReturns, recentBills, invoiceStats, deferredCount] = await Promise.all([
     Sale.aggregate([
       { $match: { sale_date: { $gte: start, $lte: end } } },
       { $group: { _id: '$customer_type', count: { $sum: 1 }, total: { $sum: '$total_amount' }, discount: { $sum: '$discount_amount' } } }
@@ -1404,7 +1585,8 @@ exports.getDashboard = asyncHandler(async (req, res) => {
     Invoice.aggregate([
       { $match: { is_pharmacy_sale: true, issue_date: { $gte: start, $lte: end } } },
       { $group: { _id: '$status', count: { $sum: 1 }, total: { $sum: '$total' } } }
-    ])
+    ]),
+    Sale.countDocuments({ payment_deferred: true, status: 'Pending' })
   ]);
 
   const salesTotals = salesAgg.reduce((acc, row) => {
@@ -1432,7 +1614,8 @@ exports.getDashboard = asyncHandler(async (req, res) => {
       pendingIpd,
       lowStockCount,
       nearExpiryCount,
-      pendingPurchaseOrders: pendingPO
+      pendingPurchaseOrders: pendingPO,
+      deferredPaymentsCount: deferredCount
     },
     recentSales,
     recentReturns,

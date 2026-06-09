@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const paymentBreakupSchema = new mongoose.Schema({
   method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Credit', 'Pending', 'NoPayment', 'Adjustment'],
+    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Credit', 'Pending', 'NoPayment', 'Adjustment', 'Deferred'],
     required: true
   },
   amount: { type: Number, required: true, min: 0 },
@@ -137,7 +137,7 @@ const saleSchema = new mongoose.Schema({
 
   payment_method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'Credit', 'Pending', 'NoPayment', 'Adjustment'],
+    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'Credit', 'Pending', 'NoPayment', 'Adjustment', 'Deferred'],
     required: true,
     default: 'Cash'
   },
@@ -161,7 +161,38 @@ const saleSchema = new mongoose.Schema({
 
   total_purchase_cost: { type: Number, default: 0, select: false },
   gross_profit: { type: Number, default: 0, select: false },
-  commission_amount: { type: Number, default: 0, select: false }
+  commission_amount: { type: Number, default: 0, select: false },
+
+  // ========== DEFERRED PAYMENT FIELDS ==========
+  payment_deferred: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  deferral_reason: {
+    type: String,
+    trim: true,
+    enum: ['will_pay_later', 'insurance_pending', 'sponsor_pending', 'discharge_settlement', 'legacy_outstanding', 'other'],
+    default: null
+  },
+  expected_payment_date: {
+    type: Date,
+    default: null
+  },
+  include_in_discharge_clearance: {
+    type: Boolean,
+    default: true,
+    index: true
+  },
+  discharged_settled_at: {
+    type: Date,
+    default: null
+  },
+  discharge_settlement_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Settlement',
+    default: null
+  }
 }, { timestamps: true });
 
 saleSchema.pre('validate', function(next) {
@@ -201,5 +232,6 @@ saleSchema.index({ customer_type: 1, admission_id: 1 });
 saleSchema.index({ source_type: 1 });
 saleSchema.index({ patient_id: 1, admission_id: 1, sale_date: -1 });
 saleSchema.index({ doctor_id: 1, sale_date: -1 });
+saleSchema.index({ payment_deferred: 1, include_in_discharge_clearance: 1, status: 1 });
 
 module.exports = mongoose.model('Sale', saleSchema);

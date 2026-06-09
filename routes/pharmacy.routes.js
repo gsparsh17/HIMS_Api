@@ -15,16 +15,24 @@ const authChain = process.env.PHARMACY_AUTH_REQUIRED === 'true'
   ? [verifyToken, authorize('admin', 'pharmacy', 'nurse', 'doctor', 'staff', 'accountant')]
   : [];
 
-// Existing pharmacy module operational routes. These power the current dashboard/POS/queue/ledger/returns screens.
+// ========== SETTINGS & CONFIGURATION ==========
 router.get('/settings', ...authChain, operations.getSettings);
 router.put('/settings', ...authChain, operations.updateSettings);
 
+// ========== PATIENT SEARCH & MANAGEMENT ==========
 router.get('/patients/search', ...authChain, operations.searchPharmacyPatients);
+
+// ========== OUTSTANDING SETTLEMENTS ==========
 router.post('/settlements/outstanding', ...authChain, operations.settleOutstanding);
 router.get('/sales/:saleId/bill', ...authChain, operations.getSaleBill);
+
+// ========== IPD ADMISSION CLEARANCE ==========
 router.get('/ipd/admissions/:admissionId/final-clearance', ...authChain, operations.getAdmissionFinalClearance);
+
+// ========== REPORTS ==========
 router.get('/reports/doctor-commission', ...authChain, operations.getDoctorCommissionReport);
 
+// ========== DASHBOARD & ANALYTICS ==========
 router.get('/dashboard', ...authChain, operations.getDashboard);
 router.get('/analytics/inventory', ...authChain, operations.getInventoryAnalytics);
 router.get('/analytics/purchases', ...authChain, operations.getPurchaseAnalytics);
@@ -32,9 +40,11 @@ router.get('/ledger/daily', ...authChain, operations.getLedgerDaily);
 router.get('/inventory/ledger', ...authChain, operations.getInventoryLedger);
 router.get('/dose-calculation', ...authChain, operations.getDoseCalculation);
 
+// ========== SALES OPERATIONS ==========
 router.post('/sales/quote', ...authChain, operations.quoteSale);
 router.post('/sales', ...authChain, operations.createSale);
 
+// ========== IPD MEDICATION & DISPENSING ==========
 router.get('/ipd/search-admissions', ...authChain, operations.searchIPDAdmissions);
 router.get('/ipd/queue', ...authChain, operations.getIPDQueue);
 router.post('/ipd/dispense', ...authChain, operations.dispenseIPDMedication);
@@ -44,17 +54,29 @@ router.post(
   ...authChain,
   operations.refundPharmacyAdvance
 );
-// Add this to the existing routes in pharmacy.routes.js
+
+// ========== IPD PATIENT MANAGEMENT ==========
 router.get('/ipd/patients', ...authChain, operations.getIPDPatients);
 router.get('/ipd/patient-ledger/:patientId', ...authChain, operations.getPatientPharmacyLedger);
 router.get('/ipd/admissions/:admissionId/file', ...authChain, operations.getAdmissionPharmacyFile);
 router.get('/ipd/admissions/:admissionId/medicine-stock', ...authChain, operations.getAdmissionMedicineStock);
 router.get('/ipd/admissions/:admissionId/advance-ledger', ...authChain, operations.getAdvanceLedger);
 
+// ========== DEFERRED PAYMENTS ENDPOINTS ==========
+// Get deferred payments for a specific admission
+router.get('/ipd/admissions/:admissionId/deferred-payments', ...authChain, operations.getDeferredPaymentsByAdmission);
+
+// Get all deferred payments across admissions (with filters)
+router.get('/deferred-payments', ...authChain, operations.getAllDeferredPayments);
+
+// Settle a deferred payment (mark as paid)
+router.post('/deferred-payments/:saleId/settle', ...authChain, operations.settleDeferredPayment);
+
+// ========== RETURNS ==========
 router.post('/returns', ...authChain, operations.createReturn);
 router.get('/returns', ...authChain, operations.getReturns);
 
-// Existing pharmacy CRUD routes kept for admin screens.
+// ========== PHARMACY CRUD (ADMIN SCREENS) ==========
 router.post('/', createPharmacy);
 router.get('/', getAllPharmacies);
 router.get('/:id', getPharmacyById);

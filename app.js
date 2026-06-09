@@ -52,6 +52,7 @@ app.use('/api/abha', require('./routes/abha.routes'));
 app.use('/api/doctors', require('./routes/doctor.routes'));
 app.use('/api/nurses', require('./routes/nurse.routes'));
 app.use('/api/staff', require('./routes/staff.routes'));
+app.use('/api/insurance-providers', require('./routes/insuranceProvider.routes'));
 app.use('/api/appointments', require('./routes/appointment.routes'));
 // Store management and HR management routes
 app.use('/api/store', require('./routes/store.routes'));
