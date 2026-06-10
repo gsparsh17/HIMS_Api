@@ -1,0 +1,603 @@
+[
+  {
+    "_id": "6a08918e4ed6b98350c51642",
+    "name": "dolo",
+    "generic_name": "Acetaminophen",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-16T15:47:26.948Z",
+    "updated_at": "2026-06-10T06:56:49.267Z",
+    "__v": 0,
+    "composition": "Paracetamol",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:49.273Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd2f"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bd37c583bfe04737b373",
+    "name": "Paracetamol",
+    "generic_name": "Acetaminophen",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "150 mg/mL",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:45:27.567Z",
+    "updated_at": "2026-06-10T06:56:49.351Z",
+    "__v": 0,
+    "composition": "Paracetamol",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:49.363Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd33"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bd57c583bfe04737b38d",
+    "name": "Abacavir",
+    "generic_name": "Abacavir",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "300 mg",
+    "description": "",
+    "min_stock_level": 148,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:45:59.885Z",
+    "updated_at": "2026-06-10T06:56:49.433Z",
+    "__v": 0,
+    "composition": "Abacavir",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:49.440Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd37"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bd6bc583bfe04737b3a8",
+    "name": "Ivermectin",
+    "generic_name": "Ivermectin",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "6 mg",
+    "description": "",
+    "min_stock_level": 73,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:46:19.866Z",
+    "updated_at": "2026-06-10T06:56:49.525Z",
+    "__v": 0,
+    "composition": "Ivermectin",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:49.525Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd3b"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bd7cc583bfe04737b3c4",
+    "name": "Artesunate",
+    "generic_name": "Artesunate",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "60 mg",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:46:36.389Z",
+    "updated_at": "2026-06-10T06:56:49.635Z",
+    "__v": 0,
+    "composition": "Artesunate",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:49.636Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd3e"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bd90c583bfe04737b3e9",
+    "name": "Chlorhexidine",
+    "generic_name": "Chlorhexidine",
+    "brand": "",
+    "category": "Injection",
+    "strength": "5% (Concentrate)",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:46:56.306Z",
+    "updated_at": "2026-06-10T06:56:49.702Z",
+    "__v": 0,
+    "composition": "Chlorhexidine Gluconate",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 12,
+        "effective_from": "2026-06-10T06:56:49.703Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd41"
+      }
+    ],
+    "gst_rate": 12,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bda5c583bfe04737b407",
+    "name": "Acetazolamide",
+    "generic_name": "Acetazolamide",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "250 mg",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:47:17.682Z",
+    "updated_at": "2026-06-10T06:56:49.761Z",
+    "__v": 0,
+    "composition": "Acetazolamide",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:49.762Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd43"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bdb4c583bfe04737b426",
+    "name": "Benzoyl peroxide",
+    "generic_name": "Benzoyl Peroxide",
+    "brand": "",
+    "category": "Injection",
+    "strength": "2.5 % - 5 %",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:47:32.266Z",
+    "updated_at": "2026-06-10T06:56:49.819Z",
+    "__v": 0,
+    "composition": "Benzoyl Peroxide",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 12,
+        "effective_from": "2026-06-10T06:56:49.819Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd45"
+      }
+    ],
+    "gst_rate": 12,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bdc6c583bfe04737b446",
+    "name": "Baclofen",
+    "generic_name": "Baclofen",
+    "brand": "",
+    "category": "Syrup",
+    "strength": "10 mg",
+    "description": "",
+    "min_stock_level": 64,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:47:50.091Z",
+    "updated_at": "2026-06-10T06:56:49.883Z",
+    "__v": 0,
+    "composition": "Baclofen",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 12,
+        "effective_from": "2026-06-10T06:56:49.883Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd47"
+      }
+    ],
+    "gst_rate": 12,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16bdd3c583bfe04737b46b",
+    "name": "Gadobenate dimeglumine",
+    "generic_name": "Gadobenate Dimeglumine",
+    "brand": "",
+    "category": "Injection",
+    "strength": "529 mg/mL",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T09:48:03.964Z",
+    "updated_at": "2026-06-10T06:56:49.943Z",
+    "__v": 0,
+    "composition": "Gadobenate Dimeglumine",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 12,
+        "effective_from": "2026-06-10T06:56:49.951Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab1b620a807f9bdbd49"
+      }
+    ],
+    "gst_rate": 12,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16c169c583bfe04737c169",
+    "name": "Betamethasone",
+    "generic_name": "Betamethasone",
+    "brand": "",
+    "category": "Injection",
+    "strength": "4 mg/mL",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T10:03:21.090Z",
+    "updated_at": "2026-06-10T06:56:50.008Z",
+    "__v": 0,
+    "composition": "Betamethasone",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 12,
+        "effective_from": "2026-06-10T06:56:50.009Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab2b620a807f9bdbd4b"
+      }
+    ],
+    "gst_rate": 12,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16c184c583bfe04737c1f1",
+    "name": "Salicylic acid",
+    "generic_name": "Salicylic Acid",
+    "brand": "",
+    "category": "Ointment",
+    "strength": "3-6 %",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T10:03:48.083Z",
+    "updated_at": "2026-06-10T06:56:50.067Z",
+    "__v": 0,
+    "composition": "Salicylic Acid",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 12,
+        "effective_from": "2026-06-10T06:56:50.069Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab2b620a807f9bdbd4d"
+      }
+    ],
+    "gst_rate": 12,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a16c1abc583bfe04737c26a",
+    "name": "Clindamycin",
+    "generic_name": "Clindamycin",
+    "brand": "",
+    "category": "Capsule",
+    "strength": "300 mg",
+    "description": "",
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-27T10:04:27.590Z",
+    "updated_at": "2026-06-10T06:56:50.128Z",
+    "__v": 0,
+    "composition": "Clindamycin",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 12,
+        "effective_from": "2026-06-10T06:56:50.130Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab2b620a807f9bdbd4f"
+      }
+    ],
+    "gst_rate": 12,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a1b27dfcd557d3ac1a5f827",
+    "name": "Paracetamol",
+    "generic_name": "Acetaminophen",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "500 mg",
+    "description": "",
+    "base_unit": "tablet",
+    "pack_unit": "strip",
+    "units_per_pack": 10,
+    "allow_loose_sale": true,
+    "min_stock_level_base_units": 10,
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "A1",
+      "rack": "Rack 1"
+    },
+    "is_active": false,
+    "created_at": "2026-05-30T18:09:35.586Z",
+    "updated_at": "2026-06-10T06:56:50.195Z",
+    "__v": 0,
+    "composition": "Paracetamol",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:50.198Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab2b620a807f9bdbd51"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a1b29c7cd557d3ac1a5f8a3",
+    "name": "Paracetamol",
+    "generic_name": "Acetaminophen",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "500 mg",
+    "description": "",
+    "base_unit": "tablet",
+    "pack_unit": "strip",
+    "units_per_pack": 10,
+    "allow_loose_sale": true,
+    "min_stock_level_base_units": 10,
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "A1",
+      "rack": "Rack 1"
+    },
+    "is_active": true,
+    "created_at": "2026-05-30T18:17:43.115Z",
+    "updated_at": "2026-06-10T06:56:50.253Z",
+    "__v": 0,
+    "composition": "Paracetamol",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:50.254Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab2b620a807f9bdbd53"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a1be88aedd73c3af7ba3336",
+    "name": "Acyclovir",
+    "generic_name": "Acyclovir",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "800 mg",
+    "description": "",
+    "base_unit": "tablet",
+    "pack_unit": "strip",
+    "units_per_pack": 10,
+    "allow_loose_sale": true,
+    "min_stock_level_base_units": 10,
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-31T07:51:38.445Z",
+    "updated_at": "2026-06-10T06:56:50.312Z",
+    "__v": 0,
+    "composition": "Acyclovir",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:50.313Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab2b620a807f9bdbd55"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a1be8b9edd73c3af7ba337a",
+    "name": "Albendazole",
+    "generic_name": "Albendazole",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "400 mg",
+    "description": "",
+    "base_unit": "tablet",
+    "pack_unit": "strip",
+    "units_per_pack": 15,
+    "allow_loose_sale": true,
+    "min_stock_level_base_units": 10,
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-31T07:52:25.763Z",
+    "updated_at": "2026-06-10T06:56:50.376Z",
+    "__v": 0,
+    "composition": "Albendazole",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:50.377Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab2b620a807f9bdbd57"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  },
+  {
+    "_id": "6a1be8ecedd73c3af7ba348c",
+    "name": "Allopurinol",
+    "generic_name": "Allopurinol",
+    "brand": "",
+    "category": "Tablet",
+    "strength": "300 mg",
+    "description": "",
+    "base_unit": "tablet",
+    "pack_unit": "strip",
+    "units_per_pack": 12,
+    "allow_loose_sale": true,
+    "min_stock_level_base_units": 10,
+    "min_stock_level": 10,
+    "prescription_required": false,
+    "location": {
+      "shelf": "",
+      "rack": ""
+    },
+    "is_active": true,
+    "created_at": "2026-05-31T07:53:16.727Z",
+    "updated_at": "2026-06-10T06:56:50.443Z",
+    "__v": 0,
+    "composition": "Allopurinol",
+    "gst_history": [
+      {
+        "hsn_code": "30049099",
+        "gst_rate": 5,
+        "effective_from": "2026-06-10T06:56:50.444Z",
+        "reason": "Bulk update - GST rate correction",
+        "changed_by": null,
+        "_id": "6a290ab2b620a807f9bdbd59"
+      }
+    ],
+    "gst_rate": 5,
+    "hsn_code": "30049099"
+  }
+]

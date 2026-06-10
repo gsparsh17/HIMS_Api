@@ -8,6 +8,7 @@ const {
   receivePurchaseOrder,
   getPurchaseOrderStatistics,
   getPurchaseOrderById,
+  getPurchaseOrderGSTSummary,  // NEW
 
   // Sales functions
   createSale,
@@ -18,7 +19,7 @@ const {
   getYearlySalesReport,
   getRevenueComparison,
 
-  // NEW: Enhanced pharmacy transaction functions
+  // Enhanced pharmacy transaction functions
   getSaleById,
   updateSalePayment,
   voidSale,
@@ -30,138 +31,65 @@ const {
 
 // ========== PURCHASE ORDER ROUTES ==========
 // Create new purchase order
-router.post('/purchase-orders',
-  // protect, 
-  //   authorize('admin', 'pharmacy_head', 'store'),
-  createPurchaseOrder
-);
+router.post('/purchase-orders', createPurchaseOrder);
 
 // Get all purchase orders with filters
-router.get('/purchase',
-  // protect, 
-  //   authorize('admin', 'pharmacy', 'pharmacy_head', 'store'),
-  getAllPurchaseOrders
-);
+router.get('/purchase', getAllPurchaseOrders);
 
 // Get purchase order statistics
-router.get('/purchase/stats',
-  // protect, 
-  //   authorize('admin', 'pharmacy_head'),
-  getPurchaseOrderStatistics
-);
+router.get('/purchase/stats', getPurchaseOrderStatistics);
+
+// Get purchase order GST summary (for GSTR-2 reporting)
+router.get('/purchase/gst-summary', getPurchaseOrderGSTSummary);  // NEW
 
 // Receive purchase order stock
-router.post('/purchase/:id/receive',
-  // protect, 
-  //   authorize('admin', 'pharmacy_head', 'store'),
-  receivePurchaseOrder
-);
+router.post('/purchase/:id/receive', receivePurchaseOrder);
 
 // Get purchase order by ID
-router.get('/purchase/:id',
-  // protect, 
-  //   authorize('admin', 'pharmacy', 'pharmacy_head', 'store'),
-  getPurchaseOrderById
-);
+router.get('/purchase/:id', getPurchaseOrderById);
 
 // ========== SALES ROUTES ==========
 // Create sale (pharmacy POS)
-router.post('/sale',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin', 'registrar'),
-  createSale
-);
+router.post('/sale', createSale);
 
 // Get all sales with filters
-router.get('/sale',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin', 'billing'),
-  getAllSales
-);
+router.get('/sale', getAllSales);
 
 // Get sales statistics
-router.get('/sale/stats',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin'),
-  getSalesStatistics
-);
+router.get('/sale/stats', getSalesStatistics);
 
 // Get daily sales report
-router.get('/sale/daily',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin', 'billing'),
-  getDailySalesReport
-);
+router.get('/sale/daily', getDailySalesReport);
 
 // Get monthly sales report
-router.get('/sale/monthly',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin', 'billing'),
-  getMonthlySalesReport
-);
+router.get('/sale/monthly', getMonthlySalesReport);
 
 // Get yearly sales report
-router.get('/sale/yearly',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin', 'billing'),
-  getYearlySalesReport
-);
+router.get('/sale/yearly', getYearlySalesReport);
 
 // Get revenue comparison
-router.get('/sale/comparison',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin'),
-  getRevenueComparison
-);
+router.get('/sale/comparison', getRevenueComparison);
 
-// ========== NEW PHARMACY ENHANCED ROUTES ==========
+// ========== PHARMACY ENHANCED ROUTES ==========
 // Get sale by ID with full details (for printing bills)
-router.get('/sale/:id',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin', 'billing'),
-  getSaleById
-);
+router.get('/sale/:id', getSaleById);
 
 // Update sale payment (for partial payments or payment adjustments)
-router.patch('/sale/:id/payment',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin'),
-  updateSalePayment
-);
+router.patch('/sale/:id/payment', updateSalePayment);
 
 // Void/cancel a sale (with reason and audit)
-router.post('/sale/:id/void',
-  // protect, 
-  //   authorize('pharmacy_head', 'admin'),
-  voidSale
-);
+router.post('/sale/:id/void', voidSale);
 
 // Get sales by patient (for patient ledger)
-router.get('/sales/patient/:patientId',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin', 'billing', 'registrar'),
-  getSalesByPatient
-);
+router.get('/sales/patient/:patientId', getSalesByPatient);
 
 // Get sales by admission (for IPD pharmacy file)
-router.get('/sales/admission/:admissionId',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin', 'billing', 'doctor'),
-  getSalesByAdmission
-);
+router.get('/sales/admission/:admissionId', getSalesByAdmission);
 
 // Get pending prescriptions for pharmacy
-router.get('/prescriptions/pending',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin'),
-  getPendingPrescriptions
-);
+router.get('/prescriptions/pending', getPendingPrescriptions);
 
 // Get recent sales for dashboard
-router.get('/recent',
-  // protect, 
-  //   authorize('pharmacy', 'pharmacy_head', 'admin'),
-  getRecentSales
-);
+router.get('/recent', getRecentSales);
 
 module.exports = router;

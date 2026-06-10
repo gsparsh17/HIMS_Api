@@ -11,6 +11,7 @@ const Patient = require('../models/Patient');
 const IPDAdmission = require('../models/IPDAdmission');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
+const PharmacyReturn = require('../models/PharmacyReturn');
 const { createUnifiedSale } = require('../services/pharmacyTransaction.service');
 
 // ========== HELPER FUNCTIONS ==========
@@ -21,6 +22,22 @@ const toNumber = (value, fallback = 0) => {
 
 const roundMoney = (value) => {
   return Number(toNumber(value).toFixed(2));
+};
+
+// Valid GST rates in India
+const VALID_GST_RATES = [0, 5, 12, 18, 28];
+
+// Validate HSN code format (4-8 digits)
+const validateHSNCode = (code) => {
+  if (!code || code.trim() === '') return false;
+  return /^\d{4,8}$/.test(code.trim());
+};
+
+// Validate GST rate
+const validateGSTRate = (rate) => {
+  const gstRate = Number(rate);
+  if (isNaN(gstRate)) return false;
+  return VALID_GST_RATES.includes(gstRate);
 };
 
 // Helper function to generate timing slots for IPD medications
@@ -169,11 +186,13 @@ const getPurchaseOrderDateFilter = (dateFilter) => {
 
 const getMedicineUnitInfo = async (medicineId) => {
   const medicine = await Medicine.findById(medicineId).select(
-    'units_per_pack pack_unit base_unit mrp selling_price price_per_unit'
+    'units_per_pack pack_unit base_unit mrp selling_price price_per_unit hsn_code gst_rate'
   );
   return {
     medicine,
     unitsPerPack: Math.max(1, toNumber(medicine?.units_per_pack, 1)),
+    hsnCode: medicine?.hsn_code,
+    gstRate: medicine?.gst_rate
   };
 };
 
@@ -203,15 +222,72 @@ exports.createPurchaseOrder = async (req, res) => {
   try {
     const { supplier_id, items, notes, expected_delivery } = req.body;
 
-    const subtotal = items.reduce((sum, item) => sum + (item.unit_cost * item.quantity), 0);
-    const tax = items.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
-    const total_amount = subtotal + tax;
+    // ========== GST VALIDATION ==========
+    let subtotal = 0;
+    let totalTax = 0;
+    const validatedItems = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      
+      // Get medicine details for GST validation
+      let medicine = null;
+      if (item.medicine_id) {
+        medicine = await Medicine.findById(item.medicine_id).select('hsn_code gst_rate name');
+      }
+      
+      const hsnCode = item.hsn_code || medicine?.hsn_code;
+      const gstRate = item.gst_rate !== undefined ? item.gst_rate : medicine?.gst_rate;
+      const medicineName = item.medicine_name || medicine?.name || 'Unknown Medicine';
+      
+      // Validate HSN code
+      if (!hsnCode) {
+        return res.status(400).json({
+          error: `HSN code is required for "${medicineName}". Please update the medicine master or provide HSN code.`
+        });
+      }
+      
+      if (!validateHSNCode(hsnCode)) {
+        return res.status(400).json({
+          error: `Invalid HSN code "${hsnCode}" for "${medicineName}". HSN must be 4-8 digits.`
+        });
+      }
+      
+      // Validate GST rate
+      if (gstRate === undefined || gstRate === null) {
+        return res.status(400).json({
+          error: `GST rate is required for "${medicineName}". Please update the medicine master.`
+        });
+      }
+      
+      if (!validateGSTRate(gstRate)) {
+        return res.status(400).json({
+          error: `Invalid GST rate ${gstRate}% for "${medicineName}". Valid rates: 0, 5, 12, 18, 28`
+        });
+      }
+      
+      // Calculate item totals
+      const itemSubtotal = item.unit_cost * item.quantity;
+      const itemTax = (itemSubtotal * gstRate) / 100;
+      
+      subtotal += itemSubtotal;
+      totalTax += itemTax;
+      
+      validatedItems.push({
+        ...item,
+        hsn_code: hsnCode,
+        gst_rate: gstRate,
+        tax_amount: item.tax_amount || itemTax
+      });
+    }
+    
+    const total_amount = subtotal + totalTax;
 
     const purchaseOrder = new PurchaseOrder({
       supplier_id,
-      items,
+      items: validatedItems,
       subtotal,
-      tax,
+      tax: totalTax,
       total_amount,
       notes,
       expected_delivery: expected_delivery ? new Date(expected_delivery) : null,
@@ -221,6 +297,7 @@ exports.createPurchaseOrder = async (req, res) => {
 
     await purchaseOrder.save();
 
+    // Create invoice with GST breakdown
     const invoice = new Invoice({
       invoice_type: 'Purchase',
       customer_type: 'Supplier',
@@ -228,15 +305,18 @@ exports.createPurchaseOrder = async (req, res) => {
       purchase_order_id: purchaseOrder._id,
       issue_date: new Date(),
       due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      service_items: items.map(item => ({
-        description: `Purchase - ${item.medicine_name || 'Item'}`,
+      service_items: validatedItems.map(item => ({
+        description: `Purchase - ${item.medicine_name || 'Item'} (HSN: ${item.hsn_code}, GST: ${item.gst_rate}%)`,
         quantity: item.quantity,
         unit_price: item.unit_cost,
         total_price: item.unit_cost * item.quantity,
-        service_type: 'Purchase'
+        tax_rate: item.gst_rate,
+        tax_amount: (item.unit_cost * item.quantity * item.gst_rate) / 100,
+        service_type: 'Purchase',
+        hsn_code: item.hsn_code
       })),
       subtotal: subtotal,
-      tax: tax,
+      tax: totalTax,
       total: total_amount,
       status: 'Issued',
       notes: `Purchase Order: ${purchaseOrder.order_number} - ${notes || ''}`,
@@ -255,9 +335,17 @@ exports.createPurchaseOrder = async (req, res) => {
     res.status(201).json({
       message: 'Purchase order created successfully',
       purchaseOrder: populatedPurchaseOrder,
-      invoice: invoice
+      invoice: invoice,
+      gst_summary: {
+        subtotal,
+        total_tax: totalTax,
+        total_amount,
+        cgst: totalTax / 2,
+        sgst: totalTax / 2
+      }
     });
   } catch (err) {
+    console.error('Error creating purchase order:', err);
     res.status(400).json({ error: err.message });
   }
 };
@@ -395,11 +483,39 @@ exports.receivePurchaseOrder = async (req, res) => {
 
       if (receivedPacks > pendingPacks) {
         return res.status(400).json({
-          error: `Cannot receive ${receivedPacks} packs for ${orderItem.medicine_id}. Pending quantity is ${pendingPacks} packs.`,
+          error: `Cannot receive ${receivedPacks} packs for ${orderItem.medicine_name}. Pending quantity is ${pendingPacks} packs.`,
         });
       }
 
-      const { medicine, unitsPerPack: medicineUnitsPerPack } = await getMedicineUnitInfo(orderItem.medicine_id);
+      const { medicine, unitsPerPack: medicineUnitsPerPack, hsnCode: medicineHsn, gstRate: medicineGst } = await getMedicineUnitInfo(orderItem.medicine_id);
+
+      // ========== GST VALIDATION FOR RECEIVING ==========
+      const hsnCode = orderItem.hsn_code || medicineHsn;
+      const gstRate = orderItem.gst_rate !== undefined ? orderItem.gst_rate : medicineGst;
+
+      if (!hsnCode) {
+        return res.status(400).json({
+          error: `HSN code is required for ${orderItem.medicine_name}. Please update the medicine master.`
+        });
+      }
+
+      if (!validateHSNCode(hsnCode)) {
+        return res.status(400).json({
+          error: `Invalid HSN code "${hsnCode}" for ${orderItem.medicine_name}. HSN must be 4-8 digits.`
+        });
+      }
+
+      if (gstRate === undefined || gstRate === null) {
+        return res.status(400).json({
+          error: `GST rate is required for ${orderItem.medicine_name}. Please update the medicine master.`
+        });
+      }
+
+      if (!validateGSTRate(gstRate)) {
+        return res.status(400).json({
+          error: `Invalid GST rate ${gstRate}% for ${orderItem.medicine_name}. Valid rates: 0, 5, 12, 18, 28`
+        });
+      }
 
       const unitsPerPack = Math.max(
         1,
@@ -427,7 +543,7 @@ exports.receivePurchaseOrder = async (req, res) => {
 
       if (!batchNumber) {
         return res.status(400).json({
-          error: `Batch number is required for ${medicine?.name || orderItem.medicine_id}`,
+          error: `Batch number is required for ${orderItem.medicine_name}`,
         });
       }
 
@@ -435,7 +551,7 @@ exports.receivePurchaseOrder = async (req, res) => {
 
       if (!expiryDate) {
         return res.status(400).json({
-          error: `Expiry date is required for ${medicine?.name || orderItem.medicine_id}`,
+          error: `Expiry date is required for ${orderItem.medicine_name}`,
         });
       }
 
@@ -445,7 +561,7 @@ exports.receivePurchaseOrder = async (req, res) => {
 
       if (Number.isNaN(expiry.getTime()) || expiry <= today) {
         return res.status(400).json({
-          error: `Expiry date must be a future date for ${medicine?.name || orderItem.medicine_id}`,
+          error: `Expiry date must be a future date for ${orderItem.medicine_name}`,
         });
       }
 
@@ -482,6 +598,7 @@ exports.receivePurchaseOrder = async (req, res) => {
         sellingPricePerPack / unitsPerPack
       );
 
+      // Create batch with GST/HSN snapshot
       const batch = new MedicineBatch({
         medicine_id: orderItem.medicine_id,
         batch_number: batchNumber,
@@ -501,6 +618,10 @@ exports.receivePurchaseOrder = async (req, res) => {
 
         purchase_price_per_base_unit: purchasePricePerBaseUnit,
         selling_price_per_base_unit: sellingPricePerBaseUnit,
+
+        // ========== GST/HSN SNAPSHOT ==========
+        hsn_code: hsnCode,
+        gst_rate: gstRate,
 
         supplier_id: order.supplier_id,
         purchase_date: order.order_date || new Date(),
@@ -523,6 +644,11 @@ exports.receivePurchaseOrder = async (req, res) => {
         $inc: { stock_quantity: quantityBaseUnits },
         $set: {
           units_per_pack: unitsPerPack,
+        },
+        // Optionally update medicine master if it's missing GST/HSN
+        $setOnInsert: {
+          hsn_code: hsnCode,
+          gst_rate: gstRate
         },
       });
     }
@@ -557,6 +683,16 @@ exports.receivePurchaseOrder = async (req, res) => {
       message: 'Purchase order stock received successfully',
       order: populatedOrder,
       createdBatches,
+      gst_summary: {
+        total_batches: createdBatches.length,
+        batches: createdBatches.map(b => ({
+          batch_number: b.batch_number,
+          medicine_name: order.items.find(i => i.medicine_id.toString() === b.medicine_id.toString())?.medicine_name,
+          hsn_code: b.hsn_code,
+          gst_rate: b.gst_rate,
+          quantity: b.quantity_base_units
+        }))
+      }
     });
   } catch (err) {
     console.error('Error receiving purchase order:', err);
@@ -587,6 +723,7 @@ exports.getPurchaseOrderStatistics = async (req, res) => {
           _id: null,
           totalOrders: { $sum: 1 },
           totalAmount: { $sum: '$total_amount' },
+          totalTax: { $sum: '$tax' },
           averageOrderValue: { $avg: '$total_amount' },
           ordersByStatus: {
             $push: {
@@ -606,6 +743,7 @@ exports.getPurchaseOrderStatistics = async (req, res) => {
           },
           totalOrders: { $first: '$totalOrders' },
           totalAmount: { $first: '$totalAmount' },
+          totalTax: { $first: '$totalTax' },
           averageOrderValue: { $first: '$averageOrderValue' },
           statusCount: { $sum: 1 },
           statusAmount: { $sum: '$ordersByStatus.amount' }
@@ -616,6 +754,7 @@ exports.getPurchaseOrderStatistics = async (req, res) => {
           _id: null,
           totalOrders: { $first: '$totalOrders' },
           totalAmount: { $first: '$totalAmount' },
+          totalTax: { $first: '$totalTax' },
           averageOrderValue: { $first: '$averageOrderValue' },
           statusBreakdown: {
             $push: {
@@ -637,6 +776,7 @@ exports.getPurchaseOrderStatistics = async (req, res) => {
     res.json(stats[0] || {
       totalOrders: 0,
       totalAmount: 0,
+      totalTax: 0,
       averageOrderValue: 0,
       statusBreakdown: []
     });
@@ -645,10 +785,104 @@ exports.getPurchaseOrderStatistics = async (req, res) => {
   }
 };
 
-// ========== SALE FUNCTIONS (LEGACY - KEPT FOR BACKWARD COMPATIBILITY) ==========
+// ========== PURCHASE ORDER GST SUMMARY ==========
+exports.getPurchaseOrderGSTSummary = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    const matchStage = {};
+    if (startDate && endDate) {
+      matchStage.order_date = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    const gstSummary = await PurchaseOrder.aggregate([
+      { $match: matchStage },
+      { $unwind: '$items' },
+      {
+        $lookup: {
+          from: 'medicines',
+          localField: 'items.medicine_id',
+          foreignField: '_id',
+          as: 'medicine_info'
+        }
+      },
+      { $unwind: { path: '$medicine_info', preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: {
+            hsn_code: { $ifNull: ['$items.hsn_code', '$medicine_info.hsn_code'] },
+            gst_rate: { $ifNull: ['$items.gst_rate', '$medicine_info.gst_rate'] }
+          },
+          hsn_code: { $first: { $ifNull: ['$items.hsn_code', '$medicine_info.hsn_code'] } },
+          gst_rate: { $first: { $ifNull: ['$items.gst_rate', '$medicine_info.gst_rate'] } },
+          total_quantity: { $sum: '$items.quantity' },
+          total_value: { $sum: { $multiply: ['$items.quantity', '$items.unit_cost'] } },
+          total_tax: { $sum: { $multiply: [
+            { $multiply: ['$items.quantity', '$items.unit_cost'] },
+            { $divide: [{ $ifNull: ['$items.gst_rate', '$medicine_info.gst_rate'] }, 100] }
+          ] } }
+        }
+      },
+      { $sort: { hsn_code: 1 } }
+    ]);
+    
+    const summary = {
+      total_purchase_value: gstSummary.reduce((sum, item) => sum + item.total_value, 0),
+      total_tax: gstSummary.reduce((sum, item) => sum + item.total_tax, 0),
+      unique_hsn_codes: gstSummary.length,
+      by_hsn: gstSummary,
+      by_rate: gstSummary.reduce((acc, item) => {
+        const rate = item.gst_rate;
+        if (!acc[rate]) {
+          acc[rate] = { rate, total_value: 0, total_tax: 0, count: 0 };
+        }
+        acc[rate].total_value += item.total_value;
+        acc[rate].total_tax += item.total_tax;
+        acc[rate].count += 1;
+        return acc;
+      }, {})
+    };
+    
+    res.json({
+      success: true,
+      period: { start: startDate, end: endDate },
+      summary,
+      by_rate: Object.values(summary.by_rate)
+    });
+  } catch (err) {
+    console.error('Error getting purchase order GST summary:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== SALE FUNCTIONS ==========
 
 exports.createSale = async (req, res) => {
   try {
+    // Validate GST for each item before sale
+    const items = req.body.items || [];
+    for (const item of items) {
+      if (item.batch_id) {
+        const batch = await MedicineBatch.findById(item.batch_id).populate('medicine_id');
+        if (batch) {
+          const gstRate = batch.gst_rate || batch.medicine_id?.gst_rate;
+          if (gstRate === undefined || gstRate === null) {
+            return res.status(400).json({
+              error: `GST rate not found for batch ${batch.batch_number}. Please check the batch.`
+            });
+          }
+          if (!validateGSTRate(gstRate)) {
+            return res.status(400).json({
+              error: `Invalid GST rate ${gstRate}% for batch ${batch.batch_number}`
+            });
+          }
+        }
+      }
+    }
+    
     // Use unified sale service for all transactions
     const result = await createUnifiedSale(req.body, req);
     return res.status(201).json({
@@ -656,7 +890,14 @@ exports.createSale = async (req, res) => {
       message: 'Sale created successfully',
       ...result,
       sale: result.sale,
-      invoice: result.invoice
+      invoice: result.invoice,
+      gst_summary: result.totals ? {
+        subtotal: result.totals.subtotal,
+        total_tax: result.totals.tax,
+        total_amount: result.totals.total,
+        cgst: result.totals.tax / 2,
+        sgst: result.totals.tax / 2
+      } : null
     });
   } catch (err) {
     console.error('Error creating sale:', err);
@@ -677,7 +918,6 @@ exports.createSale = async (req, res) => {
   }
 };
 
-// ========== NEW: GET SALE BY ID WITH FULL DETAILS ==========
 exports.getSaleById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -687,7 +927,7 @@ exports.getSaleById = async (req, res) => {
       .populate('admission_id', 'admissionNumber shipNumber status')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('items.medicine_id', 'name composition hsn_code gst_rate')
-      .populate('items.batch_id', 'batch_number expiry_date')
+      .populate('items.batch_id', 'batch_number expiry_date hsn_code gst_rate')
       .populate('created_by', 'name')
       .lean();
     
@@ -700,17 +940,26 @@ exports.getSaleById = async (req, res) => {
       ? await PharmacyReturn.find({ _id: { $in: sale.return_refs.map(r => r.return_id) } })
       : [];
     
+    // Calculate GST summary for display
+    const gstSummary = {
+      subtotal: sale.subtotal || 0,
+      total_tax: sale.tax || 0,
+      total_amount: sale.total_amount || 0,
+      cgst: (sale.tax || 0) / 2,
+      sgst: (sale.tax || 0) / 2
+    };
+    
     res.json({
       success: true,
       sale,
-      returns
+      returns,
+      gst_summary: gstSummary
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-// ========== NEW: UPDATE SALE PAYMENT ==========
 exports.updateSalePayment = async (req, res) => {
   try {
     const { id } = req.params;
@@ -773,7 +1022,6 @@ exports.updateSalePayment = async (req, res) => {
   }
 };
 
-// ========== NEW: VOID/CANCEL SALE ==========
 exports.voidSale = async (req, res) => {
   try {
     const { id } = req.params;
@@ -806,7 +1054,6 @@ exports.voidSale = async (req, res) => {
     sale.notes = sale.notes + `\n[CANCELLED] ${new Date().toISOString()}: ${reason || 'No reason provided'}`;
     await sale.save();
     
-    // Create audit log entry (you may want to use your AuditLog model)
     console.log(`Sale ${sale.sale_number} cancelled by ${req.user?.name} - Reason: ${reason}`);
     
     res.json({
@@ -823,7 +1070,6 @@ exports.voidSale = async (req, res) => {
   }
 };
 
-// ========== NEW: GET SALES BY PATIENT ==========
 exports.getSalesByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
@@ -837,6 +1083,8 @@ exports.getSalesByPatient = async (req, res) => {
     const sales = await Sale.find({ patient_id: patientId })
       .populate('admission_id', 'admissionNumber shipNumber')
       .populate('doctor_id', 'firstName lastName')
+      .populate('items.medicine_id', 'name hsn_code gst_rate')
+      .populate('items.batch_id', 'batch_number expiry_date')
       .sort({ sale_date: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
@@ -856,7 +1104,6 @@ exports.getSalesByPatient = async (req, res) => {
   }
 };
 
-// ========== NEW: GET SALES BY ADMISSION ==========
 exports.getSalesByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -870,29 +1117,35 @@ exports.getSalesByAdmission = async (req, res) => {
     
     const sales = await Sale.find({ admission_id: admissionId })
       .populate('doctor_id', 'firstName lastName')
-      .populate('items.medicine_id', 'name')
+      .populate('items.medicine_id', 'name hsn_code gst_rate')
+      .populate('items.batch_id', 'batch_number expiry_date')
       .sort({ sale_date: -1 });
     
-    // Calculate totals
+    // Calculate totals with GST
     const totals = sales.reduce((acc, sale) => {
       acc.totalAmount += sale.total_amount;
       acc.totalPaid += sale.amount_paid;
       acc.totalDue += sale.balance_due;
+      acc.totalTax += sale.tax || 0;
       return acc;
-    }, { totalAmount: 0, totalPaid: 0, totalDue: 0 });
+    }, { totalAmount: 0, totalPaid: 0, totalDue: 0, totalTax: 0 });
     
     res.json({
       success: true,
       admission,
       sales,
-      totals
+      totals,
+      gst_summary: {
+        total_tax: totals.totalTax,
+        cgst: totals.totalTax / 2,
+        sgst: totals.totalTax / 2
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-// ========== NEW: GET PENDING PRESCRIPTIONS FOR PHARMACY ==========
 exports.getPendingPrescriptions = async (req, res) => {
   try {
     const { limit = 20, page = 1 } = req.query;
@@ -906,7 +1159,7 @@ exports.getPendingPrescriptions = async (req, res) => {
     })
       .populate('patient_id', 'first_name last_name patientId uhid phone')
       .populate('doctor_id', 'firstName lastName specialization')
-      .populate('items.medicine_id', 'name composition')
+      .populate('items.medicine_id', 'name composition hsn_code gst_rate')
       .sort({ created_at: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
@@ -916,7 +1169,6 @@ exports.getPendingPrescriptions = async (req, res) => {
       is_dispensed: false
     });
     
-    // Add count of undispensed items per prescription
     const prescriptionsWithCount = prescriptions.map(pres => {
       const undispensedItems = pres.items?.filter(item => !item.is_dispensed).length || 0;
       return {
@@ -938,7 +1190,6 @@ exports.getPendingPrescriptions = async (req, res) => {
   }
 };
 
-// ========== NEW: GET RECENT SALES FOR DASHBOARD ==========
 exports.getRecentSales = async (req, res) => {
   try {
     const { limit = 10 } = req.query;
@@ -947,6 +1198,7 @@ exports.getRecentSales = async (req, res) => {
       .populate('patient_id', 'first_name last_name patientId')
       .populate('admission_id', 'admissionNumber')
       .populate('doctor_id', 'firstName lastName')
+      .populate('items.medicine_id', 'name hsn_code gst_rate')
       .sort({ sale_date: -1 })
       .limit(parseInt(limit))
       .lean();
@@ -956,7 +1208,7 @@ exports.getRecentSales = async (req, res) => {
     
     const todaySales = await Sale.aggregate([
       { $match: { sale_date: { $gte: todayStart } } },
-      { $group: { _id: null, total: { $sum: '$total_amount' }, count: { $sum: 1 } } }
+      { $group: { _id: null, total: { $sum: '$total_amount' }, tax: { $sum: '$tax' }, count: { $sum: 1 } } }
     ]);
     
     res.json({
@@ -964,7 +1216,10 @@ exports.getRecentSales = async (req, res) => {
       recentSales,
       todayStats: {
         total: todaySales[0]?.total || 0,
-        count: todaySales[0]?.count || 0
+        tax: todaySales[0]?.tax || 0,
+        count: todaySales[0]?.count || 0,
+        cgst: (todaySales[0]?.tax || 0) / 2,
+        sgst: (todaySales[0]?.tax || 0) / 2
       }
     });
   } catch (err) {
@@ -972,7 +1227,7 @@ exports.getRecentSales = async (req, res) => {
   }
 };
 
-// ========== EXISTING SALE FUNCTIONS (KEPT FOR BACKWARD COMPATIBILITY) ==========
+// ========== EXISTING SALE FUNCTIONS ==========
 
 exports.getAllSales = async (req, res) => {
   try {
@@ -992,8 +1247,8 @@ exports.getAllSales = async (req, res) => {
     const sales = await Sale.find(filter)
       .populate('patient_id')
       .populate('admission_id', 'admissionNumber shipNumber')
-      .populate('items.medicine_id', 'name')
-      .populate('items.batch_id', 'batch_number')
+      .populate('items.medicine_id', 'name hsn_code gst_rate')
+      .populate('items.batch_id', 'batch_number expiry_date')
       .populate('created_by', 'name')
       .sort({ sale_date: -1 })
       .limit(parseInt(limit))
@@ -1060,6 +1315,7 @@ exports.getSalesStatistics = async (req, res) => {
           _id: groupFormat,
           totalSales: { $sum: 1 },
           totalRevenue: { $sum: '$total_amount' },
+          totalTax: { $sum: '$tax' },
           averageSale: { $avg: '$total_amount' },
           minSale: { $min: '$total_amount' },
           maxSale: { $max: '$total_amount' }
@@ -1096,6 +1352,7 @@ exports.getDailySalesReport = async (req, res) => {
           _id: null,
           totalSales: { $sum: 1 },
           totalRevenue: { $sum: '$total_amount' },
+          totalTax: { $sum: '$tax' },
           averageSale: { $avg: '$total_amount' },
           salesByPaymentMethod: {
             $push: {
@@ -1115,6 +1372,7 @@ exports.getDailySalesReport = async (req, res) => {
           },
           totalSales: { $first: '$totalSales' },
           totalRevenue: { $first: '$totalRevenue' },
+          totalTax: { $first: '$totalTax' },
           averageSale: { $first: '$averageSale' },
           methodCount: { $sum: 1 },
           methodRevenue: { $sum: '$salesByPaymentMethod.amount' }
@@ -1125,6 +1383,7 @@ exports.getDailySalesReport = async (req, res) => {
           _id: null,
           totalSales: { $first: '$totalSales' },
           totalRevenue: { $first: '$totalRevenue' },
+          totalTax: { $first: '$totalTax' },
           averageSale: { $first: '$averageSale' },
           paymentMethods: {
             $push: {
@@ -1156,10 +1415,15 @@ exports.getDailySalesReport = async (req, res) => {
       summary: dailyStats[0] || {
         totalSales: 0,
         totalRevenue: 0,
+        totalTax: 0,
         averageSale: 0,
         paymentMethods: []
       },
-      sales: dailySales
+      sales: dailySales,
+      gst_breakdown: {
+        cgst: (dailyStats[0]?.totalTax || 0) / 2,
+        sgst: (dailyStats[0]?.totalTax || 0) / 2
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1189,7 +1453,8 @@ exports.getMonthlySalesReport = async (req, res) => {
             day: { $dayOfMonth: '$sale_date' }
           },
           dailySales: { $sum: 1 },
-          dailyRevenue: { $sum: '$total_amount' }
+          dailyRevenue: { $sum: '$total_amount' },
+          dailyTax: { $sum: '$tax' }
         }
       },
       {
@@ -1200,6 +1465,7 @@ exports.getMonthlySalesReport = async (req, res) => {
           },
           totalSales: { $sum: '$dailySales' },
           totalRevenue: { $sum: '$dailyRevenue' },
+          totalTax: { $sum: '$dailyTax' },
           averageDailySales: { $avg: '$dailySales' },
           averageDailyRevenue: { $avg: '$dailyRevenue' },
           bestDay: { $max: '$dailyRevenue' },
@@ -1243,13 +1509,18 @@ exports.getMonthlySalesReport = async (req, res) => {
       summary: monthlyStats[0] || {
         totalSales: 0,
         totalRevenue: 0,
+        totalTax: 0,
         averageDailySales: 0,
         averageDailyRevenue: 0,
         bestDay: 0,
         worstDay: 0,
         daysWithSales: 0
       },
-      topMedicines
+      topMedicines,
+      gst_breakdown: {
+        cgst: (monthlyStats[0]?.totalTax || 0) / 2,
+        sgst: (monthlyStats[0]?.totalTax || 0) / 2
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1277,7 +1548,8 @@ exports.getYearlySalesReport = async (req, res) => {
             month: { $month: '$sale_date' }
           },
           monthlySales: { $sum: 1 },
-          monthlyRevenue: { $sum: '$total_amount' }
+          monthlyRevenue: { $sum: '$total_amount' },
+          monthlyTax: { $sum: '$tax' }
         }
       },
       {
@@ -1287,6 +1559,7 @@ exports.getYearlySalesReport = async (req, res) => {
           },
           totalSales: { $sum: '$monthlySales' },
           totalRevenue: { $sum: '$monthlyRevenue' },
+          totalTax: { $sum: '$monthlyTax' },
           averageMonthlySales: { $avg: '$monthlySales' },
           averageMonthlyRevenue: { $avg: '$monthlyRevenue' },
           bestMonth: { $max: '$monthlyRevenue' },
@@ -1309,7 +1582,8 @@ exports.getYearlySalesReport = async (req, res) => {
             month: { $month: '$sale_date' }
           },
           sales: { $sum: 1 },
-          revenue: { $sum: '$total_amount' }
+          revenue: { $sum: '$total_amount' },
+          tax: { $sum: '$tax' }
         }
       },
       { $sort: { '_id.month': 1 } }
@@ -1320,13 +1594,18 @@ exports.getYearlySalesReport = async (req, res) => {
       summary: yearlyStats[0] || {
         totalSales: 0,
         totalRevenue: 0,
+        totalTax: 0,
         averageMonthlySales: 0,
         averageMonthlyRevenue: 0,
         bestMonth: 0,
         worstMonth: 0,
         monthsWithSales: 0
       },
-      monthlyBreakdown
+      monthlyBreakdown,
+      gst_breakdown: {
+        cgst: (yearlyStats[0]?.totalTax || 0) / 2,
+        sgst: (yearlyStats[0]?.totalTax || 0) / 2
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1373,6 +1652,7 @@ exports.getRevenueComparison = async (req, res) => {
           $group: {
             _id: null,
             revenue: { $sum: '$total_amount' },
+            tax: { $sum: '$tax' },
             salesCount: { $sum: 1 }
           }
         }
@@ -1387,14 +1667,15 @@ exports.getRevenueComparison = async (req, res) => {
           $group: {
             _id: null,
             revenue: { $sum: '$total_amount' },
+            tax: { $sum: '$tax' },
             salesCount: { $sum: 1 }
           }
         }
       ])
     ]);
 
-    const current = currentStats[0] || { revenue: 0, salesCount: 0 };
-    const previous = previousStats[0] || { revenue: 0, salesCount: 0 };
+    const current = currentStats[0] || { revenue: 0, tax: 0, salesCount: 0 };
+    const previous = previousStats[0] || { revenue: 0, tax: 0, salesCount: 0 };
 
     const revenueGrowth = previous.revenue > 0
       ? ((current.revenue - previous.revenue) / previous.revenue) * 100
@@ -1407,11 +1688,17 @@ exports.getRevenueComparison = async (req, res) => {
     res.json({
       currentPeriod: {
         revenue: current.revenue,
+        tax: current.tax,
+        cgst: current.tax / 2,
+        sgst: current.tax / 2,
         salesCount: current.salesCount,
         period: period === 'month' ? currentDate.toLocaleString('default', { month: 'long', year: 'numeric' }) : currentDate.getFullYear().toString()
       },
       previousPeriod: {
         revenue: previous.revenue,
+        tax: previous.tax,
+        cgst: previous.tax / 2,
+        sgst: previous.tax / 2,
         salesCount: previous.salesCount,
         period: period === 'month'
           ? new Date(currentDate.getFullYear(), currentDate.getMonth() - 1).toLocaleString('default', { month: 'long', year: 'numeric' })
