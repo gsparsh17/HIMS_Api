@@ -111,20 +111,22 @@ medicineBatchSchema.methods.getHistoricalTax = function() {
   };
 };
 
-// Virtual fields for tax (derived from medicine master at runtime)
-medicineBatchSchema.virtual('hsn_code').get(async function() {
-  const tax = await this.getCurrentTax();
-  return tax.hsn_code;
+// ========== FIX: Replace async virtuals with synchronous getters ==========
+// These use the tax_snapshot field directly (no Promise returned)
+medicineBatchSchema.virtual('hsn_code').get(function() {
+  return this.tax_snapshot?.hsn_code || null;
 });
 
-medicineBatchSchema.virtual('gst_rate').get(async function() {
-  const tax = await this.getCurrentTax();
-  return tax.gst_rate;
+medicineBatchSchema.virtual('gst_rate').get(function() {
+  return this.tax_snapshot?.gst_rate !== undefined && this.tax_snapshot?.gst_rate !== null 
+    ? this.tax_snapshot.gst_rate 
+    : null;
 });
 
+// Add a synchronous virtual for backward compatibility
 medicineBatchSchema.virtual('cgst_rate').get(function() {
-  // This would need async resolution - better to compute at query time
-  return 0;
+  const rate = this.tax_snapshot?.gst_rate || 0;
+  return rate / 2;
 });
 
 medicineBatchSchema.virtual('quantity_packs').get(function() {

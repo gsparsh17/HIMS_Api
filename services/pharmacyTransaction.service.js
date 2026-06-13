@@ -252,6 +252,54 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
     const doctorId = objectIdOrUndefined(rawItem.doctor_id || rawItem.doctorId || rawItem.prescribed_by || rawItem.prescribedBy || defaultDoctor.doctorId);
     const doctorName = normalizeText(rawItem.doctor_name || rawItem.doctorName || rawItem.prescribed_by_name || rawItem.prescribedByName || defaultDoctor.doctorName);
 
+    // ========== CORRECTED: GST Rate Priority - Batch Tax Snapshot is PRIMARY ==========
+    let taxRate = null;
+    let taxSource = null;
+
+    // PRIORITY 1: Batch tax_snapshot (MOST ACCURATE - captured at purchase time)
+    if (batch.tax_snapshot && batch.tax_snapshot.gst_rate !== undefined && batch.tax_snapshot.gst_rate !== null) {
+      taxRate = Number(batch.tax_snapshot.gst_rate);
+      taxSource = 'batch.tax_snapshot';
+      console.log(`✅ Using batch.tax_snapshot: ${taxRate}% for batch ${batch.batch_number} (${medicine.name})`);
+    }
+    // PRIORITY 2: Medicine current rate (fallback for batches without tax_snapshot)
+    else if (medicine.gst_rate !== undefined && medicine.gst_rate !== null) {
+      taxRate = Number(medicine.gst_rate);
+      taxSource = 'medicine.gst_rate';
+      console.log(`⚠️ Using medicine.gst_rate: ${taxRate}% for batch ${batch.batch_number} (${medicine.name}) - No tax_snapshot found`);
+    }
+    // PRIORITY 3: Frontend override (ONLY if explicitly flagged as manual override)
+    else if (rawItem.force_override_tax === true && (rawItem.tax_rate !== undefined || rawItem.taxRate !== undefined)) {
+      taxRate = Number(rawItem.tax_rate ?? rawItem.taxRate);
+      taxSource = 'frontend_override';
+      console.log(`⚠️ MANUAL OVERRIDE: Using frontend tax_rate: ${taxRate}% for batch ${batch.batch_number} (${medicine.name})`);
+
+      // Log warning if overriding to 0% when batch had >0%
+      if (taxRate === 0 && batch.tax_snapshot?.gst_rate > 0) {
+        console.warn(`⚠️⚠️⚠️ TAX COMPLIANCE WARNING: Overriding tax from ${batch.tax_snapshot.gst_rate}% to 0% for ${medicine.name}`);
+        console.warn(`   Batch: ${batch.batch_number}, Medicine: ${medicine.name}`);
+        console.warn(`   This should only be done with manager approval for special cases (damaged goods, expiry, etc.)`);
+      }
+    }
+    // PRIORITY 4: Last resort - default to 0% with error
+    else {
+      taxRate = 0;
+      taxSource = 'default';
+      console.error(`❌ No GST source found for batch ${batch.batch_number} (${medicine.name}). Defaulting to 0%. Please fix batch data.`);
+    }
+
+    // Validate GST rate
+    if (isNaN(taxRate) || taxRate === null || taxRate === undefined) {
+      console.error(`Invalid GST rate for batch ${batch.batch_number}:`, { taxRate, rawItem, batchId });
+      throw new Error(`GST rate not found for batch ${batch.batch_number}. Please check the batch's tax information.`);
+    }
+
+    // Validate against valid Indian GST rates
+    const validGSTRates = [0, 5, 12, 18, 28];
+    if (!validGSTRates.includes(taxRate)) {
+      throw new Error(`Invalid GST rate ${taxRate}% for batch ${batch.batch_number}. Valid rates: 0, 5, 12, 18, 28`);
+    }
+
     const item = {
       medicine_id: medicine._id,
       batch_id: batch._id,
@@ -273,6 +321,8 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
       rate_per_base_unit: ratePerBaseUnit,
       rate_per_pack: ratePerPack,
       discount: Number(rawItem.discount || 0),
+      tax_rate: taxRate,  // Set the validated tax rate
+      tax_source: taxSource, // Track source for debugging
       prescription_item_id: objectIdOrUndefined(rawItem.prescription_item_id || rawItem.prescriptionItemId),
       ipd_medication_chart_id: objectIdOrUndefined(rawItem.ipd_medication_chart_id || rawItem.medicationChartId),
       doctor_id: doctorId,
@@ -735,6 +785,7 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, hospitalId
 }
 
 async function createUnifiedSale(payload, req = {}) {
+  console.log('Creating unified sale with payload:', payload);
   const hospitalId = getHospitalId(req, payload.hospitalId);
   const pharmacyId = objectIdOrUndefined(payload.pharmacyId || payload.pharmacy_id);
   const createdBy = getCreatedBy(req);
@@ -840,9 +891,12 @@ async function createUnifiedSale(payload, req = {}) {
     payload.payment_method === 'Will Pay Later';
 
   const paymentDeferred = deferPayment || noPayment;
-  const deferralReason = payload.deferral_reason ||
-    payload.defer_reason ||
-    (paymentDeferred ? (payload.deferral_reason || 'will_pay_later') : undefined);
+
+  // For deferred sales, ensure a valid reason; for non-deferred, set to undefined
+  let deferralReason = undefined;
+  if (paymentDeferred) {
+    deferralReason = payload.deferral_reason || payload.defer_reason || 'will_pay_later';
+  }
 
   const expectedPaymentDate = payload.expected_payment_date ? new Date(payload.expected_payment_date) : null;
   const includeInDischargeClearance = payload.include_in_discharge_clearance !== false;
@@ -884,6 +938,7 @@ async function createUnifiedSale(payload, req = {}) {
       current_bill_amount: totals.total,
       previous_outstanding: previousOutstanding,
       amount_paid: 0,
+      total_collected_amount: 0,
       settlement_amount: 0,
       balance_due: totals.total,
       closing_outstanding: normalizeMoney(previousOutstanding + totals.total),
@@ -898,7 +953,7 @@ async function createUnifiedSale(payload, req = {}) {
       payment_method: 'Deferred',
       payments: [],
       status: 'Pending',
-      notes: payload.notes || `Payment deferred. Reason: ${deferralReason || 'will_pay_later'}`,
+      notes: payload.notes || `Payment deferred. Reason: ${deferralReason}`,
       created_by: createdBy,
       bill_date: payload.bill_date || new Date(),
       created_by_name: payload.created_by_name,
@@ -954,7 +1009,7 @@ async function createUnifiedSale(payload, req = {}) {
       admissionId,
       saleId: sale._id,
       invoiceId: sale.invoice_id,
-      notes: `Deferred payment: ${deferralReason || 'Will pay later'} | ${sale.sale_number}`,
+      notes: `Deferred payment: ${deferralReason} | ${sale.sale_number}`,
       createdBy
     });
 
@@ -1011,9 +1066,25 @@ async function createUnifiedSale(payload, req = {}) {
     sale.pharmacy_advance_after = finalSummary.pharmacyAdvance;
     await sale.save();
 
+    // ========== FIXED: Proper population with bed and ward details ==========
     const populatedSale = await Sale.findById(sale._id)
       .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
-      .populate('admission_id', 'admissionNumber status paymentType advanceAmount')
+      .populate({
+        path: 'admission_id',
+        select: 'admissionNumber status paymentType advanceAmount bedId wardId',
+        populate: [
+          {
+            path: 'bedId',
+            model: 'Bed',
+            select: 'bedNumber bed_number bedName'
+          },
+          {
+            path: 'wardId',
+            model: 'Ward',
+            select: 'name wardName'
+          }
+        ]
+      })
       .populate('doctor_id', 'firstName lastName name')
       .populate('items.medicine_id', 'name composition generic_name brand base_unit pack_unit units_per_pack hsn_code gst_rate')
       .populate('items.batch_id', 'batch_number expiry_date')
@@ -1042,18 +1113,25 @@ async function createUnifiedSale(payload, req = {}) {
   let overpaymentToAdvance = 0;
   let outstandingPaymentAmount = 0;
 
+  // ========== FIXED: Get total collected amount from frontend ==========
+  const frontendTotalCollected = normalizeMoney(payload.total_collected_amount || 0);
+
   if (payload.payments && payload.payments.length > 0) {
     // Use payments from payload directly
     payments = payload.payments.map(p => ({
       method: p.method,
       amount: normalizeMoney(p.amount),
-      reference: p.reference || null
+      reference: p.reference || null,
+      walletType: p.walletType || null
     }));
+
+    // Calculate total received from payments array (this should be the bill amount portion)
     totalReceived = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
+
+    console.log(`💰 Payments sum: ${totalReceived}, Frontend total collected: ${frontendTotalCollected}, Bill total: ${totals.total}`);
 
     // Calculate payment for current bill
     const paymentForCurrent = Math.min(totalReceived, totals.total);
-    const currentDue = normalizeMoney(Math.max(0, totals.total - paymentForCurrent));
     const extraTendered = normalizeMoney(Math.max(0, totalReceived - paymentForCurrent));
 
     // Handle overpayment from explicit payload or calculate
@@ -1061,6 +1139,7 @@ async function createUnifiedSale(payload, req = {}) {
       // Use explicit overpayment from frontend
       overpaymentToAdvance = explicitOverpaymentAmount;
       outstandingPaymentAmount = normalizeMoney(Math.max(0, extraTendered - overpaymentToAdvance));
+      console.log(`📝 Using explicit overpayment: ${overpaymentToAdvance}`);
     } else {
       // Calculate outstanding payment and overpayment
       const shouldSettleOutstanding = payload.payOutstanding === true || payload.pay_outstanding === true || Number(payload.outstanding_payment_amount || 0) > 0;
@@ -1069,6 +1148,7 @@ async function createUnifiedSale(payload, req = {}) {
         : 0;
       outstandingPaymentAmount = normalizeMoney(Math.min(extraTendered, requestedOutstandingPayment || extraTendered, previousOutstanding));
       overpaymentToAdvance = normalizeMoney(Math.max(0, extraTendered - outstandingPaymentAmount));
+      console.log(`💰 Overpayment to advance: ${overpaymentToAdvance}, Outstanding payment: ${outstandingPaymentAmount}`);
     }
   } else {
     // Fallback to normal payment calculation
@@ -1092,12 +1172,20 @@ async function createUnifiedSale(payload, req = {}) {
     await validateAdvancePayment({ p, patientId, admissionId });
   }
 
-  // Calculate final amounts
-  const paymentForCurrent = Math.min(totalReceived, totals.total);
-  const currentDue = normalizeMoney(Math.max(0, totals.total - paymentForCurrent));
-  const balanceDue = noPayment ? totals.total : currentDue;
+  // ========== FIXED: Calculate amounts using frontend total collected ==========
+  // Use frontendTotalCollected if provided (actual money customer paid), otherwise fallback to totalReceived
+  const totalCollectedAmount = frontendTotalCollected > 0 ? frontendTotalCollected : normalizeMoney(totalReceived);
+  // amountPaidForBill = portion used for this bill (from payments array, e.g., ₹153)
+  const amountPaidForBill = normalizeMoney(Math.min(totalReceived, totals.total));
+  // overpaymentAmount = extra added to advance (e.g., ₹47)
+  const overpaymentAmount = normalizeMoney(Math.max(0, totalCollectedAmount - amountPaidForBill));
+  // balanceDue = remaining bill amount (should be 0 if fully paid)
+  const balanceDue = noPayment ? totals.total : normalizeMoney(Math.max(0, totals.total - amountPaidForBill));
   const saleStatus = balanceDue <= 0 ? 'Completed' : 'Pending';
 
+  console.log(`💵 TOTAL COLLECTED: ${totalCollectedAmount} | Used for bill: ${amountPaidForBill} | Overpayment to advance: ${overpaymentAmount} | Balance due: ${balanceDue}`);
+
+  // ========== FIX: For non-deferred sales, ensure deferral_reason is NOT set ==========
   const sale = await Sale.create({
     hospitalId,
     pharmacy_id: pharmacyId,
@@ -1130,25 +1218,28 @@ async function createUnifiedSale(payload, req = {}) {
     total_amount: totals.total,
     current_bill_amount: totals.total,
     previous_outstanding: previousOutstanding,
-    amount_paid: paymentForCurrent,
+    amount_paid: amountPaidForBill,  // This is the amount used for this bill (₹153)
+    total_collected_amount: totalCollectedAmount,  // This is the actual amount customer paid (₹200)
     settlement_amount: outstandingPaymentAmount,
     balance_due: balanceDue,
     closing_outstanding: normalizeMoney(previousOutstanding - outstandingPaymentAmount + balanceDue),
     pharmacy_advance_before: previousPharmacyAdvance,
-    overpayment_amount: overpaymentToAdvance,
-    overpayment_credited_to: overpaymentToAdvance > 0 ? 'PHARMACY_IPD' : null,
+    overpayment_amount: overpaymentAmount,  // Extra amount added to pharmacy advance (₹47)
+    overpayment_credited_to: overpaymentAmount > 0 ? 'PHARMACY_IPD' : null,
     total_purchase_cost: totals.purchaseCost,
     gross_profit: totals.profit,
     commission_amount: totals.commissionAmount,
     return_amount: 0,
     net_amount_after_returns: totals.total,
     payment_method: noPayment ? 'Pending' : payments.length > 1 ? 'Split' : payments[0]?.method || 'Pending',
-    payments,
+    payments: payments,
     status: saleStatus,
     notes: payload.notes,
     created_by: createdBy,
     bill_date: payload.bill_date || new Date(),
-    created_by_name: payload.created_by_name
+    created_by_name: payload.created_by_name,
+    // IMPORTANT: For non-deferred sales, DO NOT set deferral_reason at all (let it default)
+    // payment_deferred defaults to false in schema, so we don't need to set it
   });
 
   await deductStockAndCreateLedger({ items, hospitalId, pharmacyId, saleId: sale._id, createdBy });
@@ -1157,8 +1248,8 @@ async function createUnifiedSale(payload, req = {}) {
   await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: false });
   await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
-  // Process payments for current bill
-  const currentPaymentBreakup = allocatePaymentsForAmount(payments, paymentForCurrent);
+  // Process payments for current bill (only the portion used for this bill)
+  const currentPaymentBreakup = allocatePaymentsForAmount(payments, amountPaidForBill);
   for (const p of currentPaymentBreakup) {
     await consumeAdvancePayment({ p, sale, hospitalId, patientId, admissionId, createdBy });
   }
@@ -1187,8 +1278,8 @@ async function createUnifiedSale(payload, req = {}) {
   }
 
   // ========== HANDLE OVERPAYMENT TO ADVANCE ==========
-  if (overpaymentToAdvance > 0 && patientId) {
-    console.log(`Creating advance entry for overpayment: ${overpaymentToAdvance}`);
+  if (overpaymentAmount > 0 && patientId) {
+    console.log(`✨ Creating advance entry for overpayment: ${overpaymentAmount}`);
 
     // Get the payment method from the first payment that contributed to overpayment
     const overpaymentSourcePayment = payments.find(p => p.amount > 0) || { method: 'Cash', reference: null };
@@ -1201,7 +1292,7 @@ async function createUnifiedSale(payload, req = {}) {
       walletType: 'PHARMACY_IPD',
       transactionType: 'PHARMACY_OVERPAYMENT_CREDIT',
       direction: 'CREDIT',
-      amount: overpaymentToAdvance,
+      amount: overpaymentAmount,
       paymentMethod: overpaymentSourcePayment.method,
       referenceNumber: overpaymentSourcePayment.reference,
       sourceModule: 'Pharmacy',
@@ -1216,17 +1307,17 @@ async function createUnifiedSale(payload, req = {}) {
       pharmacyId,
       entryType: 'ADVANCE_RECEIVED',
       direction: 'NON_CASH',
-      amount: overpaymentToAdvance,
+      amount: overpaymentAmount,
       paymentMethod: overpaymentSourcePayment.method,
       patientId,
       admissionId,
       saleId: sale._id,
       invoiceId: sale.invoice_id,
-      notes: `Extra payment (₹${overpaymentToAdvance}) credited to pharmacy advance for ${sale.sale_number}`,
+      notes: `Extra payment (₹${overpaymentAmount}) credited to pharmacy advance for ${sale.sale_number}`,
       createdBy
     });
 
-    console.log(`Successfully created advance entry for ₹${overpaymentToAdvance}`);
+    console.log(`✅ Successfully created advance entry for ₹${overpaymentAmount}`);
   }
 
   // ========== UPDATE CUSTOMER TOTAL SPENT FOR REGULAR SALE ==========
@@ -1269,14 +1360,31 @@ async function createUnifiedSale(payload, req = {}) {
     }
   }
 
+  // Get final summary and update sale
   const finalSummary = await getPatientPharmacySummary({ patientId, admissionId });
   sale.closing_outstanding = finalSummary.outstanding;
   sale.pharmacy_advance_after = finalSummary.pharmacyAdvance;
   await sale.save();
 
+  // ========== FIXED: Proper population with bed and ward details ==========
   const populatedSale = await Sale.findById(sale._id)
     .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
-    .populate('admission_id', 'admissionNumber status paymentType advanceAmount')
+    .populate({
+      path: 'admission_id',
+      select: 'admissionNumber status paymentType advanceAmount bedId wardId',
+      populate: [
+        {
+          path: 'bedId',
+          model: 'Bed',
+          select: 'bedNumber bed_number bedName'
+        },
+        {
+          path: 'wardId',
+          model: 'Ward',
+          select: 'name wardName'
+        }
+      ]
+    })
     .populate('doctor_id', 'firstName lastName name')
     .populate('items.medicine_id', 'name composition generic_name brand base_unit pack_unit units_per_pack hsn_code gst_rate')
     .populate('items.batch_id', 'batch_number expiry_date')
@@ -1288,9 +1396,16 @@ async function createUnifiedSale(payload, req = {}) {
     bill,
     previous_outstanding: previousOutstanding,
     outstanding_settlement: outstandingAllocation,
-    overpayment_advance: overpaymentToAdvance > 0 ? { amount: overpaymentToAdvance, credited_to: 'PHARMACY_IPD' } : null,
+    overpayment_advance: overpaymentAmount > 0 ? {
+      amount: overpaymentAmount,
+      credited_to: 'PHARMACY_IPD'
+    } : null,
     balances: finalSummary,
-    customerId: customerId
+    customerId: customerId,
+    // Additional fields for frontend display
+    pharmacy_advance_credit_amount: overpaymentAmount,
+    pharmacy_advance_after: finalSummary.pharmacyAdvance,
+    total_collected_amount: totalCollectedAmount  // NEW FIELD - total money collected
   };
 }
 
@@ -1796,60 +1911,65 @@ async function createReturn(payload, req = {}) {
         associatedInvoice.markModified('medicine_items');
       }
 
+      // ========== FIXED: Recalculate invoice totals with proper validation ==========
+      // Get current invoice values
       const currentInvoiceSubtotal = Number(associatedInvoice.subtotal || 0);
       const currentInvoiceDiscount = Number(associatedInvoice.discount || 0);
       const currentInvoiceTax = Number(associatedInvoice.tax || 0);
 
-      const invoiceReturnAccounting = calculateReturnAccounting({
-        currentSubtotal: currentInvoiceSubtotal,
-        currentDiscount: currentInvoiceDiscount,
-        returnedTaxable: totalReturnedSubtotal,
-        suppliedDiscountReversal: totalSuppliedDiscountReversal
-      });
+      // Calculate new values after return
+      let newInvoiceSubtotal = clampMoney(currentInvoiceSubtotal - totalReturnedSubtotal);
+      let newInvoiceDiscount = clampMoney(currentInvoiceDiscount - totalSuppliedDiscountReversal);
+      let newInvoiceTax = clampMoney(currentInvoiceTax - totalReturnedTax);
 
-      const newInvoiceSubtotal = clampMoney(
-        currentInvoiceSubtotal - invoiceReturnAccounting.returnedGrossBeforeDiscount
-      );
+      // CRITICAL FIX: If subtotal becomes 0 or negative, set everything to 0
+      if (newInvoiceSubtotal <= 0) {
+        newInvoiceSubtotal = 0;
+        newInvoiceDiscount = 0;
+      }
 
-      const newInvoiceDiscount = clampMoney(
-        currentInvoiceDiscount - invoiceReturnAccounting.discountReversal
-      );
+      // Ensure discount never exceeds subtotal
+      if (newInvoiceDiscount > newInvoiceSubtotal) {
+        newInvoiceDiscount = newInvoiceSubtotal;
+      }
 
-      const newInvoiceTax = clampMoney(currentInvoiceTax - totalReturnedTax);
+      // Calculate new total
+      let newInvoiceTotal = clampMoney(newInvoiceSubtotal - newInvoiceDiscount + newInvoiceTax);
+      if (newInvoiceTotal < 0) newInvoiceTotal = 0;
 
-      const newInvoiceTotal = clampMoney(
-        newInvoiceSubtotal - newInvoiceDiscount + newInvoiceTax
-      );
+      // Calculate new amount_paid (reduce by refund amount if cash refund)
+      let newAmountPaid = Number(associatedInvoice.amount_paid || 0);
+      if (cashRefundModes.includes(refundMode)) {
+        newAmountPaid = clampMoney(newAmountPaid - totalReturnedAmount);
+      }
 
+      // Ensure amount_paid doesn't exceed total
+      if (newAmountPaid > newInvoiceTotal) {
+        newAmountPaid = newInvoiceTotal;
+      }
+
+      const newBalanceDue = clampMoney(newInvoiceTotal - newAmountPaid);
+
+      // Update invoice with recalculated values
       associatedInvoice.subtotal = newInvoiceSubtotal;
       associatedInvoice.discount = newInvoiceDiscount;
       associatedInvoice.tax = newInvoiceTax;
       associatedInvoice.total = newInvoiceTotal;
+      associatedInvoice.amount_paid = newAmountPaid;
+      associatedInvoice.balance_due = newBalanceDue;
 
-      if (cashRefundModes.includes(refundMode)) {
-        associatedInvoice.amount_paid = clampMoney(
-          Number(associatedInvoice.amount_paid || 0) - totalReturnedAmount
-        );
-      }
-
-      if (Number(associatedInvoice.amount_paid || 0) > Number(associatedInvoice.total || 0)) {
-        associatedInvoice.amount_paid = associatedInvoice.total;
-      }
-
-      associatedInvoice.balance_due = clampMoney(
-        Number(associatedInvoice.total || 0) - Number(associatedInvoice.amount_paid || 0)
-      );
-
-      if (associatedInvoice.total <= 0) {
+      // Update status based on new totals
+      if (newInvoiceTotal <= 0) {
         associatedInvoice.status = 'Fully Returned';
-      } else if (associatedInvoice.balance_due <= 0) {
+      } else if (newBalanceDue <= 0) {
         associatedInvoice.status = 'Paid';
-      } else if (associatedInvoice.amount_paid > 0) {
+      } else if (newAmountPaid > 0) {
         associatedInvoice.status = 'Partial';
       } else {
         associatedInvoice.status = 'Pending';
       }
 
+      // Add return reference
       associatedInvoice.return_refs = associatedInvoice.return_refs || [];
       associatedInvoice.return_refs.push({
         return_id: pharmacyReturn._id,
@@ -1857,14 +1977,37 @@ async function createReturn(payload, req = {}) {
         amount: totalReturnedAmount,
         taxable_amount: totalReturnedSubtotal,
         tax_amount: totalReturnedTax,
-        gross_before_discount: invoiceReturnAccounting.returnedGrossBeforeDiscount,
-        discount_reversal: invoiceReturnAccounting.discountReversal,
+        gross_before_discount: totalReturnedSubtotal,
+        discount_reversal: totalSuppliedDiscountReversal,
         returned_at: new Date()
       });
 
       associatedInvoice.notes = associatedInvoice.notes
         ? `${associatedInvoice.notes}\nReturn ${pharmacyReturn.returnNumber}: -₹${totalReturnedAmount.toFixed(2)}`
         : `Return ${pharmacyReturn.returnNumber}: -₹${totalReturnedAmount.toFixed(2)}`;
+
+      // ========== FINAL VALIDATION: Ensure all constraints are met before saving ==========
+      // Fix: subtotal cannot be less than discount
+      if (associatedInvoice.subtotal < associatedInvoice.discount) {
+        console.warn(`Fixing: subtotal (${associatedInvoice.subtotal}) < discount (${associatedInvoice.discount})`);
+        associatedInvoice.discount = associatedInvoice.subtotal;
+      }
+
+      // Fix: total must equal subtotal - discount + tax
+      const calculatedTotal = associatedInvoice.subtotal - associatedInvoice.discount + associatedInvoice.tax;
+      if (Math.abs(associatedInvoice.total - calculatedTotal) > 0.01) {
+        console.warn(`Fixing invoice total: ${associatedInvoice.total} -> ${calculatedTotal}`);
+        associatedInvoice.total = calculatedTotal;
+      }
+
+      // Fix: amount_paid cannot exceed total
+      if (associatedInvoice.amount_paid > associatedInvoice.total) {
+        console.warn(`Fixing amount_paid: ${associatedInvoice.amount_paid} > ${associatedInvoice.total}`);
+        associatedInvoice.amount_paid = associatedInvoice.total;
+      }
+
+      // Recalculate balance_due
+      associatedInvoice.balance_due = associatedInvoice.total - associatedInvoice.amount_paid;
 
       await associatedInvoice.save();
       console.log('Invoice saved successfully');

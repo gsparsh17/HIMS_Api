@@ -35,7 +35,6 @@ const saleItemSchema = new mongoose.Schema({
   batch_number: { type: String, trim: true },
   expiry_date: { type: Date },
 
-  // Base-unit billing. quantity is retained as alias for old screens.
   quantity: { type: Number, required: true, min: 0 },
   quantity_base_units: { type: Number, min: 0 },
   base_unit: { type: String, default: 'unit' },
@@ -44,7 +43,7 @@ const saleItemSchema = new mongoose.Schema({
   packs: { type: Number, default: 0, min: 0 },
   loose_units: { type: Number, default: 0, min: 0 },
 
-  unit_price: { type: Number, required: true, min: 0 }, // alias of rate_per_base_unit
+  unit_price: { type: Number, required: true, min: 0 },
   rate_per_base_unit: { type: Number, min: 0 },
   rate_per_pack: { type: Number, min: 0 },
   gross_amount: { type: Number, default: 0 },
@@ -60,7 +59,6 @@ const saleItemSchema = new mongoose.Schema({
   total_price: { type: Number, default: 0 },
   net_amount: { type: Number, default: 0 },
 
-  // Cost/profit snapshots are stored for audit but should only be shown to Pharmacy Head/Admin.
   purchase_rate_per_base_unit: { type: Number, default: 0, select: false },
   purchase_amount: { type: Number, default: 0, select: false },
   gross_profit: { type: Number, default: 0, select: false },
@@ -126,7 +124,11 @@ const saleSchema = new mongoose.Schema({
   tax: { type: Number, default: 0 },
   total_amount: { type: Number, required: true, default: 0 },
   current_bill_amount: { type: Number, default: 0 },
-
+  total_collected_amount: {
+    type: Number,
+    default: 0,
+    description: 'Total amount actually collected from customer (including overpayment)'
+  },
   previous_outstanding: { type: Number, default: 0 },
   amount_paid: { type: Number, default: 0 },
   settlement_amount: { type: Number, default: 0 },
@@ -169,10 +171,10 @@ const saleSchema = new mongoose.Schema({
     default: false,
     index: true
   },
+  // SIMPLIFIED - No validation at all
   deferral_reason: {
     type: String,
     trim: true,
-    enum: ['will_pay_later', 'insurance_pending', 'sponsor_pending', 'discharge_settlement', 'legacy_outstanding', 'other'],
     default: null
   },
   expected_payment_date: {
@@ -195,7 +197,7 @@ const saleSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-saleSchema.pre('validate', function(next) {
+saleSchema.pre('validate', function (next) {
   this.items = (this.items || []).map((item) => {
     const qty = item.quantity_base_units ?? item.quantity ?? 0;
     item.quantity_base_units = qty;
@@ -219,7 +221,7 @@ saleSchema.pre('validate', function(next) {
   next();
 });
 
-saleSchema.pre('save', async function(next) {
+saleSchema.pre('save', async function (next) {
   if (this.isNew && !this.sale_number) {
     const count = await mongoose.model('Sale').countDocuments();
     this.sale_number = `SH/PC/DII/${String(count + 1).padStart(8, '0')}`;
