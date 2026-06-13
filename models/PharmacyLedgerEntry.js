@@ -19,7 +19,8 @@ const pharmacyLedgerEntrySchema = new mongoose.Schema({
       'STOCK_ADJUSTMENT',
       'CREDIT_NOTE',
       'FINAL_CLEARANCE',
-      'DOCTOR_COMMISSION_ACCRUAL'
+      'DOCTOR_COMMISSION_ACCRUAL',
+      'DEFERRED_SETTLEMENT'  // Added for bulk deferred payment settlements
     ],
     required: true
   },
@@ -27,7 +28,8 @@ const pharmacyLedgerEntrySchema = new mongoose.Schema({
   amount: { type: Number, required: true, min: 0 },
   paymentMethod: {
     type: String,
-    enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment', 'Credit'],
+    enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'Insurance', 'Government Scheme',
+      'IPDAdvance', 'PharmacyAdvance', 'Adjustment', 'Credit', 'Deferred', 'BulkDiscount'],
     default: 'Cash'
   },
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },

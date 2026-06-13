@@ -15,8 +15,8 @@ const billItemSchema = new mongoose.Schema({
   },
   item_type: {
     type: String,
-    enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Radiology', 'Pharmacy', 'Other', 
-           'Registration Fee', 'Admission Fee', 'IPD Advance', 'Advance Payment', 'Miscellaneous', 'Medicine Return'],
+    enum: ['Consultation', 'Procedure', 'Medicine', 'Lab Test', 'Radiology', 'Pharmacy', 'Other',
+      'Registration Fee', 'Admission Fee', 'IPD Advance', 'Advance Payment', 'Miscellaneous', 'Medicine Return'],
     required: true
   },
 
@@ -59,6 +59,18 @@ const billItemSchema = new mongoose.Schema({
   discount_amount: {
     type: Number,
     default: 0
+  },
+  // ========== NEW GST COMPLIANCE FIELDS ==========
+  taxable_amount: {
+    type: Number,
+    default: 0,
+    description: 'Amount after discount before tax (Gross - Discount)'
+  },
+  hsn_code: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    description: 'HSN code for GST compliance'
   },
 
   // Prescription linking
@@ -290,7 +302,7 @@ const billSchema = new mongoose.Schema({
 });
 
 // Calculate balance before save
-billSchema.pre('save', function(next) {
+billSchema.pre('save', function (next) {
   this.balance_due = this.total_amount - this.paid_amount;
 
   // Update status based on payment
@@ -307,15 +319,15 @@ billSchema.pre('save', function(next) {
 });
 
 // Virtuals
-billSchema.virtual('is_paid').get(function() {
+billSchema.virtual('is_paid').get(function () {
   return this.status === 'Paid';
 });
 
-billSchema.virtual('is_fully_paid').get(function() {
+billSchema.virtual('is_fully_paid').get(function () {
   return this.paid_amount >= this.total_amount;
 });
 
-billSchema.virtual('has_pending_deletion').get(function() {
+billSchema.virtual('has_pending_deletion').get(function () {
   return this.deletion_request && this.deletion_request.status === 'pending';
 });
 

@@ -69,8 +69,14 @@ router.get('/ipd/admissions/:admissionId/deferred-payments', ...authChain, opera
 // Get all deferred payments across admissions (with filters)
 router.get('/deferred-payments', ...authChain, operations.getAllDeferredPayments);
 
-// Settle a deferred payment (mark as paid)
+// Settle a single deferred payment (mark as paid) - UPDATED with discount support
 router.post('/deferred-payments/:saleId/settle', ...authChain, operations.settleDeferredPayment);
+
+// Bulk settle multiple deferred payments (POS-like interface) - NEW
+router.post('/deferred-payments/bulk-settle', ...authChain, operations.bulkSettleDeferredPayments);
+
+// Get deferred payment settlement summary for an admission - NEW
+router.get('/ipd/admissions/:admissionId/deferred-summary', ...authChain, operations.getDeferredSettlementSummary);
 
 // ========== RETURNS ==========
 router.post('/returns', ...authChain, operations.createReturn);

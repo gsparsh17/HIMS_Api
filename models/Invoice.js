@@ -197,6 +197,34 @@ const medicineItemSchema = new mongoose.Schema({
     }
   },
 
+  // ========== NEW GST COMPLIANCE FIELDS ==========
+  taxable_amount: {
+    type: Number,
+    default: 0,
+    description: 'Amount after discount before tax (Gross - Discount)'
+  },
+  hsn_code: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    description: 'HSN code for GST compliance'
+  },
+  cgst_amount: {
+    type: Number,
+    default: 0,
+    description: 'Central GST amount (half of total tax)'
+  },
+  sgst_amount: {
+    type: Number,
+    default: 0,
+    description: 'State GST amount (half of total tax)'
+  },
+  igst_amount: {
+    type: Number,
+    default: 0,
+    description: 'Integrated GST amount (for inter-state transactions)'
+  },
+
   prescription_required: {
     type: Boolean,
     default: false

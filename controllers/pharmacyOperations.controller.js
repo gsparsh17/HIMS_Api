@@ -327,6 +327,16 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     }))
   }));
 
+    const returnRows = returns.map(ret => ({
+    billType: 'RETURN',
+    billNumber: ret.returnNumber,
+    originalBillNumber: ret.originalSaleNumber,
+    date: ret.createdAt,
+    refundMode: ret.refundMode,
+    totalRefundAmount: ret.totalRefundAmount || 0,
+    items: ret.items || []
+  }));
+
   // Add deferred payments to summary
   const summary = {
     totalSales: normalizeMoney(totalSpent),
@@ -452,10 +462,16 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
   });
 });
 
-// Settle a deferred payment (mark as paid)
+// ========== UPDATED: Settle a deferred payment (with discount support) ==========
 exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   const { saleId } = req.params;
-  const { paymentMethod = 'Cash', reference, collected_by } = req.body;
+  const { 
+    paymentMethod = 'Cash', 
+    reference, 
+    collected_by,
+    discount = 0,
+    discountType = 'percentage'
+  } = req.body;
   
   const sale = await Sale.findById(saleId);
   if (!sale) {
@@ -470,7 +486,19 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, error: 'Sale is already completed' });
   }
   
-  const amountToPay = sale.balance_due;
+  let amountToPay = sale.balance_due;
+  let discountAmount = 0;
+  
+  // Apply discount if specified
+  if (discount > 0) {
+    if (discountType === 'percentage') {
+      discountAmount = normalizeMoney(amountToPay * (discount / 100));
+    } else {
+      discountAmount = normalizeMoney(Math.min(discount, amountToPay));
+    }
+    amountToPay = normalizeMoney(amountToPay - discountAmount);
+  }
+  
   const paidAmount = sale.amount_paid + amountToPay;
   
   // Update sale
@@ -481,6 +509,14 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   sale.payment_deferred = false;
   sale.settled_at = new Date();
   
+  // Apply discount
+  if (discountAmount > 0) {
+    sale.discount_amount = normalizeMoney((sale.discount_amount || 0) + discountAmount);
+    sale.discount_reason = sale.discount_reason 
+      ? `${sale.discount_reason}; Settlement discount ₹${discountAmount}` 
+      : `Settlement discount ₹${discountAmount}`;
+  }
+  
   // Add payment record
   sale.payments = sale.payments || [];
   sale.payments.push({
@@ -488,7 +524,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     amount: amountToPay,
     reference: reference,
     date: new Date(),
-    collected_by: collected_by
+    collected_by: collected_by || getCreatedBy(req)
   });
   
   await sale.save();
@@ -500,6 +536,9 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
       invoice.amount_paid = (invoice.amount_paid || 0) + amountToPay;
       invoice.balance_due = invoice.total - invoice.amount_paid;
       invoice.status = invoice.balance_due <= 0 ? 'Paid' : 'Partial';
+      if (discountAmount > 0) {
+        invoice.discount = (invoice.discount || 0) + discountAmount;
+      }
       await invoice.save();
     }
   }
@@ -511,6 +550,10 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
       bill.paid_amount = (bill.paid_amount || 0) + amountToPay;
       bill.balance_due = bill.total_amount - bill.paid_amount;
       bill.status = bill.balance_due <= 0 ? 'Paid' : 'Partially Paid';
+      if (discountAmount > 0) {
+        bill.discount = (bill.discount || 0) + discountAmount;
+        bill.discount_amount = (bill.discount_amount || 0) + discountAmount;
+      }
       await bill.save();
     }
   }
@@ -548,9 +591,27 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     admissionId: sale.admission_id,
     saleId: sale._id,
     invoiceId: sale.invoice_id,
-    notes: `Deferred payment settled via ${paymentMethod}. Reference: ${reference || 'N/A'}`,
+    notes: `Deferred payment settled via ${paymentMethod}. Discount: ₹${discountAmount}. Reference: ${reference || 'N/A'}`,
     createdBy: collected_by || getCreatedBy(req)
   });
+  
+  // Create discount ledger entry if applicable
+  if (discountAmount > 0) {
+    await PharmacyLedgerEntry.create({
+      hospitalId: sale.hospitalId,
+      pharmacyId: sale.pharmacy_id,
+      entryType: 'DISCOUNT',
+      direction: 'NON_CASH',
+      amount: discountAmount,
+      paymentMethod: 'Discount',
+      patientId: sale.patient_id,
+      admissionId: sale.admission_id,
+      saleId: sale._id,
+      invoiceId: sale.invoice_id,
+      notes: `Settlement discount applied to deferred payment ${sale.sale_number}`,
+      createdBy: collected_by || getCreatedBy(req)
+    });
+  }
   
   res.json({
     success: true,
@@ -560,6 +621,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
       sale_number: sale.sale_number,
       amount_paid: sale.amount_paid,
       balance_due: sale.balance_due,
+      discount_applied: discountAmount,
       status: sale.status
     }
   });
@@ -1703,4 +1765,78 @@ exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
 exports.getDoseCalculation = asyncHandler(async (req, res) => {
   const requiredQtyBaseUnits = calculateRequiredBaseUnits(req.query);
   res.json({ success: true, requiredQtyBaseUnits });
+});
+
+// ========== NEW: Bulk Settle Deferred Payments ==========
+exports.bulkSettleDeferredPayments = asyncHandler(async (req, res) => {
+  const { 
+    bulkSettleDeferredPayments,
+    getPatientPharmacySummary 
+  } = require('../services/pharmacyTransaction.service');
+  
+  const hospitalId = getHospitalId(req, req.body.hospitalId);
+  const pharmacyId = objectIdOrUndefined(req.body.pharmacyId) || await getDefaultPharmacyId();
+  const createdBy = getCreatedBy(req);
+  
+  const result = await bulkSettleDeferredPayments({
+    ...req.body,
+    hospitalId,
+    pharmacyId,
+    createdBy
+  }, req);
+  
+  res.status(200).json({
+    success: true,
+    message: result.message,
+    ...result
+  });
+});
+
+// ========== NEW: Get Deferred Settlement Summary ==========
+exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
+  const { admissionId } = req.params;
+  
+  if (!admissionId) {
+    return res.status(400).json({ success: false, error: 'admissionId is required' });
+  }
+  
+  const deferredSales = await Sale.find({
+    admission_id: admissionId,
+    payment_deferred: true,
+    status: { $in: ['Pending', 'Partially Paid'] }
+  }).select('sale_number total_amount amount_paid balance_due sale_date items medicine_name');
+  
+  const totalDue = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+  const pharmacyAdvance = await getAdvanceBalance({ admissionId, walletType: 'PHARMACY_IPD' });
+  const sharedIpdAdvance = await getAdvanceBalance({ admissionId, walletType: 'IPD_SHARED' });
+  
+  // Get patient details
+  let patientId = null;
+  let patientName = null;
+  if (deferredSales.length > 0) {
+    patientId = deferredSales[0].patient_id;
+    const patient = await Patient.findById(patientId).select('first_name last_name patientId');
+    if (patient) {
+      patientName = `${patient.first_name || ''} ${patient.last_name || ''}`.trim();
+    }
+  }
+  
+  res.json({
+    success: true,
+    deferredPayments: deferredSales.map(sale => ({
+      _id: sale._id,
+      sale_number: sale.sale_number,
+      total_amount: sale.total_amount,
+      amount_paid: sale.amount_paid,
+      balance_due: sale.balance_due,
+      sale_date: sale.sale_date,
+      items_count: sale.items?.length || 0
+    })),
+    totalDue,
+    pharmacyAdvance,
+    sharedIpdAdvance,
+    count: deferredSales.length,
+    patientId,
+    patientName
+  });
 });

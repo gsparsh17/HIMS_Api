@@ -195,40 +195,73 @@ async function resolvePatientContext({ patientId, admissionId, prescriptionId, e
   };
 }
 
-function calculateItemTaxesAndProfit(item, rawItem = {}, medicine = {}, batch = {}) {
-  const quantity = Number(item.quantity_base_units || 0);
-  const gross = normalizeMoney(quantity * Number(item.rate_per_base_unit || 0));
-  const discountAmount = normalizeMoney(rawItem.discount_amount || rawItem.discountAmount || item.discount_amount || 0);
-  const taxable = normalizeMoney(Math.max(0, gross - discountAmount));
-  const taxRate = Number(rawItem.tax_rate ?? rawItem.taxRate ?? medicine.gst_rate ?? medicine.tax_rate ?? 0);
-  const taxAmount = normalizeMoney(taxable * taxRate / 100);
-  const cgstRate = taxRate > 0 ? normalizeMoney(taxRate / 2) : 0;
-  const sgstRate = taxRate > 0 ? normalizeMoney(taxRate / 2) : 0;
-  const purchaseRate = Number(rawItem.purchase_rate_per_base_unit || rawItem.purchaseRatePerBaseUnit || batch.purchase_price_per_base_unit || ((batch.purchase_price || 0) / (item.units_per_pack || 1)) || 0);
-  const purchaseAmount = normalizeMoney(quantity * purchaseRate);
-  const net = normalizeMoney(taxable + taxAmount);
-  const grossProfit = normalizeMoney(taxable - purchaseAmount);
+// ========== HELPER: Validate Deferred Payment Return ==========
+async function validateDeferredPaymentReturn(saleId) {
+  const sale = await Sale.findById(saleId);
+  if (!sale) throw new Error('Sale not found');
 
-  return {
-    gross_amount: gross,
-    discount_amount: discountAmount,
-    taxable_amount: taxable,
-    tax_rate: taxRate,
-    cgst_rate: cgstRate,
-    sgst_rate: sgstRate,
-    cgst_amount: normalizeMoney(taxAmount / 2),
-    sgst_amount: normalizeMoney(taxAmount / 2),
-    tax_amount: taxAmount,
-    total_price: net,
-    net_amount: net,
-    purchase_rate_per_base_unit: purchaseRate,
-    purchase_amount: purchaseAmount,
-    gross_profit: grossProfit
-  };
+  if (sale.payment_deferred && sale.balance_due > 0) {
+    return {
+      isDeferred: true,
+      balanceDue: sale.balance_due,
+      canReturn: true,
+      message: `This is a deferred payment with balance due ₹${sale.balance_due}. Return amount will reduce the outstanding balance.`
+    };
+  }
+
+  return { isDeferred: false, canReturn: true };
 }
 
-async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoctor = {} } = {}) {
-  const items = [];
+// ========== HELPER: Handle Deferred Payment Return ==========
+async function handleDeferredPaymentReturn(originalSale, refundAmount, refundMode, returnId, createdBy) {
+  const newBalanceDue = normalizeMoney(originalSale.balance_due - refundAmount);
+
+  originalSale.balance_due = Math.max(0, newBalanceDue);
+  originalSale.return_amount = normalizeMoney((originalSale.return_amount || 0) + refundAmount);
+  originalSale.net_amount_after_returns = normalizeMoney(
+    Math.max(0, (originalSale.total_amount || 0) - (originalSale.return_amount || 0))
+  );
+
+  // If balance_due becomes 0, mark as completed and remove deferred flag
+  if (originalSale.balance_due <= 0) {
+    originalSale.status = 'Completed';
+    originalSale.payment_deferred = false;
+    originalSale.settled_at = new Date();
+  } else {
+    originalSale.status = 'PartiallyReturned';
+  }
+
+  await originalSale.save();
+
+  // If refund goes to advance, credit the advance
+  if (refundAmount > 0 && originalSale.admission_id && originalSale.patient_id &&
+    ['IPDAdvance', 'PharmacyAdvance'].includes(refundMode)) {
+    await createAdvanceLedgerEntry({
+      hospitalId: originalSale.hospitalId,
+      patientId: originalSale.patient_id,
+      admissionId: originalSale.admission_id,
+      walletType: refundMode === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED',
+      transactionType: 'PHARMACY_RETURN_CREDIT',
+      direction: 'CREDIT',
+      amount: refundAmount,
+      paymentMethod: refundMode,
+      referenceNumber: returnId,
+      sourceModule: 'Pharmacy',
+      sourceId: returnId,
+      notes: `Medicine return on deferred payment ${originalSale.sale_number}`,
+      createdBy: createdBy || originalSale.created_by
+    });
+  }
+
+  return originalSale;
+}
+
+// ========== FIXED: buildSaleItems - Allocate bill discount proportionally before tax calculation ==========
+async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoctor = {}, billDiscount = 0, billDiscountType = 'percentage' } = {}) {
+  // First pass: collect all items and calculate gross totals
+  const tempItems = [];
+  let totalGross = 0;
+
   for (const rawItem of rawItems) {
     const batchId = rawItem.batch_id || rawItem.batchId;
     if (!batchId) throw new Error(`Batch is required for ${rawItem.medicine_name || rawItem.medicineName || rawItem.medicine_id || rawItem.medicineId}`);
@@ -248,11 +281,45 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
     }
 
     const ratePerBaseUnit = Number(rawItem.rate_per_base_unit || rawItem.unit_price || batch.selling_price_per_base_unit || (batch.selling_price || 0) / unitsPerPack || 0);
-    const ratePerPack = Number(rawItem.rate_per_pack || batch.selling_price_per_pack || batch.selling_price || ratePerBaseUnit * unitsPerPack || 0);
-    const doctorId = objectIdOrUndefined(rawItem.doctor_id || rawItem.doctorId || rawItem.prescribed_by || rawItem.prescribedBy || defaultDoctor.doctorId);
-    const doctorName = normalizeText(rawItem.doctor_name || rawItem.doctorName || rawItem.prescribed_by_name || rawItem.prescribedByName || defaultDoctor.doctorName);
+    const grossAmount = normalizeMoney(quantityBaseUnits * ratePerBaseUnit);
+    totalGross += grossAmount;
 
-    // ========== CORRECTED: GST Rate Priority - Batch Tax Snapshot is PRIMARY ==========
+    tempItems.push({
+      rawItem,
+      batch,
+      medicine,
+      quantityBaseUnits,
+      unitsPerPack,
+      ratePerBaseUnit,
+      grossAmount,
+      doctorId: objectIdOrUndefined(rawItem.doctor_id || rawItem.doctorId || rawItem.prescribed_by || rawItem.prescribedBy || defaultDoctor.doctorId),
+      doctorName: normalizeText(rawItem.doctor_name || rawItem.doctorName || rawItem.prescribed_by_name || rawItem.prescribedByName || defaultDoctor.doctorName)
+    });
+  }
+
+  // Calculate bill-level discount amount
+  let billDiscountAmount = 0;
+  const discountPercent = Number(billDiscount || 0);
+  if (billDiscountType === 'percentage') {
+    billDiscountAmount = totalGross * (discountPercent / 100);
+  } else {
+    billDiscountAmount = Math.min(discountPercent, totalGross);
+  }
+
+  // Allocate discount proportionally to each item
+  const discountRatio = totalGross > 0 ? billDiscountAmount / totalGross : 0;
+
+  // Second pass: create items with allocated discount and calculate taxes
+  const items = [];
+
+  for (const temp of tempItems) {
+    const { rawItem, batch, medicine, quantityBaseUnits, unitsPerPack, ratePerBaseUnit, grossAmount, doctorId, doctorName } = temp;
+
+    // Allocate discount to this item
+    const itemDiscountAmount = normalizeMoney(grossAmount * discountRatio);
+    const taxableAmount = normalizeMoney(Math.max(0, grossAmount - itemDiscountAmount));
+
+    // Get tax rate
     let taxRate = null;
     let taxSource = null;
 
@@ -274,31 +341,28 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
       taxSource = 'frontend_override';
       console.log(`⚠️ MANUAL OVERRIDE: Using frontend tax_rate: ${taxRate}% for batch ${batch.batch_number} (${medicine.name})`);
 
-      // Log warning if overriding to 0% when batch had >0%
       if (taxRate === 0 && batch.tax_snapshot?.gst_rate > 0) {
         console.warn(`⚠️⚠️⚠️ TAX COMPLIANCE WARNING: Overriding tax from ${batch.tax_snapshot.gst_rate}% to 0% for ${medicine.name}`);
-        console.warn(`   Batch: ${batch.batch_number}, Medicine: ${medicine.name}`);
-        console.warn(`   This should only be done with manager approval for special cases (damaged goods, expiry, etc.)`);
       }
     }
-    // PRIORITY 4: Last resort - default to 0% with error
+    // PRIORITY 4: Last resort - default to 0%
     else {
       taxRate = 0;
       taxSource = 'default';
-      console.error(`❌ No GST source found for batch ${batch.batch_number} (${medicine.name}). Defaulting to 0%. Please fix batch data.`);
+      console.error(`❌ No GST source found for batch ${batch.batch_number} (${medicine.name}). Defaulting to 0%.`);
     }
 
     // Validate GST rate
-    if (isNaN(taxRate) || taxRate === null || taxRate === undefined) {
-      console.error(`Invalid GST rate for batch ${batch.batch_number}:`, { taxRate, rawItem, batchId });
-      throw new Error(`GST rate not found for batch ${batch.batch_number}. Please check the batch's tax information.`);
-    }
-
-    // Validate against valid Indian GST rates
     const validGSTRates = [0, 5, 12, 18, 28];
     if (!validGSTRates.includes(taxRate)) {
       throw new Error(`Invalid GST rate ${taxRate}% for batch ${batch.batch_number}. Valid rates: 0, 5, 12, 18, 28`);
     }
+
+    // Calculate taxes on discounted (taxable) amount
+    const taxAmount = normalizeMoney(taxableAmount * taxRate / 100);
+    const cgstAmount = normalizeMoney(taxAmount / 2);
+    const sgstAmount = normalizeMoney(taxAmount / 2);
+    const netAmount = normalizeMoney(taxableAmount + taxAmount);
 
     const item = {
       medicine_id: medicine._id,
@@ -319,10 +383,23 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
       loose_units: quantityBaseUnits % unitsPerPack,
       unit_price: ratePerBaseUnit,
       rate_per_base_unit: ratePerBaseUnit,
-      rate_per_pack: ratePerPack,
+      rate_per_pack: normalizeMoney(ratePerBaseUnit * unitsPerPack),
       discount: Number(rawItem.discount || 0),
-      tax_rate: taxRate,  // Set the validated tax rate
-      tax_source: taxSource, // Track source for debugging
+      tax_rate: taxRate,
+      tax_source: taxSource,
+      gross_amount: grossAmount,
+      discount_amount: itemDiscountAmount,
+      taxable_amount: taxableAmount,
+      tax_amount: taxAmount,
+      cgst_rate: taxRate / 2,
+      sgst_rate: taxRate / 2,
+      cgst_amount: cgstAmount,
+      sgst_amount: sgstAmount,
+      total_price: netAmount,
+      net_amount: netAmount,
+      purchase_rate_per_base_unit: Number(rawItem.purchase_rate_per_base_unit || rawItem.purchaseRatePerBaseUnit || batch.purchase_price_per_base_unit || 0),
+      purchase_amount: normalizeMoney(quantityBaseUnits * (rawItem.purchase_rate_per_base_unit || rawItem.purchaseRatePerBaseUnit || batch.purchase_price_per_base_unit || 0)),
+      gross_profit: normalizeMoney(taxableAmount - (quantityBaseUnits * (rawItem.purchase_rate_per_base_unit || rawItem.purchaseRatePerBaseUnit || batch.purchase_price_per_base_unit || 0))),
       prescription_item_id: objectIdOrUndefined(rawItem.prescription_item_id || rawItem.prescriptionItemId),
       ipd_medication_chart_id: objectIdOrUndefined(rawItem.ipd_medication_chart_id || rawItem.medicationChartId),
       doctor_id: doctorId,
@@ -333,39 +410,47 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
       commission_doctor_id: objectIdOrUndefined(rawItem.commission_doctor_id || rawItem.commissionDoctorId || medicine.commission_doctor_id || (medicine.is_own_brand ? doctorId : undefined)),
       commission_type: rawItem.commission_type || rawItem.commissionType || medicine.commission_type || 'None',
       commission_value: Number(rawItem.commission_value ?? rawItem.commissionValue ?? medicine.commission_value ?? 0),
+      commission_amount: 0,
       _batch: batch,
       _medicine: medicine
     };
 
-    Object.assign(item, calculateItemTaxesAndProfit(item, rawItem, medicine, batch));
-    if (item.commission_type === 'Percentage') item.commission_amount = normalizeMoney(item.taxable_amount * item.commission_value / 100);
-    else if (item.commission_type === 'Fixed') item.commission_amount = normalizeMoney(item.commission_value * item.quantity_base_units);
-    else item.commission_amount = 0;
+    // Calculate commission
+    if (item.commission_type === 'Percentage') {
+      item.commission_amount = normalizeMoney(item.taxable_amount * item.commission_value / 100);
+    } else if (item.commission_type === 'Fixed') {
+      item.commission_amount = normalizeMoney(item.commission_value * item.quantity_base_units);
+    }
 
     items.push(item);
   }
+
   return items;
 }
 
+// ========== FIXED: calculateTotals - Discount already applied at item level ==========
 function calculateTotals(items, { discount = 0, discount_type = 'percentage', tax_rate = null } = {}) {
   const itemGross = normalizeMoney(items.reduce((sum, item) => sum + Number(item.gross_amount || 0), 0));
   const itemDiscount = normalizeMoney(items.reduce((sum, item) => sum + Number(item.discount_amount || 0), 0));
+
   const afterItemDiscount = normalizeMoney(itemGross - itemDiscount);
-  const billDiscountValue = Number(discount || 0);
-  const billDiscountAmount = normalizeMoney(discount_type === 'percentage' ? afterItemDiscount * (billDiscountValue / 100) : Math.min(billDiscountValue, afterItemDiscount));
-  const taxableBeforeBillTax = normalizeMoney(Math.max(0, afterItemDiscount - billDiscountAmount));
+  const billDiscountAmount = 0;
+  const taxableBeforeBillTax = afterItemDiscount;
 
   let tax = normalizeMoney(items.reduce((sum, item) => sum + Number(item.tax_amount || 0), 0));
-  if (tax_rate != null && tax_rate !== '') tax = normalizeMoney(taxableBeforeBillTax * Number(tax_rate || 0) / 100);
+  if (tax_rate != null && tax_rate !== '') {
+    tax = normalizeMoney(taxableBeforeBillTax * Number(tax_rate || 0) / 100);
+  }
 
   const total = normalizeMoney(taxableBeforeBillTax + tax);
   const purchaseCost = normalizeMoney(items.reduce((sum, item) => sum + Number(item.purchase_amount || 0), 0));
   const profit = normalizeMoney(taxableBeforeBillTax - purchaseCost);
+
   return {
     subtotal: afterItemDiscount,
     grossAmount: itemGross,
     itemDiscount,
-    discountAmount: billDiscountAmount,
+    discountAmount: itemDiscount,
     taxableAmount: taxableBeforeBillTax,
     tax,
     total,
@@ -478,11 +563,26 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
   const customerType = sale.customer_type === 'WalkIn' || sale.customer_type === 'walkin' ? 'Walk-in' : 'Patient';
   const amountPaid = normalizeMoney(Math.min(sale.amount_paid || 0, sale.net_amount_after_returns || sale.total_amount || 0));
 
-  // For deferred payments, set status to 'Pending'
   let invoiceStatus = 'Pending';
   if (!isDeferred) {
     invoiceStatus = sale.balance_due <= 0 ? 'Paid' : amountPaid > 0 ? 'Partial' : 'Pending';
   }
+
+  // For invoice validation: total = subtotal - discount + tax
+  // subtotal should be the gross amount BEFORE discount
+  const grossAmount = totals.grossAmount;
+  const discountAmount = totals.discountAmount;
+  const taxAmount = totals.tax;
+  const netTotal = totals.total;
+
+  const invoiceSubtotal = grossAmount;
+  const invoiceDiscount = discountAmount;
+  const invoiceTax = taxAmount;
+  const invoiceTotal = netTotal;
+
+  // Also check if sale already has a discount (from bulk settlement)
+  const finalDiscount = sale.discount_amount > 0 ? sale.discount_amount : invoiceDiscount;
+  const finalTotal = sale.total_amount || invoiceTotal;
 
   const invoice = await Invoice.create({
     invoice_type: 'Pharmacy',
@@ -506,14 +606,16 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
       total_price: item.net_amount || item.total_price,
       tax_rate: item.tax_rate || 0,
       tax_amount: item.tax_amount || 0,
+      taxable_amount: item.taxable_amount || 0,
+      hsn_code: item.hsn_code,
       prescription_id: sale.prescription_id || undefined,
       is_dispensed: true,
       dispensed_at: new Date()
     })),
-    subtotal: totals.subtotal,
-    discount: normalizeMoney((totals.itemDiscount || 0) + (totals.discountAmount || 0)),
-    tax: totals.tax,
-    total: totals.total,
+    subtotal: invoiceSubtotal,
+    discount: finalDiscount,
+    tax: invoiceTax,
+    total: finalTotal,
     amount_paid: amountPaid,
     payments: paymentEntries.filter(p => !['Pending', 'Credit', 'NoPayment', 'Deferred'].includes(p.method)).map(p => ({
       amount: p.amount,
@@ -528,6 +630,7 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
     created_by: createdBy,
     notes: isDeferred ? `Deferred payment - ${sale.notes || ''}` : sale.notes
   });
+
   sale.invoice_id = invoice._id;
   sale.invoice_number = invoice.invoice_number;
   await sale.save();
@@ -535,7 +638,6 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
 }
 
 async function createPharmacyBill({ sale, items, totals, paymentEntries, hospitalId, patientId, admissionId, createdBy, isDeferred = false }) {
-  // Build bill items from sale items
   const billItems = items.map(item => ({
     description: item.medicine_name,
     amount: item.net_amount || item.total_price,
@@ -551,7 +653,9 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
     unit_price: item.rate_per_base_unit,
     tax_rate: item.tax_rate || 0,
     tax_amount: item.tax_amount || 0,
+    taxable_amount: item.taxable_amount || 0,
     discount_amount: item.discount_amount || 0,
+    hsn_code: item.hsn_code,
     prescription_id: sale.prescription_id,
     prescription_item_id: item.prescription_item_id,
     admission_id: admissionId,
@@ -559,7 +663,6 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
     doctor_name: item.doctor_name
   }));
 
-  // Get pharmacy balances before
   let pharmacyOutstandingBefore = 0;
   let pharmacyAdvanceBefore = 0;
 
@@ -575,19 +678,16 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
   let pharmacyAdvanceCreated = 0;
   let paymentAmount = 0;
 
-  // Calculate payment amount
   if (paymentEntries && paymentEntries.length > 0) {
     paymentAmount = paymentEntries.reduce((sum, p) => sum + p.amount, 0);
   } else if (sale.payment_method !== 'NoPayment' && sale.payment_method !== 'Pending' && sale.payment_method !== 'Deferred') {
     paymentAmount = totals.total;
   }
 
-  // Handle advance usage
   if (sale.payment_method === 'PharmacyAdvance' || (paymentEntries && paymentEntries.some(p => p.method === 'PharmacyAdvance'))) {
     pharmacyAdvanceUsed = Math.min(pharmacyAdvanceBefore, paymentAmount);
   }
 
-  // Handle overpayment -> advance creation
   let overpayment = 0;
   if (paymentAmount > totals.total) {
     overpayment = paymentAmount - totals.total;
@@ -597,13 +697,11 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
   const pharmacyOutstandingAfter = Math.max(0, totals.total - paymentAmount + pharmacyOutstandingBefore - pharmacyAdvanceUsed);
   const pharmacyAdvanceAfter = pharmacyAdvanceBefore - pharmacyAdvanceUsed + pharmacyAdvanceCreated;
 
-  // Determine bill status - for deferred payments, status should be 'Pending'
   let billStatus = 'Pending';
   if (!isDeferred) {
     billStatus = sale.payment_method === 'NoPayment' ? 'Pending' : (paymentAmount >= totals.total ? 'Paid' : 'Partially Paid');
   }
 
-  // Create the bill
   const bill = await Bill.create({
     patient_id: patientId,
     admission_id: admissionId,
@@ -636,11 +734,9 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
     advance_balance_after: pharmacyAdvanceAfter
   });
 
-  // Link bill to sale
   sale.bill_id = bill._id;
   await sale.save();
 
-  // Update patient pharmacy balances (skip for deferred payments)
   if (patientId && !isDeferred) {
     await Patient.findByIdAndUpdate(patientId, {
       $inc: {
@@ -650,7 +746,6 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
       last_pharmacy_transaction: new Date()
     });
   } else if (patientId && isDeferred) {
-    // For deferred payments, only increase outstanding balance
     await Patient.findByIdAndUpdate(patientId, {
       $inc: { pharmacy_outstanding_balance: totals.total },
       last_pharmacy_transaction: new Date()
@@ -674,7 +769,7 @@ async function createIpdChargeForSale({ sale, total, createdBy, isDeferred = fal
     sourceModule: 'Pharmacy',
     sourceId: sale._id,
     isAutoGenerated: true,
-    isBilled: false,  // For deferred payments, don't mark as billed
+    isBilled: false,
     invoiceId: sale.invoice_id,
     addedBy: createdBy,
     notes: isDeferred ? 'Deferred payment - pending settlement at discharge' : 'Auto-created from pharmacy sale'
@@ -794,7 +889,7 @@ async function createUnifiedSale(payload, req = {}) {
   const prescriptionId = objectIdOrUndefined(payload.prescription_id || payload.prescriptionId);
   const context = await resolvePatientContext({ patientId, admissionId, prescriptionId, explicit: payload });
 
-  // ========== CREATE/UPDATE CUSTOMER RECORD FOR ALL SALE TYPES ==========
+  // CREATE/UPDATE CUSTOMER RECORD
   let customerId = null;
   const customerPhone = payload.customer_phone || context.patientPhone;
   const customerName = payload.customer_name || context.patientName;
@@ -802,7 +897,6 @@ async function createUnifiedSale(payload, req = {}) {
   const customerAddress = payload.customer_address || null;
   const customerType = payload.customer_type || payload.customerType || (patientId ? 'Patient' : 'Walk-in');
 
-  // Map customer_type to enum values
   let mappedCustomerType = 'Walk-in';
   if (customerType === 'Patient' || customerType === 'patient') mappedCustomerType = 'Patient';
   else if (customerType === 'Regular' || customerType === 'regular') mappedCustomerType = 'Regular';
@@ -813,12 +907,9 @@ async function createUnifiedSale(payload, req = {}) {
   if (customerPhone) {
     try {
       const Customer = mongoose.model('Customer');
-
-      // Check if customer already exists by phone
       let customer = await Customer.findOne({ phone: customerPhone });
 
       if (!customer) {
-        // Create new customer
         customer = await Customer.create({
           name: customerName || (mappedCustomerType === 'Patient' ? 'Patient' : `${mappedCustomerType} Customer`),
           phone: customerPhone,
@@ -833,57 +924,50 @@ async function createUnifiedSale(payload, req = {}) {
         });
         console.log(`Created new customer: ${customer.name} (${customer.phone}) - Type: ${mappedCustomerType}`);
       } else {
-        // Update existing customer with latest info
         let needsUpdate = false;
-
         if (customerName && customer.name !== customerName && (customer.name === 'Walk-in Customer' || customer.name === `${customer.customer_type} Customer`)) {
           customer.name = customerName;
           needsUpdate = true;
         }
-
         if (customerEmail && !customer.email) {
           customer.email = customerEmail;
           needsUpdate = true;
         }
-
         if (customerAddress && !customer.address) {
           customer.address = customerAddress;
           needsUpdate = true;
         }
-
-        // Link patient_id if not already linked
         if (patientId && !customer.patient_id) {
           customer.patient_id = patientId;
           needsUpdate = true;
         }
-
-        // Update customer type if it was default and now we have better info
         if (mappedCustomerType !== 'Walk-in' && customer.customer_type === 'Walk-in') {
           customer.customer_type = mappedCustomerType;
           needsUpdate = true;
         }
-
         if (needsUpdate) {
           await customer.save();
           console.log(`Updated existing customer: ${customer.name} (${customer.phone})`);
         }
       }
-
       customerId = customer._id;
-
     } catch (err) {
       console.error('Error creating/updating customer:', err);
-      // Don't block sale creation if customer creation fails
     }
   }
 
-  const items = await buildSaleItems(payload.items || [], { honorLooseSale: payload.allowLooseSale !== false, defaultDoctor: { doctorId: context.doctorId, doctorName: context.doctorName } });
+  const items = await buildSaleItems(payload.items || [], {
+    honorLooseSale: payload.allowLooseSale !== false,
+    defaultDoctor: { doctorId: context.doctorId, doctorName: context.doctorName },
+    billDiscount: payload.discount || 0,
+    billDiscountType: payload.discount_type || 'percentage'
+  });
+
   const totals = calculateTotals(items, payload);
   const previousOutstanding = await getPatientOutstanding({ patientId, admissionId });
   const previousPharmacyAdvance = await getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD' });
   const noPayment = payload.noPayment === true || payload.pay_nothing === true;
 
-  // ========== CHECK FOR DEFERRED PAYMENT ==========
   const deferPayment = payload.payment_deferred === true ||
     payload.defer_payment === true ||
     payload.payment_method === 'Deferred' ||
@@ -892,7 +976,6 @@ async function createUnifiedSale(payload, req = {}) {
 
   const paymentDeferred = deferPayment || noPayment;
 
-  // For deferred sales, ensure a valid reason; for non-deferred, set to undefined
   let deferralReason = undefined;
   if (paymentDeferred) {
     deferralReason = payload.deferral_reason || payload.defer_reason || 'will_pay_later';
@@ -957,14 +1040,12 @@ async function createUnifiedSale(payload, req = {}) {
       created_by: createdBy,
       bill_date: payload.bill_date || new Date(),
       created_by_name: payload.created_by_name,
-      // Deferred payment fields
       payment_deferred: true,
       deferral_reason: deferralReason,
       expected_payment_date: expectedPaymentDate,
       include_in_discharge_clearance: includeInDischargeClearance
     });
 
-    // Create invoice for deferred sale with Pending status
     const invoice = await createSaleInvoice({
       sale,
       items,
@@ -976,7 +1057,6 @@ async function createUnifiedSale(payload, req = {}) {
       isDeferred: true
     });
 
-    // Create bill for deferred sale with Pending status
     const bill = await createPharmacyBill({
       sale,
       items,
@@ -989,15 +1069,12 @@ async function createUnifiedSale(payload, req = {}) {
       isDeferred: true
     });
 
-    // Create IPD charge if applicable (not billed yet)
     if (sale.admission_id && sale.patient_id) {
       await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: true });
     }
 
-    // Update patient medicine stock
     await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
-    // Create ledger entry for deferred payment
     await PharmacyLedgerEntry.create({
       hospitalId,
       pharmacyId,
@@ -1013,7 +1090,6 @@ async function createUnifiedSale(payload, req = {}) {
       createdBy
     });
 
-    // Update patient outstanding balance
     if (patientId) {
       await Patient.findByIdAndUpdate(patientId, {
         $inc: { pharmacy_outstanding_balance: totals.total },
@@ -1021,7 +1097,6 @@ async function createUnifiedSale(payload, req = {}) {
       });
     }
 
-    // ========== UPDATE CUSTOMER TOTAL SPENT FOR DEFERRED SALE ==========
     if (customerId) {
       const Customer = mongoose.model('Customer');
       await Customer.findByIdAndUpdate(customerId, {
@@ -1030,7 +1105,6 @@ async function createUnifiedSale(payload, req = {}) {
       });
     }
 
-    // Update prescription dispensed status if applicable
     if (prescriptionId) {
       const prescription = await Prescription.findById(prescriptionId);
       if (prescription) {
@@ -1047,7 +1121,6 @@ async function createUnifiedSale(payload, req = {}) {
       }
     }
 
-    // Update IPD medication chart
     for (const item of items) {
       if (item.ipd_medication_chart_id) {
         await IPDMedicationChart.findByIdAndUpdate(item.ipd_medication_chart_id, {
@@ -1066,23 +1139,14 @@ async function createUnifiedSale(payload, req = {}) {
     sale.pharmacy_advance_after = finalSummary.pharmacyAdvance;
     await sale.save();
 
-    // ========== FIXED: Proper population with bed and ward details ==========
     const populatedSale = await Sale.findById(sale._id)
       .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
       .populate({
         path: 'admission_id',
         select: 'admissionNumber status paymentType advanceAmount bedId wardId',
         populate: [
-          {
-            path: 'bedId',
-            model: 'Bed',
-            select: 'bedNumber bed_number bedName'
-          },
-          {
-            path: 'wardId',
-            model: 'Ward',
-            select: 'name wardName'
-          }
+          { path: 'bedId', model: 'Bed', select: 'bedNumber bed_number bedName' },
+          { path: 'wardId', model: 'Ward', select: 'name wardName' }
         ]
       })
       .populate('doctor_id', 'firstName lastName name')
@@ -1104,7 +1168,6 @@ async function createUnifiedSale(payload, req = {}) {
   }
 
   // ========== HANDLE PAYMENTS FROM PAYLOAD (NON-DEFERRED) ==========
-  // Check if overpayment_amount is explicitly provided in payload
   const explicitOverpaymentAmount = normalizeMoney(payload.overpayment_amount || 0);
   const explicitOverpaymentAdvance = payload.overpayment_advance || null;
 
@@ -1113,11 +1176,9 @@ async function createUnifiedSale(payload, req = {}) {
   let overpaymentToAdvance = 0;
   let outstandingPaymentAmount = 0;
 
-  // ========== FIXED: Get total collected amount from frontend ==========
   const frontendTotalCollected = normalizeMoney(payload.total_collected_amount || 0);
 
   if (payload.payments && payload.payments.length > 0) {
-    // Use payments from payload directly
     payments = payload.payments.map(p => ({
       method: p.method,
       amount: normalizeMoney(p.amount),
@@ -1125,23 +1186,18 @@ async function createUnifiedSale(payload, req = {}) {
       walletType: p.walletType || null
     }));
 
-    // Calculate total received from payments array (this should be the bill amount portion)
     totalReceived = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
 
     console.log(`💰 Payments sum: ${totalReceived}, Frontend total collected: ${frontendTotalCollected}, Bill total: ${totals.total}`);
 
-    // Calculate payment for current bill
     const paymentForCurrent = Math.min(totalReceived, totals.total);
     const extraTendered = normalizeMoney(Math.max(0, totalReceived - paymentForCurrent));
 
-    // Handle overpayment from explicit payload or calculate
     if (explicitOverpaymentAmount > 0 && explicitOverpaymentAdvance) {
-      // Use explicit overpayment from frontend
       overpaymentToAdvance = explicitOverpaymentAmount;
       outstandingPaymentAmount = normalizeMoney(Math.max(0, extraTendered - overpaymentToAdvance));
       console.log(`📝 Using explicit overpayment: ${overpaymentToAdvance}`);
     } else {
-      // Calculate outstanding payment and overpayment
       const shouldSettleOutstanding = payload.payOutstanding === true || payload.pay_outstanding === true || Number(payload.outstanding_payment_amount || 0) > 0;
       const requestedOutstandingPayment = shouldSettleOutstanding
         ? normalizeMoney(payload.outstanding_payment_amount || previousOutstanding)
@@ -1151,7 +1207,6 @@ async function createUnifiedSale(payload, req = {}) {
       console.log(`💰 Overpayment to advance: ${overpaymentToAdvance}, Outstanding payment: ${outstandingPaymentAmount}`);
     }
   } else {
-    // Fallback to normal payment calculation
     payments = normalizePayments({ total: totals.total, payment_method: payload.payment_method || payload.paymentMethod, payments: payload.payments, noPayment });
     totalReceived = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
     const paymentForCurrent = Math.min(totalReceived, totals.total);
@@ -1167,25 +1222,18 @@ async function createUnifiedSale(payload, req = {}) {
     }
   }
 
-  // Validate advance payments
   for (const p of payments) {
     await validateAdvancePayment({ p, patientId, admissionId });
   }
 
-  // ========== FIXED: Calculate amounts using frontend total collected ==========
-  // Use frontendTotalCollected if provided (actual money customer paid), otherwise fallback to totalReceived
   const totalCollectedAmount = frontendTotalCollected > 0 ? frontendTotalCollected : normalizeMoney(totalReceived);
-  // amountPaidForBill = portion used for this bill (from payments array, e.g., ₹153)
   const amountPaidForBill = normalizeMoney(Math.min(totalReceived, totals.total));
-  // overpaymentAmount = extra added to advance (e.g., ₹47)
   const overpaymentAmount = normalizeMoney(Math.max(0, totalCollectedAmount - amountPaidForBill));
-  // balanceDue = remaining bill amount (should be 0 if fully paid)
   const balanceDue = noPayment ? totals.total : normalizeMoney(Math.max(0, totals.total - amountPaidForBill));
   const saleStatus = balanceDue <= 0 ? 'Completed' : 'Pending';
 
   console.log(`💵 TOTAL COLLECTED: ${totalCollectedAmount} | Used for bill: ${amountPaidForBill} | Overpayment to advance: ${overpaymentAmount} | Balance due: ${balanceDue}`);
 
-  // ========== FIX: For non-deferred sales, ensure deferral_reason is NOT set ==========
   const sale = await Sale.create({
     hospitalId,
     pharmacy_id: pharmacyId,
@@ -1218,13 +1266,13 @@ async function createUnifiedSale(payload, req = {}) {
     total_amount: totals.total,
     current_bill_amount: totals.total,
     previous_outstanding: previousOutstanding,
-    amount_paid: amountPaidForBill,  // This is the amount used for this bill (₹153)
-    total_collected_amount: totalCollectedAmount,  // This is the actual amount customer paid (₹200)
+    amount_paid: amountPaidForBill,
+    total_collected_amount: totalCollectedAmount,
     settlement_amount: outstandingPaymentAmount,
     balance_due: balanceDue,
     closing_outstanding: normalizeMoney(previousOutstanding - outstandingPaymentAmount + balanceDue),
     pharmacy_advance_before: previousPharmacyAdvance,
-    overpayment_amount: overpaymentAmount,  // Extra amount added to pharmacy advance (₹47)
+    overpayment_amount: overpaymentAmount,
     overpayment_credited_to: overpaymentAmount > 0 ? 'PHARMACY_IPD' : null,
     total_purchase_cost: totals.purchaseCost,
     gross_profit: totals.profit,
@@ -1238,8 +1286,6 @@ async function createUnifiedSale(payload, req = {}) {
     created_by: createdBy,
     bill_date: payload.bill_date || new Date(),
     created_by_name: payload.created_by_name,
-    // IMPORTANT: For non-deferred sales, DO NOT set deferral_reason at all (let it default)
-    // payment_deferred defaults to false in schema, so we don't need to set it
   });
 
   await deductStockAndCreateLedger({ items, hospitalId, pharmacyId, saleId: sale._id, createdBy });
@@ -1248,7 +1294,6 @@ async function createUnifiedSale(payload, req = {}) {
   await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: false });
   await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
-  // Process payments for current bill (only the portion used for this bill)
   const currentPaymentBreakup = allocatePaymentsForAmount(payments, amountPaidForBill);
   for (const p of currentPaymentBreakup) {
     await consumeAdvancePayment({ p, sale, hospitalId, patientId, admissionId, createdBy });
@@ -1277,14 +1322,10 @@ async function createUnifiedSale(payload, req = {}) {
     outstandingAllocation = await allocatePaymentToOutstanding({ patientId, admissionId, hospitalId, pharmacyId, createdBy, sale, amount: outstandingPaymentAmount, payments });
   }
 
-  // ========== HANDLE OVERPAYMENT TO ADVANCE ==========
   if (overpaymentAmount > 0 && patientId) {
     console.log(`✨ Creating advance entry for overpayment: ${overpaymentAmount}`);
-
-    // Get the payment method from the first payment that contributed to overpayment
     const overpaymentSourcePayment = payments.find(p => p.amount > 0) || { method: 'Cash', reference: null };
 
-    // Create advance ledger entry
     await createAdvanceLedgerEntry({
       hospitalId,
       patientId,
@@ -1301,7 +1342,6 @@ async function createUnifiedSale(payload, req = {}) {
       createdBy
     });
 
-    // Create pharmacy ledger entry for the overpayment
     await PharmacyLedgerEntry.create({
       hospitalId,
       pharmacyId,
@@ -1320,7 +1360,6 @@ async function createUnifiedSale(payload, req = {}) {
     console.log(`✅ Successfully created advance entry for ₹${overpaymentAmount}`);
   }
 
-  // ========== UPDATE CUSTOMER TOTAL SPENT FOR REGULAR SALE ==========
   if (customerId) {
     const Customer = mongoose.model('Customer');
     await Customer.findByIdAndUpdate(customerId, {
@@ -1329,7 +1368,6 @@ async function createUnifiedSale(payload, req = {}) {
     });
   }
 
-  // Update prescription dispensed status
   if (prescriptionId) {
     const prescription = await Prescription.findById(prescriptionId);
     if (prescription) {
@@ -1346,7 +1384,6 @@ async function createUnifiedSale(payload, req = {}) {
     }
   }
 
-  // Update IPD medication chart
   for (const item of items) {
     if (item.ipd_medication_chart_id) {
       await IPDMedicationChart.findByIdAndUpdate(item.ipd_medication_chart_id, {
@@ -1360,29 +1397,19 @@ async function createUnifiedSale(payload, req = {}) {
     }
   }
 
-  // Get final summary and update sale
   const finalSummary = await getPatientPharmacySummary({ patientId, admissionId });
   sale.closing_outstanding = finalSummary.outstanding;
   sale.pharmacy_advance_after = finalSummary.pharmacyAdvance;
   await sale.save();
 
-  // ========== FIXED: Proper population with bed and ward details ==========
   const populatedSale = await Sale.findById(sale._id)
     .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
     .populate({
       path: 'admission_id',
       select: 'admissionNumber status paymentType advanceAmount bedId wardId',
       populate: [
-        {
-          path: 'bedId',
-          model: 'Bed',
-          select: 'bedNumber bed_number bedName'
-        },
-        {
-          path: 'wardId',
-          model: 'Ward',
-          select: 'name wardName'
-        }
+        { path: 'bedId', model: 'Bed', select: 'bedNumber bed_number bedName' },
+        { path: 'wardId', model: 'Ward', select: 'name wardName' }
       ]
     })
     .populate('doctor_id', 'firstName lastName name')
@@ -1402,13 +1429,13 @@ async function createUnifiedSale(payload, req = {}) {
     } : null,
     balances: finalSummary,
     customerId: customerId,
-    // Additional fields for frontend display
     pharmacy_advance_credit_amount: overpaymentAmount,
     pharmacy_advance_after: finalSummary.pharmacyAdvance,
-    total_collected_amount: totalCollectedAmount  // NEW FIELD - total money collected
+    total_collected_amount: totalCollectedAmount
   };
 }
 
+// ========== UPDATED: createReturn - Handle deferred payment returns ==========
 async function createReturn(payload, req = {}) {
   console.log('========== CREATE RETURN START ==========');
   console.log('Creating pharmacy return with payload:', JSON.stringify(payload, null, 2));
@@ -1499,6 +1526,12 @@ async function createReturn(payload, req = {}) {
 
   console.log('Original sale found:', originalSale.sale_number);
 
+  // Validate if this is a deferred payment return
+  const deferValidation = await validateDeferredPaymentReturn(originalSaleId);
+  if (deferValidation.isDeferred) {
+    console.log('Processing return for deferred payment:', deferValidation.message);
+  }
+
   const getOriginalSaleItem = (retItem) => {
     if (!originalSale?.items) return null;
 
@@ -1513,25 +1546,34 @@ async function createReturn(payload, req = {}) {
     );
   };
 
-  const items = (payload.items || []).map(raw => ({
-    saleItemId: raw.saleItemId,
-    medicineId: raw.medicineId,
-    batchId: raw.batchId,
-    medicineName: raw.medicineName,
-    returnedQtyBaseUnits: Number(raw.returnedQtyBaseUnits || 0),
-    baseUnit: raw.baseUnit,
-    unitsPerPack: Number(raw.unitsPerPack || 1),
-    ratePerBaseUnit: round2(raw.ratePerBaseUnit),
-    grossAmount: round2(raw.grossAmount),
-    discountReversal: round2(raw.discountReversal || 0),
-    taxableAmount: round2(raw.taxableAmount || raw.grossAmount || 0),
-    taxRate: Number(raw.taxRate || 0),
-    taxAmount: round2(raw.taxAmount),
-    refundAmount: round2(raw.refundAmount),
-    purchaseRatePerBaseUnit: round2(raw.purchaseRatePerBaseUnit || 0),
-    condition: raw.condition || 'SEALED_USABLE',
-    restock: raw.restock !== false
-  }));
+  const items = (payload.items || []).map(raw => {
+    const grossAmount = round2(raw.grossAmount);
+    const discountReversal = round2(raw.discountReversal || 0);
+    const taxableAmount = round2(raw.taxableAmount || (grossAmount - discountReversal));
+    const taxRate = Number(raw.taxRate || 0);
+    const taxAmount = round2(taxableAmount * taxRate / 100);
+    const refundAmount = round2(taxableAmount + taxAmount);
+
+    return {
+      saleItemId: raw.saleItemId,
+      medicineId: raw.medicineId,
+      batchId: raw.batchId,
+      medicineName: raw.medicineName,
+      returnedQtyBaseUnits: Number(raw.returnedQtyBaseUnits || 0),
+      baseUnit: raw.baseUnit,
+      unitsPerPack: Number(raw.unitsPerPack || 1),
+      ratePerBaseUnit: round2(raw.ratePerBaseUnit),
+      grossAmount: grossAmount,
+      discountReversal: discountReversal,
+      taxableAmount: taxableAmount,
+      taxRate: taxRate,
+      taxAmount: taxAmount,
+      refundAmount: refundAmount,
+      purchaseRatePerBaseUnit: round2(raw.purchaseRatePerBaseUnit || 0),
+      condition: raw.condition || 'SEALED_USABLE',
+      restock: raw.restock !== false
+    };
+  });
 
   if (!items.length) {
     throw new Error('No return items provided');
@@ -1618,32 +1660,39 @@ async function createReturn(payload, req = {}) {
     }
   }
 
-  originalSale.return_refs = originalSale.return_refs || [];
-  originalSale.return_refs.push({
-    return_id: pharmacyReturn._id,
-    return_number: pharmacyReturn.returnNumber,
-    amount: refundAmount,
-    returned_at: new Date()
-  });
+  // ========== HANDLE DEFERRED PAYMENT RETURN SEPARATELY ==========
+  if (originalSale.payment_deferred) {
+    console.log('Handling return for deferred payment sale...');
+    await handleDeferredPaymentReturn(originalSale, refundAmount, refundMode, pharmacyReturn._id, createdBy);
+  } else {
+    // Regular sale handling
+    originalSale.return_refs = originalSale.return_refs || [];
+    originalSale.return_refs.push({
+      return_id: pharmacyReturn._id,
+      return_number: pharmacyReturn.returnNumber,
+      amount: refundAmount,
+      returned_at: new Date()
+    });
 
-  originalSale.return_amount = round2(
-    Number(originalSale.return_amount || 0) + refundAmount
-  );
+    originalSale.return_amount = round2(
+      Number(originalSale.return_amount || 0) + refundAmount
+    );
 
-  originalSale.net_amount_after_returns = clampMoney(
-    Number(originalSale.total_amount || 0) - Number(originalSale.return_amount || 0)
-  );
+    originalSale.net_amount_after_returns = clampMoney(
+      Number(originalSale.total_amount || 0) - Number(originalSale.return_amount || 0)
+    );
 
-  originalSale.balance_due = clampMoney(
-    Number(originalSale.balance_due || 0) - refundAmount
-  );
+    originalSale.balance_due = clampMoney(
+      Number(originalSale.balance_due || 0) - refundAmount
+    );
 
-  originalSale.status =
-    Number(originalSale.return_amount || 0) >= Number(originalSale.total_amount || 0)
-      ? 'Refunded'
-      : 'PartiallyReturned';
+    originalSale.status =
+      Number(originalSale.return_amount || 0) >= Number(originalSale.total_amount || 0)
+        ? 'Refunded'
+        : 'PartiallyReturned';
 
-  await originalSale.save();
+    await originalSale.save();
+  }
   console.log('Original sale updated');
 
   let associatedBill = await Bill.findOne({
@@ -1911,46 +1960,37 @@ async function createReturn(payload, req = {}) {
         associatedInvoice.markModified('medicine_items');
       }
 
-      // ========== FIXED: Recalculate invoice totals with proper validation ==========
-      // Get current invoice values
       const currentInvoiceSubtotal = Number(associatedInvoice.subtotal || 0);
       const currentInvoiceDiscount = Number(associatedInvoice.discount || 0);
       const currentInvoiceTax = Number(associatedInvoice.tax || 0);
 
-      // Calculate new values after return
       let newInvoiceSubtotal = clampMoney(currentInvoiceSubtotal - totalReturnedSubtotal);
       let newInvoiceDiscount = clampMoney(currentInvoiceDiscount - totalSuppliedDiscountReversal);
       let newInvoiceTax = clampMoney(currentInvoiceTax - totalReturnedTax);
 
-      // CRITICAL FIX: If subtotal becomes 0 or negative, set everything to 0
       if (newInvoiceSubtotal <= 0) {
         newInvoiceSubtotal = 0;
         newInvoiceDiscount = 0;
       }
 
-      // Ensure discount never exceeds subtotal
       if (newInvoiceDiscount > newInvoiceSubtotal) {
         newInvoiceDiscount = newInvoiceSubtotal;
       }
 
-      // Calculate new total
       let newInvoiceTotal = clampMoney(newInvoiceSubtotal - newInvoiceDiscount + newInvoiceTax);
       if (newInvoiceTotal < 0) newInvoiceTotal = 0;
 
-      // Calculate new amount_paid (reduce by refund amount if cash refund)
       let newAmountPaid = Number(associatedInvoice.amount_paid || 0);
       if (cashRefundModes.includes(refundMode)) {
         newAmountPaid = clampMoney(newAmountPaid - totalReturnedAmount);
       }
 
-      // Ensure amount_paid doesn't exceed total
       if (newAmountPaid > newInvoiceTotal) {
         newAmountPaid = newInvoiceTotal;
       }
 
       const newBalanceDue = clampMoney(newInvoiceTotal - newAmountPaid);
 
-      // Update invoice with recalculated values
       associatedInvoice.subtotal = newInvoiceSubtotal;
       associatedInvoice.discount = newInvoiceDiscount;
       associatedInvoice.tax = newInvoiceTax;
@@ -1958,7 +1998,6 @@ async function createReturn(payload, req = {}) {
       associatedInvoice.amount_paid = newAmountPaid;
       associatedInvoice.balance_due = newBalanceDue;
 
-      // Update status based on new totals
       if (newInvoiceTotal <= 0) {
         associatedInvoice.status = 'Fully Returned';
       } else if (newBalanceDue <= 0) {
@@ -1969,7 +2008,6 @@ async function createReturn(payload, req = {}) {
         associatedInvoice.status = 'Pending';
       }
 
-      // Add return reference
       associatedInvoice.return_refs = associatedInvoice.return_refs || [];
       associatedInvoice.return_refs.push({
         return_id: pharmacyReturn._id,
@@ -1986,27 +2024,19 @@ async function createReturn(payload, req = {}) {
         ? `${associatedInvoice.notes}\nReturn ${pharmacyReturn.returnNumber}: -₹${totalReturnedAmount.toFixed(2)}`
         : `Return ${pharmacyReturn.returnNumber}: -₹${totalReturnedAmount.toFixed(2)}`;
 
-      // ========== FINAL VALIDATION: Ensure all constraints are met before saving ==========
-      // Fix: subtotal cannot be less than discount
       if (associatedInvoice.subtotal < associatedInvoice.discount) {
-        console.warn(`Fixing: subtotal (${associatedInvoice.subtotal}) < discount (${associatedInvoice.discount})`);
         associatedInvoice.discount = associatedInvoice.subtotal;
       }
 
-      // Fix: total must equal subtotal - discount + tax
       const calculatedTotal = associatedInvoice.subtotal - associatedInvoice.discount + associatedInvoice.tax;
       if (Math.abs(associatedInvoice.total - calculatedTotal) > 0.01) {
-        console.warn(`Fixing invoice total: ${associatedInvoice.total} -> ${calculatedTotal}`);
         associatedInvoice.total = calculatedTotal;
       }
 
-      // Fix: amount_paid cannot exceed total
       if (associatedInvoice.amount_paid > associatedInvoice.total) {
-        console.warn(`Fixing amount_paid: ${associatedInvoice.amount_paid} > ${associatedInvoice.total}`);
         associatedInvoice.amount_paid = associatedInvoice.total;
       }
 
-      // Recalculate balance_due
       associatedInvoice.balance_due = associatedInvoice.total - associatedInvoice.amount_paid;
 
       await associatedInvoice.save();
@@ -2062,7 +2092,8 @@ async function createReturn(payload, req = {}) {
     refundAmount > 0 &&
     admissionId &&
     patientId &&
-    ['IPDAdvance', 'PharmacyAdvance'].includes(refundMode)
+    ['IPDAdvance', 'PharmacyAdvance'].includes(refundMode) &&
+    !originalSale.payment_deferred // Only credit advance for non-deferred sales (deferred handled in handleDeferredPaymentReturn)
   ) {
     await createAdvanceLedgerEntry({
       hospitalId,
@@ -2160,6 +2191,788 @@ async function createOutstandingSettlement(payload, req = {}) {
   return { allocation, extraAdvance: extra, balances: await getPatientPharmacySummary({ patientId, admissionId }) };
 }
 
+// ========== NEW: Bulk Settle Deferred Payments (POS-like Interface) ==========
+async function bulkSettleDeferredPayments(payload, req = {}) {
+  const hospitalId = getHospitalId(req, payload.hospitalId);
+  const pharmacyId = objectIdOrUndefined(payload.pharmacyId || payload.pharmacy_id) || (await (async () => {
+    const Pharmacy = mongoose.model('Pharmacy');
+    const pharmacy = await Pharmacy.findOne({ status: 'Active' }).select('_id');
+    return pharmacy?._id;
+  })());
+  const createdBy = getCreatedBy(req);
+  const admissionId = objectIdOrUndefined(payload.admissionId);
+  const patientId = objectIdOrUndefined(payload.patientId);
+
+  if (!admissionId && !patientId) {
+    throw new Error('admissionId or patientId is required');
+  }
+
+  const {
+    saleIds,
+    discount = 0,
+    discountType = 'percentage',
+    payments = [],
+    notes = '',
+    settleAll = false
+  } = payload;
+
+  // Query to get deferred payments
+  const query = {
+    payment_deferred: true,
+    status: { $in: ['Pending', 'Partially Paid'] },
+    balance_due: { $gt: 0 }
+  };
+
+  if (admissionId) query.admission_id = admissionId;
+  if (patientId) query.patient_id = patientId;
+  if (!settleAll && saleIds && saleIds.length > 0) {
+    query._id = { $in: saleIds.map(id => objectIdOrUndefined(id)) };
+  }
+
+  const deferredSales = await Sale.find(query)
+    .sort({ sale_date: 1 })
+    .lean();
+
+  if (deferredSales.length === 0) {
+    return { settled: [], totalAmount: 0, message: 'No pending deferred payments found' };
+  }
+
+  // Calculate total due amount
+  let totalDue = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+  totalDue = normalizeMoney(totalDue);
+
+  // Calculate discount amount
+  let discountAmount = 0;
+  if (discountType === 'percentage') {
+    discountAmount = normalizeMoney(totalDue * (discount / 100));
+  } else {
+    discountAmount = normalizeMoney(Math.min(discount, totalDue));
+  }
+
+  const amountAfterDiscount = normalizeMoney(totalDue - discountAmount);
+  const totalCollected = normalizeMoney(payments.reduce((sum, p) => sum + (p.amount || 0), 0));
+
+  // Check if collected amount matches amount after discount
+  if (Math.abs(totalCollected - amountAfterDiscount) > 0.01) {
+    throw new Error(`Collected amount (${totalCollected}) does not match amount after discount (${amountAfterDiscount})`);
+  }
+
+  // Process each payment entry
+  const paymentEntries = [];
+  let remainingToAllocate = amountAfterDiscount;
+
+  for (const payment of payments) {
+    if (remainingToAllocate <= 0) break;
+    const amount = normalizeMoney(Math.min(payment.amount, remainingToAllocate));
+    if (amount <= 0) continue;
+
+    paymentEntries.push({
+      method: payment.method,
+      amount: amount,
+      reference: payment.reference || null,
+      walletType: payment.walletType || (payment.method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : payment.method === 'IPDAdvance' ? 'IPD_SHARED' : null)
+    });
+    remainingToAllocate = normalizeMoney(remainingToAllocate - amount);
+  }
+
+  // Validate advance payments if any
+  for (const p of paymentEntries) {
+    if (['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) {
+      if (!admissionId || !patientId) {
+        throw new Error(`${p.method} can only be used for admitted IPD patients.`);
+      }
+      const walletType = p.walletType || (p.method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED');
+      const balance = await getAdvanceBalance({ admissionId, patientId, walletType });
+      if (balance + 0.01 < p.amount) {
+        throw new Error(`Insufficient ${walletType} balance. Available ₹${balance}, needed ₹${p.amount}.`);
+      }
+    }
+  }
+
+  // Calculate proportional discount for each sale
+  const results = [];
+  let totalDiscountAllocated = 0;
+  let totalPaid = 0;
+
+  for (const sale of deferredSales) {
+    const saleDue = sale.balance_due || 0;
+    // Proportional discount allocation
+    const saleDiscount = normalizeMoney((saleDue / totalDue) * discountAmount);
+    totalDiscountAllocated += saleDiscount;
+
+    const saleAmountAfterDiscount = normalizeMoney(saleDue - saleDiscount);
+    const salePaid = normalizeMoney((saleAmountAfterDiscount / amountAfterDiscount) * totalCollected);
+    totalPaid += salePaid;
+
+    const saleDiscountRatio = saleDue > 0 ? saleDiscount / saleDue : 0;
+
+    // Update sale
+    const updatedSale = await Sale.findById(sale._id);
+    if (!updatedSale) continue;
+
+    const oldPaidAmount = updatedSale.amount_paid || 0;
+    updatedSale.amount_paid = normalizeMoney(oldPaidAmount + salePaid);
+    updatedSale.balance_due = normalizeMoney(saleAmountAfterDiscount - salePaid);
+    updatedSale.status = updatedSale.balance_due <= 0 ? 'Completed' : 'Partially Paid';
+    updatedSale.payment_deferred = updatedSale.balance_due > 0;
+
+    // Add discount record if applicable
+    if (saleDiscount > 0) {
+      updatedSale.discount_amount = normalizeMoney((updatedSale.discount_amount || 0) + saleDiscount);
+      updatedSale.discount_reason = updatedSale.discount_reason
+        ? `${updatedSale.discount_reason}; Bulk settlement discount ₹${saleDiscount}`
+        : `Bulk settlement discount ₹${saleDiscount}`;
+    }
+
+    // Add payment record
+    updatedSale.payments = updatedSale.payments || [];
+
+    // Allocate payment proportionally to this sale
+    const salePaymentEntries = allocatePaymentsForAmount(paymentEntries, salePaid);
+    for (const p of salePaymentEntries) {
+      updatedSale.payments.push({
+        method: p.method,
+        amount: p.amount,
+        reference: p.reference,
+        date: new Date(),
+        collected_by: createdBy
+      });
+    }
+
+    updatedSale.settled_at = updatedSale.balance_due <= 0 ? new Date() : updatedSale.settled_at;
+    await updatedSale.save();
+
+    // Consume advance payments
+    for (const p of salePaymentEntries) {
+      if (['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) {
+        await consumeAdvancePayment({
+          p,
+          sale: updatedSale,
+          hospitalId,
+          patientId: updatedSale.patient_id,
+          admissionId: updatedSale.admission_id,
+          createdBy
+        });
+      }
+    }
+
+    // Create payment ledger entries
+    await createPharmacyLedgerForPayments({
+      payments: salePaymentEntries,
+      sale: updatedSale,
+      hospitalId,
+      pharmacyId,
+      createdBy,
+      entryType: 'OUTSTANDING_PAYMENT'
+    });
+
+    // ========== FIX: Update associated invoice ==========
+    if (updatedSale.invoice_id) {
+      const invoice = await Invoice.findById(updatedSale.invoice_id);
+      if (invoice) {
+        console.log(`========== PROCESSING INVOICE: ${invoice.invoice_number} ==========`);
+        console.log('Invoice BEFORE update:', {
+          subtotal: invoice.subtotal,
+          discount: invoice.discount,
+          tax: invoice.tax,
+          total: invoice.total,
+          amount_paid: invoice.amount_paid,
+          balance_due: invoice.balance_due
+        });
+
+        // Keep the original subtotal (gross amount before discount)
+        const originalSubtotal = invoice.subtotal;
+
+        // Calculate new discount (add to existing)
+        const totalDiscount = normalizeMoney((invoice.discount || 0) + saleDiscount);
+
+        // Calculate new tax (reduce proportionally based on discount ratio)
+        const newTax = normalizeMoney(invoice.tax * (1 - saleDiscountRatio));
+
+        // Calculate new total using formula: total = subtotal - discount + tax
+        const newTotal = normalizeMoney(originalSubtotal - totalDiscount + newTax);
+
+        // Update payment amounts
+        const newAmountPaid = normalizeMoney((invoice.amount_paid || 0) + salePaid);
+        const newBalanceDue = normalizeMoney(newTotal - newAmountPaid);
+
+        console.log('Invoice AFTER calculations:', {
+          originalSubtotal,
+          totalDiscount,
+          newTax,
+          newTotal,
+          newAmountPaid,
+          newBalanceDue,
+          validationFormula: `${originalSubtotal} - ${totalDiscount} + ${newTax} = ${newTotal}`
+        });
+
+        // Update invoice fields
+        invoice.discount = totalDiscount;
+        invoice.tax = newTax;
+        invoice.total = newTotal;
+        invoice.amount_paid = newAmountPaid;
+        invoice.balance_due = newBalanceDue;
+
+        // ENSURE amount_paid never exceeds total
+        if (invoice.amount_paid > invoice.total) {
+          console.log(`WARNING: amount_paid (${invoice.amount_paid}) > total (${invoice.total}), capping amount_paid to total`);
+          invoice.amount_paid = invoice.total;
+          invoice.balance_due = 0;
+        }
+
+        // ENSURE balance_due is not negative
+        if (invoice.balance_due < 0) {
+          console.log(`WARNING: balance_due (${invoice.balance_due}) is negative, setting to 0`);
+          invoice.balance_due = 0;
+        }
+
+        // Update individual items for display (optional)
+        invoice.medicine_items = invoice.medicine_items.map(item => {
+          const originalTotal = item.total_price;
+          const itemDiscount = normalizeMoney(originalTotal * saleDiscountRatio);
+          const newItemTotal = normalizeMoney(originalTotal - itemDiscount);
+          const taxableAmount = normalizeMoney(item.taxable_amount - itemDiscount);
+
+          let newTaxAmount = item.tax_amount;
+          if (item.tax_rate > 0 && taxableAmount > 0) {
+            newTaxAmount = normalizeMoney(taxableAmount * item.tax_rate / 100);
+          }
+
+          return {
+            ...item.toObject(),
+            discount_amount: (item.discount_amount || 0) + itemDiscount,
+            taxable_amount: taxableAmount,
+            total_price: newItemTotal,
+            tax_amount: newTaxAmount
+          };
+        });
+
+        // Update status
+        if (invoice.balance_due <= 0) {
+          invoice.status = 'Paid';
+        } else if (invoice.amount_paid > 0) {
+          invoice.status = 'Partial';
+        } else {
+          invoice.status = 'Pending';
+        }
+
+        // Add payment to invoice payment_history
+        for (const p of salePaymentEntries) {
+          invoice.payment_history = invoice.payment_history || [];
+          invoice.payment_history.push({
+            amount: p.amount,
+            method: p.method,
+            reference: p.reference,
+            date: new Date(),
+            status: 'Completed',
+            collected_by: createdBy
+          });
+        }
+
+        console.log('Invoice AFTER update (before save):', {
+          subtotal: invoice.subtotal,
+          discount: invoice.discount,
+          tax: invoice.tax,
+          total: invoice.total,
+          amount_paid: invoice.amount_paid,
+          balance_due: invoice.balance_due,
+          validationCheck: invoice.total === invoice.subtotal - invoice.discount + invoice.tax
+        });
+
+        await invoice.save();
+        console.log(`✅ Updated invoice ${invoice.invoice_number}`);
+      }
+    }
+
+    // ========== FIX: Update associated bill ==========
+    let bill = null;
+
+    // Find the bill
+    if (sale.bill_id) {
+      bill = await Bill.findById(sale.bill_id);
+    }
+    if (!bill && updatedSale._id) {
+      bill = await Bill.findOne({ sale_id: updatedSale._id });
+    }
+    if (!bill && updatedSale.invoice_id) {
+      bill = await Bill.findOne({ invoice_id: updatedSale.invoice_id });
+    }
+
+    if (bill) {
+      console.log(`========== PROCESSING BILL: ${bill._id} ==========`);
+      console.log('Bill BEFORE update:', {
+        subtotal: bill.subtotal,
+        discount: bill.discount,
+        discount_amount: bill.discount_amount,
+        tax_amount: bill.tax_amount,
+        total_amount: bill.total_amount,
+        paid_amount: bill.paid_amount,
+        balance_due: bill.balance_due
+      });
+
+      // Keep original subtotal (gross amount before discount)
+      const originalSubtotal = bill.subtotal;
+
+      // Calculate new discount
+      const totalDiscount = normalizeMoney((bill.discount || 0) + saleDiscount);
+
+      // Calculate new tax (reduce proportionally)
+      const newTax = normalizeMoney(bill.tax_amount * (1 - saleDiscountRatio));
+
+      // Calculate new total using formula: total = subtotal - discount + tax
+      const newTotal = normalizeMoney(originalSubtotal - totalDiscount + newTax);
+
+      // Update payment amounts
+      const newPaidAmount = normalizeMoney((bill.paid_amount || 0) + salePaid);
+      const newBalanceDue = normalizeMoney(newTotal - newPaidAmount);
+
+      console.log('Bill AFTER calculations:', {
+        originalSubtotal,
+        totalDiscount,
+        newTax,
+        newTotal,
+        newPaidAmount,
+        newBalanceDue
+      });
+
+      // Update bill fields
+      bill.discount = totalDiscount;
+      bill.discount_amount = totalDiscount;
+      bill.tax_amount = newTax;
+      bill.total_amount = newTotal;
+      bill.paid_amount = newPaidAmount;
+      bill.balance_due = newBalanceDue;
+
+      // ENSURE paid_amount never exceeds total_amount
+      if (bill.paid_amount > bill.total_amount) {
+        console.log(`WARNING: paid_amount (${bill.paid_amount}) > total_amount (${bill.total_amount}), capping paid_amount to total_amount`);
+        bill.paid_amount = bill.total_amount;
+        bill.balance_due = 0;
+      }
+
+      // ENSURE balance_due is not negative
+      if (bill.balance_due < 0) {
+        console.log(`WARNING: balance_due (${bill.balance_due}) is negative, setting to 0`);
+        bill.balance_due = 0;
+      }
+
+      // Update individual items for display (optional)
+      bill.items = bill.items.map(item => {
+        if (item.item_type === 'Medicine Return') return item;
+
+        const originalAmount = Math.abs(item.amount);
+        const itemDiscount = normalizeMoney(originalAmount * saleDiscountRatio);
+        const newAmount = normalizeMoney(originalAmount - itemDiscount);
+        const taxableAmount = normalizeMoney(item.taxable_amount - itemDiscount);
+
+        let newTaxAmount = item.tax_amount;
+        if (item.tax_rate > 0 && taxableAmount > 0) {
+          newTaxAmount = normalizeMoney(taxableAmount * item.tax_rate / 100);
+        }
+
+        return {
+          ...item.toObject(),
+          amount: item.amount > 0 ? newAmount : -newAmount,
+          discount_amount: (item.discount_amount || 0) + itemDiscount,
+          taxable_amount: taxableAmount,
+          tax_amount: item.amount > 0 ? newTaxAmount : -newTaxAmount
+        };
+      });
+
+      // Update status
+      if (bill.balance_due <= 0) {
+        bill.status = 'Paid';
+        bill.paid_at = new Date();
+      } else if (bill.paid_amount > 0) {
+        bill.status = 'Partially Paid';
+      } else {
+        bill.status = 'Pending';
+      }
+
+      // Add payment records to bill
+      for (const p of salePaymentEntries) {
+        bill.payments = bill.payments || [];
+        bill.payments.push({
+          method: p.method,
+          amount: p.amount,
+          reference: p.reference,
+          date: new Date()
+        });
+      }
+
+      console.log('Bill AFTER update (before save):', {
+        subtotal: bill.subtotal,
+        discount: bill.discount,
+        discount_amount: bill.discount_amount,
+        tax_amount: bill.tax_amount,
+        total_amount: bill.total_amount,
+        paid_amount: bill.paid_amount,
+        balance_due: bill.balance_due
+      });
+
+      await bill.save();
+      console.log(`✅ Updated bill ${bill._id}`);
+    } else {
+      console.log(`⚠️ No bill found for sale ${updatedSale.sale_number}`);
+    }
+
+    // Update IPD charge
+    if (updatedSale.admission_id && updatedSale.patient_id && updatedSale.balance_due <= 0) {
+      const ipdCharge = await IPDCharge.findOne({
+        admissionId: updatedSale.admission_id,
+        sourceId: updatedSale._id,
+        sourceModule: 'Pharmacy'
+      });
+      if (ipdCharge && !ipdCharge.isBilled) {
+        ipdCharge.isBilled = true;
+        ipdCharge.billedAt = new Date();
+        await ipdCharge.save();
+      }
+    }
+
+    results.push({
+      saleId: updatedSale._id,
+      saleNumber: updatedSale.sale_number,
+      originalAmount: saleDue,
+      discount: saleDiscount,
+      amountAfterDiscount: saleAmountAfterDiscount,
+      paidAmount: salePaid,
+      balanceDue: updatedSale.balance_due,
+      status: updatedSale.status
+    });
+  }
+
+  // Update patient outstanding balance
+  if (patientId) {
+    const totalOutstandingChange = -totalPaid;
+    await Patient.findByIdAndUpdate(patientId, {
+      $inc: { pharmacy_outstanding_balance: totalOutstandingChange },
+      last_pharmacy_transaction: new Date()
+    });
+  }
+
+  // Create discount ledger entry if discount was applied
+  if (discountAmount > 0) {
+    await PharmacyLedgerEntry.create({
+      hospitalId,
+      pharmacyId,
+      entryType: 'DISCOUNT',
+      direction: 'NON_CASH',
+      amount: discountAmount,
+      paymentMethod: 'BulkDiscount',
+      patientId,
+      admissionId,
+      notes: `Bulk settlement discount of ₹${discountAmount} applied to ${results.length} deferred payments`,
+      createdBy
+    });
+  }
+
+  const finalBalances = await getPatientPharmacySummary({ patientId, admissionId });
+
+  return {
+    success: true,
+    message: `${results.length} deferred payment(s) settled successfully`,
+    summary: {
+      totalDue,
+      discountAmount: normalizeMoney(totalDiscountAllocated),
+      amountAfterDiscount,
+      totalPaid,
+      discountPercentage: discount,
+      discountType
+    },
+    settlements: results,
+    paymentBreakdown: paymentEntries,
+    balances: finalBalances
+  };
+}
+
+// ========== UPDATED: Single Deferred Payment Settlement with Discount ==========
+async function settleSingleDeferredPayment(saleId, payload, req = {}) {
+  const {
+    paymentMethod = 'Cash',
+    reference,
+    collected_by,
+    discount = 0,
+    discountType = 'percentage'
+  } = payload;
+
+  const sale = await Sale.findById(saleId);
+  if (!sale) {
+    throw new Error('Sale not found');
+  }
+
+  if (!sale.payment_deferred) {
+    throw new Error('This sale is not a deferred payment');
+  }
+
+  if (sale.status === 'Completed') {
+    throw new Error('Sale is already completed');
+  }
+
+  let amountToPay = sale.balance_due;
+  let discountAmount = 0;
+
+  // Apply discount if specified
+  if (discount > 0) {
+    if (discountType === 'percentage') {
+      discountAmount = normalizeMoney(amountToPay * (discount / 100));
+    } else {
+      discountAmount = normalizeMoney(Math.min(discount, amountToPay));
+    }
+    amountToPay = normalizeMoney(amountToPay - discountAmount);
+  }
+
+  const paidAmount = sale.amount_paid + amountToPay;
+  const saleDue = sale.balance_due;
+  const saleDiscountRatio = saleDue > 0 ? discountAmount / saleDue : 0;
+
+  // Update sale
+  sale.amount_paid = paidAmount;
+  sale.balance_due = 0;
+  sale.status = 'Completed';
+  sale.payment_method = paymentMethod;
+  sale.payment_deferred = false;
+  sale.settled_at = new Date();
+
+  // Apply discount
+  if (discountAmount > 0) {
+    sale.discount_amount = normalizeMoney((sale.discount_amount || 0) + discountAmount);
+    sale.discount_reason = sale.discount_reason
+      ? `${sale.discount_reason}; Settlement discount ₹${discountAmount}`
+      : `Settlement discount ₹${discountAmount}`;
+  }
+
+  // Add payment record
+  sale.payments = sale.payments || [];
+  sale.payments.push({
+    method: paymentMethod,
+    amount: amountToPay,
+    reference: reference,
+    date: new Date(),
+    collected_by: collected_by
+  });
+
+  await sale.save();
+
+  // ========== FIX: Update invoice (preserve validation) ==========
+  if (sale.invoice_id) {
+    const invoice = await Invoice.findById(sale.invoice_id);
+    if (invoice) {
+      // Keep the original subtotal
+      const originalSubtotal = invoice.subtotal;
+
+      // Calculate new discount
+      const totalDiscount = normalizeMoney((invoice.discount || 0) + discountAmount);
+
+      // Calculate new tax (reduce proportionally)
+      const newTax = normalizeMoney(invoice.tax * (1 - saleDiscountRatio));
+
+      // Calculate new total using formula
+      const newTotal = normalizeMoney(originalSubtotal - totalDiscount + newTax);
+
+      // Update payment amounts
+      const newAmountPaid = normalizeMoney((invoice.amount_paid || 0) + amountToPay);
+      const newBalanceDue = normalizeMoney(newTotal - newAmountPaid);
+
+      // Update invoice
+      invoice.discount = totalDiscount;
+      invoice.tax = newTax;
+      invoice.total = newTotal;
+      invoice.amount_paid = newAmountPaid;
+      invoice.balance_due = newBalanceDue;
+
+      // Update individual items for display
+      invoice.medicine_items = invoice.medicine_items.map(item => {
+        const originalTotal = item.total_price;
+        const itemDiscount = normalizeMoney(originalTotal * saleDiscountRatio);
+        const newItemTotal = normalizeMoney(originalTotal - itemDiscount);
+        const taxableAmount = normalizeMoney(item.taxable_amount - itemDiscount);
+
+        let newTaxAmount = item.tax_amount;
+        if (item.tax_rate > 0 && taxableAmount > 0) {
+          newTaxAmount = normalizeMoney(taxableAmount * item.tax_rate / 100);
+        }
+
+        return {
+          ...item.toObject(),
+          discount_amount: (item.discount_amount || 0) + itemDiscount,
+          taxable_amount: taxableAmount,
+          total_price: newItemTotal,
+          tax_amount: newTaxAmount
+        };
+      });
+
+      if (newBalanceDue <= 0) {
+        invoice.status = 'Paid';
+      } else if (newAmountPaid > 0) {
+        invoice.status = 'Partial';
+      } else {
+        invoice.status = 'Pending';
+      }
+
+      // Add payment to invoice payment_history
+      invoice.payment_history = invoice.payment_history || [];
+      invoice.payment_history.push({
+        amount: amountToPay,
+        method: paymentMethod,
+        reference: reference,
+        date: new Date(),
+        status: 'Completed',
+        collected_by: collected_by
+      });
+
+      await invoice.save();
+      console.log(`✅ Updated invoice ${invoice.invoice_number}: subtotal=${originalSubtotal}, discount=${totalDiscount}, tax=${newTax}, total=${newTotal}, paid=${newAmountPaid}`);
+    }
+  }
+
+  // ========== FIX: Update bill (preserve validation) ==========
+  if (sale.bill_id) {
+    const bill = await Bill.findById(sale.bill_id);
+    if (bill) {
+      // Keep the original subtotal
+      const originalSubtotal = bill.subtotal;
+
+      // Calculate new discount
+      const totalDiscount = normalizeMoney((bill.discount || 0) + discountAmount);
+
+      // Calculate new tax (reduce proportionally)
+      const newTax = normalizeMoney(bill.tax_amount * (1 - saleDiscountRatio));
+
+      // Calculate new total using formula
+      const newTotal = normalizeMoney(originalSubtotal - totalDiscount + newTax);
+
+      // Update payment amounts
+      const newPaidAmount = normalizeMoney((bill.paid_amount || 0) + amountToPay);
+      const newBalanceDue = normalizeMoney(newTotal - newPaidAmount);
+
+      // Update bill
+      bill.discount = totalDiscount;
+      bill.discount_amount = totalDiscount;
+      bill.tax_amount = newTax;
+      bill.total_amount = newTotal;
+      bill.paid_amount = newPaidAmount;
+      bill.balance_due = newBalanceDue;
+
+      // Update individual items for display
+      bill.items = bill.items.map(item => {
+        if (item.item_type === 'Medicine Return') return item;
+
+        const originalAmount = Math.abs(item.amount);
+        const itemDiscount = normalizeMoney(originalAmount * saleDiscountRatio);
+        const newAmount = normalizeMoney(originalAmount - itemDiscount);
+        const taxableAmount = normalizeMoney(item.taxable_amount - itemDiscount);
+
+        let newTaxAmount = item.tax_amount;
+        if (item.tax_rate > 0 && taxableAmount > 0) {
+          newTaxAmount = normalizeMoney(taxableAmount * item.tax_rate / 100);
+        }
+
+        return {
+          ...item.toObject(),
+          amount: item.amount > 0 ? newAmount : -newAmount,
+          discount_amount: (item.discount_amount || 0) + itemDiscount,
+          taxable_amount: taxableAmount,
+          tax_amount: item.amount > 0 ? newTaxAmount : -newTaxAmount
+        };
+      });
+
+      if (newBalanceDue <= 0) {
+        bill.status = 'Paid';
+        bill.paid_at = new Date();
+      } else if (newPaidAmount > 0) {
+        bill.status = 'Partially Paid';
+      } else {
+        bill.status = 'Pending';
+      }
+
+      // Add payment record to bill
+      bill.payments = bill.payments || [];
+      bill.payments.push({
+        method: paymentMethod,
+        amount: amountToPay,
+        reference: reference,
+        date: new Date()
+      });
+
+      await bill.save();
+      console.log(`✅ Updated bill ${bill._id}: subtotal=${originalSubtotal}, discount=${totalDiscount}, tax=${newTax}, total=${newTotal}, paid=${newPaidAmount}`);
+    }
+  }
+
+  // Update patient outstanding balance
+  if (sale.patient_id) {
+    await Patient.findByIdAndUpdate(sale.patient_id, {
+      $inc: { pharmacy_outstanding_balance: -amountToPay }
+    });
+  }
+
+  // Update IPD charge
+  if (sale.admission_id && sale.patient_id) {
+    const ipdCharge = await IPDCharge.findOne({
+      admissionId: sale.admission_id,
+      sourceId: sale._id,
+      sourceModule: 'Pharmacy'
+    });
+    if (ipdCharge && !ipdCharge.isBilled) {
+      ipdCharge.isBilled = true;
+      ipdCharge.billedAt = new Date();
+      await ipdCharge.save();
+    }
+  }
+
+  const hospitalId = getHospitalId(req, sale.hospitalId);
+  const pharmacyId = sale.pharmacy_id;
+  const createdBy = collected_by || getCreatedBy(req);
+
+  // Create payment ledger entry
+  await PharmacyLedgerEntry.create({
+    hospitalId,
+    pharmacyId,
+    entryType: 'OUTSTANDING_PAYMENT',
+    direction: 'IN',
+    amount: amountToPay,
+    paymentMethod: paymentMethod,
+    patientId: sale.patient_id,
+    admissionId: sale.admission_id,
+    saleId: sale._id,
+    invoiceId: sale.invoice_id,
+    notes: `Deferred payment settled via ${paymentMethod}. Discount: ₹${discountAmount}. Reference: ${reference || 'N/A'}`,
+    createdBy
+  });
+
+  // Create discount ledger entry if applicable
+  if (discountAmount > 0) {
+    await PharmacyLedgerEntry.create({
+      hospitalId,
+      pharmacyId,
+      entryType: 'DISCOUNT',
+      direction: 'NON_CASH',
+      amount: discountAmount,
+      paymentMethod: 'Discount',
+      patientId: sale.patient_id,
+      admissionId: sale.admission_id,
+      saleId: sale._id,
+      invoiceId: sale.invoice_id,
+      notes: `Settlement discount applied to deferred payment ${sale.sale_number}`,
+      createdBy
+    });
+  }
+
+  return {
+    success: true,
+    message: 'Deferred payment settled successfully',
+    sale: {
+      _id: sale._id,
+      sale_number: sale.sale_number,
+      amount_paid: sale.amount_paid,
+      balance_due: sale.balance_due,
+      discount_applied: discountAmount,
+      status: sale.status
+    }
+  };
+}
+
 module.exports = {
   objectIdOrUndefined,
   getHospitalId,
@@ -2176,6 +2989,10 @@ module.exports = {
   createUnifiedSale,
   createReturn,
   createOutstandingSettlement,
+  bulkSettleDeferredPayments,
+  settleSingleDeferredPayment,
+  validateDeferredPaymentReturn,
+  handleDeferredPaymentReturn,
   getPatientOutstanding,
   getPatientPharmacySummary,
   normalizePaymentsWithOverpayment
