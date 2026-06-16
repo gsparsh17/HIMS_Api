@@ -30,6 +30,7 @@ require('./models/StoreInventoryTransaction');
 require('./models/StoreItem');
 require('./models/StoreCategory');
 require('./models/EHRBundle');
+require('./models/ApprovalRequest');
 // ... add a require for every model file you have
 
 // Middleware
@@ -121,6 +122,7 @@ app.use('/api/external-lab', externalLabRoutes);
 app.use("/api/license", licenseRoutes);
 app.use('/api/icd11', require('./routes/icd11.routes.js'));
 app.use("/api/ot", require('./routes/ot.routes.js'));
+app.use('/api/approvals', require('./routes/approval.routes.js'));
 
 // Error Handlers
 app.use((req, res, next) => {

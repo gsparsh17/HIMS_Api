@@ -28,6 +28,14 @@ const supplierSchema = new mongoose.Schema({
   address: {
     type: String,
   },
+  gstNo: {
+    type: String,
+    trim: true,
+  },
+  licenseNo: {
+    type: String,
+    trim: true,
+  },
   isActive: {
     type: Boolean,
     default: true,

@@ -4,13 +4,13 @@ const Supplier = require('../models/Supplier.js');
 // @route   POST /api/suppliers
 // @access  Private (Admin)
 const createSupplier = async (req, res) => {
-  const { name, companyName, contactPerson, phone, email, address } = req.body; // ADDED companyName
+  const { name, companyName, contactPerson, phone, email, address, gstNo, licenseNo } = req.body; // ADDED companyName, gstNo, licenseNo
   try {
     const supplierExists = await Supplier.findOne({ $or: [{ email }, { phone }] });
     if (supplierExists) {
       return res.status(400).json({ message: 'Supplier with this email or phone already exists.' });
     }
-    const supplier = new Supplier({ name, companyName, contactPerson, phone, email, address }); // ADDED companyName
+    const supplier = new Supplier({ name, companyName, contactPerson, phone, email, address, gstNo, licenseNo }); // ADDED companyName, gstNo, licenseNo
     const createdSupplier = await supplier.save();
     res.status(201).json(createdSupplier);
   } catch (error) {
@@ -55,13 +55,15 @@ const updateSupplier = async (req, res) => {
     if (!supplier) {
       return res.status(404).json({ message: 'Supplier not found.' });
     }
-    const { name, companyName, contactPerson, phone, email, address } = req.body; // ADDED companyName
+    const { name, companyName, contactPerson, phone, email, address, gstNo, licenseNo } = req.body; // ADDED companyName, gstNo, licenseNo
     supplier.name = name || supplier.name;
     supplier.companyName = companyName || supplier.companyName; // ADDED
     supplier.contactPerson = contactPerson || supplier.contactPerson;
     supplier.phone = phone || supplier.phone;
     supplier.email = email || supplier.email;
     supplier.address = address || supplier.address;
+    supplier.gstNo = gstNo !== undefined ? gstNo : supplier.gstNo;
+    supplier.licenseNo = licenseNo !== undefined ? licenseNo : supplier.licenseNo;
     const updatedSupplier = await supplier.save();
     res.status(200).json(updatedSupplier);
   } catch (error) {

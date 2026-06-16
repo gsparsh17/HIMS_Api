@@ -397,9 +397,8 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
   
   const deferredSales = await Sale.find({
     admission_id: admissionId,
-    payment_deferred: true,
-    status: { $in: ['Pending', 'Partially Paid'] },
-    include_in_discharge_clearance: true
+    include_in_discharge_clearance: true,
+    status: { $ne: 'Cancelled' }
   })
     .populate('patient_id', 'first_name last_name patientId uhid phone')
     .populate('doctor_id', 'firstName lastName')
