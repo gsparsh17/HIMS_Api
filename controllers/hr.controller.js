@@ -10,6 +10,9 @@ const StaffAvailability = require('../models/StaffAvailability');
 const StaffLeaveRequest = require('../models/StaffLeaveRequest');
 const EmployeePayroll = require('../models/EmployeePayroll');
 const HRLeaveBalance = require('../models/HRLeaveBalance');
+const HRPayroll = require('../models/HRPayroll');
+const Invoice = require('../models/Invoice');
+const Appointment = require('../models/Appointment');
 const { syncAllExistingHRProfiles } = require('../services/hrProfileSync.service');
 const { resolveHospitalId } = require('../utils/hospitalScope');
 
