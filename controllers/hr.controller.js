@@ -1467,7 +1467,150 @@ exports.createPayrollForEmployee = async (req, res) => {
     let staff = null;
     let nurse = null;
     
-    // ... [profile lookup logic from earlier] ...
+    // 1. Try by employee_id first (direct HR profile lookup)
+    if (employee_id) {
+      profile = await HRStaffProfile.findById(employee_id);
+      if (profile) {
+        sourceModel = profile.source_model || 'Manual';
+        sourceId = profile.source_id || profile._id;
+        // Get the actual source document for details
+        if (profile.source_model === 'Doctor' && profile.doctor_id) {
+          doctor = await Doctor.findById(profile.doctor_id);
+        } else if (profile.source_model === 'Staff' && profile.staff_id) {
+          staff = await Staff.findById(profile.staff_id);
+        } else if (profile.source_model === 'Nurse' && profile.nurse_id) {
+          nurse = await Nurse.findById(profile.nurse_id);
+        }
+      }
+    }
+    
+    // 2. If not found, try by doctor_id
+    if (!profile && doctor_id) {
+      profile = await HRStaffProfile.findOne({ 
+        $or: [
+          { doctor_id: doctor_id },
+          { source_model: 'Doctor', source_id: doctor_id }
+        ]
+      });
+      
+      if (!profile) {
+        doctor = await Doctor.findById(doctor_id);
+        if (doctor) {
+          // Create profile from doctor
+          profile = await HRStaffProfile.create({
+            doctor_id: doctor._id,
+            source_model: 'Doctor',
+            source_id: doctor._id,
+            full_name: `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim(),
+            first_name: doctor.firstName,
+            last_name: doctor.lastName,
+            email: doctor.email,
+            phone: doctor.phone,
+            staff_type: 'doctor',
+            designation: 'Doctor',
+            department: doctor.department,
+            specialization: doctor.specialization,
+            license_number: doctor.licenseNumber,
+            joining_date: doctor.startDate || new Date(),
+            salary_type: doctor.paymentType || 'Salary',
+            salary_amount: doctor.amount || 0,
+            hospital_id: hospitalId,
+            created_by: getUserId(req)
+          });
+          sourceModel = 'Doctor';
+          sourceId = doctor._id;
+        }
+      } else {
+        sourceModel = profile.source_model || 'Doctor';
+        sourceId = profile.source_id || profile.doctor_id;
+        doctor = await Doctor.findById(profile.doctor_id || doctor_id);
+      }
+    }
+    
+    // 3. If not found, try by staff_id
+    if (!profile && staff_id) {
+      profile = await HRStaffProfile.findOne({ 
+        $or: [
+          { staff_id: staff_id },
+          { source_model: 'Staff', source_id: staff_id }
+        ]
+      });
+      
+      if (!profile) {
+        staff = await Staff.findById(staff_id);
+        if (staff) {
+          // Create profile from staff
+          const staffType = roleFromStaffType(staff.role || 'staff');
+          profile = await HRStaffProfile.create({
+            staff_id: staff._id,
+            source_model: 'Staff',
+            source_id: staff._id,
+            full_name: `${staff.first_name || ''} ${staff.last_name || ''}`.trim(),
+            first_name: staff.first_name,
+            last_name: staff.last_name,
+            email: staff.email,
+            phone: staff.phone,
+            gender: staff.gender,
+            staff_type: staffType,
+            designation: staff.role || 'Staff',
+            department: staff.department,
+            specialization: staff.specialization,
+            joining_date: staff.joined_at || new Date(),
+            employment_status: staff.status || 'Active',
+            aadhar_number: staff.aadharNumber,
+            pan_number: staff.panNumber,
+            hospital_id: hospitalId,
+            created_by: getUserId(req)
+          });
+          sourceModel = 'Staff';
+          sourceId = staff._id;
+        }
+      } else {
+        sourceModel = profile.source_model || 'Staff';
+        sourceId = profile.source_id || profile.staff_id;
+        staff = await Staff.findById(profile.staff_id || staff_id);
+      }
+    }
+    
+    // 4. If not found, try by nurse_id
+    if (!profile && nurse_id) {
+      profile = await HRStaffProfile.findOne({ 
+        $or: [
+          { nurse_id: nurse_id },
+          { source_model: 'Nurse', source_id: nurse_id }
+        ]
+      });
+      
+      if (!profile) {
+        nurse = await Nurse.findById(nurse_id);
+        if (nurse) {
+          // Create profile from nurse
+          profile = await HRStaffProfile.create({
+            nurse_id: nurse._id,
+            source_model: 'Nurse',
+            source_id: nurse._id,
+            full_name: `${nurse.first_name || ''} ${nurse.last_name || ''}`.trim(),
+            first_name: nurse.first_name,
+            last_name: nurse.last_name,
+            email: nurse.email,
+            phone: nurse.phone,
+            staff_type: 'nurse',
+            designation: 'Nurse',
+            department: nurse.department_id,
+            shift: nurse.shift_id,
+            joining_date: nurse.joined_at || new Date(),
+            hospital_id: hospitalId,
+            created_by: getUserId(req)
+          });
+          sourceModel = 'Nurse';
+          sourceId = nurse._id;
+        }
+      } else {
+        sourceModel = profile.source_model || 'Nurse';
+        sourceId = profile.source_id || profile.nurse_id;
+        nurse = await Nurse.findById(profile.nurse_id || nurse_id);
+      }
+    }
 
     if (!profile) {
       return res.status(404).json({ error: 'Employee profile not found' });
