@@ -57,4 +57,7 @@ otStaffSchema.index({ employeeId: 1 });
 otStaffSchema.index({ designation: 1 });
 otStaffSchema.index({ is_active: 1 });
 
+const { registerHRSyncHook } = require('../services/hrProfileSync.service');
+registerHRSyncHook(otStaffSchema, 'OTStaff');
+
 module.exports = mongoose.model('OTStaff', otStaffSchema);

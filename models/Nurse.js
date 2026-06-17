@@ -10,4 +10,7 @@ const nurseSchema = new mongoose.Schema({
   joined_at: { type: Date, default: Date.now }
 });
 
+const { registerHRSyncHook } = require('../services/hrProfileSync.service');
+registerHRSyncHook(nurseSchema, 'Nurse');
+
 module.exports = mongoose.model('Nurse', nurseSchema);

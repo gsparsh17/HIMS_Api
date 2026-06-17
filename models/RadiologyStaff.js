@@ -50,4 +50,7 @@ radiologyStaffSchema.index({ employeeId: 1 });
 radiologyStaffSchema.index({ designation: 1 });
 radiologyStaffSchema.index({ is_active: 1 });
 
+const { registerHRSyncHook } = require('../services/hrProfileSync.service');
+registerHRSyncHook(radiologyStaffSchema, 'RadiologyStaff');
+
 module.exports = mongoose.model('RadiologyStaff', radiologyStaffSchema);

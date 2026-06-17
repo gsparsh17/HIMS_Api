@@ -100,4 +100,7 @@ doctorSchema.pre('save', async function (next) {
   }
 });
 
+const { registerHRSyncHook } = require('../services/hrProfileSync.service');
+registerHRSyncHook(doctorSchema, 'Doctor');
+
 module.exports = mongoose.model('Doctor', doctorSchema);

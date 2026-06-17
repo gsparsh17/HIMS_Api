@@ -12,6 +12,12 @@ const hrStaffProfileSchema = new mongoose.Schema({
   staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
   nurse_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Nurse' },
+  lab_staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'LabStaff' },
+  pathology_staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PathologyStaff' },
+  radiology_staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'RadiologyStaff' },
+  ot_staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'OTStaff' },
+  source_model: { type: String, enum: ['Doctor', 'Staff', 'Nurse', 'LabStaff', 'PathologyStaff', 'RadiologyStaff', 'OTStaff', 'Manual'] },
+  source_id: { type: mongoose.Schema.Types.ObjectId },
   full_name: { type: String, required: true, trim: true },
   first_name: { type: String, trim: true },
   last_name: { type: String, trim: true },
@@ -37,6 +43,20 @@ const hrStaffProfileSchema = new mongoose.Schema({
   employment_status: { type: String, enum: ['Active', 'Inactive', 'On Leave', 'Suspended', 'Terminated'], default: 'Active' },
   salary_type: { type: String, enum: ['Salary', 'Per Hour', 'Fee per Visit', 'Contractual Salary', 'Commission'], default: 'Salary' },
   salary_amount: { type: Number, default: 0, min: 0 },
+  payroll_enabled: { type: Boolean, default: true },
+  pay_cycle: { type: String, enum: ['monthly', 'weekly', 'daily'], default: 'monthly' },
+  basic_salary: { type: Number, default: 0, min: 0 },
+  hra: { type: Number, default: 0, min: 0 },
+  conveyance_allowance: { type: Number, default: 0, min: 0 },
+  medical_allowance: { type: Number, default: 0, min: 0 },
+  other_allowance: { type: Number, default: 0, min: 0 },
+  pf_deduction: { type: Number, default: 0, min: 0 },
+  esi_deduction: { type: Number, default: 0, min: 0 },
+  professional_tax: { type: Number, default: 0, min: 0 },
+  tds: { type: Number, default: 0, min: 0 },
+  other_deduction: { type: Number, default: 0, min: 0 },
+  paid_leave_quota: { type: Number, default: 0, min: 0 },
+  unpaid_leave_policy: { type: String, enum: ['deduct_per_day', 'ignore'], default: 'deduct_per_day' },
   bank_name: { type: String, trim: true },
   bank_account_number: { type: String, trim: true },
   ifsc_code: { type: String, trim: true },
@@ -70,5 +90,7 @@ hrStaffProfileSchema.index({ hospital_id: 1, email: 1 }, { unique: true });
 hrStaffProfileSchema.index({ staff_type: 1, employment_status: 1 });
 hrStaffProfileSchema.index({ department: 1 });
 hrStaffProfileSchema.index({ user_id: 1 });
+hrStaffProfileSchema.index({ source_model: 1, source_id: 1 }, { unique: true, sparse: true });
+hrStaffProfileSchema.index({ payroll_enabled: 1, employment_status: 1 });
 
 module.exports = mongoose.model('HRStaffProfile', hrStaffProfileSchema);

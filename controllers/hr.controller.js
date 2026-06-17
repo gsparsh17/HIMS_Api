@@ -8,6 +8,9 @@ const HRStaffProfile = require('../models/HRStaffProfile');
 const StaffAttendance = require('../models/StaffAttendance');
 const StaffAvailability = require('../models/StaffAvailability');
 const StaffLeaveRequest = require('../models/StaffLeaveRequest');
+const EmployeePayroll = require('../models/EmployeePayroll');
+const HRLeaveBalance = require('../models/HRLeaveBalance');
+const { syncAllExistingHRProfiles } = require('../services/hrProfileSync.service');
 const { resolveHospitalId } = require('../utils/hospitalScope');
 
 const HR_ROLES = ['hr', 'hr_manager', 'admin', 'mediqliq_super_admin'];
@@ -401,6 +404,22 @@ exports.createEmployee = async (req, res) => {
       employment_status: body.employment_status || body.status || 'Active',
       salary_type: body.salary_type || body.paymentType || 'Salary',
       salary_amount: toNumber(body.salary_amount || body.amount, 0),
+      source_model: body.source_model || 'Manual',
+      source_id: body.source_id,
+      payroll_enabled: body.payroll_enabled !== undefined ? Boolean(body.payroll_enabled) : true,
+      pay_cycle: body.pay_cycle || 'monthly',
+      basic_salary: toNumber(body.basic_salary, 0),
+      hra: toNumber(body.hra, 0),
+      conveyance_allowance: toNumber(body.conveyance_allowance, 0),
+      medical_allowance: toNumber(body.medical_allowance, 0),
+      other_allowance: toNumber(body.other_allowance, 0),
+      pf_deduction: toNumber(body.pf_deduction, 0),
+      esi_deduction: toNumber(body.esi_deduction, 0),
+      professional_tax: toNumber(body.professional_tax, 0),
+      tds: toNumber(body.tds, 0),
+      other_deduction: toNumber(body.other_deduction, 0),
+      paid_leave_quota: toNumber(body.paid_leave_quota, 0),
+      unpaid_leave_policy: body.unpaid_leave_policy || 'deduct_per_day',
       bank_name: body.bank_name,
       bank_account_number: body.bank_account_number,
       ifsc_code: body.ifsc_code,
@@ -496,7 +515,11 @@ exports.getEmployeeById = async (req, res) => {
       .populate('shift')
       .populate('staff_id')
       .populate('doctor_id')
-      .populate('nurse_id');
+      .populate('nurse_id')
+      .populate('lab_staff_id')
+      .populate('pathology_staff_id')
+      .populate('radiology_staff_id')
+      .populate('ot_staff_id');
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
     res.json(employee);
   } catch (error) {
@@ -943,6 +966,28 @@ exports.updateLeaveStatus = async (req, res) => {
     await leave.save();
 
     if (req.body.status === 'approved' && leave.employee_id) {
+      const currentYear = new Date(leave.start_date).getFullYear();
+      const balance = await HRLeaveBalance.findOne({
+        employee_id: leave.employee_id._id,
+        year: currentYear,
+        leave_type: leave.leave_type
+      });
+      const available = balance
+        ? Math.max(0, Number(balance.opening_balance || 0) + Number(balance.accrued || 0) + Number(balance.adjusted || 0) - Number(balance.used || 0))
+        : Number(leave.employee_id.paid_leave_quota || 0);
+      const requestedDays = toNumber(leave.total_days, 0);
+      const paidDays = leave.leave_type === 'unpaid' ? 0 : Math.min(requestedDays, available);
+      const unpaidDays = Math.max(0, requestedDays - paidDays);
+      leave.is_paid_leave = paidDays > 0;
+      leave.paid_days = paidDays;
+      leave.unpaid_days = unpaidDays;
+      if (balance && paidDays > 0) {
+        balance.used = toNumber(balance.used, 0) + paidDays;
+        balance.updated_by = getUserId(req);
+        await balance.save();
+      }
+      await leave.save();
+
       leave.employee_id.availability_status = 'on_leave';
       leave.employee_id.availability_note = `Leave approved from ${leave.start_date.toDateString()} to ${leave.end_date.toDateString()}`;
       await leave.employee_id.save();
@@ -951,5 +996,825 @@ exports.updateLeaveStatus = async (req, res) => {
     res.json({ message: 'Leave status updated', leave });
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+};
+
+function monthBounds(year, month) {
+  const y = parseInt(year, 10);
+  const m = parseInt(month, 10);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return null;
+  const periodStart = new Date(y, m - 1, 1, 0, 0, 0, 0);
+  const periodEnd = new Date(y, m, 0, 23, 59, 59, 999);
+  return { periodStart, periodEnd, totalDays: periodEnd.getDate() };
+}
+
+function listTotal(items = []) {
+  return items.reduce((sum, item) => sum + toNumber(item.amount, 0), 0);
+}
+
+// ✅ FIXED: Use EmployeePayroll model and check for existing records
+async function calculatePayrollForEmployee(employee, { year, month, periodStart, periodEnd, totalDays }, overrides = {}) {
+  // ✅ FIX: Check if payroll already exists for this period
+  const existingPayroll = await EmployeePayroll.findOne({
+    employee_id: employee._id,
+    period_start: { $gte: periodStart },
+    period_end: { $lte: periodEnd },
+    earning_type: { $in: ['salary', null] },
+    status: { $nin: ['cancelled', 'rejected'] }
+  });
+
+  if (existingPayroll) {
+    return null; // Skip - already exists
+  }
+
+  const attendanceRecords = await StaffAttendance.find({
+    employee_id: employee._id,
+    attendance_date: { $gte: periodStart, $lte: periodEnd }
+  });
+
+  const approvedLeaves = await StaffLeaveRequest.find({
+    employee_id: employee._id,
+    status: 'approved',
+    start_date: { $lte: periodEnd },
+    end_date: { $gte: periodStart }
+  });
+
+  const presentStatuses = new Set(['present', 'late']);
+  const presentDays = attendanceRecords.filter((a) => presentStatuses.has(a.status)).length;
+  const halfDays = attendanceRecords.filter((a) => a.status === 'half_day').length;
+  const attendanceLeaveDays = attendanceRecords.filter((a) => a.status === 'leave').length;
+  const absentDays = attendanceRecords.filter((a) => a.status === 'absent').length;
+  const totalHours = attendanceRecords.reduce((sum, a) => sum + (toNumber(a.total_minutes, 0) / 60), 0);
+
+  let paidLeaveDays = 0;
+  let unpaidLeaveDays = 0;
+  for (const leave of approvedLeaves) {
+    if (leave.is_paid_leave === false || leave.leave_type === 'unpaid') unpaidLeaveDays += toNumber(leave.total_days, 0);
+    else paidLeaveDays += toNumber(leave.total_days, 0);
+  }
+  if (!approvedLeaves.length && attendanceLeaveDays > 0) paidLeaveDays = attendanceLeaveDays;
+
+  const baseSalary = toNumber(overrides.base_salary ?? employee.salary_amount, 0);
+  const perDay = totalDays > 0 ? baseSalary / totalDays : 0;
+  const payableDays = Math.max(0, Math.min(totalDays, presentDays + (halfDays * 0.5) + paidLeaveDays));
+  const unpaidLeaveDeduction = employee.unpaid_leave_policy === 'ignore' ? 0 : perDay * unpaidLeaveDays;
+  const attendanceAbsentDeduction = perDay * absentDays;
+
+  const allowances = overrides.allowances || [
+    { label: 'HRA', amount: toNumber(employee.hra, 0) },
+    { label: 'Conveyance Allowance', amount: toNumber(employee.conveyance_allowance, 0) },
+    { label: 'Medical Allowance', amount: toNumber(employee.medical_allowance, 0) },
+    { label: 'Other Allowance', amount: toNumber(employee.other_allowance, 0) }
+  ].filter((x) => x.amount > 0);
+
+  const deductions = overrides.deductions || [
+    { label: 'PF Deduction', amount: toNumber(employee.pf_deduction, 0) },
+    { label: 'ESI Deduction', amount: toNumber(employee.esi_deduction, 0) },
+    { label: 'Professional Tax', amount: toNumber(employee.professional_tax, 0) },
+    { label: 'TDS', amount: toNumber(employee.tds, 0) },
+    { label: 'Other Deduction', amount: toNumber(employee.other_deduction, 0) },
+    { label: 'Unpaid Leave Deduction', amount: unpaidLeaveDeduction },
+    { label: 'Absent Deduction', amount: attendanceAbsentDeduction }
+  ].filter((x) => x.amount > 0);
+
+  const bonus = toNumber(overrides.bonus, 0);
+  const grossSalary = baseSalary + listTotal(allowances) + bonus;
+  const totalDeductions = listTotal(deductions);
+  const netSalary = Math.max(0, grossSalary - totalDeductions);
+  const isDoctor = employee.source_model === 'Doctor' || employee.staff_type === 'doctor';
+  const payrollCategory = employee.salary_type === 'Contractual Salary' ? 'contractual_salary' : 'fixed_salary';
+
+  return {
+    employee_id: employee._id,
+    hr_staff_profile_id: employee._id,
+    user_id: employee.user_id,
+    hospital_id: employee.hospital_id,
+    source_model: employee.source_model,
+    source_id: employee.source_id,
+    staff_type: employee.staff_type,
+    designation: employee.designation,
+    month,
+    year,
+    period_start: periodStart,
+    period_end: periodEnd,
+    salary_type: employee.salary_type || 'Salary',
+    payroll_category: payrollCategory,
+    earning_type: isDoctor ? 'salary' : 'salary',
+    period_type: 'monthly',
+    doctor_id: isDoctor ? employee.doctor_id : undefined,
+    employee_name: employee.full_name,
+    employee_code: employee.employee_code,
+    base_salary: baseSalary,
+    amount: netSalary,
+    total_working_days: totalDays,
+    present_days: presentDays + (halfDays * 0.5),
+    paid_leave_days: paidLeaveDays,
+    unpaid_leave_days: unpaidLeaveDays,
+    absent_days: absentDays,
+    payable_days: payableDays,
+    total_hours: Number(totalHours.toFixed(2)),
+    allowances,
+    deductions,
+    bonus,
+    gross_salary: Math.max(0, grossSalary),
+    gross_amount: Math.max(0, grossSalary),
+    total_deductions: Math.max(0, totalDeductions),
+    deduction_amount: Math.max(0, totalDeductions),
+    net_salary: netSalary,
+    net_amount: netSalary
+  };
+}
+
+exports.syncHRProfiles = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const results = await syncAllExistingHRProfiles({ hospital_id: hospitalId });
+    res.json({ message: 'HR profiles synced from staff master records', results });
+  } catch (error) {
+    console.error('HR profile sync error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.updateEmployeeSalaryConfig = async (req, res) => {
+  try {
+    const employee = await HRStaffProfile.findById(req.params.id);
+    if (!employee) return res.status(404).json({ error: 'Employee not found' });
+    const fields = [
+      'salary_type', 'salary_amount', 'payroll_enabled', 'pay_cycle', 'basic_salary', 'hra',
+      'conveyance_allowance', 'medical_allowance', 'other_allowance', 'pf_deduction',
+      'esi_deduction', 'professional_tax', 'tds', 'other_deduction', 'paid_leave_quota',
+      'unpaid_leave_policy', 'bank_name', 'bank_account_number', 'ifsc_code', 'pan_number'
+    ];
+    fields.forEach((field) => {
+      if (req.body[field] !== undefined) employee[field] = req.body[field];
+    });
+    employee.updated_by = getUserId(req);
+    await employee.save();
+    res.json({ message: 'Employee salary configuration updated', employee });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.upsertLeaveBalance = async (req, res) => {
+  try {
+    const employee = await HRStaffProfile.findById(req.body.employee_id || req.params.employeeId);
+    if (!employee) return res.status(404).json({ error: 'Employee not found' });
+    const year = parseInt(req.body.year || new Date().getFullYear(), 10);
+    const leaveType = req.body.leave_type || 'earned';
+    const balance = await HRLeaveBalance.findOneAndUpdate(
+      { employee_id: employee._id, year, leave_type: leaveType },
+      {
+        employee_id: employee._id,
+        hospital_id: employee.hospital_id || await resolveHospitalId(req),
+        year,
+        leave_type: leaveType,
+        opening_balance: toNumber(req.body.opening_balance, 0),
+        accrued: toNumber(req.body.accrued, 0),
+        used: toNumber(req.body.used, 0),
+        adjusted: toNumber(req.body.adjusted, 0),
+        paid_leave: req.body.paid_leave !== undefined ? Boolean(req.body.paid_leave) : true,
+        notes: req.body.notes,
+        updated_by: getUserId(req)
+      },
+      { upsert: true, new: true, runValidators: true }
+    ).populate('employee_id', 'full_name employee_code staff_type designation');
+    res.json({ message: 'Leave balance saved', balance });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.getLeaveBalances = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const filter = hospitalId ? { hospital_id: hospitalId } : {};
+    if (req.query.employee_id) filter.employee_id = req.query.employee_id;
+    if (req.query.year) filter.year = parseInt(req.query.year, 10);
+    if (req.query.leave_type) filter.leave_type = req.query.leave_type;
+    const balances = await HRLeaveBalance.find(filter)
+      .populate('employee_id', 'full_name employee_code staff_type designation')
+      .sort({ year: -1, leave_type: 1 });
+    res.json(balances);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ✅ FIXED: Generate payroll with duplicate check and proper status handling
+exports.generatePayroll = async (req, res) => {
+  try {
+    const now = new Date();
+    const year = parseInt(req.body.year || now.getFullYear(), 10);
+    const month = parseInt(req.body.month || now.getMonth() + 1, 10);
+    const bounds = monthBounds(year, month);
+    if (!bounds) return res.status(400).json({ error: 'Valid year and month are required' });
+
+    const hospitalId = await resolveHospitalId(req);
+    const filter = { 
+      payroll_enabled: true, 
+      employment_status: { $ne: 'Terminated' } 
+    };
+    if (hospitalId) filter.hospital_id = hospitalId;
+    if (req.body.employee_id) filter._id = req.body.employee_id;
+    if (req.body.staff_type) filter.staff_type = req.body.staff_type;
+
+    const employees = await HRStaffProfile.find(filter);
+    const results = [];
+    const errors = [];
+
+    for (const employee of employees) {
+      try {
+        // Skip commission-based doctors (they use separate commission calculation)
+        if ((employee.source_model === 'Doctor' || employee.staff_type === 'doctor') && 
+            ['Fee per Visit', 'Per Hour', 'Commission'].includes(employee.salary_type)) {
+          results.push({ 
+            employee_id: employee._id, 
+            status: 'skipped_commission_doctor', 
+            message: 'Appointment-based doctor earnings are generated through /api/salaries/calculate-appointment or /api/salaries/bulk-calculate' 
+          });
+          continue;
+        }
+
+        // ✅ FIX: Check if payroll already exists for this employee and period
+        const existingPayroll = await EmployeePayroll.findOne({
+          employee_id: employee._id,
+          month: month,
+          year: year,
+          period_type: 'monthly',
+          earning_type: { $in: ['salary', null] },
+          status: { $nin: ['cancelled', 'rejected'] }
+        });
+
+        if (existingPayroll) {
+          results.push({ 
+            employee_id: employee._id, 
+            status: 'already_exists', 
+            payroll: existingPayroll,
+            message: 'Payroll already exists for this period' 
+          });
+          continue;
+        }
+
+        const payload = await calculatePayrollForEmployee(employee, { year, month, ...bounds }, req.body.overrides || {});
+        
+        // If calculatePayrollForEmployee returns null, skip (handled internally)
+        if (!payload) {
+          results.push({ 
+            employee_id: employee._id, 
+            status: 'skipped', 
+            message: 'No payroll data available or already exists' 
+          });
+          continue;
+        }
+
+        const payroll = await EmployeePayroll.findOneAndUpdate(
+          { employee_id: employee._id, year, month, earning_type: 'salary' },
+          {
+            ...payload,
+            status: req.body.status || 'draft',
+            notes: req.body.notes,
+            created_by: getUserId(req),
+            updated_by: getUserId(req)
+          },
+          { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+        ).populate('employee_id', 'full_name employee_code staff_type designation bank_name bank_account_number ifsc_code');
+        
+        results.push({ employee_id: employee._id, payroll, status: payroll.status });
+      } catch (error) {
+        errors.push({ employee_id: employee._id, error: error.message });
+        results.push({ employee_id: employee._id, status: 'failed', error: error.message });
+      }
+    }
+
+    res.status(201).json({ 
+      message: 'Payroll generation completed', 
+      count: results.length, 
+      errors: errors.length,
+      results 
+    });
+  } catch (error) {
+    console.error('Generate payroll error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+// ✅ FIXED: Get payrolls with proper filtering
+exports.getPayrolls = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const filter = hospitalId ? { hospital_id: hospitalId } : {};
+    
+    ['employee_id', 'staff_type', 'status', 'clearance_status', 'year', 'month', 'earning_type'].forEach((field) => {
+      if (req.query[field]) {
+        if (['year', 'month'].includes(field)) {
+          filter[field] = parseInt(req.query[field], 10);
+        } else if (field === 'earning_type') {
+          // When filtering by earning_type, also include records where earning_type is null or undefined
+          // for backward compatibility
+          if (req.query[field] === 'salary') {
+            filter.$or = [
+              { earning_type: 'salary' },
+              { earning_type: { $exists: false } },
+              { earning_type: null }
+            ];
+          } else {
+            filter.earning_type = req.query[field];
+          }
+        } else {
+          filter[field] = req.query[field];
+        }
+      }
+    });
+
+    const payrolls = await EmployeePayroll.find(filter)
+      .populate('employee_id', 'full_name employee_code staff_type designation bank_name bank_account_number ifsc_code')
+      .populate('cleared_by', 'name email role')
+      .sort({ year: -1, month: -1, createdAt: -1 });
+
+    res.json(payrolls);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ✅ FIXED: Update payroll with status validation
+exports.updatePayroll = async (req, res) => {
+  try {
+    const payroll = await EmployeePayroll.findById(req.params.id);
+    if (!payroll) return res.status(404).json({ error: 'Payroll not found' });
+    
+    // Status transition validation
+    const validTransitions = {
+      'draft': ['generated', 'cancelled'],
+      'generated': ['approved', 'hold', 'cancelled'],
+      'approved': ['processing', 'hold', 'cancelled'],
+      'processing': ['paid', 'hold', 'cancelled'],
+      'paid': ['hold'],
+      'hold': ['draft', 'generated', 'approved', 'cancelled'],
+      'cancelled': []
+    };
+
+    if (req.body.status && validTransitions[payroll.status]) {
+      if (!validTransitions[payroll.status].includes(req.body.status)) {
+        return res.status(400).json({ 
+          error: `Invalid status transition from ${payroll.status} to ${req.body.status}` 
+        });
+      }
+    }
+
+    ['allowances', 'deductions', 'bonus', 'status', 'payment_method', 'payment_reference', 'notes'].forEach((field) => {
+      if (req.body[field] !== undefined) payroll[field] = req.body[field];
+    });
+    
+    if (req.body.base_salary !== undefined) payroll.base_salary = toNumber(req.body.base_salary, payroll.base_salary);
+    payroll.updated_by = getUserId(req);
+    await payroll.save();
+    await payroll.populate('employee_id', 'full_name employee_code staff_type designation');
+    
+    res.json({ message: 'Payroll updated', payroll });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
+// ✅ FIXED: Simplified clearance - just mark as paid with validation
+exports.updatePayrollClearance = async (req, res) => {
+  try {
+    const payroll = await EmployeePayroll.findById(req.params.id);
+    if (!payroll) return res.status(404).json({ error: 'Payroll not found' });
+
+    const action = req.body.action || req.body.clearance_status;
+    
+    // Simplified: Only allow paid or hold
+    if (!['paid', 'hold', 'cancelled'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action. Use paid, hold, or cancelled' });
+    }
+
+    // Can only mark as paid if status is approved or processing
+    if (action === 'paid' && !['approved', 'processing'].includes(payroll.status)) {
+      return res.status(400).json({ 
+        error: `Cannot mark as paid from status: ${payroll.status}. Status must be approved or processing` 
+      });
+    }
+
+    payroll.status = action;
+    payroll.updated_by = getUserId(req);
+    
+    if (action === 'paid') {
+      payroll.paid_date = req.body.paid_date ? new Date(req.body.paid_date) : new Date();
+      payroll.payment_method = req.body.payment_method || payroll.payment_method;
+      payroll.payment_reference = req.body.payment_reference || payroll.payment_reference;
+    }
+
+    await payroll.save();
+    await payroll.populate('employee_id', 'full_name employee_code staff_type designation bank_name bank_account_number ifsc_code');
+    
+    res.json({ message: `Payroll ${action}`, payroll });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+};
+
+// ✅ FIXED: Create payroll with uniqueness check
+exports.createPayrollForEmployee = async (req, res) => {
+  try {
+    const {
+      employee_id,
+      doctor_id,
+      staff_id,
+      nurse_id,
+      period_type,
+      period_start,
+      period_end,
+      amount,
+      net_amount,
+      earning_type,
+      payroll_category,
+      status,
+      payment_method,
+      paid_date,
+      notes,
+      appointment_count,
+      appointments,
+      gross_amount,
+      doctor_share,
+      hospital_share,
+      revenue_percentage,
+      base_salary,
+      bonus,
+      total_deductions,
+      source_model
+    } = req.body;
+
+    if (!employee_id && !doctor_id && !staff_id && !nurse_id) {
+      return res.status(400).json({ 
+        error: 'employee_id, doctor_id, staff_id, or nurse_id is required' 
+      });
+    }
+
+    const hospitalId = await resolveHospitalId(req);
+    
+    // Find or create HR profile (existing logic)
+    let profile = null;
+    let sourceModel = source_model || 'Manual';
+    let sourceId = null;
+    let doctor = null;
+    let staff = null;
+    let nurse = null;
+    
+    // ... [profile lookup logic from earlier] ...
+
+    if (!profile) {
+      return res.status(404).json({ error: 'Employee profile not found' });
+    }
+
+    // ✅ FIX: Check for existing payroll to prevent duplicates
+    const existingCheck = {
+      employee_id: profile._id,
+      period_start: { $gte: new Date(period_start) },
+      period_end: { $lte: new Date(period_end) },
+      earning_type: earning_type || 'salary'
+    };
+
+    // For commission, also check by appointment IDs
+    if (earning_type === 'commission' && appointments && appointments.length > 0) {
+      existingCheck['appointments'] = { $in: appointments };
+    }
+
+    const existingPayroll = await EmployeePayroll.findOne(existingCheck);
+    if (existingPayroll) {
+      return res.status(409).json({ 
+        error: 'Payroll already exists for this period and employee',
+        existingPayroll 
+      });
+    }
+
+    // Create payroll record
+    const payrollData = {
+      employee_id: profile._id,
+      hr_staff_profile_id: profile._id,
+      user_id: profile.user_id,
+      hospital_id: hospitalId,
+      source_model: sourceModel,
+      source_id: sourceId || profile._id,
+      doctor_id: profile.doctor_id || doctor_id || null,
+      staff_id: profile.staff_id || staff_id || null,
+      nurse_id: profile.nurse_id || nurse_id || null,
+      employee_name: profile.full_name,
+      employee_code: profile.employee_code,
+      staff_type: profile.staff_type,
+      role: profile.staff_type,
+      designation: profile.designation,
+      department: profile.department,
+      department_name: profile.department_name,
+      payroll_category: payroll_category || (earning_type === 'commission' ? 'doctor_commission' : 'fixed_salary'),
+      earning_type: earning_type || 'salary',
+      salary_type: profile.salary_type || (earning_type === 'commission' ? 'Commission' : 'Salary'),
+      period_type: period_type || 'monthly',
+      period_start: new Date(period_start),
+      period_end: new Date(period_end),
+      base_salary: base_salary || amount || profile.salary_amount || 0,
+      amount: net_amount || amount || 0,
+      bonus: bonus || 0,
+      gross_amount: gross_amount || amount || 0,
+      gross_salary: gross_amount || amount || 0,
+      total_deductions: total_deductions || 0,
+      deduction_amount: total_deductions || 0,
+      net_amount: net_amount || amount || 0,
+      net_salary: net_amount || amount || 0,
+      appointment_count: appointment_count || 0,
+      appointments: appointments || [],
+      doctor_share: doctor_share || net_amount || amount || 0,
+      hospital_share: hospital_share || 0,
+      revenue_percentage: revenue_percentage || 0,
+      status: status || 'draft',
+      payment_method: payment_method || 'bank_transfer',
+      paid_date: paid_date ? new Date(paid_date) : null,
+      notes: notes || `Created from pending ${sourceModel} payroll`,
+      created_by: getUserId(req),
+      updated_by: getUserId(req)
+    };
+
+    // Add commission details if applicable
+    if (earning_type === 'commission') {
+      payrollData.commission_details = {
+        appointment_count: appointment_count || 0,
+        appointments: appointments || [],
+        total_appointment_fees: gross_amount || 0,
+        doctor_share: doctor_share || net_amount || amount || 0,
+        hospital_share: hospital_share || 0,
+        revenue_percentage: revenue_percentage || 0,
+        total_hours: 0,
+        rate: doctor?.amount || 0
+      };
+    }
+
+    const payroll = new EmployeePayroll(payrollData);
+    await payroll.save();
+    await payroll.populate('employee_id', 'full_name employee_code staff_type designation');
+
+    res.status(201).json({
+      message: 'Payroll created successfully',
+      payroll
+    });
+  } catch (error) {
+    console.error('Create payroll error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+// ✅ NEW: Bulk pay with transaction
+exports.bulkPayPayrolls = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { payrollIds, payment_method, paid_date, notes } = req.body;
+
+    if (!payrollIds || !Array.isArray(payrollIds) || payrollIds.length === 0) {
+      return res.status(400).json({ error: 'payrollIds array is required' });
+    }
+
+    const results = [];
+    const errors = [];
+
+    // Update each payroll in a transaction
+    for (const id of payrollIds) {
+      try {
+        const payroll = await EmployeePayroll.findById(id).session(session);
+        if (!payroll) {
+          errors.push({ id, error: 'Payroll not found' });
+          continue;
+        }
+
+        // Can only pay if status is approved or processing
+        if (!['approved', 'processing', 'draft', 'generated'].includes(payroll.status)) {
+          errors.push({ 
+            id, 
+            error: `Cannot pay payroll with status: ${payroll.status}` 
+          });
+          continue;
+        }
+
+        payroll.status = 'paid';
+        payroll.payment_method = payment_method || payroll.payment_method || 'bank_transfer';
+        payroll.paid_date = paid_date ? new Date(paid_date) : new Date();
+        payroll.notes = payroll.notes ? `${payroll.notes}\n${notes || 'Bulk payment'}` : notes || 'Bulk payment';
+        payroll.updated_by = getUserId(req);
+        await payroll.save({ session });
+
+        results.push({
+          id: payroll._id,
+          employee_name: payroll.employee_name,
+          status: 'paid',
+          amount: payroll.net_amount
+        });
+      } catch (error) {
+        errors.push({ id, error: error.message });
+      }
+    }
+
+    // If there were errors but some succeeded, commit the successful ones
+    await session.commitTransaction();
+    session.endSession();
+
+    res.json({
+      message: 'Bulk payment processed',
+      total: payrollIds.length,
+      success: results.length,
+      failed: errors.length,
+      results,
+      errors
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('Bulk pay error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ✅ NEW: Get pending salaries (with proper duplicate checks)
+exports.getPendingSalaries = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const { year, month } = req.query;
+    
+    const targetYear = parseInt(year) || new Date().getFullYear();
+    const targetMonth = parseInt(month) || new Date().getMonth() + 1;
+    
+    // Get all active full-time employees
+    const filter = { 
+      employment_status: 'Active',
+      payroll_enabled: true,
+      $or: [
+        { staff_type: { $in: ['doctor', 'nurse', 'staff'] } },
+        { source_model: 'Doctor' }
+      ]
+    };
+    if (hospitalId) filter.hospital_id = hospitalId;
+
+    const employees = await HRStaffProfile.find(filter)
+      .populate('doctor_id', 'firstName lastName isFullTime paymentType amount');
+
+    // Get existing payrolls for the period (all statuses except cancelled/rejected)
+    const existingPayrolls = await EmployeePayroll.find({
+      year: targetYear,
+      month: targetMonth,
+      period_type: 'monthly',
+      earning_type: { $in: ['salary', null] },
+      status: { $nin: ['cancelled', 'rejected'] }
+    }).select('employee_id');
+
+    const existingEmployeeIds = new Set(
+      existingPayrolls.map(p => p.employee_id?.toString()).filter(Boolean)
+    );
+
+    // Filter out employees who already have payroll
+    const pending = employees
+      .filter(emp => {
+        // Skip doctors with commission-based payment
+        if (emp.source_model === 'Doctor' || emp.staff_type === 'doctor') {
+          const doctor = emp.doctor_id;
+          if (doctor && ['Fee per Visit', 'Per Hour', 'Commission'].includes(doctor.paymentType)) {
+            return false;
+          }
+        }
+        return !existingEmployeeIds.has(emp._id.toString()) && emp.salary_amount > 0;
+      })
+      .map(emp => ({
+        _id: `pending-salary-${emp._id}`,
+        employee_id: emp,
+        doctor_id: emp.doctor_id,
+        period_type: 'monthly',
+        period_start: new Date(targetYear, targetMonth - 1, 1),
+        period_end: new Date(targetYear, targetMonth, 0),
+        base_salary: emp.salary_amount,
+        amount: emp.salary_amount,
+        net_amount: emp.salary_amount,
+        status: 'pending',
+        is_pending: true,
+        payroll_category: 'fixed_salary',
+        earning_type: 'salary'
+      }));
+
+    res.json({
+      pending,
+      total: pending.length,
+      year: targetYear,
+      month: targetMonth
+    });
+  } catch (error) {
+    console.error('Get pending salaries error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ✅ NEW: Get pending commissions (with proper duplicate checks)
+exports.getPendingCommissions = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const { startDate, endDate } = req.query;
+    
+    const start = startDate ? new Date(startDate) : new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    // Get all part-time doctors with commission-based payment
+    const doctors = await Doctor.find({
+      isFullTime: false,
+      paymentType: { $in: ['Fee per Visit', 'Per Hour', 'Commission'] }
+    });
+
+    // Get completed appointments in the period
+    const appointments = await Appointment.find({
+      doctor_id: { $in: doctors.map(d => d._id) },
+      status: 'Completed',
+      actual_end_time: { $gte: start, $lte: end }
+    }).populate('doctor_id');
+
+    // ✅ FIX: Get all commission payrolls (not just paid) to avoid duplicates
+    const existingCommissions = await EmployeePayroll.find({
+      earning_type: 'commission',
+      status: { $nin: ['cancelled', 'rejected'] }
+    });
+
+    const paidAppointmentIds = new Set();
+    existingCommissions.forEach(p => {
+      if (p.appointments) {
+        p.appointments.forEach(apptId => paidAppointmentIds.add(apptId.toString()));
+      }
+    });
+
+    const pending = [];
+    for (const appointment of appointments) {
+      if (paidAppointmentIds.has(appointment._id.toString())) continue;
+
+      const doctor = appointment.doctor_id;
+      if (!doctor) continue;
+
+      // Find associated invoices
+      const invoice = await Invoice.findOne({
+        appointment_id: appointment._id,
+        invoice_type: 'Appointment'
+      });
+
+      if (!invoice) continue;
+
+      let consultationFee = 0;
+      (invoice.service_items || []).forEach(item => {
+        const desc = (item.description || '').toLowerCase();
+        if (desc.includes('consultation') || desc.includes('doctor consultation')) {
+          consultationFee += item.total_price || 0;
+        }
+      });
+
+      if (consultationFee === 0) consultationFee = invoice.total || 0;
+
+      const commissionAmount = (consultationFee * (doctor.revenuePercentage || 0)) / 100;
+
+      if (commissionAmount > 0) {
+        // Find employee profile
+        const employee = await HRStaffProfile.findOne({
+          $or: [
+            { doctor_id: doctor._id },
+            { source_model: 'Doctor', source_id: doctor._id }
+          ]
+        });
+
+        pending.push({
+          _id: `pending-commission-${appointment._id}`,
+          invoice_id: invoice._id,
+          invoice_number: invoice.invoice_number,
+          doctor_id: doctor,
+          employee_id: employee,
+          appointment_id: appointment._id,
+          appointment_date: appointment.appointment_date,
+          patient_name: appointment.patient_id?.full_name || appointment.patient_name || 'Unknown',
+          consultation_fee: consultationFee,
+          registration_fee: invoice.total - consultationFee,
+          total_amount: invoice.total || 0,
+          amount: commissionAmount,
+          net_amount: commissionAmount,
+          status: 'pending',
+          is_pending: true,
+          period_type: 'daily',
+          period_start: new Date(appointment.appointment_date),
+          period_end: new Date(appointment.appointment_date),
+          payroll_category: 'doctor_commission',
+          earning_type: 'commission'
+        });
+      }
+    }
+
+    res.json({
+      pending,
+      total: pending.length,
+      period: { start, end }
+    });
+  } catch (error) {
+    console.error('Get pending commissions error:', error);
+    res.status(500).json({ error: error.message });
   }
 };

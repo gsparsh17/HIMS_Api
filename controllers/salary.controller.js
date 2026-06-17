@@ -1,4 +1,5 @@
-const Salary = require('../models/Salary');
+const EmployeePayroll = require('../models/EmployeePayroll');
+const Salary = EmployeePayroll; // Backward-compatible salary API wrapper over unified payroll
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const mongoose = require('mongoose');
@@ -168,6 +169,7 @@ exports.calculatePartTimeSalary = async (appointmentId) => {
 
       // ✅ for future-proofing (needs schema field, else ignored)
       earning_type: 'commission',
+      payroll_category: doctor.paymentType === 'Per Hour' ? 'hourly' : 'per_visit',
 
       period_type: 'daily',
       period_start: periodStart,
@@ -256,6 +258,7 @@ exports.calculateFullTimeSalaries = async () => {
 
         // ✅ for future-proofing (needs schema field, else ignored)
         earning_type: 'salary',
+        payroll_category: doctor.paymentType === 'Contractual Salary' ? 'contractual_salary' : 'fixed_salary',
 
         period_type: 'monthly',
         period_start: firstDay,
@@ -412,7 +415,7 @@ exports.getAllSalaries = async (req, res) => {
       limit = 10
     } = req.query;
 
-    const filter = {};
+    const filter = { source_model: 'Doctor' };
 
     if (status && status !== 'all') filter.status = normalizeStatus(status);
     if (periodType && periodType !== 'all') filter.period_type = periodType;
@@ -501,7 +504,7 @@ exports.getSalaryStatistics = async (req, res) => {
   try {
     const { period, startDate, endDate, doctorId, earningType } = req.query;
 
-    const filter = {};
+    const filter = { source_model: 'Doctor' };
 
     if (doctorId && isValidObjectId(doctorId)) {
       filter.doctor_id = new mongoose.Types.ObjectId(doctorId);
@@ -653,6 +656,7 @@ exports.bulkCalculateAndPayPartTimeSalaries = async (req, res) => {
 
       const payload = {
         earning_type: 'commission',
+        payroll_category: doctor.paymentType === 'Per Hour' ? 'hourly' : 'per_visit',
         amount: totalDocShare,
         appointment_count: appointments.length,
         net_amount: totalDocShare,
@@ -807,7 +811,7 @@ exports.getPendingSalaries = async (req, res) => {
   try {
     const { periodType, doctorId, startDate, endDate, earningType, page = 1, limit = 20 } = req.query;
 
-    const filter = { status: 'pending' };
+    const filter = { status: 'pending', source_model: 'Doctor' };
 
     if (periodType && periodType !== 'all') filter.period_type = periodType;
 
@@ -870,6 +874,7 @@ exports.generateSalaryPaymentReport = async (req, res) => {
 
     const match = {
       status: 'paid',
+      source_model: 'Doctor',
       period_type: periodType,
       period_start: { $lte: end },
       period_end: { $gte: start }

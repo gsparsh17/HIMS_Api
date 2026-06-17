@@ -47,4 +47,7 @@ staffSchema.pre('save', async function (next) {
   }
 });
 
+const { registerHRSyncHook } = require('../services/hrProfileSync.service');
+registerHRSyncHook(staffSchema, 'Staff');
+
 module.exports = mongoose.model('Staff', staffSchema);

@@ -45,4 +45,7 @@ const labStaffSchema = new mongoose.Schema({
   timestamps: true
 });
 
+const { registerHRSyncHook } = require('../services/hrProfileSync.service');
+registerHRSyncHook(labStaffSchema, 'LabStaff');
+
 module.exports = mongoose.model('LabStaff', labStaffSchema);

@@ -99,4 +99,7 @@ pathologyStaffSchema.index({ status: 1 });
 pathologyStaffSchema.index({ department: 1 });
 pathologyStaffSchema.index({ 'assigned_lab_tests.lab_test_id': 1 });
 
+const { registerHRSyncHook } = require('../services/hrProfileSync.service');
+registerHRSyncHook(pathologyStaffSchema, 'PathologyStaff');
+
 module.exports = mongoose.model('PathologyStaff', pathologyStaffSchema);
