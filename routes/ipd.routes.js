@@ -334,54 +334,24 @@ router.get('/medications/admission/:admissionId/summary',
 );
 
 // ========== BILLING ROUTES ==========
-// Add manual charge
-router.post('/billing/charges', 
-  // protect, 
-  // authorize('admin', 'billing', 'doctor'),
-  ipdBillingController.addManualCharge
-);
+// Finance mutations are authenticated and use shared Bill -> Invoice -> Receipt
+// lifecycle controls. Existing URLs are retained for older screens.
+const financeViewRoles = ['admin', 'accountant', 'registrar', 'staff'];
+const financeApproveRoles = ['admin', 'accountant'];
 
-// Get charges by admission
-router.get('/billing/admission/:admissionId/charges', 
-  // protect, 
-  // authorize('admin', 'billing', 'doctor', 'registrar'),
-  ipdBillingController.getChargesByAdmission
-);
-
-// Get running bill
-router.get('/billing/admission/:admissionId/running-bill', 
-  // protect, 
-  // authorize('admin', 'billing', 'doctor', 'registrar', 'patient'),
-  ipdBillingController.getRunningBill
-);
-
-// Generate bed charges (automatic daily)
-router.post('/billing/admission/:admissionId/bed-charges', 
-  // protect, 
-  // authorize('admin', 'billing'),
-  ipdBillingController.generateBedCharges
-);
-
-// Apply discount
-router.post('/billing/admission/:admissionId/discount', 
-  // protect, 
-  // authorize('admin', 'billing'),
-  ipdBillingController.applyDiscount
-);
-
-// Record payment
-router.post('/billing/admission/:admissionId/payment', 
-  // protect, 
-  // authorize('admin', 'billing', 'registrar'),
-  ipdBillingController.recordPayment
-);
-
-// Finalize bill
-router.post('/billing/admission/:admissionId/finalize', 
-  // protect, 
-  // authorize('admin', 'billing'),
-  ipdBillingController.finalizeBill
-);
+router.post('/billing/charges', protect, authorize(...financeViewRoles), ipdBillingController.addManualCharge);
+router.get('/billing/admission/:admissionId/charges', protect, authorize(...financeViewRoles), ipdBillingController.getChargesByAdmission);
+router.get('/billing/admission/:admissionId/running-bill', protect, authorize(...financeViewRoles), ipdBillingController.getRunningBill);
+router.post('/billing/admission/:admissionId/bed-charges', protect, authorize(...financeViewRoles), ipdBillingController.generateBedCharges);
+router.post('/billing/admission/:admissionId/discount', protect, authorize(...financeApproveRoles), ipdBillingController.applyDiscount);
+router.post('/billing/admission/:admissionId/payment', protect, authorize(...financeViewRoles), ipdBillingController.recordPayment);
+router.post('/billing/admission/:admissionId/finalize', protect, authorize(...financeViewRoles), ipdBillingController.finalizeBill);
+router.post('/billing/admission/:admissionId/advance', protect, authorize(...financeViewRoles), ipdBillingController.recordAdvance);
+router.post('/billing/admission/:admissionId/advance-refund', protect, authorize(...financeApproveRoles), ipdBillingController.refundAdvance);
+router.get('/billing/admission/:admissionId/ledger', protect, authorize(...financeViewRoles), ipdBillingController.getLedger);
+router.get('/billing/admission/:admissionId/financial-clearance', protect, authorize(...financeViewRoles), ipdBillingController.getFinancialClearance);
+router.post('/billing/admission/:admissionId/financial-clearance', protect, authorize(...financeApproveRoles), ipdBillingController.finaliseFinancialClearance);
+router.patch('/billing/admission/:admissionId/charges/:chargeId/void', protect, authorize(...financeApproveRoles), ipdBillingController.voidCharge);
 
 // ========== DISCHARGE ROUTES ==========
 // Initiate discharge process

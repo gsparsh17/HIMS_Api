@@ -6644,3 +6644,298 @@ exports.exportPharmacyRevenue = async (req, res) => {
 };
 
 module.exports = exports;
+// ============================================================================
+// FINANCIAL RECONCILIATION OVERRIDE — IPD LEGACY REPORT COMPATIBILITY
+// ============================================================================
+// The original IPD endpoints treated every IPDCharge as revenue and filtered
+// admissions by admission date. This overstates revenue (unbilled charges are
+// not revenue) and excludes continuing admissions. The endpoints below retain
+// the IncomePage response shape while making issued invoices the revenue source
+// and exposing unbilled charges separately as operational work-in-progress.
+
+function reconciledDateRange(query = {}) {
+  const end = query.endDate ? new Date(`${query.endDate}T23:59:59.999Z`) : new Date();
+  const start = query.startDate ? new Date(`${query.startDate}T00:00:00.000Z`) : new Date(end.getTime() - 29 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    const error = new Error('Provide a valid startDate and endDate');
+    error.statusCode = 400;
+    throw error;
+  }
+  return { start, end };
+}
+
+function reconciledMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function reconciledDay(value) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function csvEscape(value) {
+  const text = String(value ?? '');
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+async function buildReconciledIpdRevenueReport(query = {}) {
+  const { start, end } = reconciledDateRange(query);
+  const { doctorId, departmentId, wardId, bedType } = query;
+  const IPDAdmission = require('../models/IPDAdmission');
+  const IPDCharge = require('../models/IPDCharge');
+
+  // Include admissions that overlap the requested reporting period, rather
+  // than only patients admitted within it.
+  const admissionFilter = {
+    admissionDate: { $lte: end },
+    $or: [{ dischargeDate: null }, { dischargeDate: { $exists: false } }, { dischargeDate: { $gte: start } }],
+    status: { $nin: ['Cancelled'] }
+  };
+  if (doctorId && doctorId !== 'all') admissionFilter.primaryDoctorId = doctorId;
+  if (departmentId && departmentId !== 'all') admissionFilter.departmentId = departmentId;
+  if (wardId && wardId !== 'all') admissionFilter.wardId = wardId;
+
+  let admissions = await IPDAdmission.find(admissionFilter)
+    .populate('patientId', 'first_name last_name patientId')
+    .populate('primaryDoctorId', 'firstName lastName specialization department')
+    .populate('departmentId', 'name')
+    .populate('wardId', 'name type dailyRate')
+    .populate('bedId', 'bedNumber bedType dailyRate')
+    .lean();
+
+  if (bedType && bedType !== 'all') {
+    admissions = admissions.filter((admission) => admission.bedId?.bedType === bedType);
+  }
+
+  const admissionIds = admissions.map((admission) => admission._id);
+  if (!admissionIds.length) {
+    return {
+      period: { start: reconciledDay(start), end: reconciledDay(end) },
+      summary: {
+        totalRevenue: 0, grossRevenue: 0, totalInvoices: 0, totalAdmissions: 0,
+        totalCollected: 0, totalOutstanding: 0, totalUnbilledCharges: 0,
+        totalDoctorEarnings: 0, totalHospitalShare: 0, totalBedDays: 0,
+        activeAdmissions: 0, discharges: 0, averageLengthOfStay: 0,
+        averageDailyRevenue: 0
+      },
+      breakdown: { byWard: [], byDoctor: [], byService: [], daily: [] },
+      admissions: []
+    };
+  }
+
+  const invoiceFilter = {
+    admission_id: { $in: admissionIds },
+    issue_date: { $gte: start, $lte: end },
+    is_deleted: { $ne: true },
+    status: { $nin: ['Cancelled', 'Refunded'] },
+    invoice_type: { $nin: ['Purchase', 'Credit Note'] },
+    document_stage: { $ne: 'VOID' }
+  };
+
+  const [invoices, charges] = await Promise.all([
+    Invoice.find(invoiceFilter).lean(),
+    IPDCharge.find({
+      admissionId: { $in: admissionIds },
+      chargeDate: { $gte: start, $lte: end },
+      status: { $nin: ['VOIDED', 'CANCELLED'] }
+    }).lean()
+  ]);
+
+  const invoiceIds = new Set(invoices.map((invoice) => String(invoice._id)));
+  const invoiceByAdmission = new Map();
+  const dailyRevenue = new Map();
+  const wardRevenue = new Map();
+  const doctorRevenue = new Map();
+
+  let totalRevenue = 0;
+  let grossRevenue = 0;
+  let totalCollected = 0;
+  let totalOutstanding = 0;
+
+  invoices.forEach((invoice) => {
+    const admissionKey = String(invoice.admission_id);
+    const total = reconciledMoney(invoice.total);
+    const credits = reconciledMoney(invoice.credit_note_total);
+    const net = reconciledMoney(total - credits);
+    const paid = reconciledMoney(invoice.amount_paid);
+    const due = reconciledMoney(invoice.balance_due);
+    totalRevenue = reconciledMoney(totalRevenue + net);
+    grossRevenue = reconciledMoney(grossRevenue + total);
+    totalCollected = reconciledMoney(totalCollected + paid);
+    totalOutstanding = reconciledMoney(totalOutstanding + due);
+    invoiceByAdmission.set(admissionKey, (invoiceByAdmission.get(admissionKey) || []).concat(invoice));
+
+    const day = reconciledDay(invoice.issue_date || invoice.created_at);
+    const dayEntry = dailyRevenue.get(day) || { date: day, revenue: 0, grossRevenue: 0, collected: 0, outstanding: 0, invoices: 0 };
+    dayEntry.revenue = reconciledMoney(dayEntry.revenue + net);
+    dayEntry.grossRevenue = reconciledMoney(dayEntry.grossRevenue + total);
+    dayEntry.collected = reconciledMoney(dayEntry.collected + paid);
+    dayEntry.outstanding = reconciledMoney(dayEntry.outstanding + due);
+    dayEntry.invoices += 1;
+    dailyRevenue.set(day, dayEntry);
+  });
+
+  // Charges appear only as a service composition of invoiced work. Unbilled
+  // charges are displayed separately and do not feed revenue totals.
+  const serviceBreakdown = new Map();
+  let totalUnbilledCharges = 0;
+  charges.forEach((charge) => {
+    const amount = reconciledMoney(charge.netAmount ?? charge.amount);
+    const isRecognised = Boolean(charge.isBilled && charge.invoiceId && invoiceIds.has(String(charge.invoiceId)));
+    if (!isRecognised) {
+      totalUnbilledCharges = reconciledMoney(totalUnbilledCharges + amount);
+      return;
+    }
+    const service = charge.chargeType === 'Bed Charges' ? 'Bed' : (charge.chargeType || 'Miscellaneous');
+    const entry = serviceBreakdown.get(service) || { service, revenue: 0, count: 0 };
+    entry.revenue = reconciledMoney(entry.revenue + amount);
+    entry.count += 1;
+    serviceBreakdown.set(service, entry);
+  });
+
+  let totalBedDays = 0;
+  let activeAdmissions = 0;
+  let discharges = 0;
+  const admissionRows = admissions.map((admission) => {
+    const admissionDate = new Date(admission.admissionDate);
+    const endingDate = admission.dischargeDate ? new Date(admission.dischargeDate) : new Date();
+    const bedDays = Math.max(1, Math.ceil((endingDate - admissionDate) / (24 * 60 * 60 * 1000)));
+    totalBedDays += bedDays;
+    if (['Admitted', 'Under Treatment', 'Billing Pending', 'Payment Pending', 'Ready for Discharge'].includes(admission.status)) activeAdmissions += 1;
+    if (admission.status === 'Discharged') discharges += 1;
+
+    const admissionInvoices = invoiceByAdmission.get(String(admission._id)) || [];
+    const netRevenue = reconciledMoney(admissionInvoices.reduce((sum, invoice) => sum + (Number(invoice.total) || 0) - (Number(invoice.credit_note_total) || 0), 0));
+    const paid = reconciledMoney(admissionInvoices.reduce((sum, invoice) => sum + (Number(invoice.amount_paid) || 0), 0));
+    const outstanding = reconciledMoney(admissionInvoices.reduce((sum, invoice) => sum + (Number(invoice.balance_due) || 0), 0));
+
+    const wardName = admission.wardId?.name || 'Unassigned Ward';
+    const ward = wardRevenue.get(wardName) || { wardName, admissions: 0, bedDays: 0, revenue: 0, collected: 0, outstanding: 0 };
+    ward.admissions += 1;
+    ward.bedDays += bedDays;
+    ward.revenue = reconciledMoney(ward.revenue + netRevenue);
+    ward.collected = reconciledMoney(ward.collected + paid);
+    ward.outstanding = reconciledMoney(ward.outstanding + outstanding);
+    wardRevenue.set(wardName, ward);
+
+    const doctorIdValue = admission.primaryDoctorId?._id ? String(admission.primaryDoctorId._id) : 'Unassigned';
+    const doctorName = admission.primaryDoctorId ? `${admission.primaryDoctorId.firstName || ''} ${admission.primaryDoctorId.lastName || ''}`.trim() || 'Unassigned' : 'Unassigned';
+    const doctor = doctorRevenue.get(doctorIdValue) || { doctorId: doctorIdValue, doctorName, revenue: 0, collected: 0, outstanding: 0, admissions: 0 };
+    doctor.admissions += 1;
+    doctor.revenue = reconciledMoney(doctor.revenue + netRevenue);
+    doctor.collected = reconciledMoney(doctor.collected + paid);
+    doctor.outstanding = reconciledMoney(doctor.outstanding + outstanding);
+    doctorRevenue.set(doctorIdValue, doctor);
+
+    return {
+      admissionNumber: admission.admissionNumber,
+      patientName: admission.patientId ? `${admission.patientId.first_name || ''} ${admission.patientId.last_name || ''}`.trim() : 'Unknown',
+      patientId: admission.patientId?.patientId || '',
+      admissionDate: admission.admissionDate,
+      dischargeDate: admission.dischargeDate,
+      doctorName,
+      wardName,
+      bedNumber: admission.bedId?.bedNumber || 'N/A',
+      bedType: admission.bedId?.bedType || 'N/A',
+      status: admission.status,
+      totalBill: reconciledMoney(admission.totalBillAmount || 0),
+      invoicedRevenue: netRevenue,
+      paidAmount: paid,
+      balance: outstanding,
+      advanceBalance: reconciledMoney(admission.advanceAmount || 0),
+      bedDays
+    };
+  });
+
+  const byService = [...serviceBreakdown.values()]
+    .map((entry) => ({ ...entry, percentage: totalRevenue ? reconciledMoney((entry.revenue / totalRevenue) * 100) : 0 }))
+    .sort((a, b) => b.revenue - a.revenue);
+
+  return {
+    period: { start: reconciledDay(start), end: reconciledDay(end) },
+    summary: {
+      totalRevenue,
+      grossRevenue,
+      totalInvoices: invoices.length,
+      totalAdmissions: admissions.length,
+      totalCollected,
+      totalOutstanding,
+      totalUnbilledCharges,
+      totalDoctorEarnings: 0,
+      totalHospitalShare: totalRevenue,
+      totalBedDays,
+      activeAdmissions,
+      discharges,
+      averageLengthOfStay: admissions.length ? Number((totalBedDays / admissions.length).toFixed(1)) : 0,
+      averageDailyRevenue: dailyRevenue.size ? reconciledMoney(totalRevenue / dailyRevenue.size) : 0,
+      collectionRate: totalRevenue ? reconciledMoney((totalCollected / totalRevenue) * 100) : 0
+    },
+    breakdown: {
+      byWard: [...wardRevenue.values()].sort((a, b) => b.revenue - a.revenue),
+      byDoctor: [...doctorRevenue.values()].sort((a, b) => b.revenue - a.revenue),
+      byService,
+      daily: [...dailyRevenue.values()].sort((a, b) => a.date.localeCompare(b.date))
+    },
+    admissions: admissionRows.sort((a, b) => b.invoicedRevenue - a.invoicedRevenue)
+  };
+}
+
+exports.getIpdRevenueAnalytics = async (req, res) => {
+  try {
+    const report = await buildReconciledIpdRevenueReport(req.query);
+    res.json({ success: true, ...report });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+};
+
+exports.exportIpdRevenue = async (req, res) => {
+  try {
+    const report = await buildReconciledIpdRevenueReport(req.query);
+    const rows = report.admissions.map((admission) => ({
+      'Admission Number': admission.admissionNumber,
+      Patient: admission.patientName,
+      UHID: admission.patientId,
+      'Admission Date': admission.admissionDate ? new Date(admission.admissionDate).toLocaleDateString('en-IN') : '',
+      'Discharge Date': admission.dischargeDate ? new Date(admission.dischargeDate).toLocaleDateString('en-IN') : 'Active',
+      Doctor: admission.doctorName,
+      Ward: admission.wardName,
+      Bed: admission.bedNumber,
+      'Bed Type': admission.bedType,
+      Status: admission.status,
+      'Invoiced Revenue': admission.invoicedRevenue,
+      Collected: admission.paidAmount,
+      Outstanding: admission.balance,
+      'Unutilised Advance': admission.advanceBalance,
+      'Bed Days': admission.bedDays
+    }));
+
+    if (req.query.exportType === 'excel') {
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('IPD Revenue');
+      worksheet.columns = Object.keys(rows[0] || { 'Admission Number': '' }).map((header) => ({ header, key: header, width: 22 }));
+      worksheet.addRow({
+        'Admission Number': 'IPD REVENUE SUMMARY',
+        Patient: `${report.period.start} to ${report.period.end}`,
+        'Invoiced Revenue': report.summary.totalRevenue,
+        Collected: report.summary.totalCollected,
+        Outstanding: report.summary.totalOutstanding,
+        'Unutilised Advance': report.summary.totalUnbilledCharges
+      });
+      rows.forEach((row) => worksheet.addRow(row));
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(2).font = { bold: true };
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=ipd_revenue_${report.period.start}_to_${report.period.end}.xlsx`);
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+
+    const headers = Object.keys(rows[0] || { 'Admission Number': '' });
+    const csv = [headers.join(','), ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(','))].join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=ipd_revenue_${report.period.start}_to_${report.period.end}.csv`);
+    return res.send(csv);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+};

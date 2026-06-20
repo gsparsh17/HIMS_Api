@@ -31,6 +31,8 @@ require('./models/StoreItem');
 require('./models/StoreCategory');
 require('./models/EHRBundle');
 require('./models/ApprovalRequest');
+require('./models/FinancialSequence');
+require('./models/FinancialTransaction');
 // ... add a require for every model file you have
 
 // Middleware
@@ -99,6 +101,7 @@ const backupRoutes = require('./routes/backup.routes');
 app.use('/api/admin/backups', backupRoutes);
 app.use('/api/salaries', salaryRoutes);
 app.use('/api/revenue', revenueRoutes);
+app.use('/api/finance', require('./routes/finance.routes.js'));
 
 // Mount routes
 app.use('/api/medicines', medicineRoutes);

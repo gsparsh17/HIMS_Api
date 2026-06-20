@@ -154,6 +154,14 @@ const deletionRequestSchema = new mongoose.Schema({
 });
 
 const billSchema = new mongoose.Schema({
+  bill_number: { type: String, trim: true, uppercase: true, sparse: true },
+  document_stage: { type: String, enum: ['DRAFT', 'GENERATED', 'INVOICED', 'VOID'], default: 'DRAFT', index: true },
+  invoice_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' }],
+  invoiced_at: Date,
+  voided_at: Date,
+  voided_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  void_reason: { type: String, trim: true },
+  hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   patient_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Patient',
@@ -342,5 +350,7 @@ billSchema.index({ 'items.item_type': 1 });
 billSchema.index({ is_deleted: 1 });
 billSchema.index({ is_pharmacy_bill: 1 });
 billSchema.index({ 'deletion_request.status': 1 });
+billSchema.index({ bill_number: 1 }, { unique: true, sparse: true });
+billSchema.index({ hospital_id: 1, document_stage: 1, generated_at: -1 });
 
 module.exports = mongoose.model('Bill', billSchema);

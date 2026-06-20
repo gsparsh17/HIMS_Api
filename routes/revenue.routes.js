@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authorize } = require('../middlewares/auth');
+const { protect, authorize } = require('../middlewares/auth');
 
 const {
   calculateHospitalRevenue,
@@ -9,7 +9,6 @@ const {
   getDoctorRevenue,
   getDepartmentRevenue,
   getDetailedRevenueReport,
-
   exportRevenueData,
   exportOverview,
   exportDaily,
@@ -17,180 +16,56 @@ const {
   exportDoctor,
   exportDepartment,
   exportDetailed,
-
   getProcedureRevenueAnalytics,
   exportProcedureRevenue,
-
   getLabTestRevenueAnalytics,
   exportLabTestRevenue,
-
-  // Radiology analytics
   getRadiologyRevenueAnalytics,
   exportRadiologyRevenue,
-
-  // IPD analytics
   getIpdRevenueAnalytics,
   exportIpdRevenue,
-
-  // Pharmacy specific revenue endpoints
   getPharmacyRevenueAnalytics,
   exportPharmacyRevenue,
   getMedicineWiseRevenue,
   getPharmacyOutstandingReport
 } = require('../controllers/revenue.controller');
 
-// ========== BASE REVENUE ROUTES ==========
-router.get('/',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  calculateHospitalRevenue
-);
+/**
+ * Legacy revenue endpoints are still used by IncomePage. They are retained for
+ * UI compatibility, but now require a session and an authorised finance role.
+ */
+const reportUsers = ['admin', 'accountant', 'demo'];
+const pharmacyReportUsers = ['admin', 'accountant', 'pharmacy', 'demo'];
 
-router.get('/daily',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  getDailyRevenueReport
-);
+router.use(protect);
 
-router.get('/monthly',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  getMonthlyRevenueReport
-);
+router.get('/', authorize(...reportUsers), calculateHospitalRevenue);
+router.get('/daily', authorize(...reportUsers), getDailyRevenueReport);
+router.get('/monthly', authorize(...reportUsers), getMonthlyRevenueReport);
+router.get('/doctor', authorize(...reportUsers), getDoctorRevenue);
+router.get('/department', authorize(...reportUsers), getDepartmentRevenue);
+router.get('/detailed', authorize(...reportUsers), getDetailedRevenueReport);
 
-router.get('/doctor',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  getDoctorRevenue
-);
+router.get('/procedures', authorize(...reportUsers), getProcedureRevenueAnalytics);
+router.get('/labtests', authorize(...reportUsers), getLabTestRevenueAnalytics);
+router.get('/radiology', authorize(...reportUsers), getRadiologyRevenueAnalytics);
+router.get('/ipd', authorize(...reportUsers), getIpdRevenueAnalytics);
 
-router.get('/department',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  getDepartmentRevenue
-);
+router.get('/pharmacy', authorize(...pharmacyReportUsers), getPharmacyRevenueAnalytics);
+router.get('/pharmacy/medicines', authorize(...pharmacyReportUsers), getMedicineWiseRevenue);
+router.get('/pharmacy/outstanding', authorize(...pharmacyReportUsers), getPharmacyOutstandingReport);
 
-router.get('/detailed',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  getDetailedRevenueReport
-);
-
-// ========== ANALYTICS ==========
-router.get('/procedures',
-  // protect, 
-  // authorize('admin', 'billing', 'accountant'),
-  getProcedureRevenueAnalytics
-);
-
-router.get('/labtests',
-  // protect, 
-  // authorize('admin', 'billing', 'accountant'),
-  getLabTestRevenueAnalytics
-);
-
-router.get('/radiology',
-  // protect, 
-  // authorize('admin', 'billing', 'accountant'),
-  getRadiologyRevenueAnalytics
-);
-
-router.get('/ipd',
-  // protect, 
-  // authorize('admin', 'billing', 'accountant'),
-  getIpdRevenueAnalytics
-);
-
-// ========== PHARMACY SPECIFIC REVENUE ROUTES ==========
-router.get('/pharmacy',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  getPharmacyRevenueAnalytics
-);
-
-router.get('/pharmacy/medicines',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  getMedicineWiseRevenue
-);
-
-router.get('/pharmacy/outstanding',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  getPharmacyOutstandingReport
-);
-
-// ========== EXPORT ROUTES ==========
-router.get('/export',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  exportRevenueData
-);
-
-router.get('/export/overview',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  exportOverview
-);
-
-router.get('/export/daily',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  exportDaily
-);
-
-router.get('/export/monthly',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  exportMonthly
-);
-
-router.get('/export/doctor',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  exportDoctor
-);
-
-router.get('/export/department',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  exportDepartment
-);
-
-router.get('/export/detailed',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  exportDetailed
-);
-
-router.get('/export/procedures',
-  // protect, 
-  // authorize('admin', 'billing', 'accountant'),
-  exportProcedureRevenue
-);
-
-router.get('/export/labtests',
-  // protect, 
-  // authorize('admin', 'billing', 'accountant'),
-  exportLabTestRevenue
-);
-
-router.get('/export/radiology',
-  // protect, 
-  // authorize('admin', 'billing', 'accountant'),
-  exportRadiologyRevenue
-);
-
-router.get('/export/ipd',
-  // protect, 
-  // authorize('admin', 'billing', 'accountant'),
-  exportIpdRevenue
-);
-
-router.get('/export/pharmacy',
-  // protect, 
-  // authorize('admin', 'pharmacy_head', 'billing', 'accountant'),
-  exportPharmacyRevenue
-);
+router.get('/export', authorize(...reportUsers), exportRevenueData);
+router.get('/export/overview', authorize(...reportUsers), exportOverview);
+router.get('/export/daily', authorize(...reportUsers), exportDaily);
+router.get('/export/monthly', authorize(...reportUsers), exportMonthly);
+router.get('/export/doctor', authorize(...reportUsers), exportDoctor);
+router.get('/export/department', authorize(...reportUsers), exportDepartment);
+router.get('/export/detailed', authorize(...reportUsers), exportDetailed);
+router.get('/export/procedures', authorize(...reportUsers), exportProcedureRevenue);
+router.get('/export/labtests', authorize(...reportUsers), exportLabTestRevenue);
+router.get('/export/radiology', authorize(...reportUsers), exportRadiologyRevenue);
+router.get('/export/ipd', authorize(...reportUsers), exportIpdRevenue);
+router.get('/export/pharmacy', authorize(...pharmacyReportUsers), exportPharmacyRevenue);
 
 module.exports = router;

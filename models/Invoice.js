@@ -12,7 +12,7 @@ const paymentSchema = new mongoose.Schema({
   },
   method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme'],
+    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'Bank', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment'],
     required: true
   },
   reference: {
@@ -458,6 +458,11 @@ const invoiceSchema = new mongoose.Schema({
   },
 
   // Customer Information
+  hospital_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    index: true
+  },
   patient_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Patient',
@@ -514,9 +519,34 @@ const invoiceSchema = new mongoose.Schema({
   invoice_type: {
     type: String,
     enum: ['Appointment', 'Pharmacy', 'Procedure', 'Lab Test', 'Radiology', 'Mixed', 'Other', 'Purchase',
-      'IPD Registration', 'IPD Admission', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'IPD Payment', 'Medicine Return'],
+      'IPD Registration', 'IPD Admission', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'IPD Payment', 'Medicine Return',
+      'IPD Interim', 'IPD Final', 'Credit Note', 'IPD Advance'],
     required: true,
     index: true
+  },
+  // The lifecycle distinguishes editable bills from issued tax/financial invoices.
+  document_stage: {
+    type: String,
+    enum: ['DRAFT', 'ISSUED', 'VOID', 'CREDIT_NOTE'],
+    default: 'DRAFT',
+    index: true
+  },
+  is_final_ipd_invoice: { type: Boolean, default: false },
+  issued_at: Date,
+  voided_at: Date,
+  voided_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  void_reason: { type: String, trim: true },
+  gross_amount: { type: Number, min: 0 },
+  credit_note_total: { type: Number, default: 0, min: 0 },
+  refunded_amount: { type: Number, default: 0, min: 0 },
+  linked_invoice_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+  receipt_numbers: [{ type: String, trim: true }],
+  idempotency_key: { type: String, trim: true, sparse: true },
+  discount_details: {
+    type: { type: String, enum: ['fixed', 'percentage'], default: 'fixed' },
+    reason: String,
+    approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approved_at: Date
   },
 
   // Dates - All stored in UTC
@@ -743,7 +773,7 @@ invoiceSchema.pre('save', function (next) {
   }
 
   // Calculate balance due
-  this.balance_due = this.total - this.amount_paid;
+  this.balance_due = Math.max(0, this.total - this.amount_paid - (this.credit_note_total || 0));
 
   // Validate dates
   if (this.due_date < this.issue_date) {
@@ -751,12 +781,20 @@ invoiceSchema.pre('save', function (next) {
   }
 
   // Auto-update status based on payment
-  if (this.amount_paid >= this.total) {
+  if (this.balance_due <= 0 && this.document_stage !== 'VOID') {
     this.status = 'Paid';
-  } else if (this.amount_paid > 0) {
+  } else if (this.amount_paid > 0 || this.credit_note_total > 0) {
     this.status = 'Partial';
   } else if (new Date() > this.due_date && !['Paid', 'Cancelled', 'Refunded'].includes(this.status)) {
     this.status = 'Overdue';
+  }
+
+  // Legacy controllers may set status/amount but not the new document stage.
+  // Treat any financially issued status as an issued invoice; bills remain the
+  // editable pre-invoice document.
+  if (this.document_stage === 'DRAFT' && ['Issued', 'Pending', 'Paid', 'Partial', 'Overdue'].includes(this.status)) {
+    this.document_stage = 'ISSUED';
+    if (!this.issued_at) this.issued_at = this.issue_date || new Date();
   }
 
   // Update procedures related fields
@@ -992,5 +1030,8 @@ invoiceSchema.index({ amount_paid: 1, total: 1 });
 invoiceSchema.index({ invoice_type: 1, status: 1, created_at: -1 });
 invoiceSchema.index({ patient_id: 1, status: 1, created_at: -1 });
 invoiceSchema.index({ is_deleted: 1 });
+invoiceSchema.index({ hospital_id: 1, document_stage: 1, issue_date: -1 });
+invoiceSchema.index({ admission_id: 1, document_stage: 1, issue_date: -1 });
+invoiceSchema.index({ idempotency_key: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

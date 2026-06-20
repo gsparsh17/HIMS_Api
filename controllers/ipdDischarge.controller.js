@@ -16,6 +16,7 @@ const ProcedureRequest = require('../models/ProcedureRequest');
 const OTRequest = require('../models/OTRequest');
 const Prescription = require('../models/Prescription');
 const Sale = require('../models/Sale');
+const financial = require('../services/ipdFinancial.service');
 
 // ========== DISCHARGE SUMMARY ==========
 
@@ -363,82 +364,47 @@ exports.getDischargeChecklist = async (req, res) => {
     const dischargeSummary = await DischargeSummary.findOne({ admissionId });
     const pendingLabReports = await LabReport.countDocuments({ patientId: admission.patientId, status: { $ne: 'Completed' } });
     const pendingMedications = await IPDMedicationChart.countDocuments({ admissionId, status: 'Active', 'timing.status': 'Pending' });
-    const pendingCharges = await IPDCharge.countDocuments({ admissionId, isBilled: false });
-    const hasUnpaidAmount = admission.dueAmount > 0;
-
-    // Check deferred payments for this admission
-    const deferredSales = await Sale.find({
-      admission_id: admissionId,
-      payment_deferred: true,
-      status: { $in: ['Pending', 'Partially Paid'] },
-      include_in_discharge_clearance: true
-    });
-
-    const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
-    const hasDeferredPayments = totalDeferredAmount > 0;
-
-    // Check for pending bills that are not deferred
-    const pendingBills = await Sale.find({
-      admission_id: admissionId,
-      payment_deferred: { $ne: true },
-      balance_due: { $gt: 0 },
-      status: { $in: ['Pending', 'Partially Paid'] }
-    });
-
-    const totalPendingAmount = pendingBills.reduce((sum, bill) => sum + (bill.balance_due || 0), 0);
-    const hasPendingBills = totalPendingAmount > 0;
-
-    const totalPendingAmountAll = totalPendingAmount + totalDeferredAmount;
+    const financeClearance = await financial.getFinancialClearance(admissionId);
 
     const checklist = {
-      doctorDischargeAdvice: admission.status === 'Discharge Initiated',
+      doctorDischargeAdvice: admission.status === 'Discharge Initiated' || admission.status === 'Billing Pending' || admission.status === 'Payment Pending',
       dischargeSummaryFinalized: dischargeSummary?.status === 'Finalized' || dischargeSummary?.status === 'StaffCompleted',
       labReportsCompleted: pendingLabReports === 0,
       medicationsAdministered: pendingMedications === 0,
-      chargesBilled: pendingCharges === 0,
-      paymentSettled: !hasUnpaidAmount && !hasDeferredPayments && !hasPendingBills,
-      deferredPaymentsSettled: !hasDeferredPayments,
-      pendingBillsSettled: !hasPendingBills,
+      chargesBilled: financeClearance.checks.unbilledChargesResolved,
+      paymentSettled: financeClearance.checks.issuedInvoicesSettled,
+      pharmacyClearance: financeClearance.checks.pharmacyClearance,
+      financialClearance: financeClearance.ready,
       bedReadyForRelease: true
     };
 
     res.json({
       success: true,
       checklist,
-      isReadyForDischarge: Object.values(checklist).every(v => v === true),
+      isReadyForDischarge: Object.values(checklist).every((value) => value === true),
       pendingItems: {
         pendingLabReports,
         pendingMedications,
-        pendingCharges,
-        dueAmount: admission.dueAmount,
-        deferredPaymentsCount: deferredSales.length,
-        deferredPaymentsAmount: totalDeferredAmount,
-        pendingBillsCount: pendingBills.length,
-        pendingBillsAmount: totalPendingAmount,
-        totalPendingAmount: totalPendingAmountAll
+        unbilledCharges: financeClearance.summary.unbilledCharges,
+        invoiceOutstanding: financeClearance.summary.invoiceOutstanding,
+        pharmacyDue: financeClearance.summary.pharmacyDue,
+        advanceAvailable: financeClearance.summary.advanceAvailable
       },
-      deferredPayments: deferredSales.map(sale => ({
-        _id: sale._id,
-        sale_number: sale.sale_number,
-        total_amount: sale.total_amount,
-        balance_due: sale.balance_due,
-        sale_date: sale.sale_date,
-        deferral_reason: sale.deferral_reason,
-        items_count: sale.items?.length || 0
-      }))
+      financialClearance: financeClearance
     });
   } catch (err) {
     console.error('Error fetching discharge checklist:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message, details: err.details });
   }
 };
 
-// Complete discharge with deferred payment validation
+// Complete discharge only after the finance service has validated all bills,
+// invoices, receipts, advances and pharmacy clearances. A financial exception
+// can be approved only by finance admin/accountant through the finance route.
 exports.completeDischarge = async (req, res) => {
   try {
     const { admissionId } = req.params;
     const { dischargeReason, isLAMA } = req.body;
-
     const admission = await IPDAdmission.findById(admissionId);
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
@@ -447,79 +413,34 @@ exports.completeDischarge = async (req, res) => {
       return res.status(400).json({ error: 'Discharge summary not finalized' });
     }
 
-    // Check for deferred payments before discharge
-    const deferredSales = await Sale.find({
-      admission_id: admissionId,
-      payment_deferred: true,
-      status: { $in: ['Pending', 'Partially Paid'] },
-      include_in_discharge_clearance: true
-    });
-
-    const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
-
-    // Check for pending bills that are not deferred
-    const pendingBills = await Sale.find({
-      admission_id: admissionId,
-      payment_deferred: { $ne: true },
-      balance_due: { $gt: 0 },
-      status: { $in: ['Pending', 'Partially Paid'] }
-    });
-
-    const totalPendingAmount = pendingBills.reduce((sum, bill) => sum + (bill.balance_due || 0), 0);
-    const totalPendingAll = totalPendingAmount + totalDeferredAmount;
-
-    if (totalPendingAll > 0) {
-      return res.status(400).json({
-        error: 'Payment pending. Please settle all dues including deferred payments before discharge.',
-        pendingAmount: totalPendingAll,
-        deferredAmount: totalDeferredAmount,
-        regularPendingAmount: totalPendingAmount
+    const clearance = await financial.getFinancialClearance(admissionId);
+    if (!clearance.ready) {
+      return res.status(409).json({
+        error: 'Financial clearance is pending. Issue all charges, settle invoices and complete pharmacy clearance before discharge.',
+        financialClearance: clearance
       });
-    }
-
-    if (admission.dueAmount > 0) {
-      return res.status(400).json({ error: 'Payment pending. Please settle dues before discharge.' });
     }
 
     admission.status = 'Discharged';
     admission.dischargeDate = new Date();
     admission.dischargeReason = dischargeReason;
-    admission.isLAMA = isLAMA || false;
+    admission.isLAMA = Boolean(isLAMA);
     await admission.save();
 
     if (admission.bedId) await Bed.findByIdAndUpdate(admission.bedId, { status: 'Cleaning', currentAdmissionId: null });
-
-    const existingInvoice = await Invoice.findOne({ admission_id: admissionId });
-    if (!existingInvoice) {
-      const finalInvoice = new Invoice({
-        patient_id: admission.patientId,
-        admission_id: admissionId,
-        invoice_number: `FINAL-${admission.admissionNumber}`,
-        total: admission.totalBillAmount,
-        paid: admission.paidAmount,
-        due: 0,
-        status: 'Paid',
-        notes: `Final discharge bill for admission ${admission.admissionNumber}`
-      });
-      await finalInvoice.save();
-    }
 
     res.json({
       success: true,
       message: 'Patient discharged successfully',
       admission,
-      clearanceSummary: {
-        deferredPaymentsCleared: deferredSales.length,
-        deferredAmountCleared: totalDeferredAmount
-      }
+      financialClearance: clearance
     });
   } catch (err) {
     console.error('Error completing discharge:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message, details: err.details });
   }
 };
 
-// Get discharge documents
 exports.getDischargeDocuments = async (req, res) => {
   try {
     const { admissionId } = req.params;

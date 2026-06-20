@@ -195,6 +195,29 @@ const ipdAdmissionSchema = new mongoose.Schema({
     default: 0
   },
 
+  // Financial settlement state. advanceAmount represents currently available
+  // IPD advance; received/utilized/refunded fields preserve the audit trail.
+  advanceReceivedAmount: { type: Number, default: 0, min: 0 },
+  advanceUtilizedAmount: { type: Number, default: 0, min: 0 },
+  advanceRefundedAmount: { type: Number, default: 0, min: 0 },
+  invoicedAmount: { type: Number, default: 0, min: 0 },
+  financialClearanceStatus: {
+    type: String,
+    enum: ['pending', 'in_progress', 'cleared', 'exception_approved'],
+    default: 'pending',
+    index: true
+  },
+  financialClearanceException: {
+    reason: { type: String, trim: true },
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approvedAt: Date,
+    outstandingAccepted: { type: Number, default: 0 }
+  },
+  financialClearedAt: Date,
+  financialClearedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  finalInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+  finalSettlementReceiptNumber: { type: String, trim: true },
+
   abdmRecordLink: {
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
     abhaNumber: { type: String, index: true },

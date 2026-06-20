@@ -1,32 +1,40 @@
 const express = require('express');
 const router = express.Router();
 const billingController = require('../controllers/billing.controller');
-const { verifyToken, isAdmin } = require('../middlewares/auth');
+const { protect, authorize, isAdmin } = require('../middlewares/auth');
 
-// Generate bills for procedures, lab tests, and radiology
-router.post('/procedure', billingController.generateProcedureBill);
-router.post('/labtest', billingController.generateLabTestBill);
-router.post('/radiology', billingController.generateRadiologyBill);  // ✅ NEW
+/**
+ * Bill creation is used by OPD, lab, radiology, procedure and IPD screens.
+ * Keep it broad enough for those counter users, but never expose financial
+ * documents anonymously.
+ */
+const billingUsers = [
+  'admin', 'accountant', 'staff', 'registrar', 'receptionist',
+  'pharmacy', 'pathology_staff', 'radiology_staff', 'ot_staff', 'demo'
+];
+const billingApprovers = ['admin', 'accountant', 'demo'];
 
-// Existing routes
-router.post('/', billingController.createBill);
-router.get('/', billingController.getAllBills);
+router.use(protect);
 
-// Deletion request routes
-router.post('/:id/request-deletion', verifyToken, billingController.requestBillDeletion);
-router.get('/deletion-requests/pending', verifyToken, isAdmin, billingController.getPendingDeletionRequests);
-router.put('/:id/review-deletion', verifyToken, isAdmin, billingController.reviewDeletionRequest);
-router.get('/deleted', verifyToken, isAdmin, billingController.getDeletedBills);
+// Specific paths must be declared before /:id.
+router.post('/procedure', authorize(...billingUsers), billingController.generateProcedureBill);
+router.post('/labtest', authorize(...billingUsers), billingController.generateLabTestBill);
+router.post('/radiology', authorize(...billingUsers), billingController.generateRadiologyBill);
 
-// Admin direct delete (permanent)
-router.delete('/:id/admin-delete', verifyToken, isAdmin, billingController.adminDeleteBill);
+router.get('/deletion-requests/pending', isAdmin, billingController.getPendingDeletionRequests);
+router.get('/deleted', isAdmin, billingController.getDeletedBills);
+router.get('/appointment/:appointmentId', authorize(...billingUsers), billingController.getBillByAppointmentId);
+router.get('/admission/:admissionId', authorize(...billingUsers), billingController.getBillByAdmissionId);
 
-// IMPORTANT: keep specific routes BEFORE /:id
-router.get('/appointment/:appointmentId', billingController.getBillByAppointmentId);
-router.get('/admission/:admissionId', billingController.getBillByAdmissionId);  // ✅ NEW
+router.post('/', authorize(...billingUsers), billingController.createBill);
+router.get('/', authorize(...billingUsers), billingController.getAllBills);
+router.get('/:id', authorize(...billingUsers), billingController.getBillById);
+router.put('/:id', authorize(...billingUsers), billingController.updateBillStatus);
 
-router.get('/:id', billingController.getBillById);
-router.put('/:id', billingController.updateBillStatus);
-router.delete('/:id', verifyToken, billingController.deleteBill);
+router.post('/:id/request-deletion', authorize(...billingUsers), billingController.requestBillDeletion);
+router.put('/:id/review-deletion', authorize(...billingApprovers), billingController.reviewDeletionRequest);
+// Existing permanent-delete endpoint is intentionally restricted to actual admins.
+router.delete('/:id/admin-delete', isAdmin, billingController.adminDeleteBill);
+router.delete('/:id', authorize(...billingUsers), billingController.deleteBill);
 
 module.exports = router;
