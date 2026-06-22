@@ -217,7 +217,7 @@ const billSchema = new mongoose.Schema({
 
   payment_method: {
     type: String,
-    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'NoPayment'],
+    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'NoPayment', 'Adjustment'],
     required: true,
     default: 'Pending'
   },
@@ -226,7 +226,7 @@ const billSchema = new mongoose.Schema({
   payments: [{
     method: {
       type: String,
-      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance']
+      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment']
     },
     amount: Number,
     reference: String,
@@ -247,10 +247,28 @@ const billSchema = new mongoose.Schema({
   paid_at: {
     type: Date
   },
+  // paid_amount is actual money/advance collected; discounts are tracked independently.
   paid_amount: {
     type: Number,
     default: 0
   },
+  settlement_discount_amount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  credit_note_amount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  settlement_refs: [{
+    settlement_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PharmacyLedgerSettlement' },
+    payment_amount: { type: Number, default: 0 },
+    settlement_discount_amount: { type: Number, default: 0 },
+    credit_note_amount: { type: Number, default: 0 },
+    settled_at: { type: Date, default: Date.now }
+  }],
   balance_due: {
     type: Number,
     default: 0
@@ -311,13 +329,13 @@ const billSchema = new mongoose.Schema({
 
 // Calculate balance before save
 billSchema.pre('save', function (next) {
-  this.balance_due = this.total_amount - this.paid_amount;
+  this.balance_due = Math.max(0, this.total_amount - this.paid_amount - (this.settlement_discount_amount || 0) - (this.credit_note_amount || 0));
 
-  // Update status based on payment
-  if (this.paid_amount >= this.total_amount) {
+  // Update status based on all clearing instruments (actual payment, discount, credit note).
+  if (this.balance_due <= 0) {
     this.status = 'Paid';
     this.paid_at = this.paid_at || new Date();
-  } else if (this.paid_amount > 0) {
+  } else if (this.paid_amount > 0 || this.settlement_discount_amount > 0 || this.credit_note_amount > 0) {
     this.status = 'Partially Paid';
   } else if (this.status === 'Generated') {
     this.status = 'Pending';
@@ -332,7 +350,7 @@ billSchema.virtual('is_paid').get(function () {
 });
 
 billSchema.virtual('is_fully_paid').get(function () {
-  return this.paid_amount >= this.total_amount;
+  return this.balance_due <= 0;
 });
 
 billSchema.virtual('has_pending_deletion').get(function () {

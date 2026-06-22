@@ -20,7 +20,8 @@ const pharmacyLedgerEntrySchema = new mongoose.Schema({
       'CREDIT_NOTE',
       'FINAL_CLEARANCE',
       'DOCTOR_COMMISSION_ACCRUAL',
-      'DEFERRED_SETTLEMENT'  // Added for bulk deferred payment settlements
+      'DEFERRED_SETTLEMENT',
+      'SETTLEMENT_REVERSAL'
     ],
     required: true
   },
@@ -37,6 +38,8 @@ const pharmacyLedgerEntrySchema = new mongoose.Schema({
   saleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
   returnId: { type: mongoose.Schema.Types.ObjectId, ref: 'PharmacyReturn' },
   invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+  settlementId: { type: mongoose.Schema.Types.ObjectId, ref: 'PharmacyLedgerSettlement', index: true },
+  settlementAllocationId: { type: mongoose.Schema.Types.ObjectId },
   purchaseOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder' },
   notes: { type: String, trim: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }

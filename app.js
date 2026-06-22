@@ -13,6 +13,8 @@ require('./models/Prescription');
 require('./models/pharmacyInvoiceModel.js');
 require('./models/HospitalPharmacySetting');
 require('./models/PatientAdvanceLedger');
+require('./models/PharmacyLedgerSettlement');
+require('./models/PatientSettlementCredit');
 require('./models/PharmacyLedgerEntry');
 require('./models/InventoryLedger');
 require('./models/IPDPatientMedicineStock');

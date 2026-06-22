@@ -22,7 +22,8 @@ const patientAdvanceLedgerSchema = new mongoose.Schema({
       'REFUND_PAID',
       'MANUAL_ADJUSTMENT',
       'OPENING_BALANCE',
-      'PHARMACY_ADVANCE_REFUND'
+      'PHARMACY_ADVANCE_REFUND',
+      'PHARMACY_SETTLEMENT_CREDIT'
     ],
     required: true
   },

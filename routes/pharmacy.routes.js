@@ -62,6 +62,15 @@ router.get('/ipd/admissions/:admissionId/file', ...authChain, operations.getAdmi
 router.get('/ipd/admissions/:admissionId/medicine-stock', ...authChain, operations.getAdmissionMedicineStock);
 router.get('/ipd/admissions/:admissionId/advance-ledger', ...authChain, operations.getAdvanceLedger);
 
+
+// ========== FINAL LEDGER SETTLEMENTS ==========
+const pharmacyLedgerSettlement = require('../controllers/pharmacyLedgerSettlement.controller');
+router.post('/ledger-settlements/preview', ...authChain, pharmacyLedgerSettlement.preview);
+router.post('/ledger-settlements', ...authChain, pharmacyLedgerSettlement.create);
+router.get('/ledger-settlements', ...authChain, pharmacyLedgerSettlement.list);
+router.get('/ledger-settlements/:settlementId', ...authChain, pharmacyLedgerSettlement.getOne);
+router.post('/ledger-settlements/:settlementId/reverse', ...authChain, pharmacyLedgerSettlement.reverse);
+
 // ========== DEFERRED PAYMENTS ENDPOINTS ==========
 // Get deferred payments for a specific admission
 router.get('/ipd/admissions/:admissionId/deferred-payments', ...authChain, operations.getDeferredPaymentsByAdmission);

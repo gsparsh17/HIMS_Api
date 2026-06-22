@@ -537,7 +537,17 @@ const invoiceSchema = new mongoose.Schema({
   voided_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   void_reason: { type: String, trim: true },
   gross_amount: { type: Number, min: 0 },
+  // A credit note changes an issued invoice retrospectively. A final settlement
+  // concession is separate so historical item/bill discounts and tax are preserved.
   credit_note_total: { type: Number, default: 0, min: 0 },
+  settlement_discount_amount: { type: Number, default: 0, min: 0 },
+  settlement_refs: [{
+    settlement_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PharmacyLedgerSettlement' },
+    payment_amount: { type: Number, default: 0 },
+    settlement_discount_amount: { type: Number, default: 0 },
+    credit_note_amount: { type: Number, default: 0 },
+    settled_at: { type: Date, default: Date.now }
+  }],
   refunded_amount: { type: Number, default: 0, min: 0 },
   linked_invoice_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   receipt_numbers: [{ type: String, trim: true }],
@@ -773,7 +783,7 @@ invoiceSchema.pre('save', function (next) {
   }
 
   // Calculate balance due
-  this.balance_due = Math.max(0, this.total - this.amount_paid - (this.credit_note_total || 0));
+  this.balance_due = Math.max(0, this.total - this.amount_paid - (this.settlement_discount_amount || 0) - (this.credit_note_total || 0));
 
   // Validate dates
   if (this.due_date < this.issue_date) {
@@ -783,7 +793,7 @@ invoiceSchema.pre('save', function (next) {
   // Auto-update status based on payment
   if (this.balance_due <= 0 && this.document_stage !== 'VOID') {
     this.status = 'Paid';
-  } else if (this.amount_paid > 0 || this.credit_note_total > 0) {
+  } else if (this.amount_paid > 0 || this.settlement_discount_amount > 0 || this.credit_note_total > 0) {
     this.status = 'Partial';
   } else if (new Date() > this.due_date && !['Paid', 'Cancelled', 'Refunded'].includes(this.status)) {
     this.status = 'Overdue';

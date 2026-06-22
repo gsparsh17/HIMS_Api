@@ -1768,26 +1768,53 @@ exports.getDoseCalculation = asyncHandler(async (req, res) => {
 
 // ========== NEW: Bulk Settle Deferred Payments ==========
 exports.bulkSettleDeferredPayments = asyncHandler(async (req, res) => {
-  const { 
-    bulkSettleDeferredPayments,
-    getPatientPharmacySummary 
-  } = require('../services/pharmacyTransaction.service');
-  
+  // Backward-compatible adapter. The legacy bulk service rewrote original
+  // invoice tax/discount values and reused split-tender balances per sale.
+  // Route old callers into the auditable ledger-settlement engine instead.
+  const { postLedgerSettlement } = require('../services/pharmacyLedgerSettlement.service');
   const hospitalId = getHospitalId(req, req.body.hospitalId);
   const pharmacyId = objectIdOrUndefined(req.body.pharmacyId) || await getDefaultPharmacyId();
   const createdBy = getCreatedBy(req);
-  
-  const result = await bulkSettleDeferredPayments({
-    ...req.body,
-    hospitalId,
-    pharmacyId,
-    createdBy
-  }, req);
-  
-  res.status(200).json({
+
+  const result = await postLedgerSettlement({
+    patientId: req.body.patientId,
+    admissionId: req.body.admissionId,
+    saleIds: req.body.saleIds,
+    settlementType: 'FINAL_CONCESSION',
+    discountScope: req.body.discountBase === 'total' ? 'FULL_LEDGER_GROSS' : 'UNPAID_DUE',
+    discountType: String(req.body.discountType || 'percentage').toUpperCase(),
+    discountValue: req.body.discount || 0,
+    percentageTreatment: 'ADDITIONAL',
+    allocationPolicy: req.body.allocationPolicy || 'PROPORTIONAL',
+    allocations: req.body.allocations,
+    payments: req.body.payments || [],
+    reason: req.body.reason || 'Legacy bulk deferred-payment settlement',
+    notes: req.body.notes || '',
+    idempotencyKey: req.body.idempotencyKey,
+  }, { hospitalId, pharmacyId, createdBy: createdBy || req.body.createdBy });
+
+  const settlement = result.settlement;
+  res.status(result.replayed ? 200 : 201).json({
     success: true,
-    message: result.message,
-    ...result
+    replayed: result.replayed,
+    message: result.replayed ? 'Existing settlement returned.' : 'Deferred payments settled through final ledger settlement.',
+    settlement,
+    summary: {
+      totalDue: settlement.opening_outstanding_total,
+      discountAmount: settlement.discount_applied,
+      amountAfterDiscount: settlement.payment_received,
+      totalPaid: settlement.payment_received,
+      discountType: settlement.discount_type,
+    },
+    settlements: settlement.allocations.map((allocation) => ({
+      saleId: allocation.sale_id,
+      saleNumber: allocation.sale_number,
+      paid: allocation.payment_allocated,
+      discount: allocation.settlement_discount_allocated,
+      creditNote: allocation.credit_note_allocated,
+      balance_due: allocation.closing_due,
+    })),
+    paymentBreakdown: settlement.payment_breakdown,
   });
 });
 
