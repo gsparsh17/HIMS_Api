@@ -212,6 +212,7 @@ exports.searchPharmacyPatients = asyncHandler(async (req, res) => {
   res.json({ success: true, patients: rows.slice(0, Number(limit)) });
 });
 
+// In pharmacyOperations.controller.js - update getSaleBill
 exports.getSaleBill = asyncHandler(async (req, res) => {
   const withCosts = canViewPharmacyCost(req);
   let query = Sale.findById(req.params.saleId)
@@ -222,7 +223,12 @@ exports.getSaleBill = asyncHandler(async (req, res) => {
     .populate('items.batch_id', 'batch_number expiry_date')
     .populate('return_refs.return_id', 'returnNumber totalRefundAmount refundMode createdAt');
 
-  if (withCosts) query = query.select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount');
+  const userRole = String(req.user?.role || req.user?.userType || '').toLowerCase();
+  const canViewCost = ['admin', 'superadmin', 'pharmacy_head', 'pharmacyhead', 'pharmacy-admin', 'pharmacy_admin'].includes(userRole) || req.query.includeCost === 'true';
+
+  if (canViewCost) {
+    query = query.select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount');
+  }
 
   const sale = await query.lean();
   if (!sale) return res.status(404).json({ success: false, error: 'Sale bill not found' });
@@ -231,15 +237,38 @@ exports.getSaleBill = asyncHandler(async (req, res) => {
   const bill = await Bill.findOne({ sale_id: sale._id }).lean();
   const invoice = await Invoice.findOne({ sale_id: sale._id }).lean();
 
+  // Calculate total purchase cost for the sale
+  let totalPurchaseCost = 0;
+  let totalGrossProfit = 0;
+
+  if (sale.items && sale.items.length > 0) {
+    totalPurchaseCost = sale.items.reduce((sum, item) => {
+      const purchaseAmount = item.purchase_amount || (item.purchase_rate_per_base_unit * (item.quantity_base_units || 0));
+      return sum + Number(purchaseAmount || 0);
+    }, 0);
+
+    totalGrossProfit = sale.items.reduce((sum, item) => {
+      const netAmount = item.net_amount || item.total_price || 0;
+      const purchaseAmount = item.purchase_amount || (item.purchase_rate_per_base_unit * (item.quantity_base_units || 0));
+      return sum + (Number(netAmount || 0) - Number(purchaseAmount || 0));
+    }, 0);
+  }
+
   const balances = await getPatientPharmacySummary({ patientId: sale.patient_id?._id || sale.patient_id, admissionId: sale.admission_id?._id || sale.admission_id });
 
   res.json({
     success: true,
-    sale: withCosts ? sale : stripCostFields(sale),
+    sale: canViewCost ? sale : stripCostFields(sale),
     bill,
     invoice,
     balances,
-    costVisible: withCosts
+    costVisible: canViewCost,
+    purchaseSummary: {
+      totalPurchaseCost,
+      totalGrossProfit,
+      grossProfitMargin: totalPurchaseCost > 0 ? (totalGrossProfit / totalPurchaseCost * 100) : 0,
+      itemCount: sale.items?.length || 0
+    }
   });
 });
 
@@ -327,7 +356,7 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     }))
   }));
 
-    const returnRows = returns.map(ret => ({
+  const returnRows = returns.map(ret => ({
     billType: 'RETURN',
     billNumber: ret.returnNumber,
     originalBillNumber: ret.originalSaleNumber,
@@ -390,11 +419,11 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
 // Get deferred payments by admission ID
 exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
   const { admissionId } = req.params;
-  
+
   if (!admissionId) {
     return res.status(400).json({ success: false, error: 'admissionId is required' });
   }
-  
+
   const deferredSales = await Sale.find({
     admission_id: admissionId,
     include_in_discharge_clearance: true,
@@ -406,14 +435,14 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
     .populate('items.batch_id', 'batch_number expiry_date')
     .sort({ sale_date: -1 })
     .lean();
-  
+
   const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
-  
+
   // Get associated bills and invoices for these deferred sales
   const saleIds = deferredSales.map(s => s._id);
   const bills = await Bill.find({ sale_id: { $in: saleIds }, is_pharmacy_bill: true }).lean();
   const invoices = await Invoice.find({ sale_id: { $in: saleIds }, is_pharmacy_sale: true }).lean();
-  
+
   res.json({
     success: true,
     deferredPayments: deferredSales,
@@ -427,21 +456,21 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
 // Get all deferred payments across admissions (for dashboard)
 exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
   const { startDate, endDate, admissionId, patientId, limit = 100 } = req.query;
-  
+
   const query = {
     payment_deferred: true,
     status: { $in: ['Pending', 'Partially Paid'] }
   };
-  
+
   if (admissionId) query.admission_id = admissionId;
   if (patientId) query.patient_id = patientId;
-  
+
   if (startDate || endDate) {
     query.sale_date = {};
     if (startDate) query.sale_date.$gte = new Date(startDate);
     if (endDate) query.sale_date.$lte = new Date(endDate);
   }
-  
+
   const deferredSales = await Sale.find(query)
     .populate('patient_id', 'first_name last_name patientId uhid phone')
     .populate('admission_id', 'admissionNumber shipNumber status')
@@ -450,9 +479,9 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
     .sort({ sale_date: -1 })
     .limit(Number(limit))
     .lean();
-  
+
   const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
-  
+
   res.json({
     success: true,
     deferredPayments: deferredSales,
@@ -464,30 +493,30 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
 // ========== UPDATED: Settle a deferred payment (with discount support) ==========
 exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   const { saleId } = req.params;
-  const { 
-    paymentMethod = 'Cash', 
-    reference, 
+  const {
+    paymentMethod = 'Cash',
+    reference,
     collected_by,
     discount = 0,
     discountType = 'percentage'
   } = req.body;
-  
+
   const sale = await Sale.findById(saleId);
   if (!sale) {
     return res.status(404).json({ success: false, error: 'Sale not found' });
   }
-  
+
   if (!sale.payment_deferred) {
     return res.status(400).json({ success: false, error: 'This sale is not a deferred payment' });
   }
-  
+
   if (sale.status === 'Completed') {
     return res.status(400).json({ success: false, error: 'Sale is already completed' });
   }
-  
+
   let amountToPay = sale.balance_due;
   let discountAmount = 0;
-  
+
   // Apply discount if specified
   if (discount > 0) {
     if (discountType === 'percentage') {
@@ -497,9 +526,9 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     }
     amountToPay = normalizeMoney(amountToPay - discountAmount);
   }
-  
+
   const paidAmount = sale.amount_paid + amountToPay;
-  
+
   // Update sale
   sale.amount_paid = paidAmount;
   sale.balance_due = 0;
@@ -507,15 +536,15 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   sale.payment_method = paymentMethod;
   sale.payment_deferred = false;
   sale.settled_at = new Date();
-  
+
   // Apply discount
   if (discountAmount > 0) {
     sale.discount_amount = normalizeMoney((sale.discount_amount || 0) + discountAmount);
-    sale.discount_reason = sale.discount_reason 
-      ? `${sale.discount_reason}; Settlement discount ₹${discountAmount}` 
+    sale.discount_reason = sale.discount_reason
+      ? `${sale.discount_reason}; Settlement discount ₹${discountAmount}`
       : `Settlement discount ₹${discountAmount}`;
   }
-  
+
   // Add payment record
   sale.payments = sale.payments || [];
   sale.payments.push({
@@ -525,9 +554,9 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     date: new Date(),
     collected_by: collected_by || getCreatedBy(req)
   });
-  
+
   await sale.save();
-  
+
   // Update associated invoice
   if (sale.invoice_id) {
     const invoice = await Invoice.findById(sale.invoice_id);
@@ -541,7 +570,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
       await invoice.save();
     }
   }
-  
+
   // Update associated bill
   if (sale.bill_id) {
     const bill = await Bill.findById(sale.bill_id);
@@ -556,14 +585,14 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
       await bill.save();
     }
   }
-  
+
   // Update patient outstanding balance
   if (sale.patient_id) {
     await Patient.findByIdAndUpdate(sale.patient_id, {
       $inc: { pharmacy_outstanding_balance: -amountToPay }
     });
   }
-  
+
   // Update IPD charge if applicable
   if (sale.admission_id && sale.patient_id) {
     const ipdCharge = await IPDCharge.findOne({
@@ -577,7 +606,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
       await ipdCharge.save();
     }
   }
-  
+
   // Create payment ledger entry
   await PharmacyLedgerEntry.create({
     hospitalId: sale.hospitalId,
@@ -593,7 +622,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     notes: `Deferred payment settled via ${paymentMethod}. Discount: ₹${discountAmount}. Reference: ${reference || 'N/A'}`,
     createdBy: collected_by || getCreatedBy(req)
   });
-  
+
   // Create discount ledger entry if applicable
   if (discountAmount > 0) {
     await PharmacyLedgerEntry.create({
@@ -611,7 +640,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
       createdBy: collected_by || getCreatedBy(req)
     });
   }
-  
+
   res.json({
     success: true,
     message: 'Deferred payment settled successfully',
@@ -664,6 +693,139 @@ exports.getDoctorCommissionReport = asyncHandler(async (req, res) => {
   totals.salesAmount = normalizeMoney(totals.salesAmount);
   totals.commissionAmount = normalizeMoney(totals.commissionAmount);
   res.json({ success: true, range: { start, end }, totals, rows });
+});
+
+// ========== DOCTOR BILL REPORT ==========
+exports.getDoctorBillReport = asyncHandler(async (req, res) => {
+  const start = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
+  
+  // Build match query for sales
+  const match = { 
+    sale_date: { $gte: start, $lte: end }
+  };
+  
+  // Filter by doctor if specified
+  if (req.query.doctorId) {
+    match.doctor_id = objectIdOrUndefined(req.query.doctorId);
+  }
+  
+  // Fetch sales with proper population
+  const sales = await Sale.find(match)
+    .populate('patient_id', 'first_name last_name patientId uhid phone age gender')
+    .populate('doctor_id', 'firstName lastName name specialization')
+    .populate('admission_id', 'admissionNumber shipNumber')
+    .populate('items.medicine_id', 'name composition generic_name brand hsn_code gst_rate')
+    .populate('items.batch_id', 'batch_number expiry_date purchase_price_per_base_unit')
+    .sort({ sale_date: -1 })
+    .lean();
+
+  // Build bill rows with purchase costs
+  const rows = [];
+  let totalSales = 0;
+  let totalPurchaseCost = 0;
+  let totalGrossProfit = 0;
+  let totalDiscount = 0;
+  let totalTax = 0;
+  let totalItems = 0;
+
+  for (const sale of sales) {
+    // Get bill and invoice if available
+    const bill = await Bill.findOne({ sale_id: sale._id }).lean();
+    const invoice = await Invoice.findOne({ sale_id: sale._id }).lean();
+    
+    // Calculate purchase costs for this sale
+    let salePurchaseCost = 0;
+    let saleGrossProfit = 0;
+    const itemsWithCost = (sale.items || []).map(item => {
+      const quantity = item.quantity_base_units || item.quantity || 0;
+      const purchaseRate = item.purchase_rate_per_base_unit || 0;
+      const purchaseAmount = item.purchase_amount || (purchaseRate * quantity);
+      const netAmount = item.net_amount || item.total_price || 0;
+      const profit = netAmount - purchaseAmount;
+      
+      salePurchaseCost += purchaseAmount;
+      saleGrossProfit += profit;
+      
+      return {
+        ...item,
+        purchase_rate_per_base_unit: purchaseRate,
+        purchase_amount: purchaseAmount,
+        profit: profit,
+        profit_margin: purchaseAmount > 0 ? (profit / purchaseAmount * 100) : 0
+      };
+    });
+
+    totalSales += sale.total_amount || 0;
+    totalPurchaseCost += salePurchaseCost;
+    totalGrossProfit += saleGrossProfit;
+    totalDiscount += sale.discount_amount || 0;
+    totalTax += sale.tax || 0;
+    totalItems += sale.items?.length || 0;
+
+    rows.push({
+      saleId: sale._id,
+      saleNumber: sale.sale_number,
+      invoiceNumber: sale.invoice_number || invoice?.invoice_number || '—',
+      billNumber: bill?.bill_number || '—',
+      saleDate: sale.sale_date,
+      patient: sale.patient_id ? {
+        _id: sale.patient_id._id,
+        name: `${sale.patient_id.first_name || ''} ${sale.patient_id.last_name || ''}`.trim(),
+        uhid: sale.patient_id.uhid || sale.patient_id.patientId,
+        phone: sale.patient_id.phone
+      } : null,
+      doctor: sale.doctor_id ? {
+        _id: sale.doctor_id._id,
+        name: sale.doctor_id.name || `${sale.doctor_id.firstName || ''} ${sale.doctor_id.lastName || ''}`.trim(),
+        specialization: sale.doctor_id.specialization
+      } : null,
+      admission: sale.admission_id ? {
+        _id: sale.admission_id._id,
+        number: sale.admission_id.admissionNumber || sale.admission_id.shipNumber
+      } : null,
+      customerType: sale.customer_type || 'WalkIn',
+      paymentMethod: sale.payment_method,
+      isDeferred: sale.payment_deferred || false,
+      deferralReason: sale.deferral_reason,
+      subtotal: sale.subtotal || 0,
+      discountAmount: sale.discount_amount || 0,
+      taxAmount: sale.tax || 0,
+      totalAmount: sale.total_amount || 0,
+      paidAmount: sale.amount_paid || 0,
+      balanceDue: sale.balance_due || 0,
+      purchaseCost: salePurchaseCost,
+      grossProfit: saleGrossProfit,
+      profitMargin: salePurchaseCost > 0 ? (saleGrossProfit / salePurchaseCost * 100) : 0,
+      items: itemsWithCost,
+      itemCount: sale.items?.length || 0,
+      bill: bill,
+      invoice: invoice
+    });
+  }
+
+  // Calculate summary totals
+  const summary = {
+    totalSales,
+    totalPurchaseCost,
+    totalGrossProfit,
+    totalDiscount,
+    totalTax,
+    totalItems,
+    totalBills: rows.length,
+    totalPaid: rows.reduce((sum, r) => sum + r.paidAmount, 0),
+    totalBalanceDue: rows.reduce((sum, r) => sum + r.balanceDue, 0),
+    avgProfitMargin: totalPurchaseCost > 0 ? (totalGrossProfit / totalPurchaseCost * 100) : 0,
+    rows
+  };
+
+  res.json({
+    success: true,
+    range: { start, end },
+    summary,
+    rows,
+    doctorFilter: req.query.doctorId || null
+  });
 });
 
 exports.depositAdvance = asyncHandler(async (req, res) => {
@@ -1821,21 +1983,21 @@ exports.bulkSettleDeferredPayments = asyncHandler(async (req, res) => {
 // ========== NEW: Get Deferred Settlement Summary ==========
 exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
   const { admissionId } = req.params;
-  
+
   if (!admissionId) {
     return res.status(400).json({ success: false, error: 'admissionId is required' });
   }
-  
+
   const deferredSales = await Sale.find({
     admission_id: admissionId,
     payment_deferred: true,
     status: { $in: ['Pending', 'Partially Paid'] }
   }).select('sale_number total_amount amount_paid balance_due sale_date items medicine_name');
-  
+
   const totalDue = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
   const pharmacyAdvance = await getAdvanceBalance({ admissionId, walletType: 'PHARMACY_IPD' });
   const sharedIpdAdvance = await getAdvanceBalance({ admissionId, walletType: 'IPD_SHARED' });
-  
+
   // Get patient details
   let patientId = null;
   let patientName = null;
@@ -1846,7 +2008,7 @@ exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
       patientName = `${patient.first_name || ''} ${patient.last_name || ''}`.trim();
     }
   }
-  
+
   res.json({
     success: true,
     deferredPayments: deferredSales.map(sale => ({

@@ -31,6 +31,7 @@ router.get('/ipd/admissions/:admissionId/final-clearance', ...authChain, operati
 
 // ========== REPORTS ==========
 router.get('/reports/doctor-commission', ...authChain, operations.getDoctorCommissionReport);
+router.get('/reports/doctor-bills', ...authChain, operations.getDoctorBillReport);
 
 // ========== DASHBOARD & ANALYTICS ==========
 router.get('/dashboard', ...authChain, operations.getDashboard);
