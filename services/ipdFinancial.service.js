@@ -563,7 +563,12 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
       throw error;
     }
 
-    if (invoiceKind === 'IPD Final') admission.finalInvoiceId = invoice._id;
+    if (invoiceKind === 'IPD Final') {
+      admission.finalInvoiceId = invoice._id;
+      if (admission.status === 'Billing Pending') {
+        admission.status = 'Payment Pending';
+      }
+    }
     admission.financialClearanceStatus = 'in_progress';
     await admission.save(sessionOptions(session));
     return { invoice, bill, alreadyExists: false };
@@ -1039,7 +1044,7 @@ async function getFinancialClearance(admissionId) {
   }).select('sale_number balance_due total_amount payment_deferred include_in_discharge_clearance sale_date').lean();
   const pharmacyDue = money(pendingPharmacySales.reduce((sum, sale) => sum + (Number(sale.balance_due) || 0), 0));
   const hasPharmacyTransactions = await Sale.exists({ admission_id: admissionId });
-  const pharmacyCleared = ['cleared', 'exempted'].includes(admission.pharmacyClearanceStatus) || (!hasPharmacyTransactions && pharmacyDue === 0);
+  const pharmacyCleared = ['cleared', 'exempted'].includes(admission.pharmacyClearanceStatus) || pharmacyDue === 0;
   const finalInvoice = snapshot.invoices.find((invoice) => invoice.invoice_type === 'IPD Final') || null;
 
   const checks = {
@@ -1100,6 +1105,12 @@ async function finaliseFinancialClearance(admissionId, payload, user) {
     };
   }
   if (issuedInvoice) admission.finalInvoiceId = issuedInvoice._id;
+
+  // Advance the overall admission status if it is currently pending billing/payment
+  if (clearance.ready && ['Billing Pending', 'Payment Pending'].includes(admission.status)) {
+    admission.status = 'Ready for Discharge';
+  }
+
   await admission.save();
   return { clearance: await getFinancialClearance(admissionId), issuedInvoice, admission };
 }
