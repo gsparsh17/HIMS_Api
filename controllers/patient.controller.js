@@ -16,7 +16,7 @@ const storage = multer.diskStorage({
     cb(null, 'uploads/');
   },
   filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); 
+    cb(null, Date.now() + path.extname(file.originalname));
   }
 });
 
@@ -40,12 +40,12 @@ exports.uploadPatientImage = async (req, res) => {
 // ========== ENHANCED PATIENT SEARCH FOR PHARMACY POS ==========
 exports.searchPatientsForPharmacy = async (req, res) => {
   try {
-    const { 
-      query, 
+    const {
+      query,
       searchType = 'all',
       includeWalkins = true,
       includeActiveIPD = true,
-      limit = 20 
+      limit = 20
     } = req.query;
 
     if (!query || query.trim().length < 2) {
@@ -60,7 +60,7 @@ exports.searchPatientsForPharmacy = async (req, res) => {
       conditions.push(
         { first_name: searchRegex },
         { last_name: searchRegex },
-        { 
+        {
           $expr: {
             $regexMatch: {
               input: { $concat: ['$first_name', ' ', { $ifNull: ['$last_name', ''] }] },
@@ -92,6 +92,17 @@ exports.searchPatientsForPharmacy = async (req, res) => {
       conditions.push({ 'active_admissions.registration_number': searchRegex });
     }
 
+    // ========== FIX: Define all active admission statuses ==========
+    const activeStatuses = [
+      'Admitted',
+      'Under Treatment',
+      'Discharge Initiated',
+      'Discharge Summary Pending',
+      'Billing Pending',
+      'Payment Pending',
+      'Ready for Discharge'
+    ];
+
     const pipeline = [
       {
         $match: {
@@ -109,7 +120,7 @@ exports.searchPatientsForPharmacy = async (req, res) => {
                 $expr: {
                   $and: [
                     { $eq: ['$patientId', '$$patientId'] },
-                    { $in: ['$status', ['Admitted', 'Under Treatment']] }
+                    { $in: ['$status', activeStatuses] }  // <-- FIX: Use all active statuses
                   ]
                 }
               }
@@ -117,12 +128,12 @@ exports.searchPatientsForPharmacy = async (req, res) => {
             {
               $project: {
                 admissionNumber: 1,
-                admissionNumber: 1,
                 primaryDoctorId: 1,
                 wardId: 1,
                 bedId: 1,
                 roomId: 1,
-                status: 1
+                status: 1,
+                shipNumber: 1  // <-- FIX: Include shipNumber
               }
             },
             {
@@ -142,9 +153,19 @@ exports.searchPatientsForPharmacy = async (req, res) => {
               }
             },
             {
+              $lookup: {
+                from: 'beds',
+                localField: 'bedId',
+                foreignField: '_id',
+                as: 'bed'
+              }
+            },
+            {
               $addFields: {
                 doctor_name: { $arrayElemAt: ['$doctor.name', 0] },
-                ward_name: { $arrayElemAt: ['$ward.name', 0] }
+                ward_name: { $arrayElemAt: ['$ward.name', 0] },
+                bed_number: { $arrayElemAt: ['$bed.bedNumber', 0] },
+                ship_number: '$shipNumber'  // <-- FIX: Use shipNumber field
               }
             }
           ],
@@ -185,10 +206,10 @@ exports.searchPatientsForPharmacy = async (req, res) => {
           current_admission: {
             _id: 1,
             admissionNumber: 1,
-            ship_number: '$active_admissions.ship_number',
+            ship_number: '$current_admission.ship_number',
             doctor_name: 1,
             ward_name: 1,
-            bed_number: '$bedId',
+            bed_number: 1,
             status: 1
           },
           has_active_admission: 1,
@@ -206,7 +227,7 @@ exports.searchPatientsForPharmacy = async (req, res) => {
       ...patient,
       ship_number: patient.current_admission?.ship_number || null,
       doctor_name: patient.current_admission?.doctor_name || null,
-      ward_bed: patient.current_admission?.ward_name && patient.current_admission?.bed_number 
+      ward_bed: patient.current_admission?.ward_name && patient.current_admission?.bed_number
         ? `${patient.current_admission.ward_name} - ${patient.current_admission.bed_number}`
         : null
     }));
@@ -227,10 +248,10 @@ exports.searchPatientsForPharmacy = async (req, res) => {
 exports.getPatientPharmacyAccount = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const patient = await Patient.findById(id)
       .select('first_name last_name uhid patientId phone pharmacy_outstanding_balance pharmacy_advance_balance sponsor_type sponsor_name patient_type is_walkin');
-    
+
     if (!patient) {
       return res.status(404).json({ error: 'Patient not found' });
     }
@@ -332,11 +353,11 @@ exports.updatePatientPharmacyBalance = async (req, res) => {
 exports.createOrUpdateWalkinPatient = async (req, res) => {
   try {
     const { phone, name, first_name, last_name, ...otherData } = req.body;
-    
+
     // Parse name if provided as single field
     let firstName = first_name;
     let lastName = last_name;
-    
+
     if (name && !firstName) {
       const nameParts = name.trim().split(/\s+/);
       firstName = nameParts[0];
@@ -344,9 +365,9 @@ exports.createOrUpdateWalkinPatient = async (req, res) => {
     }
 
     // Check if walkin patient already exists with this phone
-    let walkinPatient = await Patient.findOne({ 
+    let walkinPatient = await Patient.findOne({
       phone: phone,
-      is_walkin: true 
+      is_walkin: true
     });
 
     if (walkinPatient) {
@@ -355,7 +376,7 @@ exports.createOrUpdateWalkinPatient = async (req, res) => {
       walkinPatient.first_name = firstName || walkinPatient.first_name;
       walkinPatient.last_name = lastName || walkinPatient.last_name;
       await walkinPatient.save();
-      
+
       return res.json({
         success: true,
         isNew: false,
@@ -411,7 +432,7 @@ exports.createPatient = async (req, res) => {
   try {
     const existingPatient = await Patient.findOne({ phone: req.body.phone });
     if (existingPatient && !req.body.force_create) {
-      return res.status(409).json({ 
+      return res.status(409).json({
         error: 'DUPLICATE_PATIENT',
         message: 'Patient with this phone number already exists',
         existingPatient: {
@@ -426,7 +447,7 @@ exports.createPatient = async (req, res) => {
 
     const patient = new Patient(req.body);
     await patient.save();
-    
+
     if (req.body.localId) {
       const OfflineSyncLog = require('../models/OfflineSyncLog');
       await OfflineSyncLog.create({
@@ -439,11 +460,11 @@ exports.createPatient = async (req, res) => {
         syncedAt: new Date()
       });
     }
-    
+
     res.status(201).json({ success: true, patient, synced: true });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(409).json({ 
+      return res.status(409).json({
         error: 'DUPLICATE_PATIENT',
         message: 'Patient with this phone or Aadhaar already exists'
       });
@@ -456,7 +477,7 @@ exports.createPatient = async (req, res) => {
 exports.bulkCreatePatients = async (req, res) => {
   const patientsData = req.body;
   console.log('📦 Received bulk patient data:', patientsData.length, 'patients');
-  
+
   if (!patientsData || !Array.isArray(patientsData)) {
     return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
   }
@@ -468,7 +489,7 @@ exports.bulkCreatePatients = async (req, res) => {
   for (const patientData of patientsData) {
     try {
       const existingPatient = await Patient.findOne({ phone: patientData.phone });
-      
+
       if (existingPatient) {
         console.log(`🔄 Duplicate patient found for phone: ${patientData.phone}, treating as success`);
         successfulImports.push({
@@ -479,7 +500,7 @@ exports.bulkCreatePatients = async (req, res) => {
           duplicate: true,
           message: 'Patient already exists, synced successfully'
         });
-        
+
         if (patientData.localId) {
           syncLogs.push({
             localId: patientData.localId,
@@ -496,12 +517,12 @@ exports.bulkCreatePatients = async (req, res) => {
       }
 
       const { localId, isSynced, tempPatientId, force_create, ...cleanData } = patientData;
-      
+
       const patient = new Patient(cleanData);
       await patient.save();
-      
+
       console.log(`✅ New patient saved: ${patient.first_name} ${patient.last_name} (${patient.patientId})`);
-      
+
       successfulImports.push({
         localId: localId || tempPatientId,
         serverId: patient._id,
@@ -510,7 +531,7 @@ exports.bulkCreatePatients = async (req, res) => {
         duplicate: false,
         message: 'New patient created'
       });
-      
+
       if (localId) {
         syncLogs.push({
           localId: localId,
@@ -522,7 +543,7 @@ exports.bulkCreatePatients = async (req, res) => {
           syncedAt: new Date()
         });
       }
-      
+
     } catch (err) {
       console.error(`❌ Failed to sync patient: ${err.message}`);
       failedImports.push({
@@ -535,14 +556,14 @@ exports.bulkCreatePatients = async (req, res) => {
       });
     }
   }
-  
+
   if (syncLogs.length > 0) {
     const OfflineSyncLog = require('../models/OfflineSyncLog');
     await OfflineSyncLog.insertMany(syncLogs);
   }
-  
+
   console.log(`📊 Bulk sync completed: ${successfulImports.length} successful, ${failedImports.length} failed`);
-  
+
   res.status(201).json({
     message: 'Bulk patient sync completed',
     successfulCount: successfulImports.length,
@@ -556,16 +577,16 @@ exports.bulkCreatePatients = async (req, res) => {
 exports.checkDuplicateByPhone = async (req, res) => {
   try {
     const { phone } = req.query;
-    
+
     if (!phone) {
       return res.status(400).json({ error: 'Phone number is required' });
     }
-    
+
     const existingPatient = await Patient.findOne({ phone: phone });
-    
+
     if (existingPatient) {
-      return res.json({ 
-        exists: true, 
+      return res.json({
+        exists: true,
         patient: {
           _id: existingPatient._id,
           patientId: existingPatient.patientId,
@@ -581,7 +602,7 @@ exports.checkDuplicateByPhone = async (req, res) => {
         }
       });
     }
-    
+
     res.json({ exists: false, patient: null });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -592,33 +613,33 @@ exports.checkDuplicateByPhone = async (req, res) => {
 exports.getPatientByTempId = async (req, res) => {
   try {
     const { tempId } = req.params;
-    
+
     const queueItem = await OfflineSyncLog.findOne({
       tempPatientId: tempId,
       entityType: 'PATIENT',
       status: 'SYNCED'
     });
-    
+
     if (queueItem && queueItem.serverId) {
       const patient = await Patient.findById(queueItem.serverId);
       if (patient) {
         return res.json({ patient });
       }
     }
-    
+
     const syncLog = await OfflineSyncLog.findOne({
       localId: tempId,
       entityType: 'PATIENT',
       status: 'SYNCED'
     });
-    
+
     if (syncLog && syncLog.serverId) {
       const patient = await Patient.findById(syncLog.serverId);
       if (patient) {
         return res.json({ patient });
       }
     }
-    
+
     res.json({ patient: null });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -636,15 +657,15 @@ exports.getSyncStatus = async (req, res) => {
         }
       }
     ]);
-    
+
     const recentSyncs = await OfflineSyncLog.find({ status: 'SYNCED' })
       .sort({ syncedAt: -1 })
       .limit(20);
-    
+
     const pendingCount = await OfflineSyncLog.countDocuments({ status: 'PENDING' });
     const failedCount = await OfflineSyncLog.countDocuments({ status: 'FAILED' });
     const conflictCount = await OfflineSyncLog.countDocuments({ status: 'CONFLICT' });
-    
+
     res.json({
       stats,
       recentSyncs,
@@ -674,7 +695,7 @@ exports.getAllPatients = async (req, res) => {
         { 'abha.address': { $regex: search, $options: 'i' } }
       ];
     }
-    
+
     if (gender) matchStage.gender = gender;
     if (patient_type) matchStage.patient_type = patient_type;
     if (sponsor_type) matchStage.sponsor_type = sponsor_type;
@@ -762,17 +783,17 @@ exports.deletePatient = async (req, res) => {
 exports.getPatientByPhone = async (req, res) => {
   try {
     const { phone } = req.params;
-    
+
     if (!phone) {
       return res.status(400).json({ error: 'Phone number is required' });
     }
-    
+
     const patient = await Patient.findOne({ phone: phone });
-    
+
     if (patient) {
       return res.json({ patient });
     }
-    
+
     res.json({ patient: null });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -783,12 +804,12 @@ exports.getPatientByPhone = async (req, res) => {
 exports.getRecentPatients = async (req, res) => {
   try {
     const { limit = 10 } = req.query;
-    
+
     const patients = await Patient.find()
       .sort({ registered_at: -1 })
       .limit(parseInt(limit))
       .select('first_name last_name phone patient_id registered_at');
-    
+
     res.json({ patients });
   } catch (err) {
     res.status(500).json({ error: err.message });
