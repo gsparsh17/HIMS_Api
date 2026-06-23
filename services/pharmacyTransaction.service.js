@@ -614,6 +614,8 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
   return invoice;
 }
 
+// In createPharmacyBill function, around line ~700-750
+
 async function createPharmacyBill({ sale, items, totals, paymentEntries, hospitalId, patientId, admissionId, createdBy, isDeferred = false }) {
   const billItems = items.map(item => ({
     description: item.medicine_name,
@@ -655,28 +657,51 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
   let pharmacyAdvanceCreated = 0;
   let paymentAmount = 0;
 
-  if (paymentEntries && paymentEntries.length > 0) {
+  // Calculate payment amount correctly for deferred payments
+  if (isDeferred || sale.payment_deferred === true) {
+    // For deferred payments, amount_paid is what's paid towards the bill
+    // If advance mode, amount_paid is 0 (all went to advance)
+    paymentAmount = sale.amount_paid || 0;
+  } else if (paymentEntries && paymentEntries.length > 0) {
     paymentAmount = paymentEntries.reduce((sum, p) => sum + p.amount, 0);
   } else if (sale.payment_method !== 'NoPayment' && sale.payment_method !== 'Pending' && sale.payment_method !== 'Deferred') {
     paymentAmount = totals.total;
+  }
+
+  // For deferred "advance" mode, the advance credit is tracked separately
+  if (isDeferred || sale.payment_deferred === true) {
+    // Check if this is "advance" mode - payment went to advance, not to bill
+    const immediateAdvance = sale.immediate_advance_payment || sale.immediateAdvancePayment || 0;
+    if (immediateAdvance > 0 && sale.amount_paid === 0) {
+      // All collected amount went to advance, none to bill
+      pharmacyAdvanceCreated = immediateAdvance;
+    }
   }
 
   if (sale.payment_method === 'PharmacyAdvance' || (paymentEntries && paymentEntries.some(p => p.method === 'PharmacyAdvance'))) {
     pharmacyAdvanceUsed = Math.min(pharmacyAdvanceBefore, paymentAmount);
   }
 
+  // Overpayment check - only for non-deferred payments
   let overpayment = 0;
-  if (paymentAmount > totals.total) {
-    overpayment = paymentAmount - totals.total;
-    pharmacyAdvanceCreated = overpayment;
+  if (!isDeferred && !sale.payment_deferred) {
+    if (paymentAmount > totals.total) {
+      overpayment = paymentAmount - totals.total;
+      pharmacyAdvanceCreated = overpayment;
+    }
   }
 
   const pharmacyOutstandingAfter = Math.max(0, totals.total - paymentAmount + pharmacyOutstandingBefore - pharmacyAdvanceUsed);
   const pharmacyAdvanceAfter = pharmacyAdvanceBefore - pharmacyAdvanceUsed + pharmacyAdvanceCreated;
 
+  // Determine bill status correctly
   let billStatus = 'Pending';
-  if (!isDeferred) {
+  if (!isDeferred && !sale.payment_deferred) {
     billStatus = sale.payment_method === 'NoPayment' ? 'Pending' : (paymentAmount >= totals.total ? 'Paid' : 'Partially Paid');
+  } else {
+    // For deferred payments, bill is not paid until the deferred amount is settled
+    // But we track the advance credit separately
+    billStatus = 'Pending';
   }
 
   const bill = await Bill.create({
@@ -690,7 +715,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
     tax_amount: totals.tax,
     discount: totals.discountAmount,
     discount_type: sale.discount_type || 'percentage',
-    payment_method: isDeferred ? 'Pending' : (sale.payment_method === 'Deferred' ? 'Pending' : sale.payment_method),
+    payment_method: isDeferred || sale.payment_deferred ? 'Pending' : (sale.payment_method === 'Deferred' ? 'Pending' : sale.payment_method),
     payments: paymentEntries.map(p => ({
       method: p.method,
       amount: p.amount,
@@ -702,7 +727,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
     paid_amount: paymentAmount,
     balance_due: totals.total - paymentAmount,
     created_by: createdBy,
-    notes: isDeferred ? `Deferred payment - ${sale.notes || 'Pending settlement'}` : (sale.notes || `Pharmacy sale: ${sale.sale_number}`),
+    notes: isDeferred || sale.payment_deferred ? `Deferred payment - ${sale.notes || 'Pending settlement'}` : (sale.notes || `Pharmacy sale: ${sale.sale_number}`),
     is_pharmacy_bill: true,
     pharmacy_outstanding_before: pharmacyOutstandingBefore,
     pharmacy_outstanding_after: pharmacyOutstandingAfter,
@@ -714,19 +739,27 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
   sale.bill_id = bill._id;
   await sale.save();
 
-  if (patientId && !isDeferred) {
-    await Patient.findByIdAndUpdate(patientId, {
-      $inc: {
-        pharmacy_outstanding_balance: (totals.total - paymentAmount - pharmacyAdvanceUsed),
-        pharmacy_advance_balance: (pharmacyAdvanceCreated - pharmacyAdvanceUsed)
-      },
-      last_pharmacy_transaction: new Date()
-    });
-  } else if (patientId && isDeferred) {
-    await Patient.findByIdAndUpdate(patientId, {
-      $inc: { pharmacy_outstanding_balance: totals.total },
-      last_pharmacy_transaction: new Date()
-    });
+  // Update patient balances - for deferred payments, outstanding balance increases
+  if (patientId) {
+    if (isDeferred || sale.payment_deferred) {
+      // Deferred payment: outstanding balance is the full bill amount
+      // The advance credit is already added to pharmacy_advance_balance
+      await Patient.findByIdAndUpdate(patientId, {
+        $inc: {
+          pharmacy_outstanding_balance: totals.total - paymentAmount,
+          // pharmacy_advance_balance is already updated when advance was credited
+        },
+        last_pharmacy_transaction: new Date()
+      });
+    } else {
+      await Patient.findByIdAndUpdate(patientId, {
+        $inc: {
+          pharmacy_outstanding_balance: (totals.total - paymentAmount - pharmacyAdvanceUsed),
+          pharmacy_advance_balance: (pharmacyAdvanceCreated - pharmacyAdvanceUsed)
+        },
+        last_pharmacy_transaction: new Date()
+      });
+    }
   }
 
   return bill;
@@ -987,7 +1020,7 @@ async function createUnifiedSale(payload, req = {}) {
       }));
       // Sum up payments that are NOT going to advance
       const paymentSum = manualPayments.reduce((sum, p) => sum + p.amount, 0);
-      
+
       // If there's immediate advance payment, subtract it from total collected
       if (immediateAdvancePayment > 0) {
         // The payment is going to advance, not to the bill
@@ -1005,12 +1038,12 @@ async function createUnifiedSale(payload, req = {}) {
     // Check if there's an immediate advance payment (Pay Less Now with "Add to Advance" mode)
     if (immediateAdvancePayment > 0) {
       console.log(`💰 Processing immediate advance payment: ${immediateAdvancePayment} via ${immediateAdvanceMethod}`);
-      
+
       // Validate that we have an IPD patient
       if (!patientId || !admissionId) {
         throw new Error('Immediate advance payment requires an IPD patient with an active admission.');
       }
-      
+
       // The advance payment is credited separately later
       // Balance due remains the full total
       balanceDue = totals.total;
@@ -1084,7 +1117,7 @@ async function createUnifiedSale(payload, req = {}) {
     // ========== PROCESS IMMEDIATE ADVANCE PAYMENT ==========
     if (immediateAdvancePayment > 0 && patientId && admissionId) {
       console.log(`✨ Crediting ${immediateAdvancePayment} to Pharmacy Advance for sale ${sale.sale_number}`);
-      
+
       // Credit to pharmacy advance
       await createAdvanceLedgerEntry({
         hospitalId,
@@ -2350,7 +2383,7 @@ async function bulkSettleDeferredPayments(payload, req = {}) {
 
   let totalDue = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
   totalDue = normalizeMoney(totalDue);
-  
+
   let totalBillAmount = deferredSales.reduce((sum, sale) => sum + (sale.total_amount || sale.gross_amount || sale.balance_due || 0), 0);
   totalBillAmount = normalizeMoney(totalBillAmount);
 
@@ -2431,7 +2464,7 @@ async function bulkSettleDeferredPayments(payload, req = {}) {
     if (totalDue > 0) {
       saleDiscount = normalizeMoney((saleDue / totalDue) * discountAmount);
     }
-    
+
     const applicableSaleDiscount = Math.min(saleDiscount, saleDue);
     totalDiscountAllocated += applicableSaleDiscount;
 
