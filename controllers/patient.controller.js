@@ -162,7 +162,13 @@ exports.searchPatientsForPharmacy = async (req, res) => {
             },
             {
               $addFields: {
-                doctor_name: { $arrayElemAt: ['$doctor.name', 0] },
+                doctor_name: {
+                  $concat: [
+                    { $ifNull: [{ $arrayElemAt: ['$doctor.firstName', 0] }, ''] },
+                    ' ',
+                    { $ifNull: [{ $arrayElemAt: ['$doctor.lastName', 0] }, ''] }
+                  ]
+                },
                 ward_name: { $arrayElemAt: ['$ward.name', 0] },
                 bed_number: { $arrayElemAt: ['$bed.bedNumber', 0] },
                 ship_number: '$shipNumber'  // <-- FIX: Use shipNumber field

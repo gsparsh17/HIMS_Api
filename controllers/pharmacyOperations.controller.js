@@ -1908,14 +1908,23 @@ exports.getInventoryLedger = asyncHandler(async (req, res) => {
 });
 
 exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
-  const { q = '', limit = 20 } = req.query;
+  const { q = '', limit = 20, patientId } = req.query;
   const text = String(q).trim();
-  const admissionQuery = text
-    ? { admissionNumber: { $regex: text, $options: 'i' }, status: { $ne: 'Discharged' } }
-    : { status: { $ne: 'Discharged' } };
+  
+  const admissionQuery = { status: { $ne: 'Discharged' } };
+  if (text) {
+    admissionQuery.admissionNumber = { $regex: text, $options: 'i' };
+  }
+  if (patientId) {
+    admissionQuery.patientId = patientId;
+  }
 
   const admissions = await IPDAdmission.find(admissionQuery)
-    .populate('patientId', 'first_name last_name patientId uhid phone')
+    .populate('patientId', 'first_name last_name patientId uhid phone sponsor_type sponsor_name')
+    .populate('primaryDoctorId', 'firstName lastName')
+    .populate('wardId', 'name')
+    .populate('bedId', 'bedNumber bedType')
+    .populate('roomId', 'room_number type name')
     .sort({ admissionDate: -1 })
     .limit(Number(limit))
     .lean();
