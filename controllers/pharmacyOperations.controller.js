@@ -1912,11 +1912,28 @@ exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
   const text = String(q).trim();
   
   const admissionQuery = { status: { $ne: 'Discharged' } };
-  if (text) {
-    admissionQuery.admissionNumber = { $regex: text, $options: 'i' };
-  }
+  
   if (patientId) {
     admissionQuery.patientId = patientId;
+  }
+  
+  if (text && !patientId) {
+    const matchingPatients = await Patient.find({
+      $or: [
+        { patientId: { $regex: text, $options: 'i' } },
+        { uhid: { $regex: text, $options: 'i' } },
+        { phone: { $regex: text, $options: 'i' } },
+        { first_name: { $regex: text, $options: 'i' } }
+      ]
+    }).select('_id').lean();
+    
+    const patientIds = matchingPatients.map(p => p._id);
+    
+    admissionQuery.$or = [
+      { admissionNumber: { $regex: text, $options: 'i' } },
+      { shipNumber: { $regex: text, $options: 'i' } },
+      { patientId: { $in: patientIds } }
+    ];
   }
 
   const admissions = await IPDAdmission.find(admissionQuery)
