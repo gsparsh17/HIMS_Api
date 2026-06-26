@@ -213,12 +213,45 @@ function buildSettlementPreviewFromRows(rows, input) {
   };
 }
 
+async function getAdvanceBalances({ patientId, admissionId, session }) {
+  const [ipdAdvance, pharmacyAdvance] = await Promise.all([
+    getAdvanceBalance({ patientId, admissionId, walletType: 'IPD_SHARED', session }),
+    getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD', session })
+  ]);
+  return { ipdAdvance, pharmacyAdvance };
+}
+
 async function previewLedgerSettlement(input, context = {}) {
   const session = context.session;
   const sales = await loadSelectedSales(input, session);
   const preview = buildSettlementPreviewFromRows(sales.map(saleRow), input);
+
+  // Get advance balances
+  const patientId = input.patientId || sales[0]?.patient_id;
+  const admissionId = input.admissionId || sales[0]?.admission_id;
+
+  let advanceBalances = { ipdAdvance: 0, pharmacyAdvance: 0 };
+  if (patientId) {
+    advanceBalances = await getAdvanceBalances({ patientId, admissionId, session });
+  }
+
+  // Calculate how much of the advance can be used (capped at payment required)
+  const paymentRequired = preview.summary?.paymentRequired || 0;
+  const availablePharmacyAdvance = Math.min(advanceBalances.pharmacyAdvance, paymentRequired);
+  const availableIpdAdvance = Math.min(advanceBalances.ipdAdvance, paymentRequired - availablePharmacyAdvance);
+
   return {
     ...preview,
+    advanceBalances: {
+      ...advanceBalances,
+      availablePharmacyAdvance,
+      availableIpdAdvance,
+    },
+    suggestedPayments: {
+      pharmacyAdvance: availablePharmacyAdvance > 0 ? availablePharmacyAdvance : 0,
+      ipdAdvance: availableIpdAdvance > 0 ? availableIpdAdvance : 0,
+      remaining: Math.max(0, paymentRequired - availablePharmacyAdvance - availableIpdAdvance),
+    },
     sales: sales.map((sale) => ({
       _id: sale._id,
       sale_number: sale.sale_number,
@@ -335,34 +368,61 @@ function paymentReference(settlementNumber, sourceReference) {
 }
 
 async function findLinkedBill(sale, session) {
-  const conditions = [{ sale_id: sale._id }];
-  if (sale.invoice_id) conditions.push({ invoice_id: sale.invoice_id });
+  const conditions = [];
+
+  if (sale._id) {
+    conditions.push({ sale_id: sale._id });
+  }
+  if (sale.invoice_id) {
+    conditions.push({ invoice_id: sale.invoice_id });
+  }
+  if (sale.bill_id) {
+    conditions.push({ _id: sale.bill_id });
+  }
+
+  if (conditions.length === 0) return null;
+
   return scoped(Bill.findOne({ $or: conditions }), session);
 }
 
 async function findLinkedInvoice(sale, session) {
-  const conditions = [{ sale_id: sale._id }];
-  if (sale.invoice_id) conditions.unshift({ _id: sale.invoice_id });
+  const conditions = [];
+
+  if (sale._id) {
+    conditions.push({ sale_id: sale._id });
+  }
+  if (sale.invoice_id) {
+    conditions.push({ _id: sale.invoice_id });
+  }
+
+  if (conditions.length === 0) return null;
+
   return scoped(Invoice.findOne({ $or: conditions }), session);
 }
 
+// ========== UPDATED: applyAllocation with proper discount handling ==========
 async function applyAllocation({ sale, allocation, paymentEntries, settlement, createdBy, session }) {
   const now = new Date();
   const paymentAllocated = money(allocation.paymentAllocated);
   const settlementDiscount = money(allocation.settlementDiscountAllocated);
   const creditNote = money(allocation.creditNoteAllocated);
-  const closingDue = money(Math.max(0, allocation.openingDue - paymentAllocated - settlementDiscount));
 
+  // ========== FIX: Properly round closing due ==========
+  const closingDue = money(Math.max(0, allocation.openingDue - paymentAllocated - settlementDiscount));
+  const finalClosingDue = Math.abs(closingDue) < 0.005 ? 0 : closingDue;
+
+  // Update sale
   sale.amount_paid = money((sale.amount_paid || 0) + paymentAllocated);
   sale.settlement_discount_amount = money((sale.settlement_discount_amount || 0) + settlementDiscount);
   sale.credit_note_amount = money((sale.credit_note_amount || 0) + creditNote);
-  sale.balance_due = closingDue;
-  sale.status = closingDue <= 0 ? 'Completed' : 'Partially Paid';
-  sale.payment_deferred = closingDue > 0;
-  sale.settled_at = closingDue <= 0 ? now : sale.settled_at;
+  sale.balance_due = finalClosingDue;
+  sale.status = finalClosingDue <= 0 ? 'Completed' : 'Partially Paid';
+  sale.payment_deferred = finalClosingDue > 0;
+  sale.settled_at = finalClosingDue <= 0 ? now : sale.settled_at;
   sale.payment_method = paymentEntries.length > 1 ? 'Split' : (paymentEntries[0]?.method || sale.payment_method);
   sale.payments = sale.payments || [];
   sale.settlement_refs = sale.settlement_refs || [];
+
   for (const payment of paymentEntries) {
     sale.payments.push({
       method: payment.method,
@@ -371,6 +431,7 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
       walletType: payment.walletType,
     });
   }
+
   sale.settlement_refs.push({
     settlement_id: settlement._id,
     payment_amount: paymentAllocated,
@@ -380,13 +441,61 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
   });
   await sale.save({ session });
 
+  // ========== FIX: Update Invoice with discount ==========
   const invoice = await findLinkedInvoice(sale, session);
   if (invoice) {
+    // Add payment
     invoice.amount_paid = money((invoice.amount_paid || 0) + paymentAllocated);
     invoice.settlement_discount_amount = money((invoice.settlement_discount_amount || 0) + settlementDiscount);
     invoice.credit_note_total = money((invoice.credit_note_total || 0) + creditNote);
+
+    // ========== KEY FIX: ADD to existing discount (not replace) ==========
+    const existingDiscount = money(invoice.discount || 0);
+    const newDiscount = money(existingDiscount + settlementDiscount);
+    invoice.discount = newDiscount;
+
+    // ========== DISTRIBUTE DISCOUNT TO ITEMS ==========
+    // Calculate total taxable amount for items
+    const totalTaxable = money(invoice.medicine_items.reduce((sum, item) => sum + money(item.taxable_amount || 0), 0));
+
+    // Distribute the NEW settlement discount proportionally across items
+    // But we need to ADD to existing item discounts, not replace
+    if (totalTaxable > 0 && settlementDiscount > 0) {
+      invoice.medicine_items = invoice.medicine_items.map(item => {
+        const itemTaxable = money(item.taxable_amount || 0);
+        // Calculate proportional discount for this item
+        const proportionalDiscount = money((itemTaxable / totalTaxable) * settlementDiscount);
+        // ADD to existing item discount
+        const existingItemDiscount = money(item.discount_amount || item.discount || 0);
+        const newItemDiscount = money(existingItemDiscount + proportionalDiscount);
+
+        // Update item fields
+        const updatedItem = {
+          ...item.toObject(),
+          discount_amount: newItemDiscount,
+          // Recalculate total_price: total_price - proportionalDiscount
+          total_price: money((item.total_price || 0) - proportionalDiscount),
+          // Recalculate taxable_amount (already has original discount applied)
+          // The taxable_amount remains the same as it's based on the original discount
+        };
+
+        return updatedItem;
+      });
+    }
+
+    // Recalculate invoice totals
+    const subtotal = money(invoice.subtotal || 0);
+    const tax = money(invoice.tax || 0);
+    invoice.total = money(subtotal - newDiscount + tax);
+    invoice.balance_due = money(invoice.total - invoice.amount_paid);
+
+    if (Math.abs(invoice.balance_due) < 0.005) {
+      invoice.balance_due = 0;
+    }
+
     invoice.payment_history = invoice.payment_history || [];
     invoice.settlement_refs = invoice.settlement_refs || [];
+
     for (const payment of paymentEntries) {
       invoice.payment_history.push({
         amount: payment.amount,
@@ -396,6 +505,7 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
         collected_by: createdBy,
       });
     }
+
     invoice.settlement_refs.push({
       settlement_id: settlement._id,
       payment_amount: paymentAllocated,
@@ -403,16 +513,83 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
       credit_note_amount: creditNote,
       settled_at: now,
     });
+
+    if (invoice.balance_due <= 0) {
+      invoice.status = 'Paid';
+    } else if (invoice.amount_paid > 0) {
+      invoice.status = 'Partial';
+    } else {
+      invoice.status = 'Pending';
+    }
+
     await invoice.save({ session });
   }
 
+  // ========== FIX: Update Bill with discount and item-wise discounts ==========
   const bill = await findLinkedBill(sale, session);
   if (bill) {
+    // Add payment
     bill.paid_amount = money((bill.paid_amount || 0) + paymentAllocated);
     bill.settlement_discount_amount = money((bill.settlement_discount_amount || 0) + settlementDiscount);
     bill.credit_note_amount = money((bill.credit_note_amount || 0) + creditNote);
+
+    // ========== KEY FIX: ADD to existing discount (not replace) ==========
+    const existingDiscount = money(bill.discount || bill.discount_amount || 0);
+    const newDiscount = money(existingDiscount + settlementDiscount);
+    bill.discount = newDiscount;
+    bill.discount_amount = newDiscount;
+
+    // ========== DISTRIBUTE DISCOUNT TO ITEMS ==========
+    // Calculate total taxable amount for bill items
+    const totalTaxable = money(bill.items.reduce((sum, item) => {
+      // Skip return items
+      if (item.item_type === 'Medicine Return') return sum;
+      return sum + money(item.taxable_amount || item.amount || 0);
+    }, 0));
+
+    // Distribute the NEW settlement discount proportionally across items
+    if (totalTaxable > 0 && settlementDiscount > 0) {
+      bill.items = bill.items.map(item => {
+        // Skip return items
+        if (item.item_type === 'Medicine Return') return item;
+
+        const itemTaxable = money(item.taxable_amount || item.amount || 0);
+        // Calculate proportional discount for this item
+        const proportionalDiscount = money((itemTaxable / totalTaxable) * settlementDiscount);
+        // ADD to existing item discount
+        const existingItemDiscount = money(item.discount_amount || 0);
+        const newItemDiscount = money(existingItemDiscount + proportionalDiscount);
+
+        // Update item
+        const updatedItem = {
+          ...item.toObject(),
+          discount_amount: newItemDiscount,
+          // Recalculate amount: amount - proportionalDiscount
+          amount: money((item.amount || 0) - proportionalDiscount),
+          // Recalculate taxable_amount (already has original discount applied)
+          taxable_amount: money((item.taxable_amount || 0) - proportionalDiscount),
+        };
+
+        return updatedItem;
+      });
+    }
+
+    // Get base amounts
+    const grossAmount = money(bill.subtotal || bill.gross_amount || 0);
+    const taxAmount = money(bill.tax_amount || 0);
+
+    // Recalculate total: gross - total_discount + tax
+    bill.total_amount = money(grossAmount - newDiscount + taxAmount);
+    bill.balance_due = money(bill.total_amount - bill.paid_amount);
+
+    // Ensure balance_due is not a tiny floating point number
+    if (Math.abs(bill.balance_due) < 0.005) {
+      bill.balance_due = 0;
+    }
+
     bill.payments = bill.payments || [];
     bill.settlement_refs = bill.settlement_refs || [];
+
     for (const payment of paymentEntries) {
       bill.payments.push({
         method: payment.method,
@@ -420,6 +597,7 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
         reference: paymentReference(settlement.settlement_number, payment.reference),
       });
     }
+
     bill.settlement_refs.push({
       settlement_id: settlement._id,
       payment_amount: paymentAllocated,
@@ -427,9 +605,21 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
       credit_note_amount: creditNote,
       settled_at: now,
     });
+
+    // Update bill status
+    if (bill.balance_due <= 0) {
+      bill.status = 'Paid';
+      bill.paid_at = now;
+    } else if (bill.paid_amount > 0) {
+      bill.status = 'Partially Paid';
+    } else {
+      bill.status = 'Pending';
+    }
+
     await bill.save({ session });
   }
 
+  // Create ledger entries for payments
   for (const payment of paymentEntries) {
     await debitAdvanceIfUsed({ payment, sale, settlement, session, createdBy });
     await PharmacyLedgerEntry.create([{
@@ -450,6 +640,7 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
     }], { session });
   }
 
+  // Create discount ledger entry
   if (settlementDiscount > 0) {
     await PharmacyLedgerEntry.create([{
       hospitalId: settlement.hospital_id,

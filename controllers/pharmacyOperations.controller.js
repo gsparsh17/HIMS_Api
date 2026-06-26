@@ -318,43 +318,139 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     PHARMACY_IPD: await getAdvanceBalance({ admissionId, patientId, walletType: 'PHARMACY_IPD' })
   };
 
-  // Calculate totals
+  // ========== CORRECTED CALCULATIONS ==========
+  // 1. Calculate totals from all sales
   const totalSpent = sales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
   const totalPaid = sales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
   const totalReturnsAmount = returns.reduce((sum, ret) => sum + Number(ret.totalRefundAmount || 0), 0);
-  const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
 
-  // Outstanding = Total Sales - Total Paid - Returns - Pharmacy Advance Used + Deferred Amount
-  const outstanding = Math.max(0, totalSpent - totalPaid - totalReturnsAmount - balances.PHARMACY_IPD);
+  // 2. Separate deferred and non-deferred sales
+  const nonDeferredSales = sales.filter(s => !s.payment_deferred);
+  const deferredSalesList = sales.filter(s => s.payment_deferred === true);
 
-  // Format bill rows with deferred indicator
-  const billRows = sales.map(sale => ({
-    billType: sale.payment_deferred ? 'DEFERRED' : 'SALE',
-    billNumber: sale.sale_number,
-    invoiceNumber: sale.invoice_number,
-    date: sale.sale_date,
-    grossAmount: sale.gross_amount || sale.subtotal,
-    discount: (sale.item_discount_amount || 0) + (sale.discount_amount || 0),
-    tax: sale.tax || 0,
-    totalAmount: sale.total_amount || 0,
-    paidAmount: sale.amount_paid || 0,
-    returnAmount: sale.return_amount || 0,
-    balanceDue: sale.balance_due || 0,
-    closingOutstanding: sale.closing_outstanding || 0,
-    paymentMethod: sale.payment_method,
-    isDeferred: sale.payment_deferred === true,
-    deferralReason: sale.deferral_reason,
-    items: (sale.items || []).map(item => ({
-      medicine_name: item.medicine_name,
-      composition: item.composition,
-      quantity: item.quantity_base_units,
-      unit_price: item.unit_price,
-      amount: item.net_amount,
-      batch_number: item.batch_number,
-      expiry_date: item.expiry_date,
-      tax_rate: item.tax_rate
-    }))
-  }));
+  // 3. Calculate deferred totals
+  const totalDeferredAmount = deferredSalesList.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
+  const totalDeferredPaid = deferredSalesList.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
+  const totalDeferredReturns = deferredSalesList.reduce((sum, sale) => sum + Number(sale.return_amount || 0), 0);
+
+  // 4. Calculate non-deferred totals
+  const totalNonDeferred = nonDeferredSales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
+  const totalNonDeferredPaid = nonDeferredSales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
+  const totalNonDeferredReturns = nonDeferredSales.reduce((sum, sale) => sum + Number(sale.return_amount || 0), 0);
+
+  // 5. Calculate remaining after payments and returns for non-deferred bills
+  const nonDeferredRemaining = Math.max(0, totalNonDeferred - totalNonDeferredPaid - totalNonDeferredReturns);
+
+  // 6. Calculate remaining deferred balance (excluding returns)
+  const deferredRemaining = Math.max(0, totalDeferredAmount - totalDeferredPaid - totalDeferredReturns);
+
+  // 7. Get pharmacy advance balance
+  const pharmacyAdvance = balances.PHARMACY_IPD;
+
+  // 8. CORRECT: Determine how much of the advance is needed for deferred bills
+  const advanceUsedForDeferred = Math.min(pharmacyAdvance, deferredRemaining);
+
+  // 9. Remaining advance after deferred bills
+  const remainingAdvanceAfterDeferred = Math.max(0, pharmacyAdvance - advanceUsedForDeferred);
+
+  // 10. Use remaining advance for non-deferred bills
+  const advanceUsedForNonDeferred = Math.min(remainingAdvanceAfterDeferred, nonDeferredRemaining);
+
+  // 11. Total advance used
+  const totalAdvanceUsed = advanceUsedForDeferred + advanceUsedForNonDeferred;
+
+  // 12. CORRECT OUTSTANDING: What the patient still owes after using the advance
+  const outstanding = Math.max(0, nonDeferredRemaining - advanceUsedForNonDeferred);
+
+  // 13. CORRECT REFUNDABLE ADVANCE: What's left of the advance after paying all bills
+  const refundableAdvance = Math.max(0, pharmacyAdvance - totalAdvanceUsed);
+
+  // 14. Calculate pending bills (legacy)
+  const pendingBillsTotal = sales.reduce((sum, s) => sum + (s.balance_due || 0), 0);
+
+  // ========== CALCULATE PURCHASE COSTS ==========
+  let totalPurchaseCost = 0;
+  let totalGrossProfit = 0;
+  let totalItems = 0;
+
+  sales.forEach(sale => {
+    if (sale.items && Array.isArray(sale.items)) {
+      sale.items.forEach(item => {
+        totalItems++;
+        const quantity = item.quantity_base_units || item.quantity || 0;
+        const purchaseRate = item.purchase_rate_per_base_unit || item.purchaseRatePerBaseUnit || 0;
+        const purchaseAmount = item.purchase_amount || item.purchaseAmount || (purchaseRate * quantity);
+        totalPurchaseCost += purchaseAmount;
+      });
+    }
+    // Also check for total_purchase_cost on the sale
+    if (sale.total_purchase_cost) {
+      totalPurchaseCost = Math.max(totalPurchaseCost, Number(sale.total_purchase_cost) || 0);
+    }
+  });
+
+  totalGrossProfit = Math.max(0, totalSpent - totalPurchaseCost);
+
+  // Format bill rows with deferred indicator and purchase costs
+  const billRows = sales.map(sale => {
+    // Calculate per-sale purchase cost
+    let salePurchaseCost = 0;
+    let saleGrossProfit = 0;
+    let saleItemsCount = 0;
+
+    if (sale.items && Array.isArray(sale.items)) {
+      sale.items.forEach(item => {
+        saleItemsCount++;
+        const quantity = item.quantity_base_units || item.quantity || 0;
+        const purchaseRate = item.purchase_rate_per_base_unit || item.purchaseRatePerBaseUnit || 0;
+        const purchaseAmount = item.purchase_amount || item.purchaseAmount || (purchaseRate * quantity);
+        salePurchaseCost += purchaseAmount;
+      });
+    }
+
+    if (sale.total_purchase_cost) {
+      salePurchaseCost = Math.max(salePurchaseCost, Number(sale.total_purchase_cost) || 0);
+    }
+
+    saleGrossProfit = Math.max(0, Number(sale.total_amount || 0) - salePurchaseCost);
+
+    return {
+      billType: sale.payment_deferred ? 'DEFERRED' : 'SALE',
+      billNumber: sale.sale_number,
+      invoiceNumber: sale.invoice_number,
+      date: sale.sale_date,
+      grossAmount: sale.gross_amount || sale.subtotal,
+      discount: (sale.item_discount_amount || 0) + (sale.discount_amount || 0),
+      tax: sale.tax || 0,
+      totalAmount: sale.total_amount || 0,
+      paidAmount: sale.amount_paid || 0,
+      returnAmount: sale.return_amount || 0,
+      balanceDue: sale.balance_due || 0,
+      closingOutstanding: sale.closing_outstanding || 0,
+      paymentMethod: sale.payment_method,
+      isDeferred: sale.payment_deferred === true,
+      deferralReason: sale.deferral_reason,
+      // ========== PURCHASE COST FIELDS ==========
+      purchaseCost: salePurchaseCost,
+      grossProfit: saleGrossProfit,
+      profitMargin: salePurchaseCost > 0 ? (saleGrossProfit / salePurchaseCost * 100) : 0,
+      itemCount: saleItemsCount,
+      items: (sale.items || []).map(item => ({
+        medicine_name: item.medicine_name,
+        composition: item.composition,
+        quantity: item.quantity_base_units,
+        unit_price: item.unit_price,
+        amount: item.net_amount,
+        batch_number: item.batch_number,
+        expiry_date: item.expiry_date,
+        tax_rate: item.tax_rate,
+        // ========== PURCHASE COST PER ITEM ==========
+        purchase_rate_per_base_unit: item.purchase_rate_per_base_unit || item.purchaseRatePerBaseUnit || 0,
+        purchase_amount: item.purchase_amount || item.purchaseAmount || 0,
+        gross_profit: (item.net_amount || item.total_price || 0) - (item.purchase_amount || item.purchaseRatePerBaseUnit || 0)
+      }))
+    };
+  });
 
   const returnRows = returns.map(ret => ({
     billType: 'RETURN',
@@ -366,17 +462,28 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     items: ret.items || []
   }));
 
-  // Add deferred payments to summary
+  // ========== CORRECTED SUMMARY ==========
   const summary = {
     totalSales: normalizeMoney(totalSpent),
     totalReturns: normalizeMoney(totalReturnsAmount),
     totalPaid: normalizeMoney(totalPaid),
     totalDue: normalizeMoney(outstanding),
     totalDeferred: normalizeMoney(totalDeferredAmount),
-    pharmacyAdvanceBalance: normalizeMoney(balances.PHARMACY_IPD),
+    pharmacyAdvanceBalance: normalizeMoney(pharmacyAdvance),
     sharedIpdAdvanceBalance: normalizeMoney(balances.IPD_SHARED),
-    netPayableBeforeDischarge: normalizeMoney(Math.max(0, outstanding + totalDeferredAmount)),
-    refundableAdvance: normalizeMoney(Math.max(0, balances.PHARMACY_IPD - outstanding))
+    netPayableBeforeDischarge: normalizeMoney(outstanding + deferredRemaining),
+    refundableAdvance: normalizeMoney(refundableAdvance),
+    // Additional helpful fields
+    deferredRemaining: normalizeMoney(deferredRemaining),
+    nonDeferredRemaining: normalizeMoney(nonDeferredRemaining),
+    advanceUsedForDeferred: normalizeMoney(advanceUsedForDeferred),
+    advanceUsedForNonDeferred: normalizeMoney(advanceUsedForNonDeferred),
+    totalAdvanceUsed: normalizeMoney(totalAdvanceUsed),
+    // ========== PURCHASE COST SUMMARY ==========
+    totalPurchaseCost: normalizeMoney(totalPurchaseCost),
+    totalGrossProfit: normalizeMoney(totalGrossProfit),
+    profitMargin: totalPurchaseCost > 0 ? (totalGrossProfit / totalPurchaseCost * 100) : 0,
+    totalItems: totalItems
   };
 
   const formattedBalances = {
@@ -384,11 +491,14 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     PHARMACY_IPD: balances.PHARMACY_IPD,
     outstanding: outstanding,
     totalSpent: totalSpent,
-    pendingBills: sales.reduce((sum, s) => sum + (s.balance_due || 0), 0),
+    pendingBills: pendingBillsTotal,
     sharedIpdAdvance: balances.IPD_SHARED,
     pharmacyAdvance: balances.PHARMACY_IPD,
     deferredAmount: totalDeferredAmount,
-    deferredCount: deferredSales.length
+    deferredCount: deferredSalesList.length,
+    nonDeferredOutstanding: nonDeferredRemaining,
+    deferredRemaining: deferredRemaining,
+    refundableAdvance: refundableAdvance
   };
 
   const admissionWithDetails = {
@@ -408,7 +518,7 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     ledgers,
     pharmacyBills: bills,
     pharmacyInvoices: invoices,
-    deferredPayments: deferredSales,
+    deferredPayments: deferredSalesList,
     balances: formattedBalances,
     summary
   });
@@ -429,6 +539,8 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
     include_in_discharge_clearance: true,
     status: { $ne: 'Cancelled' }
   })
+    // ========== FIX: Select purchase cost fields ==========
+    .select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount')
     .populate('patient_id', 'first_name last_name patientId uhid phone')
     .populate('doctor_id', 'firstName lastName')
     .populate('items.medicine_id', 'name composition')
@@ -472,6 +584,8 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
   }
 
   const deferredSales = await Sale.find(query)
+    // ========== FIX: Select purchase cost fields ==========
+    .select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount')
     .populate('patient_id', 'first_name last_name patientId uhid phone')
     .populate('admission_id', 'admissionNumber shipNumber status')
     .populate('doctor_id', 'firstName lastName')
@@ -697,26 +811,42 @@ exports.getDoctorCommissionReport = asyncHandler(async (req, res) => {
 
 // ========== DOCTOR BILL REPORT ==========
 exports.getDoctorBillReport = asyncHandler(async (req, res) => {
+  // Default to last 1 month
   const start = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
-  
+
   // Build match query for sales
-  const match = { 
+  const match = {
     sale_date: { $gte: start, $lte: end }
   };
-  
+
   // Filter by doctor if specified
   if (req.query.doctorId) {
     match.doctor_id = objectIdOrUndefined(req.query.doctorId);
   }
-  
-  // Fetch sales with proper population
+
+  // Fetch sales with proper population - include all necessary fields
   const sales = await Sale.find(match)
-    .populate('patient_id', 'first_name last_name patientId uhid phone age gender')
-    .populate('doctor_id', 'firstName lastName name specialization')
-    .populate('admission_id', 'admissionNumber shipNumber')
-    .populate('items.medicine_id', 'name composition generic_name brand hsn_code gst_rate')
-    .populate('items.batch_id', 'batch_number expiry_date purchase_price_per_base_unit')
+    .populate({
+      path: 'patient_id',
+      select: 'first_name last_name patientId uhid phone age gender'
+    })
+    .populate({
+      path: 'doctor_id',
+      select: 'firstName lastName name specialization'
+    })
+    .populate({
+      path: 'admission_id',
+      select: 'admissionNumber shipNumber'
+    })
+    .populate({
+      path: 'items.medicine_id',
+      select: 'name composition generic_name brand hsn_code gst_rate'
+    })
+    .populate({
+      path: 'items.batch_id',
+      select: 'batch_number expiry_date purchase_price_per_base_unit purchase_price purchase_price_per_pack units_per_pack'
+    })
     .sort({ sale_date: -1 })
     .lean();
 
@@ -731,30 +861,84 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
 
   for (const sale of sales) {
     // Get bill and invoice if available
-    const bill = await Bill.findOne({ sale_id: sale._id }).lean();
-    const invoice = await Invoice.findOne({ sale_id: sale._id }).lean();
-    
+    const [bill, invoice] = await Promise.all([
+      Bill.findOne({ sale_id: sale._id }).lean(),
+      Invoice.findOne({ sale_id: sale._id }).lean()
+    ]);
+
     // Calculate purchase costs for this sale
     let salePurchaseCost = 0;
     let saleGrossProfit = 0;
+
     const itemsWithCost = (sale.items || []).map(item => {
       const quantity = item.quantity_base_units || item.quantity || 0;
-      const purchaseRate = item.purchase_rate_per_base_unit || 0;
-      const purchaseAmount = item.purchase_amount || (purchaseRate * quantity);
+
+      // ========== FIXED: Get purchase rate from multiple sources ==========
+      let purchaseRate = 0;
+
+      // 1. Check if item has purchase_rate_per_base_unit directly
+      if (item.purchase_rate_per_base_unit) {
+        purchaseRate = item.purchase_rate_per_base_unit;
+      }
+      // 2. Check if item has purchase_amount
+      else if (item.purchase_amount) {
+        purchaseRate = item.purchase_amount / (quantity > 0 ? quantity : 1);
+      }
+      // 3. Check if batch has purchase_price_per_base_unit
+      else if (item.batch_id?.purchase_price_per_base_unit) {
+        purchaseRate = item.batch_id.purchase_price_per_base_unit;
+      }
+      // 4. Check if batch has purchase_price_per_pack and units_per_pack
+      else if (item.batch_id?.purchase_price_per_pack && item.batch_id?.units_per_pack) {
+        purchaseRate = item.batch_id.purchase_price_per_pack / item.batch_id.units_per_pack;
+      }
+      // 5. Check if batch has purchase_price
+      else if (item.batch_id?.purchase_price) {
+        const unitsPerPack = item.batch_id?.units_per_pack || 1;
+        purchaseRate = item.batch_id.purchase_price / unitsPerPack;
+      }
+
+      // Calculate purchase amount
+      let purchaseAmount = item.purchase_amount || (purchaseRate * quantity);
       const netAmount = item.net_amount || item.total_price || 0;
       const profit = netAmount - purchaseAmount;
-      
-      salePurchaseCost += purchaseAmount;
-      saleGrossProfit += profit;
-      
+
+      // Only add positive purchase amounts (skip returns)
+      if (!item.is_return && item.item_type !== 'Medicine Return') {
+        salePurchaseCost += purchaseAmount > 0 ? purchaseAmount : 0;
+        saleGrossProfit += profit;
+      }
+
       return {
         ...item,
         purchase_rate_per_base_unit: purchaseRate,
         purchase_amount: purchaseAmount,
         profit: profit,
-        profit_margin: purchaseAmount > 0 ? (profit / purchaseAmount * 100) : 0
+        profit_margin: purchaseAmount > 0 ? (profit / purchaseAmount * 100) : 0,
+        // Ensure medicine name is available
+        medicine_name: item.medicine_name || item.medicine_id?.name || 'Unknown',
+        composition: item.composition || item.medicine_id?.composition || '',
+        batch_number: item.batch_number || item.batch_id?.batch_number || '—',
+        unit_price: item.unit_price || item.rate_per_base_unit || 0,
+        quantity_base_units: quantity
       };
     });
+
+    // If purchaseCost is still 0 but we have sale items with purchase data, recalculate
+    if (salePurchaseCost === 0 && itemsWithCost.length > 0) {
+      salePurchaseCost = itemsWithCost.reduce((sum, item) => {
+        // Skip return items
+        if (item.is_return || item.item_type === 'Medicine Return') return sum;
+        return sum + (item.purchase_amount || 0);
+      }, 0);
+
+      saleGrossProfit = (sale.total_amount || 0) - salePurchaseCost;
+    }
+
+    // If grossProfit is 0 but we have data, recalculate
+    if (saleGrossProfit === 0 && sale.total_amount > 0 && salePurchaseCost > 0) {
+      saleGrossProfit = sale.total_amount - salePurchaseCost;
+    }
 
     totalSales += sale.total_amount || 0;
     totalPurchaseCost += salePurchaseCost;
@@ -806,24 +990,23 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
 
   // Calculate summary totals
   const summary = {
-    totalSales,
-    totalPurchaseCost,
-    totalGrossProfit,
-    totalDiscount,
-    totalTax,
-    totalItems,
+    totalSales: totalSales,
+    totalPurchaseCost: totalPurchaseCost,
+    totalGrossProfit: totalGrossProfit,
+    totalDiscount: totalDiscount,
+    totalTax: totalTax,
+    totalItems: totalItems,
     totalBills: rows.length,
     totalPaid: rows.reduce((sum, r) => sum + r.paidAmount, 0),
     totalBalanceDue: rows.reduce((sum, r) => sum + r.balanceDue, 0),
-    avgProfitMargin: totalPurchaseCost > 0 ? (totalGrossProfit / totalPurchaseCost * 100) : 0,
-    rows
+    avgProfitMargin: totalPurchaseCost > 0 ? (totalGrossProfit / totalPurchaseCost * 100) : 0
   };
 
   res.json({
     success: true,
     range: { start, end },
-    summary,
-    rows,
+    summary: summary,
+    rows: rows,
     doctorFilter: req.query.doctorId || null
   });
 });
@@ -1139,7 +1322,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
       referenceNumber = entry.returnId.returnNumber;
     }
 
-    // Extract ward and bed details from populated admission
     let wardName = null;
     let bedNumber = null;
     let wardId = null;
@@ -1159,7 +1341,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
       returnNumber: entry.returnId?.returnNumber || null,
       referenceNumber: referenceNumber,
       saleAmount: entry.saleId?.total_amount || null,
-      // Add ward and bed details for frontend
       wardName: wardName,
       bedNumber: bedNumber,
       wardId: wardId,
@@ -1184,15 +1365,17 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
         { path: 'roomId', select: 'room_number type' }
       ]
     })
-    .populate('sale_id', 'sale_number invoice_number')
+    .populate({
+      path: 'sale_id',
+      select: 'sale_number invoice_number items total_amount gross_profit total_purchase_cost'
+    })
     .populate('invoice_id', 'invoice_number')
     .populate('items.medicine_id', 'name composition')
     .sort({ generated_at: -1 })
     .lean();
 
-  // Enrich bills with proper numbers and admission details
+  // ========== ENRICH BILLS WITH PURCHASE COST DATA FROM SALE ==========
   const enrichedBills = bills.map(bill => {
-    // Extract ward and bed details from populated admission
     let wardName = null;
     let bedNumber = null;
     let wardId = null;
@@ -1207,26 +1390,144 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
       admissionNumber = bill.admission_id.admissionNumber || null;
     }
 
+    // ========== CALCULATE PURCHASE COST FROM SALE ITEMS ==========
+    let totalPurchaseCost = 0;
+    let totalGrossProfit = 0;
+    let totalGST = bill.tax_amount || bill.tax || 0;
+    let enrichedItems = [];
+
+    // If bill has sale_id, get purchase cost from sale items
+    if (bill.sale_id && bill.sale_id.items && Array.isArray(bill.sale_id.items)) {
+      const saleItems = bill.sale_id.items;
+
+      // Map bill items to sale items by medicine_id and batch_id
+      for (const billItem of (bill.items || [])) {
+        // Find matching sale item by medicine_id and batch_id
+        const matchedSaleItem = saleItems.find(si =>
+          String(si.medicine_id) === String(billItem.medicine_id) &&
+          String(si.batch_id) === String(billItem.batch_id)
+        );
+
+        const quantity = billItem.quantity_base_units || billItem.quantity || 0;
+        const amount = billItem.amount || billItem.total_price || 0;
+
+        let purchaseRate = 0;
+        let purchaseAmount = 0;
+        let grossProfit = 0;
+
+        if (matchedSaleItem) {
+          // ========== USE PURCHASE DATA FROM SALE ITEM ==========
+          purchaseRate = matchedSaleItem.purchase_rate_per_base_unit || 0;
+          purchaseAmount = matchedSaleItem.purchase_amount || (purchaseRate * quantity);
+          grossProfit = matchedSaleItem.gross_profit || (amount - purchaseAmount);
+
+          // If the sale item has explicit purchase_amount, use it
+          if (matchedSaleItem.purchase_amount) {
+            purchaseAmount = matchedSaleItem.purchase_amount;
+          }
+          if (matchedSaleItem.gross_profit) {
+            grossProfit = matchedSaleItem.gross_profit;
+          }
+
+          // If grossProfit is still 0 but we have purchase amount, calculate it
+          if (grossProfit === 0 && purchaseAmount > 0) {
+            grossProfit = amount - purchaseAmount;
+          }
+        } else {
+          // Fallback: try to get from bill item itself
+          purchaseRate = billItem.purchase_rate_per_base_unit || billItem.purchaseRatePerBaseUnit || 0;
+          purchaseAmount = billItem.purchase_amount || billItem.purchaseAmount || (purchaseRate * quantity);
+          grossProfit = amount - purchaseAmount;
+        }
+
+        // Only add positive purchase costs (exclude returns)
+        if (!billItem.isReturned && billItem.item_type !== 'Medicine Return') {
+          totalPurchaseCost += purchaseAmount > 0 ? purchaseAmount : 0;
+          totalGrossProfit += grossProfit;
+        }
+
+        enrichedItems.push({
+          ...billItem,
+          purchase_rate_per_base_unit: purchaseRate,
+          purchase_amount: purchaseAmount,
+          gross_profit: grossProfit,
+          isReturned: billItem.item_type === 'Medicine Return' || billItem.isReturned || false
+        });
+      }
+
+      // If totalPurchaseCost is still 0 but sale has total_purchase_cost, use it
+      if (totalPurchaseCost === 0 && bill.sale_id.total_purchase_cost) {
+        totalPurchaseCost = bill.sale_id.total_purchase_cost;
+      }
+
+      // If grossProfit is still 0 but sale has gross_profit, use it
+      if (totalGrossProfit === 0 && bill.sale_id.gross_profit) {
+        totalGrossProfit = bill.sale_id.gross_profit;
+      }
+    } else {
+      // No sale_id, use bill items directly
+      for (const billItem of (bill.items || [])) {
+        if (billItem.isReturned || billItem.item_type === 'Medicine Return') continue;
+
+        const quantity = billItem.quantity_base_units || billItem.quantity || 0;
+        const amount = billItem.amount || billItem.total_price || 0;
+        const purchaseRate = billItem.purchase_rate_per_base_unit || billItem.purchaseRatePerBaseUnit || 0;
+        const purchaseAmount = billItem.purchase_amount || billItem.purchaseAmount || (purchaseRate * quantity);
+        const grossProfit = amount - purchaseAmount;
+
+        totalPurchaseCost += purchaseAmount;
+        totalGrossProfit += grossProfit;
+
+        enrichedItems.push({
+          ...billItem,
+          purchase_rate_per_base_unit: purchaseRate,
+          purchase_amount: purchaseAmount,
+          gross_profit: grossProfit,
+          isReturned: false
+        });
+      }
+    }
+
+    // Calculate GST from bill or from items
+    if (!totalGST && bill.items) {
+      totalGST = bill.items.reduce((sum, item) => {
+        if (item.isReturned || item.item_type === 'Medicine Return') return sum;
+        return sum + (item.tax_amount || item.taxAmount || 0);
+      }, 0);
+    }
+
+    // ========== CALCULATE GROSS AMOUNT ==========
+    const grossAmount = (bill.subtotal || 0) + (bill.discount_amount || bill.discount || 0);
+
     return {
       ...bill,
       bill_number: bill.sale_id?.sale_number || bill.sale_number || bill._id,
       invoice_number: bill.invoice_id?.invoice_number || bill.invoice_number,
       patient_name: bill.patient_id ? `${bill.patient_id.first_name || ''} ${bill.patient_id.last_name || ''}`.trim() : 'Walk-in',
       items_count: bill.items?.length || 0,
-      // Add ward and bed details for frontend
       ward_name: wardName,
       bed_number: bedNumber,
       ward_id: wardId,
       bed_id: bedId,
-      admission_number: admissionNumber
+      admission_number: admissionNumber,
+      // ========== PURCHASE COST FIELDS ==========
+      purchase_cost: totalPurchaseCost,
+      gross_profit: totalGrossProfit,
+      profit_margin: totalPurchaseCost > 0 ? (totalGrossProfit / totalPurchaseCost * 100) : 0,
+      gst_amount: totalGST,
+      gross_amount: grossAmount,
+      items: enrichedItems
     };
   });
 
-  // Calculate totals from bills
+  // ========== CALCULATE BILL TOTALS WITH PURCHASE COST ==========
   const billTotals = {
     totalAmount: enrichedBills.reduce((sum, b) => sum + (b.total_amount || 0), 0),
     totalPaid: enrichedBills.reduce((sum, b) => sum + (b.paid_amount || 0), 0),
     totalBalance: enrichedBills.reduce((sum, b) => sum + (b.balance_due || 0), 0),
+    totalPurchaseCost: enrichedBills.reduce((sum, b) => sum + (b.purchase_cost || 0), 0),
+    totalGrossProfit: enrichedBills.reduce((sum, b) => sum + (b.gross_profit || 0), 0),
+    totalGST: enrichedBills.reduce((sum, b) => sum + (b.gst_amount || 0), 0),
     count: enrichedBills.length,
     paidCount: enrichedBills.filter(b => b.status === 'Paid').length,
     pendingCount: enrichedBills.filter(b => b.status === 'Pending' || b.status === 'Partially Paid').length
@@ -1301,7 +1602,10 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     returns: totals.returns_total || 0,
     totalReceived: totals.totalReceived,
     totalRefunds: totals.totalRefunds,
-    netCash: totals.netCash
+    netCash: totals.netCash,
+    totalPurchaseCost: billTotals.totalPurchaseCost,
+    totalGrossProfit: billTotals.totalGrossProfit,
+    totalGST: billTotals.totalGST
   };
 
   // ========== LEGACY TOTALS FOR BACKWARD COMPATIBILITY ==========
@@ -1319,7 +1623,7 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     return acc;
   }, {});
 
-  // ========== FINAL RESPONSE WITH BILLS INCLUDED ==========
+  // ========== FINAL RESPONSE ==========
   res.json({
     success: true,
     range: { start, end },
@@ -1910,13 +2214,13 @@ exports.getInventoryLedger = asyncHandler(async (req, res) => {
 exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
   const { q = '', limit = 20, patientId } = req.query;
   const text = String(q).trim();
-  
+
   const admissionQuery = { status: { $ne: 'Discharged' } };
-  
+
   if (patientId) {
     admissionQuery.patientId = patientId;
   }
-  
+
   if (text && !patientId) {
     const matchingPatients = await Patient.find({
       $or: [
@@ -1926,9 +2230,9 @@ exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
         { first_name: { $regex: text, $options: 'i' } }
       ]
     }).select('_id').lean();
-    
+
     const patientIds = matchingPatients.map(p => p._id);
-    
+
     admissionQuery.$or = [
       { admissionNumber: { $regex: text, $options: 'i' } },
       { shipNumber: { $regex: text, $options: 'i' } },

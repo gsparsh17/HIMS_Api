@@ -164,8 +164,7 @@ const billSchema = new mongoose.Schema({
   hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   patient_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Patient',
-    required: true
+    ref: 'Patient'
   },
   appointment_id: {
     type: mongoose.Schema.Types.ObjectId,

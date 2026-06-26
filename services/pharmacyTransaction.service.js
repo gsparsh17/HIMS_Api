@@ -901,7 +901,6 @@ async function createUnifiedSale(payload, req = {}) {
   const context = await resolvePatientContext({ patientId, admissionId, prescriptionId, explicit: payload });
 
   // ========== CHECK FOR "PAY LESS NOW" FEATURE ==========
-  // New field from frontend: immediate_payment_to_advance
   const immediateAdvancePayment = normalizeMoney(payload.immediate_payment_to_advance || 0);
   const immediateAdvanceMethod = payload.immediate_payment_method || 'Cash';
 
@@ -1004,48 +1003,36 @@ async function createUnifiedSale(payload, req = {}) {
   if (paymentDeferred) {
     console.log('Processing deferred payment sale...');
 
-    // Calculate the actual balance due
-    // If there's an immediate advance payment, the balance due is the full total
-    // (the payment goes to advance, not to the bill)
     let balanceDue = totals.total;
     let amountPaid = 0;
     let totalCollected = 0;
 
-    // Check if there's any manual payment that goes to the bill
     if (payload.payments && payload.payments.length > 0) {
       const manualPayments = payload.payments.map(p => ({
         method: p.method,
         amount: normalizeMoney(p.amount),
         reference: p.reference || null
       }));
-      // Sum up payments that are NOT going to advance
       const paymentSum = manualPayments.reduce((sum, p) => sum + p.amount, 0);
 
-      // If there's immediate advance payment, subtract it from total collected
       if (immediateAdvancePayment > 0) {
-        // The payment is going to advance, not to the bill
         totalCollected = paymentSum;
         amountPaid = 0;
         balanceDue = totals.total;
       } else {
-        // Regular deferred with partial payment
         amountPaid = Math.min(paymentSum, totals.total);
         balanceDue = totals.total - amountPaid;
         totalCollected = paymentSum;
       }
     }
 
-    // Check if there's an immediate advance payment (Pay Less Now with "Add to Advance" mode)
     if (immediateAdvancePayment > 0) {
       console.log(`💰 Processing immediate advance payment: ${immediateAdvancePayment} via ${immediateAdvanceMethod}`);
 
-      // Validate that we have an IPD patient
       if (!patientId || !admissionId) {
         throw new Error('Immediate advance payment requires an IPD patient with an active admission.');
       }
 
-      // The advance payment is credited separately later
-      // Balance due remains the full total
       balanceDue = totals.total;
       amountPaid = 0;
       totalCollected = immediateAdvancePayment;
@@ -1107,18 +1094,53 @@ async function createUnifiedSale(payload, req = {}) {
       deferral_reason: deferralReason,
       expected_payment_date: expectedPaymentDate,
       include_in_discharge_clearance: includeInDischargeClearance,
-      // Store the immediate advance payment info for reference
       immediate_advance_payment: immediateAdvancePayment > 0 ? {
         amount: immediateAdvancePayment,
         method: immediateAdvanceMethod
       } : null
     });
 
+    // ========== DEDUCT STOCK FOR DEFERRED PAYMENTS ==========
+    // IMPORTANT: Stock must be deducted for deferred payments too
+    if (items && items.length > 0) {
+      console.log(`📦 Deducting stock for deferred sale ${sale.sale_number}`);
+      for (const item of items) {
+        const batch = await MedicineBatch.findById(item.batch_id);
+        if (batch) {
+          const current = Number(batch.quantity_base_units ?? batch.quantity ?? 0);
+          const nextQty = current - Number(item.quantity_base_units || item.quantity || 0);
+          if (nextQty < 0) {
+            throw new Error(`Insufficient stock for batch ${batch.batch_number}`);
+          }
+          batch.quantity_base_units = nextQty;
+          batch.quantity = nextQty;
+          await batch.save();
+
+          // Create inventory ledger entry
+          await InventoryLedger.create({
+            hospitalId,
+            pharmacyId: pharmacyId || sale.pharmacy_id,
+            medicineId: item.medicine_id,
+            batchId: item.batch_id,
+            movementType: 'SALE_OUT',
+            direction: 'OUT',
+            quantityBaseUnits: item.quantity_base_units,
+            balanceAfterBaseUnits: nextQty,
+            sourceModule: 'PharmacySale',
+            sourceId: sale._id,
+            notes: `Deferred sale ${sale.sale_number}`,
+            createdBy
+          });
+
+          console.log(`✅ Deducted ${item.quantity_base_units} from batch ${batch.batch_number}, remaining: ${nextQty}`);
+        }
+      }
+    }
+
     // ========== PROCESS IMMEDIATE ADVANCE PAYMENT ==========
     if (immediateAdvancePayment > 0 && patientId && admissionId) {
       console.log(`✨ Crediting ${immediateAdvancePayment} to Pharmacy Advance for sale ${sale.sale_number}`);
 
-      // Credit to pharmacy advance
       await createAdvanceLedgerEntry({
         hospitalId,
         patientId,
@@ -1135,7 +1157,6 @@ async function createUnifiedSale(payload, req = {}) {
         createdBy
       });
 
-      // Create pharmacy ledger entry
       await PharmacyLedgerEntry.create({
         hospitalId,
         pharmacyId,
@@ -1151,7 +1172,6 @@ async function createUnifiedSale(payload, req = {}) {
         createdBy
       });
 
-      // Update patient's pharmacy advance balance
       await Patient.findByIdAndUpdate(patientId, {
         $inc: { pharmacy_advance_balance: immediateAdvancePayment },
         last_pharmacy_transaction: new Date()
@@ -1168,14 +1188,12 @@ async function createUnifiedSale(payload, req = {}) {
         reference: p.reference || null
       }));
 
-      // Deduct advance if applicable
       for (const p of paymentEntries) {
         if (['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) {
           await consumeAdvancePayment({ p, sale, hospitalId, patientId, admissionId, createdBy });
         }
       }
 
-      // Create payment ledger entries
       await createPharmacyLedgerForPayments({
         payments: paymentEntries,
         sale,
@@ -1313,7 +1331,8 @@ async function createUnifiedSale(payload, req = {}) {
       } : null,
       pharmacy_advance_credit_amount: immediateAdvancePayment,
       pharmacy_advance_after: finalSummary.pharmacyAdvance,
-      total_collected_amount: totalCollected
+      total_collected_amount: totalCollected,
+      stock_deducted: true
     };
   }
 
@@ -1438,7 +1457,9 @@ async function createUnifiedSale(payload, req = {}) {
     created_by_name: payload.created_by_name,
   });
 
+  // ========== DEDUCT STOCK FOR NON-DEFERRED SALE ==========
   await deductStockAndCreateLedger({ items, hospitalId, pharmacyId, saleId: sale._id, createdBy });
+
   const invoice = await createSaleInvoice({ sale, items, customerName: sale.customer_name, customerPhone: sale.customer_phone, totals, paymentEntries: payments, createdBy, isDeferred: false });
   const bill = await createPharmacyBill({ sale, items, totals, paymentEntries: payments, hospitalId, patientId, admissionId, createdBy, isDeferred: false });
   await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: false });
@@ -1581,7 +1602,8 @@ async function createUnifiedSale(payload, req = {}) {
     customerId: customerId,
     pharmacy_advance_credit_amount: overpaymentAmount,
     pharmacy_advance_after: finalSummary.pharmacyAdvance,
-    total_collected_amount: totalCollectedAmount
+    total_collected_amount: totalCollectedAmount,
+    stock_deducted: true
   };
 }
 
@@ -2310,30 +2332,181 @@ async function createOutstandingSettlement(payload, req = {}) {
   const createdBy = getCreatedBy(req);
   const patientId = objectIdOrUndefined(payload.patient_id || payload.patientId);
   const admissionId = objectIdOrUndefined(payload.admission_id || payload.admissionId);
-  if (!patientId && !admissionId) throw new Error('patientId or admissionId is required for settlement.');
-  const payments = normalizePayments({ total: payload.amount, payment_method: payload.payment_method || payload.paymentMethod, payments: payload.payments });
-  const amount = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
-  const fakeSale = { _id: undefined, sale_number: payload.referenceNumber || 'SETTLEMENT', patient_id: patientId, admission_id: admissionId };
-  for (const p of payments) await consumeAdvancePayment({ p, sale: fakeSale, hospitalId, patientId, admissionId, createdBy });
-  const allocation = await allocatePaymentToOutstanding({ patientId, admissionId, hospitalId, pharmacyId, createdBy, sale: fakeSale, amount, payments });
-  const extra = normalizeMoney(amount - allocation.allocated);
-  if (extra > 0) {
-    await createAdvanceLedgerEntry({
-      hospitalId,
-      patientId,
-      admissionId,
-      walletType: 'PHARMACY_IPD',
-      transactionType: 'PHARMACY_OVERPAYMENT_CREDIT',
-      direction: 'CREDIT',
-      amount: extra,
-      paymentMethod: payments[0]?.method || 'Cash',
-      referenceNumber: payload.referenceNumber,
-      sourceModule: 'Pharmacy',
-      notes: 'Extra settlement amount credited to pharmacy advance',
-      createdBy
-    });
+
+  if (!patientId && !admissionId) {
+    throw new Error('patientId or admissionId is required for settlement.');
   }
-  return { allocation, extraAdvance: extra, balances: await getPatientPharmacySummary({ patientId, admissionId }) };
+
+  // Get current pharmacy advance balance
+  const currentAdvance = await getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD' });
+
+  // Check if we need to use advance for deferred payments first
+  const deferredSales = await Sale.find({
+    admission_id: admissionId,
+    payment_deferred: true,
+    status: { $in: ['Pending', 'Partially Paid'] },
+    balance_due: { $gt: 0 }
+  }).sort({ sale_date: 1 });
+
+  const totalDeferredDue = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+
+  // Use advance for deferred payments first
+  let advanceToUse = 0;
+  let remainingAdvance = currentAdvance;
+
+  if (totalDeferredDue > 0 && remainingAdvance > 0) {
+    advanceToUse = Math.min(remainingAdvance, totalDeferredDue);
+    remainingAdvance = currentAdvance - advanceToUse;
+
+    // Apply advance to deferred payments
+    let remainingToAllocate = advanceToUse;
+    for (const sale of deferredSales) {
+      if (remainingToAllocate <= 0) break;
+      const saleDue = sale.balance_due || 0;
+      const amountToPay = Math.min(remainingToAllocate, saleDue);
+
+      if (amountToPay > 0) {
+        // Update the sale
+        sale.amount_paid = (sale.amount_paid || 0) + amountToPay;
+        sale.balance_due = Math.max(0, sale.balance_due - amountToPay);
+        if (sale.balance_due <= 0) {
+          sale.status = 'Completed';
+          sale.payment_deferred = false;
+          sale.settled_at = new Date();
+        } else {
+          sale.status = 'Partially Paid';
+        }
+        await sale.save();
+
+        // Create ledger entry for advance usage
+        await PharmacyLedgerEntry.create({
+          hospitalId,
+          pharmacyId,
+          entryType: 'ADVANCE_USED',
+          direction: 'NON_CASH',
+          amount: amountToPay,
+          paymentMethod: 'PharmacyAdvance',
+          patientId,
+          admissionId,
+          saleId: sale._id,
+          invoiceId: sale.invoice_id,
+          notes: `Advance used to settle deferred payment ${sale.sale_number}`,
+          createdBy
+        });
+
+        // Create advance ledger entry
+        await createAdvanceLedgerEntry({
+          hospitalId,
+          patientId,
+          admissionId,
+          walletType: 'PHARMACY_IPD',
+          transactionType: 'PHARMACY_SALE_DEBIT',
+          direction: 'DEBIT',
+          amount: amountToPay,
+          paymentMethod: 'PharmacyAdvance',
+          referenceNumber: sale.sale_number,
+          sourceModule: 'Pharmacy',
+          sourceId: sale._id,
+          notes: `Advance used for deferred payment ${sale.sale_number}`,
+          createdBy
+        });
+
+        remainingToAllocate -= amountToPay;
+      }
+    }
+  }
+
+  // Now process the regular payments for outstanding (non-deferred) bills
+  const payments = normalizePayments({
+    total: payload.amount,
+    payment_method: payload.payment_method || payload.paymentMethod,
+    payments: payload.payments
+  });
+
+  const amount = normalizeMoney(payments.reduce((sum, p) => sum + p.amount, 0));
+
+  // Only process outstanding if there's a remaining amount after deferred settlement
+  if (amount > 0) {
+    // Check if we still have outstanding non-deferred bills
+    const nonDeferredOutstanding = await getPatientOutstanding({ patientId, admissionId });
+
+    if (nonDeferredOutstanding > 0) {
+      const fakeSale = {
+        _id: undefined,
+        sale_number: payload.referenceNumber || 'SETTLEMENT',
+        patient_id: patientId,
+        admission_id: admissionId
+      };
+
+      // Validate advance payments
+      for (const p of payments) {
+        await validateAdvancePayment({ p, patientId, admissionId });
+      }
+
+      // Consume advance payments first if specified
+      for (const p of payments) {
+        if (['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) {
+          await consumeAdvancePayment({
+            p,
+            sale: fakeSale,
+            hospitalId,
+            patientId,
+            admissionId,
+            createdBy
+          });
+        }
+      }
+
+      // Allocate payment to outstanding bills
+      const allocation = await allocatePaymentToOutstanding({
+        patientId,
+        admissionId,
+        hospitalId,
+        pharmacyId,
+        createdBy,
+        sale: fakeSale,
+        amount,
+        payments
+      });
+
+      // Handle any extra amount (overpayment)
+      const extra = normalizeMoney(amount - allocation.allocated);
+      if (extra > 0) {
+        await createAdvanceLedgerEntry({
+          hospitalId,
+          patientId,
+          admissionId,
+          walletType: 'PHARMACY_IPD',
+          transactionType: 'PHARMACY_OVERPAYMENT_CREDIT',
+          direction: 'CREDIT',
+          amount: extra,
+          paymentMethod: payments[0]?.method || 'Cash',
+          referenceNumber: payload.referenceNumber,
+          sourceModule: 'Pharmacy',
+          notes: 'Extra settlement amount credited to pharmacy advance',
+          createdBy
+        });
+      }
+
+      const finalBalances = await getPatientPharmacySummary({ patientId, admissionId });
+
+      return {
+        allocation,
+        extraAdvance: extra,
+        balances: finalBalances,
+        deferredSettled: advanceToUse > 0 ? { amount: advanceToUse, count: deferredSales.filter(s => s.balance_due <= 0).length } : null
+      };
+    }
+  }
+
+  const finalBalances = await getPatientPharmacySummary({ patientId, admissionId });
+
+  return {
+    allocation: { allocated: 0, remaining: 0, allocations: [] },
+    extraAdvance: 0,
+    balances: finalBalances,
+    deferredSettled: advanceToUse > 0 ? { amount: advanceToUse, count: deferredSales.filter(s => s.balance_due <= 0).length } : null
+  };
 }
 
 // ========== Bulk Settle Deferred Payments ==========

@@ -7,7 +7,11 @@
 
 function money(value) {
   const number = Number(value || 0);
-  return Number.isFinite(number) ? Number(number.toFixed(2)) : 0;
+  if (!Number.isFinite(number)) return 0;
+  // Round to 2 decimal places and handle floating point errors
+  const rounded = Math.round((number + Number.EPSILON) * 100) / 100;
+  // If it's within 0.005 of 0, treat as 0
+  return Math.abs(rounded) < 0.005 ? 0 : rounded;
 }
 
 function sum(items, selector) {
@@ -115,7 +119,8 @@ function buildFinalConcessionAllocations(openRows, options = {}) {
         paymentAllocated,
         settlementDiscountAllocated,
         creditNoteAllocated: 0,
-        closingDue: 0,
+        // ========== FIX: Round closing due ==========
+        closingDue: money(Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated)),
       };
     });
     assertMoneyEquals(sum(allocations, (row) => row.settlementDiscountAllocated), discountToApply, 'Manual discount allocation total');
@@ -132,7 +137,8 @@ function buildFinalConcessionAllocations(openRows, options = {}) {
       paymentAllocated,
       settlementDiscountAllocated,
       creditNoteAllocated: 0,
-      closingDue: 0,
+      // ========== FIX: Round closing due ==========
+      closingDue: money(Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated)),
     };
   });
 }
@@ -200,7 +206,8 @@ function buildRetroactiveAllocations(allRows, options = {}) {
       settlementDiscountAllocated,
       creditNoteAllocated,
       unapplied,
-      closingDue: 0,
+      // ========== FIX: Round closing due ==========
+      closingDue: money(Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated)),
     };
   });
 

@@ -11,9 +11,11 @@ const operations = require('../controllers/pharmacyOperations.controller');
 const { verifyToken, authorize } = require('../middlewares/auth');
 
 // Auth can be enforced without changing local/demo behavior by setting PHARMACY_AUTH_REQUIRED=true.
-const authChain = process.env.PHARMACY_AUTH_REQUIRED === 'true'
-  ? [verifyToken, authorize('admin', 'pharmacy', 'nurse', 'doctor', 'staff', 'accountant')]
-  : [];
+// const authChain = process.env.PHARMACY_AUTH_REQUIRED === 'true'
+//   ? [verifyToken, authorize('admin', 'pharmacy', 'nurse', 'doctor', 'staff', 'accountant')]
+//   : [];
+
+const authChain = [verifyToken, authorize('admin', 'pharmacy', 'nurse', 'doctor', 'staff', 'accountant')];
 
 // ========== SETTINGS & CONFIGURATION ==========
 router.get('/settings', ...authChain, operations.getSettings);

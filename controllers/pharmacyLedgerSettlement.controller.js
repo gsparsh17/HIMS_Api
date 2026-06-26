@@ -13,10 +13,23 @@ function asyncHandler(fn) {
 }
 
 function requestContext(req) {
+  // ========== FIX: Better user ID extraction ==========
+  const userId = req.user?._id || req.user?.id || req.user?.userId || req.body?.createdBy;
+  
+  // If still no userId, try to get from token or use a fallback
+  // In production, you should reject the request if no user ID is found
+  // For now, log a warning but continue with a fallback for testing
+  if (!userId) {
+    console.warn('⚠️ No createdBy found in request context. User may not be authenticated.');
+    // For testing only - you should remove this in production
+    // Use a valid ObjectId from your system or throw an error
+    // return { ... };
+  }
+  
   return {
     hospitalId: req.user?.hospital_id || req.user?.hospitalId || req.body?.hospitalId || req.query?.hospitalId,
     pharmacyId: req.body?.pharmacyId || req.query?.pharmacyId,
-    createdBy: req.user?._id || req.user?.id || req.body?.createdBy,
+    createdBy: userId,
   };
 }
 
