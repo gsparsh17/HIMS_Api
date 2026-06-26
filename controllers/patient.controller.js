@@ -37,7 +37,6 @@ exports.uploadPatientImage = async (req, res) => {
   }
 };
 
-// ========== ENHANCED PATIENT SEARCH FOR PHARMACY POS ==========
 exports.searchPatientsForPharmacy = async (req, res) => {
   try {
     const {
@@ -120,7 +119,7 @@ exports.searchPatientsForPharmacy = async (req, res) => {
                 $expr: {
                   $and: [
                     { $eq: ['$patientId', '$$patientId'] },
-                    { $in: ['$status', activeStatuses] }  // <-- FIX: Use all active statuses
+                    { $in: ['$status', activeStatuses] }
                   ]
                 }
               }
@@ -128,12 +127,13 @@ exports.searchPatientsForPharmacy = async (req, res) => {
             {
               $project: {
                 admissionNumber: 1,
+                admissionDate: 1,  // <-- FIX 1: Include admissionDate
                 primaryDoctorId: 1,
                 wardId: 1,
                 bedId: 1,
                 roomId: 1,
                 status: 1,
-                shipNumber: 1  // <-- FIX: Include shipNumber
+                shipNumber: 1
               }
             },
             {
@@ -161,6 +161,14 @@ exports.searchPatientsForPharmacy = async (req, res) => {
               }
             },
             {
+              $lookup: {
+                from: 'rooms',
+                localField: 'roomId',
+                foreignField: '_id',
+                as: 'room'
+              }
+            },
+            {
               $addFields: {
                 doctor_name: {
                   $concat: [
@@ -171,7 +179,8 @@ exports.searchPatientsForPharmacy = async (req, res) => {
                 },
                 ward_name: { $arrayElemAt: ['$ward.name', 0] },
                 bed_number: { $arrayElemAt: ['$bed.bedNumber', 0] },
-                ship_number: '$shipNumber'  // <-- FIX: Use shipNumber field
+                room_number: { $arrayElemAt: ['$room.room_number', 0] },
+                ship_number: '$shipNumber'
               }
             }
           ],
@@ -180,6 +189,62 @@ exports.searchPatientsForPharmacy = async (req, res) => {
       },
       {
         $addFields: {
+          // ========== FIX 2: Calculate age from DOB ==========
+          calculated_age: {
+            $let: {
+              vars: {
+                birthDate: '$dob',
+                today: new Date()
+              },
+              in: {
+                $cond: {
+                  if: { $eq: ['$dob', null] },
+                  then: null,
+                  else: {
+                    $let: {
+                      vars: {
+                        ageYears: {
+                          $subtract: [
+                            { $year: '$$today' },
+                            { $year: '$$birthDate' }
+                          ]
+                        },
+                        monthDiff: {
+                          $subtract: [
+                            { $month: '$$today' },
+                            { $month: '$$birthDate' }
+                          ]
+                        },
+                        dayDiff: {
+                          $subtract: [
+                            { $dayOfMonth: '$$today' },
+                            { $dayOfMonth: '$$birthDate' }
+                          ]
+                        }
+                      },
+                      in: {
+                        $cond: {
+                          if: {
+                            $or: [
+                              { $lt: ['$$monthDiff', 0] },
+                              {
+                                $and: [
+                                  { $eq: ['$$monthDiff', 0] },
+                                  { $lt: ['$$dayDiff', 0] }
+                                ]
+                              }
+                            ]
+                          },
+                          then: { $subtract: ['$$ageYears', 1] },
+                          else: '$$ageYears'
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
           pharmacy_account_summary: {
             outstanding: { $ifNull: ['$pharmacy_outstanding_balance', 0] },
             advance: { $ifNull: ['$pharmacy_advance_balance', 0] }
@@ -200,7 +265,8 @@ exports.searchPatientsForPharmacy = async (req, res) => {
           salutation: 1,
           phone: 1,
           gender: 1,
-          age: 1,
+          // ========== FIX 2: Use calculated age ==========
+          age: { $ifNull: ['$calculated_age', '$age'] },
           dob: 1,
           sponsor_type: 1,
           sponsor_name: 1,
@@ -212,10 +278,12 @@ exports.searchPatientsForPharmacy = async (req, res) => {
           current_admission: {
             _id: 1,
             admissionNumber: 1,
+            admissionDate: 1,  // <-- FIX 1: Include admissionDate
             ship_number: '$current_admission.ship_number',
             doctor_name: 1,
             ward_name: 1,
             bed_number: 1,
+            room_number: 1,
             status: 1
           },
           has_active_admission: 1,
@@ -228,14 +296,16 @@ exports.searchPatientsForPharmacy = async (req, res) => {
 
     const patients = await Patient.aggregate(pipeline).limit(parseInt(limit));
 
-    // Enhance with SHIP number from active admissions
+    // Enhance with SHIP number and ensure age is set
     const enhancedPatients = patients.map(patient => ({
       ...patient,
       ship_number: patient.current_admission?.ship_number || null,
       doctor_name: patient.current_admission?.doctor_name || null,
       ward_bed: patient.current_admission?.ward_name && patient.current_admission?.bed_number
         ? `${patient.current_admission.ward_name} - ${patient.current_admission.bed_number}`
-        : null
+        : null,
+      // Ensure age is a number
+      age: patient.age || null
     }));
 
     res.json({
@@ -249,7 +319,6 @@ exports.searchPatientsForPharmacy = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 // ========== GET PATIENT PHARMACY ACCOUNT SUMMARY ==========
 exports.getPatientPharmacyAccount = async (req, res) => {
   try {

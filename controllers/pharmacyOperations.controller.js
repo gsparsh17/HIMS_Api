@@ -1724,6 +1724,7 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'Patient not found' });
   }
 
+  // ========== FIX: Build admission query ==========
   const admissionQuery = { patientId: patient._id };
   if (admissionId) {
     admissionQuery._id = admissionId;
@@ -1736,7 +1737,11 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .populate('wardId', 'name')
     .sort({ admissionDate: -1 });
 
+  // ========== FIX: Build sale filter with admissionId ==========
   const saleFilter = { patient_id: patient._id };
+  if (admissionId) {
+    saleFilter.admission_id = admissionId;  // ← CRITICAL: Filter by admission!
+  }
   if (startDate && endDate) {
     saleFilter.sale_date = {
       $gte: new Date(startDate),
@@ -1752,7 +1757,11 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .limit(Number(limit))
     .lean();
 
+  // ========== FIX: Advance filters with admissionId ==========
   const advanceFilters = { patientId: patient._id };
+  if (admissionId) {
+    advanceFilters.admissionId = admissionId;  // ← CRITICAL: Filter by admission!
+  }
   if (startDate && endDate) {
     advanceFilters.createdAt = {
       $gte: new Date(startDate),
@@ -1764,7 +1773,11 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(Number(limit));
 
+  // ========== FIX: Pharmacy ledger query with admissionId ==========
   const pharmacyLedgerQuery = { patientId: patient._id };
+  if (admissionId) {
+    pharmacyLedgerQuery.admissionId = admissionId;  // ← CRITICAL: Filter by admission!
+  }
   if (startDate && endDate) {
     pharmacyLedgerQuery.entryDate = {
       $gte: new Date(startDate),
@@ -1829,10 +1842,16 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
 
   totals.netBalance = totals.totalIN - totals.totalOUT;
 
-  const returns = await PharmacyReturn.find({ patientId: patient._id })
+  // ========== FIX: Returns filter with admissionId ==========
+  const returnsFilter = { patientId: patient._id };
+  if (admissionId) {
+    returnsFilter.admissionId = admissionId;  // ← CRITICAL: Filter by admission!
+  }
+  const returns = await PharmacyReturn.find(returnsFilter)
     .sort({ createdAt: -1 })
     .limit(Number(limit));
 
+  // ========== FIX: Bills query with admissionId ==========
   const saleIds = sales.filter(s => s._id).map(s => s._id);
   const billsQuery = {
     $or: [
@@ -1840,7 +1859,9 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
       { sale_id: { $in: saleIds } }
     ]
   };
-
+  if (admissionId) {
+    billsQuery.admission_id = admissionId;  // ← CRITICAL: Filter by admission!
+  }
   if (startDate && endDate) {
     billsQuery.generated_at = {
       $gte: new Date(startDate),
@@ -1863,6 +1884,7 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     bill_number: bill.sale_id?.sale_number || bill.sale_number || bill._id
   }));
 
+  // ========== FIX: Calculate balances for the specific admission ==========
   const currentBalances = {
     sharedIpdAdvance: 0,
     pharmacyAdvance: 0,
@@ -1871,7 +1893,10 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     totalDeferred: 0
   };
 
-  for (const admission of admissions) {
+  // Only calculate balances for the selected admission(s)
+  const targetAdmissions = admissions.length > 0 ? admissions : [];
+
+  for (const admission of targetAdmissions) {
     const pharmacyAdvance = await getAdvanceBalance({
       admissionId: admission._id,
       patientId: patient._id,
@@ -1887,7 +1912,11 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     currentBalances.sharedIpdAdvance += sharedIpdAdvance;
   }
 
-  const allSales = await Sale.find({ patient_id: patient._id });
+  // Only count sales for the specific admission
+  const allSales = await Sale.find({
+    patient_id: patient._id,
+    ...(admissionId && { admission_id: admissionId })
+  });
   currentBalances.totalSpent = allSales.reduce((sum, sale) => sum + sale.total_amount, 0);
 
   const deferredSales = allSales.filter(sale => sale.payment_deferred === true);
@@ -1896,7 +1925,8 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
   const pendingSales = await Sale.find({
     patient_id: patient._id,
     balance_due: { $gt: 0 },
-    payment_deferred: { $ne: true }
+    payment_deferred: { $ne: true },
+    ...(admissionId && { admission_id: admissionId })
   });
   currentBalances.pendingBills = pendingSales.reduce((sum, sale) => sum + sale.balance_due, 0);
 
@@ -1919,7 +1949,7 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
       phone: patient.phone,
       full_name: `${patient.first_name} ${patient.last_name || ''}`.trim()
     },
-    admissions,
+    admissions: targetAdmissions,
     transactions: {
       sales,
       deferredSales,
