@@ -1251,12 +1251,12 @@ async function createUnifiedSale(payload, req = {}) {
       });
     }
 
-    if (patientId && balanceDue > 0) {
-      await Patient.findByIdAndUpdate(patientId, {
-        $inc: { pharmacy_outstanding_balance: balanceDue },
-        last_pharmacy_transaction: new Date()
-      });
-    }
+    // if (patientId && balanceDue > 0) {
+    //   await Patient.findByIdAndUpdate(patientId, {
+    //     $inc: { pharmacy_outstanding_balance: balanceDue },
+    //     last_pharmacy_transaction: new Date()
+    //   });
+    // }
 
     if (customerId) {
       const Customer = mongoose.model('Customer');
