@@ -23,6 +23,8 @@ const PAYMENT_METHODS = new Set([
 ]);
 const ADVANCE_METHODS = new Set(['IPDAdvance', 'PharmacyAdvance']);
 
+// ========== HELPER FUNCTIONS ==========
+
 function objectId(value, name) {
   if (!value || !mongoose.Types.ObjectId.isValid(value)) {
     throw new Error(`${name} is required and must be a valid ObjectId.`);
@@ -60,12 +62,11 @@ function saleGross(sale) {
 }
 
 function saleExistingDiscounts(sale) {
-  // Original item/bill discounts plus previous final-settlement adjustments.
   return money(
-    (sale.item_discount_amount || 0)
-    + (sale.discount_amount || 0)
-    + (sale.settlement_discount_amount || 0)
-    + (sale.credit_note_amount || 0)
+    (sale.item_discount_amount || 0) +
+    (sale.discount_amount || 0) +
+    (sale.settlement_discount_amount || 0) +
+    (sale.credit_note_amount || 0)
   );
 }
 
@@ -82,18 +83,63 @@ function saleRow(sale) {
   };
 }
 
+function requireReason(value) {
+  const reason = String(value || '').trim();
+  if (!reason) throw new Error('A settlement reason is required for audit purposes.');
+  return reason;
+}
+
+function paymentReference(settlementNumber, sourceReference) {
+  return `SETTLEMENT:${settlementNumber}${sourceReference ? `|${sourceReference}` : ''}`;
+}
+
+function getSafeBalance(value) {
+  const num = money(value);
+  return Math.abs(num) < 0.005 ? 0 : num;
+}
+
+// ========== ADVANCE BALANCE FUNCTIONS ==========
+
+async function getAdvanceBalance({ patientId, admissionId, walletType, session }) {
+  const query = { walletType };
+  if (admissionId) {
+    query.admissionId = admissionId;
+  } else if (patientId) {
+    query.patientId = patientId;
+  } else {
+    return 0;
+  }
+  const last = await scoped(PatientAdvanceLedger.findOne(query).sort({ createdAt: -1 }), session);
+  return money(last?.balanceAfter);
+}
+
+async function getAdvanceBalances({ patientId, admissionId, session }) {
+  const [ipdAdvance, pharmacyAdvance] = await Promise.all([
+    getAdvanceBalance({ patientId, admissionId, walletType: 'IPD_SHARED', session }),
+    getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD', session })
+  ]);
+  return { ipdAdvance, pharmacyAdvance };
+}
+
+// ========== PHARMACY RESOLVER ==========
+
 async function resolvePharmacyId(value, session) {
   if (value && mongoose.Types.ObjectId.isValid(value)) return new mongoose.Types.ObjectId(value);
   const pharmacy = await scoped(Pharmacy.findOne({ status: 'Active' }).select('_id'), session);
   return pharmacy?._id;
 }
 
+// ========== LOAD SELECTED SALES ==========
+
 async function loadSelectedSales(input, session) {
   const admissionId = optionalObjectId(input.admissionId);
   const patientId = optionalObjectId(input.patientId);
   if (!admissionId && !patientId) throw new Error('admissionId or patientId is required.');
 
-  const query = { status: { $ne: 'Cancelled' }, include_in_discharge_clearance: true };
+  const query = {
+    status: { $ne: 'Cancelled' },
+    include_in_discharge_clearance: true
+  };
   if (admissionId) query.admission_id = admissionId;
   if (patientId) query.patient_id = patientId;
 
@@ -105,18 +151,39 @@ async function loadSelectedSales(input, session) {
   const sales = await scoped(Sale.find(query).sort({ sale_date: 1 }), session);
   if (!sales.length) throw new Error('No eligible pharmacy sales were found for this ledger context.');
 
-  // A supplied sale must belong to the requested patient/admission context.
   if (Array.isArray(input.saleIds) && sales.length !== input.saleIds.length) {
     throw new Error('One or more selected sales do not belong to this patient/admission ledger or are cancelled.');
   }
   return sales;
 }
 
+// ========== FIND LINKED DOCUMENTS ==========
+
+async function findLinkedBill(sale, session) {
+  const conditions = [];
+  if (sale._id) conditions.push({ sale_id: sale._id });
+  if (sale.invoice_id) conditions.push({ invoice_id: sale.invoice_id });
+  if (sale.bill_id) conditions.push({ _id: sale.bill_id });
+  if (conditions.length === 0) return null;
+  return scoped(Bill.findOne({ $or: conditions }), session);
+}
+
+async function findLinkedInvoice(sale, session) {
+  const conditions = [];
+  if (sale._id) conditions.push({ sale_id: sale._id });
+  if (sale.invoice_id) conditions.push({ _id: sale.invoice_id });
+  if (conditions.length === 0) return null;
+  return scoped(Invoice.findOne({ $or: conditions }), session);
+}
+
+// ========== DISCOUNT POOL CALCULATION ==========
+
 function calculateDiscountPool(rows, input) {
   const scope = input.discountScope || 'UNPAID_DUE';
   const type = input.discountType || 'PERCENTAGE';
   const treatment = input.percentageTreatment || 'ADDITIONAL';
   const value = money(input.discountValue);
+
   if (value < 0) throw new Error('Discount cannot be negative.');
   if (type === 'PERCENTAGE' && value > 100) throw new Error('Percentage discount cannot exceed 100%.');
 
@@ -129,7 +196,6 @@ function calculateDiscountPool(rows, input) {
   if (type === 'FIXED') {
     calculated = value;
   } else if (scope === 'UNPAID_DUE') {
-    // Current due already excludes all earlier bill/item discounts.
     calculated = money((outstanding * value) / 100);
   } else {
     const percentageOfGross = money((gross * value) / 100);
@@ -147,12 +213,15 @@ function calculateDiscountPool(rows, input) {
   };
 }
 
+// ========== BUILD SETTLEMENT PREVIEW ==========
+
 function buildSettlementPreviewFromRows(rows, input) {
   const settlementType = input.settlementType || 'FINAL_CONCESSION';
   const discountScope = input.discountScope || 'UNPAID_DUE';
   const discountType = input.discountType || 'PERCENTAGE';
   const percentageTreatment = input.percentageTreatment || 'ADDITIONAL';
   const allocationPolicy = input.allocationPolicy || 'PROPORTIONAL';
+
   const totals = calculateDiscountPool(rows, { ...input, discountScope, discountType, percentageTreatment });
   const openRows = rows.filter((row) => row.openingDue > 0);
 
@@ -213,20 +282,18 @@ function buildSettlementPreviewFromRows(rows, input) {
   };
 }
 
-async function getAdvanceBalances({ patientId, admissionId, session }) {
-  const [ipdAdvance, pharmacyAdvance] = await Promise.all([
-    getAdvanceBalance({ patientId, admissionId, walletType: 'IPD_SHARED', session }),
-    getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD', session })
-  ]);
-  return { ipdAdvance, pharmacyAdvance };
-}
+// ========== PREVIEW LEDGER SETTLEMENT ==========
 
 async function previewLedgerSettlement(input, context = {}) {
   const session = context.session;
   const sales = await loadSelectedSales(input, session);
+
+  if (!sales || sales.length === 0) {
+    throw new Error('No eligible pharmacy sales were found for this ledger context.');
+  }
+
   const preview = buildSettlementPreviewFromRows(sales.map(saleRow), input);
 
-  // Get advance balances
   const patientId = input.patientId || sales[0]?.patient_id;
   const admissionId = input.admissionId || sales[0]?.admission_id;
 
@@ -235,7 +302,6 @@ async function previewLedgerSettlement(input, context = {}) {
     advanceBalances = await getAdvanceBalances({ patientId, admissionId, session });
   }
 
-  // Calculate how much of the advance can be used (capped at payment required)
   const paymentRequired = preview.summary?.paymentRequired || 0;
   const availablePharmacyAdvance = Math.min(advanceBalances.pharmacyAdvance, paymentRequired);
   const availableIpdAdvance = Math.min(advanceBalances.ipdAdvance, paymentRequired - availablePharmacyAdvance);
@@ -266,31 +332,29 @@ async function previewLedgerSettlement(input, context = {}) {
   };
 }
 
-function requireReason(value) {
-  const reason = String(value || '').trim();
-  if (!reason) throw new Error('A settlement reason is required for audit purposes.');
-  return reason;
-}
-
-async function getAdvanceBalance({ patientId, admissionId, walletType, session }) {
-  const query = { walletType };
-  if (admissionId) query.admissionId = admissionId;
-  else query.patientId = patientId;
-  const last = await scoped(PatientAdvanceLedger.findOne(query).sort({ createdAt: -1 }), session);
-  return money(last?.balanceAfter);
-}
+// ========== DEBIT ADVANCE IF USED ==========
 
 async function debitAdvanceIfUsed({ payment, sale, settlement, session, createdBy }) {
   if (!ADVANCE_METHODS.has(payment.method)) return;
+
   if (!sale.patient_id || !sale.admission_id) {
     throw new Error(`${payment.method} can only be used for an admitted patient.`);
   }
+
   const walletType = payment.walletType || (payment.method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED');
-  const available = await getAdvanceBalance({ patientId: sale.patient_id, admissionId: sale.admission_id, walletType, session });
+  const available = await getAdvanceBalance({
+    patientId: sale.patient_id,
+    admissionId: sale.admission_id,
+    walletType,
+    session
+  });
+
   if (available + 0.01 < payment.amount) {
     throw new Error(`Insufficient ${walletType} balance. Available ₹${available}, requested ₹${payment.amount}.`);
   }
+
   const balanceAfter = money(available - payment.amount);
+
   await PatientAdvanceLedger.create([{
     hospitalId: settlement.hospital_id,
     patientId: sale.patient_id,
@@ -311,8 +375,11 @@ async function debitAdvanceIfUsed({ payment, sale, settlement, session, createdB
   }], { session });
 }
 
+// ========== CREATE PATIENT CREDIT ==========
+
 async function createPatientCredit({ settlement, amount, disposition, session, createdBy }) {
   if (amount <= 0) return null;
+
   if (!['PATIENT_CREDIT', 'REFUND_PENDING', 'PHARMACY_ADVANCE', 'IPD_ADJUSTMENT'].includes(disposition)) {
     throw new Error('A patientCreditDisposition is required when a retroactive discount creates credit on paid bills.');
   }
@@ -339,6 +406,7 @@ async function createPatientCredit({ settlement, amount, disposition, session, c
       session,
     });
     const balanceAfter = money(opening + amount);
+
     await PatientAdvanceLedger.create([{
       hospitalId: settlement.hospital_id,
       patientId: settlement.patient_id,
@@ -357,69 +425,39 @@ async function createPatientCredit({ settlement, amount, disposition, session, c
       notes: `Retroactive pharmacy settlement credit ${settlement.settlement_number}`,
       createdBy,
     }], { session });
-    await Patient.updateOne({ _id: settlement.patient_id }, { $inc: { pharmacy_advance_balance: amount } }, { session });
+
+    await Patient.updateOne(
+      { _id: settlement.patient_id },
+      { $inc: { pharmacy_advance_balance: amount } },
+      { session }
+    );
   }
 
   return credit;
 }
 
-function paymentReference(settlementNumber, sourceReference) {
-  return `SETTLEMENT:${settlementNumber}${sourceReference ? `|${sourceReference}` : ''}`;
-}
+// ========== APPLY ALLOCATION ==========
 
-async function findLinkedBill(sale, session) {
-  const conditions = [];
-
-  if (sale._id) {
-    conditions.push({ sale_id: sale._id });
-  }
-  if (sale.invoice_id) {
-    conditions.push({ invoice_id: sale.invoice_id });
-  }
-  if (sale.bill_id) {
-    conditions.push({ _id: sale.bill_id });
-  }
-
-  if (conditions.length === 0) return null;
-
-  return scoped(Bill.findOne({ $or: conditions }), session);
-}
-
-async function findLinkedInvoice(sale, session) {
-  const conditions = [];
-
-  if (sale._id) {
-    conditions.push({ sale_id: sale._id });
-  }
-  if (sale.invoice_id) {
-    conditions.push({ _id: sale.invoice_id });
-  }
-
-  if (conditions.length === 0) return null;
-
-  return scoped(Invoice.findOne({ $or: conditions }), session);
-}
-
-// ========== UPDATED: applyAllocation with proper discount handling ==========
 async function applyAllocation({ sale, allocation, paymentEntries, settlement, createdBy, session }) {
   const now = new Date();
   const paymentAllocated = money(allocation.paymentAllocated);
   const settlementDiscount = money(allocation.settlementDiscountAllocated);
   const creditNote = money(allocation.creditNoteAllocated);
 
-  // ========== FIX: Properly round closing due ==========
-  const closingDue = money(Math.max(0, allocation.openingDue - paymentAllocated - settlementDiscount));
-  const finalClosingDue = Math.abs(closingDue) < 0.005 ? 0 : closingDue;
+  // Calculate closing due with proper rounding
+  const closingDue = getSafeBalance(allocation.openingDue - paymentAllocated - settlementDiscount);
+  const finalClosingDue = getSafeBalance(closingDue);
 
-  // Update sale
-  sale.amount_paid = money((sale.amount_paid || 0) + paymentAllocated);
-  sale.settlement_discount_amount = money((sale.settlement_discount_amount || 0) + settlementDiscount);
-  sale.credit_note_amount = money((sale.credit_note_amount || 0) + creditNote);
+  // ========== UPDATE SALE ==========
+  sale.amount_paid = getSafeBalance((sale.amount_paid || 0) + paymentAllocated);
+  sale.settlement_discount_amount = getSafeBalance((sale.settlement_discount_amount || 0) + settlementDiscount);
+  sale.credit_note_amount = getSafeBalance((sale.credit_note_amount || 0) + creditNote);
   sale.balance_due = finalClosingDue;
   sale.status = finalClosingDue <= 0 ? 'Completed' : 'Partially Paid';
   sale.payment_deferred = finalClosingDue > 0;
   sale.settled_at = finalClosingDue <= 0 ? now : sale.settled_at;
   sale.payment_method = paymentEntries.length > 1 ? 'Split' : (paymentEntries[0]?.method || sale.payment_method);
+
   sale.payments = sale.payments || [];
   sale.settlement_refs = sale.settlement_refs || [];
 
@@ -439,59 +477,44 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
     credit_note_amount: creditNote,
     settled_at: now,
   });
+
   await sale.save({ session });
 
-  // ========== FIX: Update Invoice with discount ==========
+  // ========== UPDATE INVOICE ==========
   const invoice = await findLinkedInvoice(sale, session);
   if (invoice) {
-    // Add payment
-    invoice.amount_paid = money((invoice.amount_paid || 0) + paymentAllocated);
-    invoice.settlement_discount_amount = money((invoice.settlement_discount_amount || 0) + settlementDiscount);
-    invoice.credit_note_total = money((invoice.credit_note_total || 0) + creditNote);
+    invoice.amount_paid = getSafeBalance((invoice.amount_paid || 0) + paymentAllocated);
+    invoice.settlement_discount_amount = getSafeBalance((invoice.settlement_discount_amount || 0) + settlementDiscount);
+    invoice.credit_note_total = getSafeBalance((invoice.credit_note_total || 0) + creditNote);
 
-    // ========== KEY FIX: ADD to existing discount (not replace) ==========
-    const existingDiscount = money(invoice.discount || 0);
-    const newDiscount = money(existingDiscount + settlementDiscount);
+    // ADD to existing discount
+    const existingDiscount = getSafeBalance(invoice.discount || 0);
+    const newDiscount = getSafeBalance(existingDiscount + settlementDiscount);
     invoice.discount = newDiscount;
 
-    // ========== DISTRIBUTE DISCOUNT TO ITEMS ==========
-    // Calculate total taxable amount for items
+    // Distribute discount to items
     const totalTaxable = money(invoice.medicine_items.reduce((sum, item) => sum + money(item.taxable_amount || 0), 0));
 
-    // Distribute the NEW settlement discount proportionally across items
-    // But we need to ADD to existing item discounts, not replace
     if (totalTaxable > 0 && settlementDiscount > 0) {
       invoice.medicine_items = invoice.medicine_items.map(item => {
         const itemTaxable = money(item.taxable_amount || 0);
-        // Calculate proportional discount for this item
         const proportionalDiscount = money((itemTaxable / totalTaxable) * settlementDiscount);
-        // ADD to existing item discount
         const existingItemDiscount = money(item.discount_amount || item.discount || 0);
-        const newItemDiscount = money(existingItemDiscount + proportionalDiscount);
+        const newItemDiscount = getSafeBalance(existingItemDiscount + proportionalDiscount);
 
-        // Update item fields
-        const updatedItem = {
+        return {
           ...item.toObject(),
           discount_amount: newItemDiscount,
-          // Recalculate total_price: total_price - proportionalDiscount
-          total_price: money((item.total_price || 0) - proportionalDiscount),
-          // Recalculate taxable_amount (already has original discount applied)
-          // The taxable_amount remains the same as it's based on the original discount
+          total_price: getSafeBalance((item.total_price || 0) - proportionalDiscount),
         };
-
-        return updatedItem;
       });
     }
 
-    // Recalculate invoice totals
-    const subtotal = money(invoice.subtotal || 0);
-    const tax = money(invoice.tax || 0);
-    invoice.total = money(subtotal - newDiscount + tax);
-    invoice.balance_due = money(invoice.total - invoice.amount_paid);
-
-    if (Math.abs(invoice.balance_due) < 0.005) {
-      invoice.balance_due = 0;
-    }
+    // Recalculate totals
+    const subtotal = getSafeBalance(invoice.subtotal || 0);
+    const tax = getSafeBalance(invoice.tax || 0);
+    invoice.total = getSafeBalance(subtotal - newDiscount + tax);
+    invoice.balance_due = getSafeBalance(invoice.total - invoice.amount_paid);
 
     invoice.payment_history = invoice.payment_history || [];
     invoice.settlement_refs = invoice.settlement_refs || [];
@@ -514,78 +537,55 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
       settled_at: now,
     });
 
-    if (invoice.balance_due <= 0) {
-      invoice.status = 'Paid';
-    } else if (invoice.amount_paid > 0) {
-      invoice.status = 'Partial';
-    } else {
-      invoice.status = 'Pending';
-    }
+    invoice.status = invoice.balance_due <= 0 ? 'Paid' :
+                     invoice.amount_paid > 0 ? 'Partial' : 'Pending';
 
     await invoice.save({ session });
   }
 
-  // ========== FIX: Update Bill with discount and item-wise discounts ==========
+  // ========== UPDATE BILL ==========
   const bill = await findLinkedBill(sale, session);
   if (bill) {
-    // Add payment
-    bill.paid_amount = money((bill.paid_amount || 0) + paymentAllocated);
-    bill.settlement_discount_amount = money((bill.settlement_discount_amount || 0) + settlementDiscount);
-    bill.credit_note_amount = money((bill.credit_note_amount || 0) + creditNote);
+    bill.paid_amount = getSafeBalance((bill.paid_amount || 0) + paymentAllocated);
+    bill.settlement_discount_amount = getSafeBalance((bill.settlement_discount_amount || 0) + settlementDiscount);
+    bill.credit_note_amount = getSafeBalance((bill.credit_note_amount || 0) + creditNote);
 
-    // ========== KEY FIX: ADD to existing discount (not replace) ==========
-    const existingDiscount = money(bill.discount || bill.discount_amount || 0);
-    const newDiscount = money(existingDiscount + settlementDiscount);
+    // ADD to existing discount
+    const existingDiscount = getSafeBalance(bill.discount || bill.discount_amount || 0);
+    const newDiscount = getSafeBalance(existingDiscount + settlementDiscount);
     bill.discount = newDiscount;
     bill.discount_amount = newDiscount;
 
-    // ========== DISTRIBUTE DISCOUNT TO ITEMS ==========
-    // Calculate total taxable amount for bill items
+    // Distribute discount to bill items
     const totalTaxable = money(bill.items.reduce((sum, item) => {
-      // Skip return items
       if (item.item_type === 'Medicine Return') return sum;
       return sum + money(item.taxable_amount || item.amount || 0);
     }, 0));
 
-    // Distribute the NEW settlement discount proportionally across items
     if (totalTaxable > 0 && settlementDiscount > 0) {
       bill.items = bill.items.map(item => {
-        // Skip return items
         if (item.item_type === 'Medicine Return') return item;
 
         const itemTaxable = money(item.taxable_amount || item.amount || 0);
-        // Calculate proportional discount for this item
         const proportionalDiscount = money((itemTaxable / totalTaxable) * settlementDiscount);
-        // ADD to existing item discount
         const existingItemDiscount = money(item.discount_amount || 0);
-        const newItemDiscount = money(existingItemDiscount + proportionalDiscount);
+        const newItemDiscount = getSafeBalance(existingItemDiscount + proportionalDiscount);
 
-        // Update item
-        const updatedItem = {
+        return {
           ...item.toObject(),
           discount_amount: newItemDiscount,
-          // Recalculate amount: amount - proportionalDiscount
-          amount: money((item.amount || 0) - proportionalDiscount),
-          // Recalculate taxable_amount (already has original discount applied)
-          taxable_amount: money((item.taxable_amount || 0) - proportionalDiscount),
+          amount: getSafeBalance((item.amount || 0) - proportionalDiscount),
+          taxable_amount: getSafeBalance((item.taxable_amount || 0) - proportionalDiscount),
         };
-
-        return updatedItem;
       });
     }
 
-    // Get base amounts
-    const grossAmount = money(bill.subtotal || bill.gross_amount || 0);
-    const taxAmount = money(bill.tax_amount || 0);
+    // Recalculate totals
+    const grossAmount = getSafeBalance(bill.subtotal || bill.gross_amount || 0);
+    const taxAmount = getSafeBalance(bill.tax_amount || 0);
 
-    // Recalculate total: gross - total_discount + tax
-    bill.total_amount = money(grossAmount - newDiscount + taxAmount);
-    bill.balance_due = money(bill.total_amount - bill.paid_amount);
-
-    // Ensure balance_due is not a tiny floating point number
-    if (Math.abs(bill.balance_due) < 0.005) {
-      bill.balance_due = 0;
-    }
+    bill.total_amount = getSafeBalance(grossAmount - newDiscount + taxAmount);
+    bill.balance_due = getSafeBalance(bill.total_amount - bill.paid_amount);
 
     bill.payments = bill.payments || [];
     bill.settlement_refs = bill.settlement_refs || [];
@@ -606,22 +606,17 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
       settled_at: now,
     });
 
-    // Update bill status
-    if (bill.balance_due <= 0) {
-      bill.status = 'Paid';
-      bill.paid_at = now;
-    } else if (bill.paid_amount > 0) {
-      bill.status = 'Partially Paid';
-    } else {
-      bill.status = 'Pending';
-    }
+    bill.status = bill.balance_due <= 0 ? 'Paid' :
+                  bill.paid_amount > 0 ? 'Partially Paid' : 'Pending';
+    if (bill.status === 'Paid') bill.paid_at = now;
 
     await bill.save({ session });
   }
 
-  // Create ledger entries for payments
+  // ========== CREATE LEDGER ENTRIES ==========
   for (const payment of paymentEntries) {
     await debitAdvanceIfUsed({ payment, sale, settlement, session, createdBy });
+
     await PharmacyLedgerEntry.create([{
       hospitalId: settlement.hospital_id,
       pharmacyId: settlement.pharmacy_id,
@@ -680,6 +675,8 @@ async function applyAllocation({ sale, allocation, paymentEntries, settlement, c
   }
 }
 
+// ========== RUN TRANSACTION ==========
+
 async function runTransaction(work) {
   const session = await mongoose.startSession();
   try {
@@ -692,6 +689,8 @@ async function runTransaction(work) {
     await session.endSession();
   }
 }
+
+// ========== POST LEDGER SETTLEMENT ==========
 
 async function postLedgerSettlement(input, context = {}) {
   const createdBy = objectId(context.createdBy || input.createdBy, 'createdBy');
@@ -715,11 +714,14 @@ async function postLedgerSettlement(input, context = {}) {
 
     const sales = await loadSelectedSales({ ...input, patientId, admissionId }, session);
     const preview = buildSettlementPreviewFromRows(sales.map(saleRow), input);
+
     const paymentSources = normalizePaymentSources(input.payments || []);
     const paymentReceived = sum(paymentSources, (payment) => payment.amount);
+
     if (Math.abs(paymentReceived - preview.summary.paymentRequired) > 0.01) {
       throw new Error(`Payment receipt total must equal ₹${preview.summary.paymentRequired}; received ₹${paymentReceived}.`);
     }
+
     if (preview.summary.patientCreditCreated > 0 && input.settlementType !== 'RETROACTIVE_INVOICE_DISCOUNT') {
       throw new Error('Patient credit can only be created by a retroactive invoice discount.');
     }
@@ -729,6 +731,7 @@ async function postLedgerSettlement(input, context = {}) {
 
     const resolvedPatientId = patientId || sales[0].patient_id;
     if (!resolvedPatientId) throw new Error('A patient is required for pharmacy ledger settlement.');
+
     const settlement = new PharmacyLedgerSettlement({
       hospital_id: hospitalId,
       pharmacy_id: pharmacyId,
@@ -780,12 +783,16 @@ async function postLedgerSettlement(input, context = {}) {
       created_by: createdBy,
       idempotency_key: idempotencyKey || undefined,
     });
+
     await settlement.save({ session });
 
+    // Apply allocations to each sale
     for (const sale of sales) {
       const allocation = allocationBySale.get(String(sale._id));
       if (!allocation) continue;
-      const storedAllocation = settlement.allocations.find((entry) => String(entry.sale_id) === String(sale._id));
+      const storedAllocation = settlement.allocations.find(
+        (entry) => String(entry.sale_id) === String(sale._id)
+      );
       await applyAllocation({
         sale,
         allocation: { ...allocation, _id: storedAllocation._id },
@@ -796,6 +803,7 @@ async function postLedgerSettlement(input, context = {}) {
       });
     }
 
+    // Create patient credit if applicable
     const credit = await createPatientCredit({
       settlement,
       amount: preview.summary.patientCreditCreated,
@@ -803,17 +811,21 @@ async function postLedgerSettlement(input, context = {}) {
       session,
       createdBy,
     });
+
     if (credit) {
       settlement.patient_credit_id = credit._id;
       await settlement.save({ session });
     }
 
-    // Only the portion that clears current unpaid sales reduces pharmacy outstanding.
+    // Update patient outstanding balance
     const clearedOutstanding = money(preview.summary.paymentRequired + preview.summary.settlementDiscountApplied);
     if (settlement.patient_id && clearedOutstanding > 0) {
       await Patient.updateOne(
         { _id: settlement.patient_id },
-        { $inc: { pharmacy_outstanding_balance: -clearedOutstanding }, $set: { last_pharmacy_transaction: new Date() } },
+        {
+          $inc: { pharmacy_outstanding_balance: -clearedOutstanding },
+          $set: { last_pharmacy_transaction: new Date() }
+        },
         { session }
       );
     }
@@ -821,6 +833,8 @@ async function postLedgerSettlement(input, context = {}) {
     return { settlement, replayed: false };
   });
 }
+
+// ========== GET SETTLEMENT BY ID ==========
 
 async function getSettlementById(id) {
   return PharmacyLedgerSettlement.findById(objectId(id, 'settlementId'))
@@ -831,11 +845,14 @@ async function getSettlementById(id) {
     .populate('patient_credit_id');
 }
 
+// ========== LIST SETTLEMENTS ==========
+
 async function listSettlements(filters = {}) {
   const query = {};
   if (filters.patientId) query.patient_id = objectId(filters.patientId, 'patientId');
   if (filters.admissionId) query.admission_id = objectId(filters.admissionId, 'admissionId');
   if (filters.status) query.status = filters.status;
+
   return PharmacyLedgerSettlement.find(query)
     .sort({ createdAt: -1 })
     .limit(Math.min(Number(filters.limit || 50), 200))
@@ -843,6 +860,8 @@ async function listSettlements(filters = {}) {
     .populate('admission_id', 'admissionNumber')
     .populate('created_by', 'name email');
 }
+
+// ========== REVERSE LEDGER SETTLEMENT ==========
 
 async function reverseLedgerSettlement(id, input, context = {}) {
   const createdBy = objectId(context.createdBy || input.createdBy, 'createdBy');
@@ -856,41 +875,56 @@ async function reverseLedgerSettlement(id, input, context = {}) {
     for (const allocation of settlement.allocations) {
       const sale = await scoped(Sale.findById(allocation.sale_id), session);
       if (!sale) continue;
+
       const lastRef = (sale.settlement_refs || [])[sale.settlement_refs.length - 1];
       if (!lastRef || String(lastRef.settlement_id) !== String(settlement._id)) {
         throw new Error(`Settlement ${settlement.settlement_number} is not the latest settlement for sale ${sale.sale_number}; reverse later settlements first.`);
       }
 
-      sale.amount_paid = money(Math.max(0, (sale.amount_paid || 0) - allocation.payment_allocated));
-      sale.settlement_discount_amount = money(Math.max(0, (sale.settlement_discount_amount || 0) - allocation.settlement_discount_allocated));
-      sale.credit_note_amount = money(Math.max(0, (sale.credit_note_amount || 0) - allocation.credit_note_allocated));
-      sale.balance_due = money(allocation.opening_due);
+      // Reverse sale changes
+      sale.amount_paid = getSafeBalance(Math.max(0, (sale.amount_paid || 0) - allocation.payment_allocated));
+      sale.settlement_discount_amount = getSafeBalance(Math.max(0, (sale.settlement_discount_amount || 0) - allocation.settlement_discount_allocated));
+      sale.credit_note_amount = getSafeBalance(Math.max(0, (sale.credit_note_amount || 0) - allocation.credit_note_allocated));
+      sale.balance_due = getSafeBalance(allocation.opening_due);
       sale.status = sale.balance_due > 0 ? (sale.amount_paid > 0 ? 'Partially Paid' : 'Pending') : 'Completed';
       sale.payment_deferred = sale.balance_due > 0;
-      sale.payments = (sale.payments || []).filter((payment) => !String(payment.reference || '').startsWith(`SETTLEMENT:${settlement.settlement_number}`));
+      sale.payments = (sale.payments || []).filter(
+        (payment) => !String(payment.reference || '').startsWith(`SETTLEMENT:${settlement.settlement_number}`)
+      );
       sale.settlement_refs.pop();
       await sale.save({ session });
 
+      // Reverse invoice changes
       const invoice = await findLinkedInvoice(sale, session);
       if (invoice) {
-        invoice.amount_paid = money(Math.max(0, (invoice.amount_paid || 0) - allocation.payment_allocated));
-        invoice.settlement_discount_amount = money(Math.max(0, (invoice.settlement_discount_amount || 0) - allocation.settlement_discount_allocated));
-        invoice.credit_note_total = money(Math.max(0, (invoice.credit_note_total || 0) - allocation.credit_note_allocated));
-        invoice.payment_history = (invoice.payment_history || []).filter((payment) => !String(payment.reference || '').startsWith(`SETTLEMENT:${settlement.settlement_number}`));
-        invoice.settlement_refs = (invoice.settlement_refs || []).filter((ref) => String(ref.settlement_id) !== String(settlement._id));
+        invoice.amount_paid = getSafeBalance(Math.max(0, (invoice.amount_paid || 0) - allocation.payment_allocated));
+        invoice.settlement_discount_amount = getSafeBalance(Math.max(0, (invoice.settlement_discount_amount || 0) - allocation.settlement_discount_allocated));
+        invoice.credit_note_total = getSafeBalance(Math.max(0, (invoice.credit_note_total || 0) - allocation.credit_note_allocated));
+        invoice.payment_history = (invoice.payment_history || []).filter(
+          (payment) => !String(payment.reference || '').startsWith(`SETTLEMENT:${settlement.settlement_number}`)
+        );
+        invoice.settlement_refs = (invoice.settlement_refs || []).filter(
+          (ref) => String(ref.settlement_id) !== String(settlement._id)
+        );
         await invoice.save({ session });
       }
 
+      // Reverse bill changes
       const bill = await findLinkedBill(sale, session);
       if (bill) {
-        bill.paid_amount = money(Math.max(0, (bill.paid_amount || 0) - allocation.payment_allocated));
-        bill.settlement_discount_amount = money(Math.max(0, (bill.settlement_discount_amount || 0) - allocation.settlement_discount_allocated));
-        bill.credit_note_amount = money(Math.max(0, (bill.credit_note_amount || 0) - allocation.credit_note_allocated));
-        bill.payments = (bill.payments || []).filter((payment) => !String(payment.reference || '').startsWith(`SETTLEMENT:${settlement.settlement_number}`));
-        bill.settlement_refs = (bill.settlement_refs || []).filter((ref) => String(ref.settlement_id) !== String(settlement._id));
+        bill.paid_amount = getSafeBalance(Math.max(0, (bill.paid_amount || 0) - allocation.payment_allocated));
+        bill.settlement_discount_amount = getSafeBalance(Math.max(0, (bill.settlement_discount_amount || 0) - allocation.settlement_discount_allocated));
+        bill.credit_note_amount = getSafeBalance(Math.max(0, (bill.credit_note_amount || 0) - allocation.credit_note_allocated));
+        bill.payments = (bill.payments || []).filter(
+          (payment) => !String(payment.reference || '').startsWith(`SETTLEMENT:${settlement.settlement_number}`)
+        );
+        bill.settlement_refs = (bill.settlement_refs || []).filter(
+          (ref) => String(ref.settlement_id) !== String(settlement._id)
+        );
         await bill.save({ session });
       }
 
+      // Create reversal ledger entries
       if (allocation.payment_allocated > 0) {
         await PharmacyLedgerEntry.create([{
           hospitalId: settlement.hospital_id,
@@ -909,6 +943,7 @@ async function reverseLedgerSettlement(id, input, context = {}) {
           createdBy,
         }], { session });
       }
+
       const nonCashReversal = money(allocation.settlement_discount_allocated + allocation.credit_note_allocated);
       if (nonCashReversal > 0) {
         await PharmacyLedgerEntry.create([{
@@ -930,13 +965,21 @@ async function reverseLedgerSettlement(id, input, context = {}) {
       }
     }
 
+    // Reverse patient credit if applicable
     if (settlement.patient_credit_id) {
       const credit = await scoped(PatientSettlementCredit.findById(settlement.patient_credit_id), session);
       if (credit && credit.status === 'OPEN') {
         credit.status = 'VOID';
         await credit.save({ session });
+
         if (credit.disposition === 'PHARMACY_ADVANCE') {
-          const opening = await getAdvanceBalance({ patientId: settlement.patient_id, admissionId: settlement.admission_id, walletType: 'PHARMACY_IPD', session });
+          const opening = await getAdvanceBalance({
+            patientId: settlement.patient_id,
+            admissionId: settlement.admission_id,
+            walletType: 'PHARMACY_IPD',
+            session
+          });
+
           await PatientAdvanceLedger.create([{
             hospitalId: settlement.hospital_id,
             patientId: settlement.patient_id,
@@ -951,18 +994,31 @@ async function reverseLedgerSettlement(id, input, context = {}) {
             documentId: settlement._id,
             sourceModule: 'Pharmacy',
             sourceId: settlement._id,
-            balanceAfter: money(opening - credit.amount),
+            balanceAfter: getSafeBalance(opening - credit.amount),
             notes: `Reversal of pharmacy settlement credit ${settlement.settlement_number}`,
             createdBy,
           }], { session });
-          await Patient.updateOne({ _id: settlement.patient_id }, { $inc: { pharmacy_advance_balance: -credit.amount } }, { session });
+
+          await Patient.updateOne(
+            { _id: settlement.patient_id },
+            { $inc: { pharmacy_advance_balance: -credit.amount } },
+            { session }
+          );
         }
       }
     }
 
-    const restoredOutstanding = sum(settlement.allocations, (allocation) => allocation.payment_allocated + allocation.settlement_discount_allocated);
+    // Restore patient outstanding balance
+    const restoredOutstanding = sum(settlement.allocations, (allocation) =>
+      allocation.payment_allocated + allocation.settlement_discount_allocated
+    );
+
     if (settlement.patient_id && restoredOutstanding > 0) {
-      await Patient.updateOne({ _id: settlement.patient_id }, { $inc: { pharmacy_outstanding_balance: restoredOutstanding } }, { session });
+      await Patient.updateOne(
+        { _id: settlement.patient_id },
+        { $inc: { pharmacy_outstanding_balance: restoredOutstanding } },
+        { session }
+      );
     }
 
     settlement.status = 'REVERSED';
@@ -970,9 +1026,12 @@ async function reverseLedgerSettlement(id, input, context = {}) {
     settlement.reversed_by = createdBy;
     settlement.reversal_reason = reversalReason;
     await settlement.save({ session });
+
     return settlement;
   });
 }
+
+// ========== EXPORTS ==========
 
 module.exports = {
   previewLedgerSettlement,

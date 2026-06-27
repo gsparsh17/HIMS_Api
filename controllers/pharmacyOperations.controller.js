@@ -2000,7 +2000,57 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     `PH-ADV-REF-${Date.now()}`;
 
   const notes = req.body.notes || 'Final pharmacy clearance advance refund';
-  const createdBy = getCreatedBy(req);
+
+  // ========== FIX: Get createdBy properly ==========
+  const createdByRaw = getCreatedBy(req);
+  const collectedByName = req.body.refunded_by || req.body.collected_by || req.body.collectedBy || 'Pharmacy Staff';
+
+  // Try to resolve createdBy to an ObjectId
+  let createdBy = null;
+  if (createdByRaw && mongoose.Types.ObjectId.isValid(createdByRaw)) {
+    createdBy = createdByRaw;
+  } else {
+    // Try to find user by name or email
+    try {
+      const User = require('../models/User');
+      let user = null;
+
+      // Check if collectedByName is an email
+      if (collectedByName.includes('@')) {
+        user = await User.findOne({ email: collectedByName });
+      } else {
+        // Try to find by name
+        const nameParts = collectedByName.split(' ');
+        if (nameParts.length >= 2) {
+          user = await User.findOne({
+            first_name: nameParts[0],
+            last_name: nameParts.slice(1).join(' ')
+          });
+        } else {
+          user = await User.findOne({
+            $or: [
+              { username: collectedByName },
+              { first_name: collectedByName }
+            ]
+          });
+        }
+      }
+
+      if (user) {
+        createdBy = user._id;
+      }
+    } catch (userErr) {
+      console.log('Could not find user by name/email, using system as fallback');
+    }
+  }
+
+  // If still no createdBy, use a fallback or the current user's ID from request
+  if (!createdBy) {
+    createdBy = req.user?._id || req.user?.id || null;
+  }
+
+  // Store the name for display purposes
+  const createdByName = collectedByName || req.user?.name || 'Pharmacy Staff';
 
   if (!admissionId) {
     return res.status(400).json({
@@ -2062,6 +2112,7 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     });
   }
 
+  // ========== CREATE ADVANCE LEDGER ENTRY ==========
   const advanceLedger = await createAdvanceLedgerEntry({
     hospitalId,
     patientId,
@@ -2075,9 +2126,10 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     sourceModule: 'Pharmacy',
     sourceId: admissionId,
     notes,
-    createdBy
+    createdBy: createdBy || 'System' // Use ObjectId if available, else string
   });
 
+  // ========== CREATE PHARMACY LEDGER ENTRY ==========
   const pharmacyLedger = await PharmacyLedgerEntry.create({
     hospitalId,
     pharmacyId,
@@ -2087,10 +2139,11 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     paymentMethod: refundMethod,
     patientId,
     admissionId,
-    notes: `${notes}. Reference: ${referenceNumber}`,
-    createdBy
+    notes: `${notes}. Reference: ${referenceNumber}. Refunded by: ${createdByName}`,
+    createdBy: createdBy || 'System' // Use ObjectId if available, else string
   });
 
+  // ========== UPDATE PATIENT ==========
   await Patient.findByIdAndUpdate(patientId, {
     $set: {
       pharmacy_advance_balance: Math.max(0, normalizeMoney(advanceLedger.balanceAfter || 0)),
@@ -2098,6 +2151,7 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     }
   });
 
+  // ========== GET FINAL BALANCES ==========
   const balances = await getPatientPharmacySummary({
     patientId,
     admissionId
@@ -2109,6 +2163,7 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     refundedAmount: amount,
     refundMethod,
     referenceNumber,
+    refundedBy: createdByName,
     balanceBefore: normalizeMoney(currentPharmacyAdvance),
     balanceAfter: normalizeMoney(advanceLedger.balanceAfter || 0),
     advanceLedger,

@@ -889,7 +889,7 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, hospitalId
   return { allocated: normalizeMoney(amount - remaining), remaining, allocations };
 }
 
-// ========== UPDATED: createUnifiedSale - Support "Pay Less Now" feature ==========
+// ========== UPDATED: createUnifiedSale - Support "Pay Less Now" feature with proper balance sync ==========
 async function createUnifiedSale(payload, req = {}) {
   console.log('Creating unified sale with payload:', payload);
   const hospitalId = getHospitalId(req, payload.hospitalId);
@@ -1101,7 +1101,6 @@ async function createUnifiedSale(payload, req = {}) {
     });
 
     // ========== DEDUCT STOCK FOR DEFERRED PAYMENTS ==========
-    // IMPORTANT: Stock must be deducted for deferred payments too
     if (items && items.length > 0) {
       console.log(`📦 Deducting stock for deferred sale ${sale.sale_number}`);
       for (const item of items) {
@@ -1116,7 +1115,6 @@ async function createUnifiedSale(payload, req = {}) {
           batch.quantity = nextQty;
           await batch.save();
 
-          // Create inventory ledger entry
           await InventoryLedger.create({
             hospitalId,
             pharmacyId: pharmacyId || sale.pharmacy_id,
@@ -1227,6 +1225,23 @@ async function createUnifiedSale(payload, req = {}) {
       isDeferred: true
     });
 
+    // ========== SYNC SALE BALANCE WITH BILL FOR DEFERRED PAYMENTS ==========
+    // The bill already has the correct balance_due with discount applied
+    // Update the sale's balance_due to match the bill
+    if (bill) {
+      console.log(`🔄 Syncing Sale ${sale.sale_number} balance with bill:`);
+      console.log(`   - Bill balance_due: ${bill.balance_due}`);
+      console.log(`   - Sale balance_due before: ${sale.balance_due}`);
+
+      sale.balance_due = bill.balance_due || balanceDue;
+      sale.net_amount_after_returns = bill.total_amount || totals.total;
+      sale.current_bill_amount = bill.total_amount || totals.total;
+      sale.closing_outstanding = bill.balance_due || balanceDue;
+
+      await sale.save();
+      console.log(`✅ Synced Sale ${sale.sale_number} balance_due to ${sale.balance_due}`);
+    }
+
     if (sale.admission_id && sale.patient_id) {
       await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: true });
     }
@@ -1234,13 +1249,13 @@ async function createUnifiedSale(payload, req = {}) {
     await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
     // Create due ledger entry for the deferred amount
-    if (balanceDue > 0) {
+    if (sale.balance_due > 0) {
       await PharmacyLedgerEntry.create({
         hospitalId,
         pharmacyId,
         entryType: 'DUE_CREATED',
         direction: 'OUT',
-        amount: balanceDue,
+        amount: sale.balance_due,
         paymentMethod: 'Deferred',
         patientId,
         admissionId,
@@ -1250,13 +1265,6 @@ async function createUnifiedSale(payload, req = {}) {
         createdBy
       });
     }
-
-    // if (patientId && balanceDue > 0) {
-    //   await Patient.findByIdAndUpdate(patientId, {
-    //     $inc: { pharmacy_outstanding_balance: balanceDue },
-    //     last_pharmacy_transaction: new Date()
-    //   });
-    // }
 
     if (customerId) {
       const Customer = mongoose.model('Customer');
@@ -1320,7 +1328,7 @@ async function createUnifiedSale(payload, req = {}) {
       invoice,
       bill,
       paymentDeferred: true,
-      deferredAmount: balanceDue,
+      deferredAmount: sale.balance_due,
       deferralReason: deferralReason,
       previous_outstanding: previousOutstanding,
       balances: finalSummary,
@@ -1462,6 +1470,22 @@ async function createUnifiedSale(payload, req = {}) {
 
   const invoice = await createSaleInvoice({ sale, items, customerName: sale.customer_name, customerPhone: sale.customer_phone, totals, paymentEntries: payments, createdBy, isDeferred: false });
   const bill = await createPharmacyBill({ sale, items, totals, paymentEntries: payments, hospitalId, patientId, admissionId, createdBy, isDeferred: false });
+
+  // ========== SYNC SALE BALANCE WITH BILL FOR NON-DEFERRED PAYMENTS ==========
+  if (bill) {
+    console.log(`🔄 Syncing Sale ${sale.sale_number} balance with bill (non-deferred):`);
+    console.log(`   - Bill balance_due: ${bill.balance_due}`);
+    console.log(`   - Sale balance_due before: ${sale.balance_due}`);
+
+    sale.balance_due = bill.balance_due || balanceDue;
+    sale.net_amount_after_returns = bill.total_amount || totals.total;
+    sale.current_bill_amount = bill.total_amount || totals.total;
+    sale.closing_outstanding = bill.balance_due || balanceDue;
+
+    await sale.save();
+    console.log(`✅ Synced Sale ${sale.sale_number} balance_due to ${sale.balance_due}`);
+  }
+
   await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: false });
   await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
@@ -1471,13 +1495,13 @@ async function createUnifiedSale(payload, req = {}) {
   }
   await createPharmacyLedgerForPayments({ payments: currentPaymentBreakup, sale, hospitalId, pharmacyId, createdBy, entryType: 'SALE' });
 
-  if (balanceDue > 0) {
+  if (sale.balance_due > 0) {
     await PharmacyLedgerEntry.create({
       hospitalId,
       pharmacyId,
       entryType: 'DUE_CREATED',
       direction: 'NON_CASH',
-      amount: balanceDue,
+      amount: sale.balance_due,
       paymentMethod: 'Credit',
       patientId,
       admissionId,
@@ -1607,7 +1631,7 @@ async function createUnifiedSale(payload, req = {}) {
   };
 }
 
-// ========== UPDATED: createReturn - Handle deferred payment returns ==========
+// ========== UPDATED: createReturn - Handle deferred payment returns with sale-bill sync ==========
 async function createReturn(payload, req = {}) {
   console.log('========== CREATE RETURN START ==========');
   console.log('Creating pharmacy return with payload:', JSON.stringify(payload, null, 2));
@@ -2054,6 +2078,44 @@ async function createReturn(payload, req = {}) {
 
     await associatedBill.save();
     console.log('Bill saved successfully');
+
+    // ========== SYNC SALE BALANCE WITH BILL ==========
+    // The Bill's balance_due includes all adjustments (returns, discounts, etc.)
+    // The Sale's balance_due should match the Bill's balance_due
+    const saleToSync = await Sale.findById(originalSaleId);
+    if (saleToSync) {
+      const billBalanceDue = associatedBill.balance_due || 0;
+      const billTotalAmount = associatedBill.total_amount || 0;
+
+      console.log(`🔄 Syncing Sale ${saleToSync.sale_number}:`);
+      console.log(`   - Bill balance_due: ${billBalanceDue}`);
+      console.log(`   - Sale balance_due before: ${saleToSync.balance_due}`);
+      console.log(`   - Bill total_amount: ${billTotalAmount}`);
+      console.log(`   - Sale total_amount: ${saleToSync.total_amount}`);
+
+      // Update sale to match bill's balance
+      saleToSync.balance_due = billBalanceDue;
+      saleToSync.net_amount_after_returns = billTotalAmount;
+      saleToSync.closing_outstanding = billBalanceDue;
+      saleToSync.current_bill_amount = billTotalAmount;
+
+      // Also update total_amount if needed (keep original gross + discount logic)
+      // The total_amount should remain as the original gross, but we use billTotalAmount for net
+      // saleToSync.total_amount = saleToSync.total_amount; // Keep original
+
+      // If balance_due is 0, mark as completed
+      if (saleToSync.balance_due <= 0) {
+        saleToSync.status = 'Completed';
+        saleToSync.payment_deferred = false;
+        saleToSync.settled_at = new Date();
+      } else {
+        saleToSync.status = 'PartiallyReturned';
+      }
+
+      await saleToSync.save();
+      console.log(`✅ Synced Sale ${saleToSync.sale_number} balance_due to ${billBalanceDue}`);
+      console.log(`   - Sale balance_due after: ${saleToSync.balance_due}`);
+    }
 
     const invoiceId = associatedBill.invoice_id || originalSale?.invoice_id;
     const associatedInvoice = invoiceId ? await Invoice.findById(invoiceId) : null;

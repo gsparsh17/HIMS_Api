@@ -5,12 +5,12 @@
  * No database access belongs in this file. Amounts are in INR and rounded to 2 decimals.
  */
 
+// ========== CORE MATH HELPERS ==========
+
 function money(value) {
   const number = Number(value || 0);
   if (!Number.isFinite(number)) return 0;
-  // Round to 2 decimal places and handle floating point errors
   const rounded = Math.round((number + Number.EPSILON) * 100) / 100;
-  // If it's within 0.005 of 0, treat as 0
   return Math.abs(rounded) < 0.005 ? 0 : rounded;
 }
 
@@ -28,6 +28,8 @@ function assertMoneyEquals(actual, expected, label) {
   }
 }
 
+// ========== SORTING ==========
+
 function sortRows(rows, policy) {
   const copy = [...rows];
   switch (policy) {
@@ -44,9 +46,12 @@ function sortRows(rows, policy) {
   }
 }
 
+// ========== ALLOCATE POOL ==========
+
 function allocatePool(rows, pool, policy = 'PROPORTIONAL', capacityKey = 'openingDue') {
   const amount = money(pool);
   const totalCapacity = sum(rows, (row) => row[capacityKey]);
+
   if (amount < -0.01) throw new Error('Allocation amount cannot be negative.');
   if (amount > totalCapacity + 0.01) {
     throw new Error(`Allocation amount ₹${amount} exceeds available capacity ₹${totalCapacity}.`);
@@ -57,18 +62,25 @@ function allocatePool(rows, pool, policy = 'PROPORTIONAL', capacityKey = 'openin
 
   if (policy === 'PROPORTIONAL') {
     let allocated = 0;
+    const totalCapacitySafe = totalCapacity > 0 ? totalCapacity : 1;
+
     rows.forEach((row, index) => {
       const rowId = idOf(row);
       const capacity = money(row[capacityKey]);
-      const value = index === rows.length - 1
-        ? money(amount - allocated)
-        : money((amount * capacity) / totalCapacity);
+
+      let value;
+      if (index === rows.length - 1) {
+        value = money(amount - allocated);
+      } else {
+        value = money((amount * capacity) / totalCapacitySafe);
+      }
+
       const safe = Math.min(capacity, Math.max(0, value));
       byId.set(rowId, safe);
       allocated = money(allocated + safe);
     });
 
-    // Handle paise residuals caused by rounding, without exceeding a document capacity.
+    // Handle paise residuals
     let residual = money(amount - sum(rows, (row) => byId.get(idOf(row))));
     for (const row of rows) {
       if (residual <= 0) break;
@@ -81,6 +93,7 @@ function allocatePool(rows, pool, policy = 'PROPORTIONAL', capacityKey = 'openin
     return byId;
   }
 
+  // Policy-based allocation (FIFO, LIFO, etc.)
   let remaining = amount;
   for (const row of sortRows(rows, policy)) {
     if (remaining <= 0) break;
@@ -92,62 +105,90 @@ function allocatePool(rows, pool, policy = 'PROPORTIONAL', capacityKey = 'openin
   return byId;
 }
 
-/**
- * Final-concession mode: a discount pool is applied only to currently open dues.
- * Each selected open sale closes exactly: payment + settlement discount = opening due.
- */
+// ========== BUILD FINAL CONCESSION ALLOCATIONS ==========
+
 function buildFinalConcessionAllocations(openRows, options = {}) {
   const rows = (openRows || [])
-    .map((row) => ({ ...row, saleId: idOf(row), openingDue: money(row.openingDue) }))
+    .map((row) => ({
+      ...row,
+      saleId: idOf(row),
+      openingDue: money(row.openingDue),
+    }))
     .filter((row) => row.openingDue > 0);
+
   const totalDue = sum(rows, (row) => row.openingDue);
   const discountToApply = Math.min(money(options.discountToApply), totalDue);
   const policy = options.allocationPolicy || 'PROPORTIONAL';
 
+  // Manual allocation mode
   if (policy === 'MANUAL') {
-    const manualById = new Map((options.manualAllocations || []).map((allocation) => [String(allocation.saleId), allocation]));
+    const manualById = new Map(
+      (options.manualAllocations || []).map((allocation) => [String(allocation.saleId), allocation])
+    );
+
     const allocations = rows.map((row) => {
       const manual = manualById.get(row.saleId) || {};
       const paymentAllocated = money(manual.paymentAllocated);
       const settlementDiscountAllocated = money(manual.settlementDiscountAllocated);
+
       if (paymentAllocated < 0 || settlementDiscountAllocated < 0) {
         throw new Error(`Negative allocation is not allowed for sale ${row.saleId}.`);
       }
-      assertMoneyEquals(paymentAllocated + settlementDiscountAllocated, row.openingDue, `Allocation for sale ${row.saleId}`);
+
+      assertMoneyEquals(
+        paymentAllocated + settlementDiscountAllocated,
+        row.openingDue,
+        `Allocation for sale ${row.saleId}`
+      );
+
+      const closingDue = Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated);
+
       return {
         ...row,
         paymentAllocated,
         settlementDiscountAllocated,
         creditNoteAllocated: 0,
-        // ========== FIX: Round closing due ==========
-        closingDue: money(Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated)),
+        unapplied: 0,
+        closingDue: money(closingDue),
       };
     });
-    assertMoneyEquals(sum(allocations, (row) => row.settlementDiscountAllocated), discountToApply, 'Manual discount allocation total');
-    assertMoneyEquals(sum(allocations, (row) => row.paymentAllocated), money(totalDue - discountToApply), 'Manual payment allocation total');
+
+    assertMoneyEquals(
+      sum(allocations, (row) => row.settlementDiscountAllocated),
+      discountToApply,
+      'Manual discount allocation total'
+    );
+
+    assertMoneyEquals(
+      sum(allocations, (row) => row.paymentAllocated),
+      money(totalDue - discountToApply),
+      'Manual payment allocation total'
+    );
+
     return allocations;
   }
 
+  // Automatic allocation
   const discounts = allocatePool(rows, discountToApply, policy, 'openingDue');
+
   return rows.map((row) => {
     const settlementDiscountAllocated = money(discounts.get(row.saleId));
     const paymentAllocated = money(row.openingDue - settlementDiscountAllocated);
+    const closingDue = Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated);
+
     return {
       ...row,
       paymentAllocated,
       settlementDiscountAllocated,
       creditNoteAllocated: 0,
-      // ========== FIX: Round closing due ==========
-      closingDue: money(Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated)),
+      unapplied: 0,
+      closingDue: money(closingDue),
     };
   });
 }
 
-/**
- * Retroactive invoice discount mode. The discount is allocated across both paid
- * and unpaid sales. It first reduces an open due; any remaining portion is a
- * patient credit / credit-note amount against previous payments.
- */
+// ========== BUILD RETROACTIVE ALLOCATIONS ==========
+
 function buildRetroactiveAllocations(allRows, options = {}) {
   const rows = (allRows || []).map((row) => ({
     ...row,
@@ -161,11 +202,16 @@ function buildRetroactiveAllocations(allRows, options = {}) {
   const discountType = options.discountType || 'PERCENTAGE';
   const treatment = options.percentageTreatment || 'ADDITIONAL';
   const policy = options.allocationPolicy || 'PROPORTIONAL';
+
   let requestedById = new Map();
 
+  // Percentage discount
   if (discountType === 'PERCENTAGE') {
     const rate = Number(options.discountValue || 0);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 100) throw new Error('Percentage discount must be between 0 and 100.');
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      throw new Error('Percentage discount must be between 0 and 100.');
+    }
+
     for (const row of rows) {
       const calculated = money((row.grossAmount * rate) / 100);
       const requested = treatment === 'TARGET_TOTAL_DISCOUNT'
@@ -174,81 +220,113 @@ function buildRetroactiveAllocations(allRows, options = {}) {
       requestedById.set(row.saleId, requested);
     }
   } else {
+    // Fixed amount discount
     const pool = money(options.discountValue);
+
     const capacities = rows.map((row) => ({
       ...row,
-      // Existing amount paid plus current due is the maximum that can be adjusted
-      // without producing a negative economic liability for this sale.
       discountCapacity: money(row.amountPaid + row.openingDue),
     }));
+
     if (policy === 'MANUAL') {
-      const manualById = new Map((options.manualAllocations || []).map((allocation) => [String(allocation.saleId), allocation]));
+      const manualById = new Map(
+        (options.manualAllocations || []).map((allocation) => [String(allocation.saleId), allocation])
+      );
+
       for (const row of capacities) {
         const manual = manualById.get(row.saleId) || {};
-        requestedById.set(row.saleId, money(manual.settlementDiscountAllocated) + money(manual.creditNoteAllocated));
+        requestedById.set(
+          row.saleId,
+          money(manual.settlementDiscountAllocated) + money(manual.creditNoteAllocated)
+        );
       }
-      assertMoneyEquals(sum(capacities, (row) => requestedById.get(row.saleId)), pool, 'Manual retroactive discount allocation total');
+
+      assertMoneyEquals(
+        sum(capacities, (row) => requestedById.get(row.saleId)),
+        pool,
+        'Manual retroactive discount allocation total'
+      );
     } else {
       requestedById = allocatePool(capacities, pool, policy, 'discountCapacity');
     }
   }
 
+  // Build allocations
   const allocations = rows.map((row) => {
-    const requested = money(requestedById.get(row.saleId));
+    const requested = money(requestedById.get(row.saleId) || 0);
+
+    // First apply discount to opening due
     const settlementDiscountAllocated = Math.min(row.openingDue, requested);
     const remainingCredit = money(requested - settlementDiscountAllocated);
+
+    // Then apply remaining credit to amount paid (credit note)
     const creditNoteAllocated = Math.min(row.amountPaid, remainingCredit);
     const unapplied = money(remainingCredit - creditNoteAllocated);
+
+    // Payment is the remaining opening due after discount
     const paymentAllocated = money(row.openingDue - settlementDiscountAllocated);
+    const closingDue = Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated);
+
     return {
       ...row,
       paymentAllocated,
       settlementDiscountAllocated,
       creditNoteAllocated,
       unapplied,
-      // ========== FIX: Round closing due ==========
-      closingDue: money(Math.max(0, row.openingDue - paymentAllocated - settlementDiscountAllocated)),
+      closingDue: money(closingDue),
     };
   });
 
   return allocations;
 }
 
-/**
- * Maps a single receipt (possibly split across tenders) to document payment
- * allocations. Each tender is consumed exactly once; this fixes the historical
- * bug where the same cash amount could be reused for multiple sales.
- */
+// ========== ALLOCATE PAYMENT METHODS TO SALES ==========
+
 function allocatePaymentMethodsToSales(paymentSources, allocations) {
-  const sources = (paymentSources || []).map((source) => ({ ...source, remaining: money(source.amount) }));
+  const sources = (paymentSources || []).map((source) => ({
+    ...source,
+    remaining: money(source.amount),
+  }));
+
   const result = new Map();
 
   for (const allocation of allocations || []) {
     let remaining = money(allocation.paymentAllocated);
     const entries = [];
+
     for (const source of sources) {
       if (remaining <= 0) break;
       const use = Math.min(source.remaining, remaining);
       if (use <= 0) continue;
+
       entries.push({
         method: source.method,
         amount: money(use),
         reference: source.reference || '',
         walletType: source.walletType || null,
       });
+
       source.remaining = money(source.remaining - use);
       remaining = money(remaining - use);
     }
+
     if (remaining > 0.01) {
       throw new Error(`Payment sources are insufficient for sale ${allocation.saleId}.`);
     }
+
     result.set(String(allocation.saleId), entries);
   }
 
+  // Verify no unused payment sources
   const unused = sum(sources, (source) => source.remaining);
-  if (unused > 0.01) throw new Error(`Receipt has ₹${unused} that was not allocated to any sale.`);
+  if (unused > 0.01) {
+    throw new Error(`Receipt has ₹${unused} that was not allocated to any sale.`);
+  }
+
   return result;
 }
+
+// ========== EXPORTS ==========
 
 module.exports = {
   money,

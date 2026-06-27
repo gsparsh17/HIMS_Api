@@ -7,6 +7,7 @@ const Supplier = require('../models/Supplier');
 const Hospital = require('../models/Hospital');
 const Pharmacy = require('../models/Pharmacy');
 const Bill = require('../models/Bill');
+const Sale = require('../models/Sale');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const LabRequest = require('../models/LabRequest');
 const RadiologyRequest = require('../models/RadiologyRequest');
@@ -1346,7 +1347,7 @@ exports.generatePurchaseInvoice = async (req, res) => {
   }
 };
 
-// ============== COMMON INVOICE FUNCTIONS (PRESERVING ALL ORIGINAL RETURN VALUES) ==============
+// ============== COMMON INVOICE FUNCTIONS ==============
 
 // Get all invoices with filters
 exports.getAllInvoices = async (req, res) => {
@@ -1528,70 +1529,333 @@ exports.getInvoiceById = async (req, res) => {
   }
 };
 
-// Update invoice payment
+// ========== ENHANCED UPDATE INVOICE PAYMENT ==========
+// This function handles payments for pharmacy invoices and properly updates
+// all associated documents including Sale, Bill, Patient, and Ledger entries.
+// It also handles deferred payments and advance consumption.
 exports.updateInvoicePayment = async (req, res) => {
   try {
     const { amount, method, reference, collected_by } = req.body;
+    const invoiceId = req.params.id;
+    console.log(req.body);
+    // Validate input
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Invalid payment amount' });
+    }
 
-    const invoice = await Invoice.findById(req.params.id);
+    const invoice = await Invoice.findById(invoiceId);
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
+    // Check if payment amount exceeds balance due
+    if (amount > invoice.balance_due) {
+      return res.status(400).json({
+        error: `Payment amount (${amount}) exceeds balance due (${invoice.balance_due})`
+      });
+    }
+
+    const isAdvancePayment = ['IPDAdvance', 'PharmacyAdvance'].includes(method);
+    const isCashPayment = ['Cash', 'UPI', 'Card', 'Bank Transfer'].includes(method);
+
+    // ========== 1. UPDATE INVOICE ==========
+    invoice.payment_history = invoice.payment_history || [];
+
+    // ========== FIX: Convert collected_by to ObjectId if it's a valid ObjectId, otherwise store as string ==========
+    // Check if collected_by is a valid ObjectId string (24 hex characters)
+    const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(collected_by);
+    const collectedById = isValidObjectId ? collected_by : null;
+    const collectedByName = !isValidObjectId ? (collected_by || req.user?.name || 'Pharmacy Staff') : 'Pharmacy Staff';
+
+    // If collected_by is an email or name, try to find the user
+    let collectedByObjectId = null;
+    if (collected_by && !isValidObjectId) {
+      try {
+        // Try to find user by email or name
+        const User = require('../models/User');
+        let user = await User.findOne({
+          $or: [
+            { email: collected_by },
+            { username: collected_by },
+            {
+              $and: [
+                { first_name: collected_by.split(' ')[0] },
+                { last_name: collected_by.split(' ').slice(1).join(' ') || '' }
+              ]
+            }
+          ]
+        });
+        if (user) {
+          collectedByObjectId = user._id;
+        }
+      } catch (userErr) {
+        console.log('Could not find user by name/email, storing as string');
+      }
+    } else if (isValidObjectId) {
+      collectedByObjectId = collected_by;
+    }
+
+    // If we have an ObjectId, use it; otherwise store as string in a separate field
+    // or use the user ID from request
+    const finalCollectedBy = collectedByObjectId || req.user?._id || req.user?.id || null;
+    const finalCollectedByName = collectedByName || req.user?.name || 'Pharmacy Staff';
+
     invoice.payment_history.push({
       amount: amount,
       method: method,
-      reference: reference,
-      collected_by: collected_by,
+      reference: reference || '',
+      // Store the ObjectId if available, otherwise the name will be stored as a fallback
+      // If your schema expects ObjectId, we need to ensure we only pass ObjectId
+      collected_by: finalCollectedBy || finalCollectedByName, // Use ObjectId if available, otherwise string
+      collected_by_name: finalCollectedByName, // Always store name as separate field if schema has it
       date: new Date(),
       status: 'Completed'
     });
 
-    invoice.amount_paid += amount;
-    invoice.balance_due = invoice.total - invoice.amount_paid;
+    invoice.amount_paid = (invoice.amount_paid || 0) + amount;
+    invoice.balance_due = Math.max(0, invoice.total - invoice.amount_paid);
 
-    if (invoice.amount_paid >= invoice.total) {
+    if (invoice.balance_due <= 0) {
       invoice.status = 'Paid';
-
-      if (invoice.sale_id) {
-        await Sale.findByIdAndUpdate(invoice.sale_id, {
-          status: 'Completed',
-          payment_method: method
-        });
-      }
-
-      if (invoice.bill_id) {
-        await Bill.findByIdAndUpdate(invoice.bill_id, {
-          status: 'Paid',
-          paid_amount: invoice.total,
-          paid_at: new Date()
-        });
-      }
-
     } else if (invoice.amount_paid > 0) {
       invoice.status = 'Partial';
+    } else {
+      invoice.status = 'Pending';
+    }
 
-      if (invoice.bill_id) {
-        await Bill.findByIdAndUpdate(invoice.bill_id, {
-          status: 'Partially Paid',
-          paid_amount: invoice.amount_paid
+    await invoice.save();
+    console.log(`✅ Invoice ${invoice.invoice_number} updated. Balance due: ${invoice.balance_due}`);
+
+    // ========== 2. UPDATE ASSOCIATED SALE ==========
+    let sale = null;
+    if (invoice.sale_id) {
+      sale = await Sale.findById(invoice.sale_id);
+    }
+
+    if (!sale && invoice.prescription_id) {
+      sale = await Sale.findOne({ prescription_id: invoice.prescription_id });
+    }
+
+    if (!sale && invoice.bill_id) {
+      const bill = await Bill.findById(invoice.bill_id);
+      if (bill) {
+        sale = await Sale.findOne({ bill_id: bill._id });
+      }
+    }
+
+    if (sale) {
+      console.log(`Updating associated sale: ${sale.sale_number}`);
+
+      // Update sale payment
+      sale.amount_paid = (sale.amount_paid || 0) + amount;
+      sale.balance_due = Math.max(0, (sale.balance_due || 0) - amount);
+
+      // If this is a deferred payment, clear the deferred flag
+      if (sale.payment_deferred === true) {
+        if (sale.balance_due <= 0) {
+          sale.payment_deferred = false;
+          sale.status = 'Completed';
+          sale.settled_at = new Date();
+        } else {
+          sale.status = 'Partially Paid';
+        }
+      } else {
+        sale.status = sale.balance_due <= 0 ? 'Completed' : 'Partially Paid';
+      }
+
+      // Add payment to sale
+      sale.payments = sale.payments || [];
+      sale.payments.push({
+        method: method,
+        amount: amount,
+        reference: reference || '',
+        date: new Date(),
+        collected_by: finalCollectedByName || 'Pharmacy Staff'
+      });
+
+      await sale.save();
+      console.log(`✅ Sale ${sale.sale_number} updated. Balance due: ${sale.balance_due}`);
+    }
+
+    // ========== 3. UPDATE ASSOCIATED BILL ==========
+    let bill = null;
+    if (invoice.bill_id) {
+      bill = await Bill.findById(invoice.bill_id);
+    }
+
+    if (!bill && invoice.sale_id) {
+      bill = await Bill.findOne({ sale_id: invoice.sale_id });
+    }
+
+    if (bill) {
+      console.log(`Updating associated bill: ${bill._id}`);
+
+      // Update bill payment
+      bill.paid_amount = (bill.paid_amount || 0) + amount;
+      bill.balance_due = Math.max(0, (bill.total_amount || 0) - bill.paid_amount);
+
+      // Add payment to bill
+      bill.payments = bill.payments || [];
+      bill.payments.push({
+        method: method,
+        amount: amount,
+        reference: reference || '',
+        date: new Date(),
+        collected_by: finalCollectedByName || 'Pharmacy Staff'
+      });
+
+      // Update bill status
+      if (bill.balance_due <= 0) {
+        bill.status = 'Paid';
+        bill.paid_at = new Date();
+      } else if (bill.paid_amount > 0) {
+        bill.status = 'Partially Paid';
+      } else {
+        bill.status = 'Pending';
+      }
+
+      await bill.save();
+      console.log(`✅ Bill updated. Balance due: ${bill.balance_due}`);
+    }
+
+    // ========== 4. UPDATE PATIENT BALANCE ==========
+    let patientId = invoice.patient_id || sale?.patient_id;
+    let admissionId = sale?.admission_id || invoice.admission_id;
+    if (patientId) {
+      // Update patient pharmacy outstanding balance
+      const updateAmount = isAdvancePayment ? 0 : -amount;
+
+      await Patient.findByIdAndUpdate(patientId, {
+        $inc: {
+          pharmacy_outstanding_balance: updateAmount,
+          ...(isAdvancePayment ? { pharmacy_advance_balance: -amount } : {})
+        },
+        last_pharmacy_transaction: new Date()
+      });
+      console.log(`✅ Patient ${patientId} balance updated`);
+    }
+
+    // ========== 5. CREATE PHARMACY LEDGER ENTRY ==========
+    try {
+      const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
+
+      // Determine the direction based on payment method
+      const direction = isAdvancePayment ? 'NON_CASH' : 'IN';
+
+      await PharmacyLedgerEntry.create({
+        hospitalId: invoice.hospital_id || req.user?.hospital_id,
+        pharmacyId: invoice.pharmacy_id,
+        entryType: isAdvancePayment ? 'ADVANCE_USED' : 'OUTSTANDING_PAYMENT',
+        direction: direction,
+        amount: amount,
+        paymentMethod: method,
+        patientId: patientId,
+        admissionId: admissionId,
+        saleId: sale?._id,
+        invoiceId: invoice._id,
+        billId: bill?._id,
+        notes: `Payment collected for invoice ${invoice.invoice_number}. Reference: ${reference || 'N/A'}`,
+        createdBy: finalCollectedBy || req.user?._id || req.user?.id || 'System'
+      });
+      console.log(`✅ Pharmacy ledger entry created`);
+    } catch (ledgerError) {
+      console.error('Error creating pharmacy ledger entry:', ledgerError);
+      // Don't fail the whole operation if ledger creation fails
+    }
+
+    // ========== 6. CONSUME ADVANCE PAYMENT ==========
+    if (isAdvancePayment && sale) {
+      try {
+        const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
+        const walletType = method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED';
+
+        // Get current balance
+        const currentBalance = await PatientAdvanceLedger.findOne({
+          patientId: sale.patient_id || invoice.patient_id,
+          admissionId: sale.admission_id,
+          walletType: walletType
+        }).sort({ createdAt: -1 });
+
+        const currentAmount = currentBalance?.balanceAfter || 0;
+        const balanceAfter = currentAmount - amount;
+
+        // Create advance ledger entry
+        await PatientAdvanceLedger.create({
+          hospitalId: invoice.hospital_id || req.user?.hospital_id,
+          patientId: sale.patient_id || invoice.patient_id,
+          admissionId: sale.admission_id,
+          walletType: walletType,
+          transactionType: 'PHARMACY_SALE_DEBIT',
+          direction: 'DEBIT',
+          amount: amount,
+          paymentMethod: method,
+          referenceNumber: reference || invoice.invoice_number,
+          sourceModule: 'Pharmacy',
+          sourceId: sale._id,
+          balanceAfter: Math.max(0, balanceAfter),
+          notes: `Payment for ${sale.sale_number || invoice.invoice_number}`,
+          createdBy: finalCollectedBy || req.user?._id
+        });
+        console.log(`✅ Advance ledger entry created for ${method}`);
+      } catch (advanceError) {
+        console.error('Error creating advance ledger entry:', advanceError);
+      }
+    }
+
+    // ========== 7. UPDATE IPD CHARGE ==========
+    if (sale && sale.admission_id && sale.patient_id) {
+      try {
+        const IPDCharge = require('../models/IPDCharge');
+        const ipdCharge = await IPDCharge.findOne({
+          admissionId: sale.admission_id,
+          sourceId: sale._id,
+          sourceModule: 'Pharmacy'
+        });
+
+        if (ipdCharge && !ipdCharge.isBilled && sale.balance_due <= 0) {
+          ipdCharge.isBilled = true;
+          ipdCharge.billedAt = new Date();
+          await ipdCharge.save();
+          console.log(`✅ IPD charge marked as billed`);
+        }
+      } catch (chargeError) {
+        console.error('Error updating IPD charge:', chargeError);
+      }
+    }
+
+    // ========== 8. UPDATE OUTSTANDING BALANCE FOR DEFERRED PAYMENTS ==========
+    if (sale && sale.payment_deferred === false && sale.balance_due <= 0) {
+      // If sale was deferred and is now fully paid, update patient outstanding
+      if (patientId) {
+        await Patient.findByIdAndUpdate(patientId, {
+          $inc: { pharmacy_outstanding_balance: 0 }, // Already handled above
+          last_pharmacy_transaction: new Date()
         });
       }
     }
 
-    await invoice.save();
+    // ========== 9. FETCH UPDATED INVOICE ==========
+    const updatedInvoice = await Invoice.findById(invoice._id)
+      .populate('patient_id', 'first_name last_name patientId uhid phone')
+      .populate('prescription_id', 'prescription_number')
+      .populate('bill_id', 'bill_number total_amount paid_amount balance_due');
 
     res.json({
       success: true,
       message: 'Payment updated successfully',
-      invoice: await Invoice.findById(invoice._id)
-        .populate('patient_id')
-        .populate('prescription_id')
-        .populate('bill_id')
+      invoice: updatedInvoice,
+      saleUpdated: !!sale,
+      billUpdated: !!bill,
+      newBalanceDue: invoice.balance_due,
+      status: invoice.status
     });
+
   } catch (err) {
     console.error('Error updating invoice payment:', err);
-    res.status(400).json({ error: err.message });
+    res.status(400).json({
+      error: err.message,
+      details: err.stack
+    });
   }
 };
 
