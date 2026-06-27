@@ -22,9 +22,9 @@ const prescriptionItemSchema = new mongoose.Schema({
   },
   route_of_administration: {
     type: String,
-    enum: ["Oral", "Sublingual", "Intramuscular Injection", "Intravenous Injection", 
-             "Subcutaneous Injection", "Topical Application", "Inhalation", "Nasal", 
-             "Eye Drops", "Ear Drops", "Rectal", "Other"],
+    enum: ["Oral", "Sublingual", "Intramuscular Injection", "Intravenous Injection",
+      "Subcutaneous Injection", "Topical Application", "Inhalation", "Nasal", 'Intravenous', 'Intramuscular', 'Subcutaneous', 'Topical', 'Inhalation',
+      "Eye Drops", "Ear Drops", "Rectal", "Other"],
     trim: true,
     default: 'Oral'
   },
@@ -88,17 +88,17 @@ const procedureRequestSchema = new mongoose.Schema({
 
 const prescriptionSchema = new mongoose.Schema({
   prescription_number: { type: String, unique: true },
-  
+
   // Patient & Doctor
   patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true },
   doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', required: true },
   appointment_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' },
-  
+
   // IPD Support
   ipd_admission_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission' },
   source_type: { type: String, enum: ['OPD', 'IPD', 'Emergency'], default: 'OPD' },
   round_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDRound' },
-  
+
   // Clinical Information
   presenting_complaint: { type: String, trim: true },
   history_of_presenting_complaint: { type: String, trim: true },
@@ -134,14 +134,14 @@ const prescriptionSchema = new mongoose.Schema({
     ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' }
   },
   created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  
+
   // Pharmacy Integration
   is_converted_to_ipd: { type: Boolean, default: false },
   ipd_medication_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'IPDMedicationChart' }]
 }, { timestamps: true });
 
 // Generate prescription number
-prescriptionSchema.pre('save', async function(next) {
+prescriptionSchema.pre('save', async function (next) {
   if (this.isNew && !this.prescription_number) {
     const count = await mongoose.model('Prescription').countDocuments();
     const date = new Date();
@@ -153,13 +153,13 @@ prescriptionSchema.pre('save', async function(next) {
 });
 
 // Virtuals
-prescriptionSchema.virtual('is_expired').get(function() {
+prescriptionSchema.virtual('is_expired').get(function () {
   const expiryDate = new Date(this.issue_date);
   expiryDate.setDate(expiryDate.getDate() + this.validity_days);
   return new Date() > expiryDate;
 });
 
-prescriptionSchema.virtual('is_fully_dispensed').get(function() {
+prescriptionSchema.virtual('is_fully_dispensed').get(function () {
   return this.items.every(item => item.is_dispensed);
 });
 
