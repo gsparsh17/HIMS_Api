@@ -252,28 +252,28 @@ exports.createPrescription = async (req, res) => {
     // Process medication items and calculate required quantities
     const processedItems = items && Array.isArray(items)
       ? items.map(item => {
-          const requiredQtyBaseUnits = calculateRequiredBaseUnits({
-            dosage: item.dosage || '',
-            frequency: item.frequency,
-            duration: parseInt(item.duration) || 1,
-            durationUnit: 'Days'
-          });
+        const requiredQtyBaseUnits = calculateRequiredBaseUnits({
+          dosage: item.dosage || '',
+          frequency: item.frequency,
+          duration: parseInt(item.duration) || 1,
+          durationUnit: 'Days'
+        });
 
-          return {
-            medicine_name: item.medicine_name,
-            generic_name: item.generic_name || '',
-            medicine_id: item.medicine_id || null,
-            medicine_type: item.medicine_type || 'Tablet',
-            route_of_administration: item.route_of_administration || 'Oral',
-            dosage: item.dosage || '',
-            frequency: item.frequency,
-            duration: item.duration,
-            quantity: item.quantity || requiredQtyBaseUnits,
-            required_qty_base_units: requiredQtyBaseUnits,
-            instructions: item.instructions || '',
-            timing: item.timing || 'Anytime'
-          };
-        })
+        return {
+          medicine_name: item.medicine_name,
+          generic_name: item.generic_name || '',
+          medicine_id: item.medicine_id || null,
+          medicine_type: item.medicine_type || 'Tablet',
+          route_of_administration: item.route_of_administration || 'Oral',
+          dosage: item.dosage || '',
+          frequency: item.frequency,
+          duration: item.duration,
+          quantity: item.quantity || requiredQtyBaseUnits,
+          required_qty_base_units: requiredQtyBaseUnits,
+          instructions: item.instructions || '',
+          timing: item.timing || 'Anytime'
+        };
+      })
       : [];
 
     // Create prescription first
@@ -466,7 +466,7 @@ exports.createPrescription = async (req, res) => {
   }
 };
 
-// Get prescription by ID (with populated requests)
+// Get prescription by ID (with populated requests and admission details)
 exports.getPrescriptionById = async (req, res) => {
   try {
     const prescription = await Prescription.findById(req.params.id)
@@ -481,11 +481,34 @@ exports.getPrescriptionById = async (req, res) => {
       return res.status(404).json({ error: 'Prescription not found' });
     }
 
+    // ========== FIX: Populate IPD admission details ==========
+    let admissionDetails = null;
+    if (prescription.ipd_admission_id) {
+      const IPDAdmission = require('../models/IPDAdmission');
+      admissionDetails = await IPDAdmission.findById(prescription.ipd_admission_id)
+        .populate('wardId', 'name code')
+        .populate('bedId', 'bedNumber name')
+        .populate('roomId', 'room_number')
+        .populate('primaryDoctorId', 'firstName lastName specialization')
+        .lean();
+
+      if (admissionDetails) {
+        // Extract ward and bed details
+        admissionDetails.ward_name = admissionDetails.wardId?.name || 'N/A';
+        admissionDetails.bed_number = admissionDetails.bedId?.bedNumber || 'N/A';
+        admissionDetails.room_number = admissionDetails.roomId?.room_number || 'N/A';
+      }
+    }
+
     const vitals = await Vital.findOne({ prescription_id: prescription._id });
+
+    // Convert to object and add admission details
+    const prescriptionObj = prescription.toObject();
+    prescriptionObj.admission_details = admissionDetails;
 
     res.json({
       success: true,
-      prescription: prescription.toObject(),
+      prescription: prescriptionObj,
       vitals: vitals || null
     });
   } catch (err) {
@@ -494,7 +517,7 @@ exports.getPrescriptionById = async (req, res) => {
   }
 };
 
-// Get all prescriptions
+// Get all prescriptions (with admission details)
 exports.getAllPrescriptions = async (req, res) => {
   try {
     const {
@@ -524,7 +547,7 @@ exports.getAllPrescriptions = async (req, res) => {
     }
 
     const prescriptions = await Prescription.find(filter)
-      .populate('patient_id', 'first_name last_name patientId')
+      .populate('patient_id', 'first_name last_name patientId phone')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('lab_test_requests.request_id', 'requestNumber status')
       .populate('radiology_test_requests.request_id', 'requestNumber status')
@@ -533,17 +556,251 @@ exports.getAllPrescriptions = async (req, res) => {
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit));
 
+    // ========== FIX: Get admission details for IPD prescriptions ==========
+    const IPDAdmission = require('../models/IPDAdmission');
+    const prescriptionsWithAdmission = await Promise.all(
+      prescriptions.map(async (prescription) => {
+        const prescriptionObj = prescription.toObject();
+
+        if (prescription.ipd_admission_id) {
+          const admission = await IPDAdmission.findById(prescription.ipd_admission_id)
+            .populate('wardId', 'name code')
+            .populate('bedId', 'bedNumber name')
+            .lean();
+
+          if (admission) {
+            prescriptionObj.admission_details = {
+              _id: admission._id,
+              admissionNumber: admission.admissionNumber,
+              shipNumber: admission.shipNumber,
+              ward_name: admission.wardId?.name || 'N/A',
+              ward_code: admission.wardId?.code || '',
+              bed_number: admission.bedId?.bedNumber || 'N/A',
+              status: admission.status,
+              admission_date: admission.admissionDate
+            };
+
+            // For backward compatibility - add ward and bed directly to prescription object
+            prescriptionObj.ward = admission.wardId?.name || 'N/A';
+            prescriptionObj.bed_number = admission.bedId?.bedNumber || 'N/A';
+            prescriptionObj.admission_number = admission.admissionNumber;
+          }
+        }
+
+        return prescriptionObj;
+      })
+    );
+
     const total = await Prescription.countDocuments(filter);
 
     res.json({
       success: true,
-      prescriptions,
+      prescriptions: prescriptionsWithAdmission,
       total,
       page: parseInt(page),
       totalPages: Math.ceil(total / limit)
     });
   } catch (err) {
     console.error('Error fetching prescriptions:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get prescriptions by patient (with admission details)
+exports.getPrescriptionsByPatientId = async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    const filter = { patient_id: patientId };
+    if (status) filter.status = status;
+
+    const prescriptions = await Prescription.find(filter)
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('lab_test_requests.request_id', 'requestNumber status')
+      .populate('radiology_test_requests.request_id', 'requestNumber status')
+      .populate('procedure_requests.request_id', 'requestNumber status')
+      .sort({ issue_date: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+
+    // ========== FIX: Get admission details for IPD prescriptions ==========
+    const IPDAdmission = require('../models/IPDAdmission');
+    const prescriptionsWithAdmission = await Promise.all(
+      prescriptions.map(async (prescription) => {
+        const prescriptionObj = prescription.toObject();
+
+        if (prescription.ipd_admission_id) {
+          const admission = await IPDAdmission.findById(prescription.ipd_admission_id)
+            .populate('wardId', 'name code')
+            .populate('bedId', 'bedNumber name')
+            .lean();
+
+          if (admission) {
+            prescriptionObj.admission_details = {
+              _id: admission._id,
+              admissionNumber: admission.admissionNumber,
+              shipNumber: admission.shipNumber,
+              ward_name: admission.wardId?.name || 'N/A',
+              bed_number: admission.bedId?.bedNumber || 'N/A',
+              status: admission.status,
+              admission_date: admission.admissionDate
+            };
+
+            // For backward compatibility
+            prescriptionObj.ward = admission.wardId?.name || 'N/A';
+            prescriptionObj.bed_number = admission.bedId?.bedNumber || 'N/A';
+            prescriptionObj.admission_number = admission.admissionNumber;
+          }
+        }
+
+        return prescriptionObj;
+      })
+    );
+
+    const total = await Prescription.countDocuments(filter);
+
+    res.json({
+      success: true,
+      prescriptions: prescriptionsWithAdmission,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (err) {
+    console.error('Error fetching prescriptions by patient:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get IPD prescriptions for admission (with full admission details)
+exports.getIPDPrescriptions = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+
+    const prescriptions = await Prescription.find({
+      ipd_admission_id: admissionId,
+      source_type: 'IPD'
+    })
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('ipd_medication_ids', 'medicineName dosage frequency status')
+      .populate('lab_test_requests.request_id', 'requestNumber status')
+      .populate('radiology_test_requests.request_id', 'requestNumber status')
+      .populate('procedure_requests.request_id', 'requestNumber status')
+      .sort({ issue_date: -1 });
+
+    // ========== FIX: Get admission details ==========
+    const IPDAdmission = require('../models/IPDAdmission');
+    const admission = await IPDAdmission.findById(admissionId)
+      .populate('wardId', 'name code')
+      .populate('bedId', 'bedNumber name')
+      .populate('roomId', 'room_number')
+      .lean();
+
+    const prescriptionsWithAdmission = prescriptions.map((prescription) => {
+      const prescriptionObj = prescription.toObject();
+
+      if (admission) {
+        prescriptionObj.admission_details = {
+          _id: admission._id,
+          admissionNumber: admission.admissionNumber,
+          shipNumber: admission.shipNumber,
+          ward_name: admission.wardId?.name || 'N/A',
+          ward_code: admission.wardId?.code || '',
+          bed_number: admission.bedId?.bedNumber || 'N/A',
+          room_number: admission.roomId?.room_number || 'N/A',
+          status: admission.status,
+          admission_date: admission.admissionDate
+        };
+
+        // For backward compatibility
+        prescriptionObj.ward = admission.wardId?.name || 'N/A';
+        prescriptionObj.bed_number = admission.bedId?.bedNumber || 'N/A';
+        prescriptionObj.admission_number = admission.admissionNumber;
+      }
+
+      return prescriptionObj;
+    });
+
+    res.json({
+      success: true,
+      count: prescriptionsWithAdmission.length,
+      admission_details: admission ? {
+        _id: admission._id,
+        admissionNumber: admission.admissionNumber,
+        ward_name: admission.wardId?.name || 'N/A',
+        bed_number: admission.bedId?.bedNumber || 'N/A',
+        status: admission.status
+      } : null,
+      prescriptions: prescriptionsWithAdmission
+    });
+  } catch (err) {
+    console.error('Error fetching IPD prescriptions:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get active prescriptions (with admission details)
+exports.getActivePrescriptions = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, patient_id } = req.query;
+
+    const filter = {
+      status: 'Active',
+      issue_date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+    };
+    if (patient_id) filter.patient_id = patient_id;
+
+    const prescriptions = await Prescription.find(filter)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('doctor_id', 'firstName lastName specialization')
+      .sort({ issue_date: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+
+    // ========== FIX: Get admission details for IPD prescriptions ==========
+    const IPDAdmission = require('../models/IPDAdmission');
+    const prescriptionsWithAdmission = await Promise.all(
+      prescriptions.map(async (prescription) => {
+        const prescriptionObj = prescription.toObject();
+
+        if (prescription.ipd_admission_id) {
+          const admission = await IPDAdmission.findById(prescription.ipd_admission_id)
+            .populate('wardId', 'name code')
+            .populate('bedId', 'bedNumber name')
+            .lean();
+
+          if (admission) {
+            prescriptionObj.admission_details = {
+              _id: admission._id,
+              admissionNumber: admission.admissionNumber,
+              ward_name: admission.wardId?.name || 'N/A',
+              bed_number: admission.bedId?.bedNumber || 'N/A',
+              status: admission.status
+            };
+
+            // For backward compatibility
+            prescriptionObj.ward = admission.wardId?.name || 'N/A';
+            prescriptionObj.bed_number = admission.bedId?.bedNumber || 'N/A';
+            prescriptionObj.admission_number = admission.admissionNumber;
+          }
+        }
+
+        return prescriptionObj;
+      })
+    );
+
+    const total = await Prescription.countDocuments(filter);
+
+    res.json({
+      success: true,
+      prescriptions: prescriptionsWithAdmission,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (err) {
+    console.error('Error fetching active prescriptions:', err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -646,39 +903,6 @@ exports.dispenseMedication = async (req, res) => {
   }
 };
 
-// Get prescriptions by patient
-exports.getPrescriptionsByPatientId = async (req, res) => {
-  try {
-    const { patientId } = req.params;
-    const { status, page = 1, limit = 10 } = req.query;
-
-    const filter = { patient_id: patientId };
-    if (status) filter.status = status;
-
-    const prescriptions = await Prescription.find(filter)
-      .populate('doctor_id', 'firstName lastName specialization')
-      .populate('lab_test_requests.request_id', 'requestNumber status')
-      .populate('radiology_test_requests.request_id', 'requestNumber status')
-      .populate('procedure_requests.request_id', 'requestNumber status')
-      .sort({ issue_date: -1 })
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit));
-
-    const total = await Prescription.countDocuments(filter);
-
-    res.json({
-      success: true,
-      prescriptions,
-      total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / limit)
-    });
-  } catch (err) {
-    console.error('Error fetching prescriptions by patient:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
 // Get prescriptions by doctor
 exports.getPrescriptionsByDoctorId = async (req, res) => {
   try {
@@ -705,39 +929,6 @@ exports.getPrescriptionsByDoctorId = async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching prescriptions by doctor:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-// Get active prescriptions
-exports.getActivePrescriptions = async (req, res) => {
-  try {
-    const { page = 1, limit = 10, patient_id } = req.query;
-
-    const filter = {
-      status: 'Active',
-      issue_date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
-    };
-    if (patient_id) filter.patient_id = patient_id;
-
-    const prescriptions = await Prescription.find(filter)
-      .populate('patient_id', 'first_name last_name patientId')
-      .populate('doctor_id', 'firstName lastName specialization')
-      .sort({ issue_date: -1 })
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit));
-
-    const total = await Prescription.countDocuments(filter);
-
-    res.json({
-      success: true,
-      prescriptions,
-      total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / limit)
-    });
-  } catch (err) {
-    console.error('Error fetching active prescriptions:', err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -866,33 +1057,6 @@ exports.getOPDPrescriptionsForIPD = async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching OPD prescriptions:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-// Get IPD prescriptions for admission
-exports.getIPDPrescriptions = async (req, res) => {
-  try {
-    const { admissionId } = req.params;
-
-    const prescriptions = await Prescription.find({
-      ipd_admission_id: admissionId,
-      source_type: 'IPD'
-    })
-      .populate('doctor_id', 'firstName lastName specialization')
-      .populate('ipd_medication_ids', 'medicineName dosage frequency status')
-      .populate('lab_test_requests.request_id', 'requestNumber status')
-      .populate('radiology_test_requests.request_id', 'requestNumber status')
-      .populate('procedure_requests.request_id', 'requestNumber status')
-      .sort({ issue_date: -1 });
-
-    res.json({
-      success: true,
-      count: prescriptions.length,
-      prescriptions
-    });
-  } catch (err) {
-    console.error('Error fetching IPD prescriptions:', err);
     res.status(500).json({ error: err.message });
   }
 };
