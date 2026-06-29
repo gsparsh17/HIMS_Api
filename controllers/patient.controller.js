@@ -796,14 +796,61 @@ exports.getAllPatients = async (req, res) => {
         }
       },
       {
+        $lookup: {
+          from: 'doctors',
+          let: { doctorId: { $arrayElemAt: ['$latestAppointment.doctor_id', 0] } },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$doctorId'] } } },
+            { $project: { name: 1, firstName: 1, lastName: 1 } }
+          ],
+          as: 'lastDoctor'
+        }
+      },
+      {
+        $lookup: {
+          from: 'departments',
+          let: { deptId: { $arrayElemAt: ['$latestAppointment.department_id', 0] } },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$deptId'] } } },
+            { $project: { name: 1 } }
+          ],
+          as: 'lastDepartment'
+        }
+      },
+      {
         $addFields: {
           lastVisitDate: { $arrayElemAt: ['$latestAppointment.appointment_date', 0] },
-          lastVisitStatus: { $arrayElemAt: ['$latestAppointment.status', 0] }
+          lastVisitStatus: { $arrayElemAt: ['$latestAppointment.status', 0] },
+          lastVisitedDoctor: {
+            $let: {
+              vars: { doc: { $arrayElemAt: ['$lastDoctor', 0] } },
+              in: {
+                $cond: {
+                  if: { $ifNull: ['$$doc', false] },
+                  then: {
+                    $trim: {
+                      input: {
+                        $concat: [
+                          { $ifNull: ['$$doc.firstName', ''] },
+                          ' ',
+                          { $ifNull: ['$$doc.lastName', { $ifNull: ['$$doc.name', ''] }] }
+                        ]
+                      }
+                    }
+                  },
+                  else: null
+                }
+              }
+            }
+          },
+          lastVisitedDepartment: { $arrayElemAt: ['$lastDepartment.name', 0] }
         }
       },
       {
         $project: {
-          latestAppointment: 0
+          latestAppointment: 0,
+          lastDoctor: 0,
+          lastDepartment: 0
         }
       }
     ]);

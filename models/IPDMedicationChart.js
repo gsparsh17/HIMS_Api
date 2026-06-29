@@ -44,6 +44,9 @@ const pharmacyRequestSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  requestedQuantity: {
+    type: Number
+  },
   pharmacyId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Pharmacy'

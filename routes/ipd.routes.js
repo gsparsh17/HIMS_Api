@@ -297,6 +297,20 @@ router.patch('/medications/:id/hold',
   ipdMedicationController.holdMedication
 );
 
+// Request medication from pharmacy (nurse)
+router.patch('/medications/:id/request-pharmacy', 
+  // protect, 
+  // authorize('nurse', 'admin'),
+  ipdMedicationController.requestPharmacy
+);
+
+// Receive medication stock from external pharmacy (nurse)
+router.patch('/medications/:id/receive-external', 
+  // protect, 
+  // authorize('nurse', 'admin'),
+  ipdMedicationController.receiveExternalPharmacyStock
+);
+
 // ========== PHARMACY INTEGRATION FOR MEDICATIONS ==========
 // Get pending pharmacy requests (for pharmacy dashboard)
 router.get('/medications/pharmacy/requests/:pharmacyId', 
