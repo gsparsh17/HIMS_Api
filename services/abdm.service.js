@@ -12,6 +12,7 @@ const fetchFn = (...args) => {
 
 const ABDM_SESSION_URL = process.env.ABDM_SESSION_URL || 'https://dev.abdm.gov.in/api/hiecm/gateway/v3/sessions';
 const ABDM_ABHA_BASE_URL = process.env.ABDM_ABHA_BASE_URL || 'https://abhasbx.abdm.gov.in/abha/api';
+const ABDM_GATEWAY_BASE_URL = process.env.ABDM_GATEWAY_BASE_URL || 'https://dev.abdm.gov.in/gateway';
 
 function getRequestId() {
   return crypto.randomUUID();
@@ -144,9 +145,105 @@ async function abdmGet(path, extraHeaders = {}, responseType = 'json') {
   return response.json().catch(() => ({}));
 }
 
+async function updateBridgeUrl(bridgeUrl) {
+  const gatewayToken = await getGatewayToken();
+  const ABDM_HIECM_BASE_URL = process.env.ABDM_HIECM_BASE_URL || 'https://dev.abdm.gov.in/api/hiecm/gateway';
+  
+  const response = await fetchFn(`${ABDM_HIECM_BASE_URL}/v3/bridge/url`, {
+    method: 'PATCH',
+    headers: {
+      'accept': '*/*',
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${gatewayToken}`,
+      'REQUEST-ID': crypto.randomUUID(),
+      'TIMESTAMP': new Date().toISOString(),
+      'X-CM-ID': process.env.ABDM_CM_ID || 'sbx'
+    },
+    body: JSON.stringify({ 
+      bridgeId: process.env.ABDM_BRIDGE_ID || 'SBXID_043402',
+      url: bridgeUrl 
+    })
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data?.message || data?.error || `Bridge URL update failed: ${response.status}`);
+    error.statusCode = response.status;
+    error.details = data;
+    throw error;
+  }
+  return data;
+}
+
+async function addHipService(publicBaseUrl) {
+  const gatewayToken = await getGatewayToken();
+  const ABDM_GATEWAY_BASE_URL = process.env.ABDM_GATEWAY_BASE_URL || 'https://dev.abdm.gov.in/gateway';
+  
+  const body = [
+    {
+      id: process.env.ABDM_HIP_SERVICE_ID || 'CITY_HOSPITAL_HIP',
+      name: process.env.ABDM_HIP_SERVICE_NAME || 'City Hospital HIP',
+      type: 'HIP',
+      active: true,
+      alias: [process.env.ABDM_HIP_ALIAS || 'city-hospital'],
+      endpoints: [
+        {
+          address: publicBaseUrl,
+          connectionType: 'https',
+          use: 'registration'
+        }
+      ]
+    }
+  ];
+
+  const response = await fetchFn(`${ABDM_GATEWAY_BASE_URL}/v1/bridges/addUpdateServices`, {
+    method: 'POST',
+    headers: {
+      'accept': '*/*',
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${gatewayToken}`
+    },
+    body: JSON.stringify(body)
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data?.message || data?.error || `Add HIP service failed: ${response.status}`);
+    error.statusCode = response.status;
+    error.details = data;
+    throw error;
+  }
+  return data;
+}
+
+async function getBridgeServices() {
+  const gatewayToken = await getGatewayToken();
+  const ABDM_GATEWAY_BASE_URL = process.env.ABDM_GATEWAY_BASE_URL || 'https://dev.abdm.gov.in/gateway';
+  
+  const response = await fetchFn(`${ABDM_GATEWAY_BASE_URL}/v1/bridges/getServices`, {
+    method: 'GET',
+    headers: {
+      'accept': 'application/json',
+      'Authorization': `Bearer ${gatewayToken}`
+    }
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data?.message || data?.error || `Get services failed: ${response.status}`);
+    error.statusCode = response.status;
+    error.details = data;
+    throw error;
+  }
+  return data;
+}
+
 module.exports = {
   getGatewayToken,
   encryptForAbdm,
   abdmPost,
-  abdmGet
+  abdmGet,
+  updateBridgeUrl,
+  addHipService,
+  getBridgeServices
 };

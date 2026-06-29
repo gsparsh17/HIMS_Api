@@ -129,6 +129,21 @@ app.use('/api/icd11', require('./routes/icd11.routes.js'));
 app.use("/api/ot", require('./routes/ot.routes.js'));
 app.use('/api/approvals', require('./routes/approval.routes.js'));
 
+// Temporary admin-only test route for ABDM gateway token
+const { getGatewayToken } = require('./services/abdm.service');
+app.get('/api/abdm/test-token', async (req, res) => {
+  try {
+    const token = await getGatewayToken();
+    res.json({ success: true, tokenPreview: token.slice(0, 12) + '...' });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+      details: error.details
+    });
+  }
+});
+
 // Error Handlers
 app.use((req, res, next) => {
   res.status(404).json({ error: 'Route not found' });
