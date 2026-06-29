@@ -10,8 +10,14 @@ const ipdNursingController = require('../controllers/ipdNursing.controller');
 const ipdMedicationController = require('../controllers/ipdMedication.controller');
 const ipdBillingController = require('../controllers/ipdBilling.controller');
 const ipdDischargeController = require('../controllers/ipdDischarge.controller');
+const ipdInitialAssessmentController = require('../controllers/ipdInitialAssessment.controller');
 
 // ========== ADMISSION ROUTES ==========
+// Initial Assessment
+router.get('/admissions/:admissionId/initial-assessment', ipdInitialAssessmentController.getAssessmentByAdmissionId);
+router.post('/admissions/:admissionId/initial-assessment', ipdInitialAssessmentController.saveAssessment);
+router.put('/admissions/:admissionId/initial-assessment', ipdInitialAssessmentController.saveAssessment);
+
 // Create new admission
 router.post('/admissions', 
   // protect, 
