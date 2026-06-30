@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const controller = require('../controllers/radiology.controller');
-const radiologyStaffController = require('../controllers/radiologyStaff.controller')
+const radiologyStaffController = require('../controllers/radiologyStaff.controller');
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
@@ -43,33 +43,20 @@ router.post('/requests/:id/upload', upload.single('report'), controller.uploadRe
 router.get('/requests/:id/download', controller.downloadReport);
 router.patch('/requests/:id/billed', controller.markAsBilled);
 
-// Get all radiology staff
-router.get('/staff', radiologyStaffController.getAllStaff);
-
-// Get single staff member
-router.get('/staff/:id', radiologyStaffController.getStaffById);
-
-// Create new radiology staff
-router.post('/staff', radiologyStaffController.createStaff);
-
-// Update radiology staff
-router.put('/staff/:id', radiologyStaffController.updateStaff);
-
-// Toggle staff status (activate/deactivate)
-router.patch('/staff/:id/toggle-status', radiologyStaffController.toggleStaffStatus);
-
-// Delete radiology staff
-router.delete('/staff/:id', radiologyStaffController.deleteStaff);
-
-// Get staff by designation
-router.get('/staff/designation/:designation', radiologyStaffController.getStaffByDesignation);
-
-// Get available staff (active)
-router.get('/staff/available', radiologyStaffController.getAvailableStaff);
-
-// ============== SPECIALIZED QUERIES ==============
+// ============== ADMISSION-BASED QUERIES ==============
 router.get('/admission/:admissionId/requests', controller.getRequestsByAdmission);
+router.get('/admission/:admissionId/pending', controller.getPendingIPDRequests);
 router.get('/patient/:patientId/requests', controller.getRequestsByPatient);
 router.get('/dashboard/stats', controller.getDashboardStats);
+
+// ============== RADIOLOGY STAFF ROUTES ==============
+router.get('/staff', radiologyStaffController.getAllStaff);
+router.get('/staff/:id', radiologyStaffController.getStaffById);
+router.post('/staff', radiologyStaffController.createStaff);
+router.put('/staff/:id', radiologyStaffController.updateStaff);
+router.patch('/staff/:id/toggle-status', radiologyStaffController.toggleStaffStatus);
+router.delete('/staff/:id', radiologyStaffController.deleteStaff);
+router.get('/staff/designation/:designation', radiologyStaffController.getStaffByDesignation);
+router.get('/staff/available', radiologyStaffController.getAvailableStaff);
 
 module.exports = router;

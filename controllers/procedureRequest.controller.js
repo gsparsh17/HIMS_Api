@@ -302,30 +302,70 @@ exports.uploadAttachment = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+// ============== ADMISSION-BASED QUERIES ==============
 
-// Get requests by admission (for IPD)
+// Get procedure requests by admission (for IPD patient file)
 exports.getRequestsByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
+    
+    if (!admissionId) {
+      return res.status(400).json({ error: 'Admission ID is required' });
+    }
+    
     const requests = await ProcedureRequest.find({ 
       admissionId, 
       sourceType: 'IPD' 
     })
-      .populate('procedureId', 'code name category')
-      .populate('doctorId', 'firstName lastName')
+      .populate('patientId', 'first_name last_name patientId')
+      .populate('doctorId', 'firstName lastName specialization')
+      .populate('procedureId', 'code name category base_price pre_procedure_instructions')
+      .populate('performedBy', 'name')
+      .populate('approvedBy', 'name')
+      .populate('completedBy', 'name')
       .sort({ requestedDate: -1 });
     
     res.json({ success: true, data: requests });
   } catch (error) {
-    console.error('Error fetching requests by admission:', error);
+    console.error('Error fetching procedure requests by admission:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get requests by patient
+// Get pending procedure requests for IPD admission
+exports.getPendingIPDRequests = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+    
+    if (!admissionId) {
+      return res.status(400).json({ error: 'Admission ID is required' });
+    }
+    
+    const requests = await ProcedureRequest.find({
+      admissionId,
+      sourceType: 'IPD',
+      status: { $in: ['Pending', 'Approved', 'Scheduled'] }
+    })
+      .populate('procedureId', 'code name category estimated_duration_minutes')
+      .populate('doctorId', 'firstName lastName')
+      .sort({ priority: -1, requestedDate: 1 });
+    
+    res.json({ success: true, data: requests });
+  } catch (error) {
+    console.error('Error fetching pending IPD procedure requests:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get procedure requests by patient
 exports.getRequestsByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
+    
+    if (!patientId) {
+      return res.status(400).json({ error: 'Patient ID is required' });
+    }
+    
     const requests = await ProcedureRequest.find({ patientId })
       .populate('procedureId', 'code name category')
       .populate('doctorId', 'firstName lastName')
@@ -335,25 +375,6 @@ exports.getRequestsByPatient = async (req, res) => {
     res.json({ success: true, data: requests });
   } catch (error) {
     console.error('Error fetching requests by patient:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
-// Get pending requests for IPD
-exports.getPendingIPDRequests = async (req, res) => {
-  try {
-    const { admissionId } = req.params;
-    const requests = await ProcedureRequest.find({
-      admissionId,
-      sourceType: 'IPD',
-      status: { $in: ['Pending', 'Approved', 'Scheduled'] }
-    })
-      .populate('procedureId', 'code name category estimated_duration_minutes')
-      .sort({ priority: -1, requestedDate: 1 });
-    
-    res.json({ success: true, data: requests });
-  } catch (error) {
-    console.error('Error fetching pending IPD requests:', error);
     res.status(500).json({ error: error.message });
   }
 };

@@ -348,29 +348,70 @@ exports.downloadReport = async (req, res) => {
   }
 };
 
-// Get requests by admission (for IPD)
+// ============== ADMISSION-BASED QUERIES ==============
+
+// Get radiology requests by admission (for IPD patient file)
 exports.getRequestsByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
+    
+    if (!admissionId) {
+      return res.status(400).json({ error: 'Admission ID is required' });
+    }
+    
     const requests = await RadiologyRequest.find({ 
       admissionId, 
       sourceType: 'IPD' 
     })
-      .populate('imagingTestId', 'code name category')
-      .populate('doctorId', 'firstName lastName')
+      .populate('patientId', 'first_name last_name patientId')
+      .populate('doctorId', 'firstName lastName specialization')
+      .populate('imagingTestId', 'code name category base_price')
+      .populate('performedBy', 'name')
+      .populate('reportedBy', 'name')
+      .populate('approvedBy', 'name')
       .sort({ requestedDate: -1 });
     
     res.json({ success: true, data: requests });
   } catch (error) {
-    console.error('Error fetching requests by admission:', error);
+    console.error('Error fetching radiology requests by admission:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get requests by patient
+// Get pending radiology requests for IPD admission
+exports.getPendingIPDRequests = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+    
+    if (!admissionId) {
+      return res.status(400).json({ error: 'Admission ID is required' });
+    }
+    
+    const requests = await RadiologyRequest.find({
+      admissionId,
+      sourceType: 'IPD',
+      status: { $in: ['Pending', 'Approved', 'Scheduled'] }
+    })
+      .populate('imagingTestId', 'code name category')
+      .populate('doctorId', 'firstName lastName')
+      .sort({ priority: -1, requestedDate: 1 });
+    
+    res.json({ success: true, data: requests });
+  } catch (error) {
+    console.error('Error fetching pending IPD radiology requests:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get radiology requests by patient
 exports.getRequestsByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
+    
+    if (!patientId) {
+      return res.status(400).json({ error: 'Patient ID is required' });
+    }
+    
     const requests = await RadiologyRequest.find({ patientId })
       .populate('imagingTestId', 'code name category')
       .populate('doctorId', 'firstName lastName')

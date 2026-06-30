@@ -36,7 +36,7 @@ router.post('/requests/:id/findings', controller.addProcedureFindings);
 router.post('/requests/:id/upload', upload.single('file'), controller.uploadAttachment);
 router.patch('/requests/:id/billed', controller.markAsBilled);
 
-// ============== SPECIALIZED QUERIES ==============
+// ============== ADMISSION-BASED QUERIES ==============
 router.get('/admission/:admissionId/requests', controller.getRequestsByAdmission);
 router.get('/admission/:admissionId/pending', controller.getPendingIPDRequests);
 router.get('/patient/:patientId/requests', controller.getRequestsByPatient);

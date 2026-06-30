@@ -67,7 +67,7 @@ router.delete('/admissions/:id',
   ipdAdmissionController.deleteAdmission
 );
 
-// ========== PHARMACY INTEGRATION ROUTES (NEW) ==========
+// ========== PHARMACY INTEGRATION ROUTES ==========
 // Get admission by SHIP number (for pharmacy POS lookup)
 router.get('/ship/:shipNumber', 
   // protect, 
@@ -151,6 +151,13 @@ router.delete('/beds/:id',
   // protect, 
   // authorize('admin'),
   ipdBedController.deleteBed
+);
+
+// ========== SYNC BED STATUS ==========
+router.post('/beds/sync', 
+  // protect, 
+  // authorize('admin', 'registrar'),
+  ipdBedController.syncBedStatus
 );
 
 // ========== ROUND ROUTES ==========
@@ -354,8 +361,6 @@ router.get('/medications/admission/:admissionId/summary',
 );
 
 // ========== BILLING ROUTES ==========
-// Finance mutations are authenticated and use shared Bill -> Invoice -> Receipt
-// lifecycle controls. Existing URLs are retained for older screens.
 const financeViewRoles = ['admin', 'accountant', 'registrar', 'staff'];
 const financeApproveRoles = ['admin', 'accountant'];
 
