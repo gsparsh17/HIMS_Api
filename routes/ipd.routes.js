@@ -257,75 +257,75 @@ router.get('/vitals/admission/:admissionId/latest',
 
 // ========== MEDICATION ROUTES ==========
 // Create medication order
-router.post('/medications', protect, authorize('doctor', 'admin'), ipdMedicationController.createMedicationOrder);
+router.post('/medications', ipdMedicationController.createMedicationOrder);
 
 // Get medications by admission
-router.get('/medications/admission/:admissionId', protect, authorize('doctor', 'nurse', 'pharmacy', 'pharmacy_head', 'pharmacist', 'admin'), ipdMedicationController.getMedicationsByAdmission);
+router.get('/medications/admission/:admissionId', ipdMedicationController.getMedicationsByAdmission);
 
 // Get today's medication schedule
-router.get('/medications/admission/:admissionId/today', protect, authorize('nurse', 'doctor', 'admin'), ipdMedicationController.getTodaySchedule);
+router.get('/medications/admission/:admissionId/today', ipdMedicationController.getTodaySchedule);
 
 // Get medication by ID
-router.get('/medications/:id', protect, authorize('doctor', 'nurse', 'pharmacy', 'pharmacy_head', 'pharmacist', 'admin'), ipdMedicationController.getMedicationById);
+router.get('/medications/:id', ipdMedicationController.getMedicationById);
 
 // Administer medication (nurse)
-router.patch('/medications/:id/administer', protect, authorize('nurse', 'admin'), validateAdministration, ipdMedicationController.administerMedication);
+router.patch('/medications/:id/administer', validateAdministration, ipdMedicationController.administerMedication);
 
 // Skip medication (nurse)
-router.patch('/medications/:id/skip', protect, authorize('nurse', 'admin'), ipdMedicationController.skipMedication);
+router.patch('/medications/:id/skip', ipdMedicationController.skipMedication);
 
 // Stop medication (doctor)
-router.patch('/medications/:id/stop', protect, authorize('doctor', 'admin'), ipdMedicationController.stopMedication);
+router.patch('/medications/:id/stop', ipdMedicationController.stopMedication);
 
 // Hold medication (nurse/doctor)
-router.patch('/medications/:id/hold', protect, authorize('nurse', 'doctor', 'admin'), ipdMedicationController.holdMedication);
+router.patch('/medications/:id/hold', ipdMedicationController.holdMedication);
 
 // Request medication from pharmacy (nurse)
-router.patch('/medications/:id/request-pharmacy', protect, authorize('nurse', 'admin'), validateIndent, ipdMedicationController.requestPharmacy);
+router.patch('/medications/:id/request-pharmacy', validateIndent, ipdMedicationController.requestPharmacy);
 
 // Receive medication stock from external pharmacy (nurse)
-router.patch('/medications/:id/receive-external', protect, authorize('nurse', 'admin'), validateIndent, ipdMedicationController.receiveExternalPharmacyStock);
+router.patch('/medications/:id/receive-external', validateIndent, ipdMedicationController.receiveExternalPharmacyStock);
 
 // ========== NEW: NURSE STOCK RECEIPT APIS ==========
 // Nurse acknowledges stock receipt from pharmacy
-router.patch('/medications/:id/acknowledge-receipt', protect, authorize('nurse', 'admin'), ipdMedicationController.acknowledgeStockReceipt);
+router.patch('/medications/:id/acknowledge-receipt', ipdMedicationController.acknowledgeStockReceipt);
 
 // Get pending stock receipts for a nurse
-router.get('/medications/admission/:admissionId/pending-receipts', protect, authorize('nurse', 'admin'), ipdMedicationController.getPendingStockReceipts);
+router.get('/medications/admission/:admissionId/pending-receipts', ipdMedicationController.getPendingStockReceipts);
 
 // ========== PHARMACY INTEGRATION FOR MEDICATIONS ==========
 // Get pending pharmacy requests (for pharmacy dashboard)
-router.get('/medications/pharmacy/requests/:pharmacyId', protect, authorize('pharmacy', 'pharmacy_head', 'pharmacist', 'admin'), ipdMedicationController.getPendingPharmacyRequests);
+router.get('/medications/pharmacy/requests/:pharmacyId', ipdMedicationController.getPendingPharmacyRequests);
 
 // Process pharmacy request (pharmacy dispenses medication)
-router.patch('/medications/:id/pharmacy-process', protect, authorize('pharmacy', 'pharmacy_head', 'pharmacist', 'admin'), validatePharmacyProcess, ipdMedicationController.processPharmacyRequest);
+router.patch('/medications/:id/pharmacy-process', validatePharmacyProcess, ipdMedicationController.processPharmacyRequest);
 
 // Get nurse's today's medication schedule
-router.get('/medications/nurse/today', protect, authorize('nurse', 'admin'), ipdMedicationController.getNurseTodaySchedule);
+router.get('/medications/nurse/today', ipdMedicationController.getNurseTodaySchedule);
 
 // Get medication schedule for specific nurse and admission
-router.get('/medications/nurse/admission/:admissionId/schedule', protect, authorize('nurse', 'admin'), ipdMedicationController.getMedicationScheduleForNurse);
+router.get('/medications/nurse/admission/:admissionId/schedule', ipdMedicationController.getMedicationScheduleForNurse);
 
 // Get medication summary for admission
-router.get('/medications/admission/:admissionId/summary', protect, authorize('doctor', 'nurse', 'pharmacy', 'pharmacy_head', 'pharmacist', 'admin'), ipdMedicationController.getMedicationSummary);
+router.get('/medications/admission/:admissionId/summary', ipdMedicationController.getMedicationSummary);
 
 // ========== BILLING ROUTES ==========
 const financeViewRoles = ['admin', 'accountant', 'registrar', 'staff'];
 const financeApproveRoles = ['admin', 'accountant'];
 
-router.post('/billing/charges', protect, authorize(...financeViewRoles), ipdBillingController.addManualCharge);
-router.get('/billing/admission/:admissionId/charges', protect, authorize(...financeViewRoles), ipdBillingController.getChargesByAdmission);
-router.get('/billing/admission/:admissionId/running-bill', protect, authorize(...financeViewRoles), ipdBillingController.getRunningBill);
-router.post('/billing/admission/:admissionId/bed-charges', protect, authorize(...financeViewRoles), ipdBillingController.generateBedCharges);
-router.post('/billing/admission/:admissionId/discount', protect, authorize(...financeApproveRoles), ipdBillingController.applyDiscount);
-router.post('/billing/admission/:admissionId/payment', protect, authorize(...financeViewRoles), ipdBillingController.recordPayment);
-router.post('/billing/admission/:admissionId/finalize', protect, authorize(...financeViewRoles), ipdBillingController.finalizeBill);
-router.post('/billing/admission/:admissionId/advance', protect, authorize(...financeViewRoles), ipdBillingController.recordAdvance);
-router.post('/billing/admission/:admissionId/advance-refund', protect, authorize(...financeApproveRoles), ipdBillingController.refundAdvance);
-router.get('/billing/admission/:admissionId/ledger', protect, authorize(...financeViewRoles), ipdBillingController.getLedger);
-router.get('/billing/admission/:admissionId/financial-clearance', protect, authorize(...financeViewRoles), ipdBillingController.getFinancialClearance);
-router.post('/billing/admission/:admissionId/financial-clearance', protect, authorize(...financeApproveRoles), ipdBillingController.finaliseFinancialClearance);
-router.patch('/billing/admission/:admissionId/charges/:chargeId/void', protect, authorize(...financeApproveRoles), ipdBillingController.voidCharge);
+router.post('/billing/charges', ipdBillingController.addManualCharge);
+router.get('/billing/admission/:admissionId/charges', ipdBillingController.getChargesByAdmission);
+router.get('/billing/admission/:admissionId/running-bill', ipdBillingController.getRunningBill);
+router.post('/billing/admission/:admissionId/bed-charges', ipdBillingController.generateBedCharges);
+router.post('/billing/admission/:admissionId/discount', ipdBillingController.applyDiscount);
+router.post('/billing/admission/:admissionId/payment', ipdBillingController.recordPayment);
+router.post('/billing/admission/:admissionId/finalize', ipdBillingController.finalizeBill);
+router.post('/billing/admission/:admissionId/advance', ipdBillingController.recordAdvance);
+router.post('/billing/admission/:admissionId/advance-refund', ipdBillingController.refundAdvance);
+router.get('/billing/admission/:admissionId/ledger', ipdBillingController.getLedger);
+router.get('/billing/admission/:admissionId/financial-clearance', ipdBillingController.getFinancialClearance);
+router.post('/billing/admission/:admissionId/financial-clearance', ipdBillingController.finaliseFinancialClearance);
+router.patch('/billing/admission/:admissionId/charges/:chargeId/void', ipdBillingController.voidCharge);
 
 // ========== DISCHARGE ROUTES ==========
 // Initiate discharge process
