@@ -5,7 +5,7 @@ const ipdPatientMedicineStockSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', required: true, index: true },
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
-  medicineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Medicine', required: true, index: true },
+  medicineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Medicine', index: true },
   batchId: { type: mongoose.Schema.Types.ObjectId, ref: 'MedicineBatch', index: true },
   medicineName: { type: String, required: true, trim: true },
   baseUnit: { type: String, default: 'unit' },
