@@ -156,7 +156,7 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
   return createdRequests;
 }
 
-const { calculateRequiredBaseUnits } = require('../services/pharmacyTransaction.service');
+const { calculateMedicationRequiredBaseUnits, resolveDoseQtyBaseUnits, generateTimingSlots: generateMedicationTimingSlots, createOrUpdatePharmacyRequest, normaliseBoolean, assertAdmissionHospitalAccess } = require('../services/ipdMedicationFlow.service');
 
 // Helper function to generate timing slots for medication
 function generateTimingSlots(frequency, durationDays) {
@@ -273,16 +273,20 @@ exports.createPrescription = async (req, res) => {
     // Process medication items and calculate required quantities
     const processedItems = items && Array.isArray(items)
       ? items.map(item => {
-        const requiredQtyBaseUnits = calculateRequiredBaseUnits({
-          dosage: item.dosage || '',
-          frequency: item.frequency,
+        const doseQtyBaseUnits = resolveDoseQtyBaseUnits(item);
+        const requiredQtyBaseUnits = calculateMedicationRequiredBaseUnits({
+          ...item,
           duration: parseInt(item.duration) || 1,
           durationUnit: 'Days'
         });
 
         return {
           medicine_name: item.medicine_name,
-          generic_name: item.generic_name || '',
+          generic_name: item.generic_name || item.medicine_name || '',
+          nlem_code: item.nlem_code || item.nlemCode || '',
+          dosage_form: item.dosage_form || item.dosageForm || item.medicine_type || '',
+          // Optional legacy/pre-mapped inventory reference only. It is never
+          // required for OPD/IPD prescribing and is not used to constrain the doctor.
           medicine_id: item.medicine_id || null,
           medicine_type: item.medicine_type || 'Tablet',
           route_of_administration: item.route_of_administration || 'Oral',
@@ -290,16 +294,27 @@ exports.createPrescription = async (req, res) => {
           frequency: item.frequency,
           duration: item.duration,
           quantity: item.quantity || requiredQtyBaseUnits,
+          dose_qty_base_units: doseQtyBaseUnits,
           required_qty_base_units: requiredQtyBaseUnits,
           instructions: item.instructions || '',
           timing: item.timing || 'Anytime',
           // NEW: Include pharmacy dispense flag from frontend
-          requires_pharmacy_dispense: item.requires_pharmacy_dispense !== undefined
-            ? item.requires_pharmacy_dispense
-            : true
+          requires_pharmacy_dispense: normaliseBoolean(item.requires_pharmacy_dispense, true)
         };
       })
       : [];
+
+    // IPD prescriptions must be tied to the admission and to its patient. This prevents
+    // a medication chart or pharmacy sale from being created for the wrong patient/file.
+    let ipdAdmission = null;
+    if (String(source_type || '').toUpperCase() === 'IPD') {
+      ipdAdmission = await IPDAdmission.findById(ipd_admission_id);
+      if (!ipdAdmission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
+      assertAdmissionHospitalAccess(req, ipdAdmission);
+      if (String(ipdAdmission.patientId) !== String(patient_id)) {
+        return res.status(400).json({ success: false, error: 'The selected patient does not belong to this IPD admission.' });
+      }
+    }
 
     // Create prescription first
     const prescription = new Prescription({
@@ -403,12 +418,12 @@ exports.createPrescription = async (req, res) => {
 
         // Generate timing slots for nurse administration
         const durationValue = parseInt(item.duration) || 1;
-        const timingSlots = generateTimingSlots(item.frequency, durationValue);
+        const timingSlots = generateMedicationTimingSlots(item.frequency, durationValue);
 
-        // Calculate required quantity
-        const requiredQtyBaseUnits = item.required_qty_base_units || calculateRequiredBaseUnits({
-          dosage: item.dosage,
-          frequency: item.frequency,
+        // Quantity planning uses dose units, never the text strength (for example, 500mg is one tablet unless a dose count is entered).
+        const doseQtyBaseUnits = item.dose_qty_base_units || resolveDoseQtyBaseUnits(item);
+        const requiredQtyBaseUnits = item.required_qty_base_units || calculateMedicationRequiredBaseUnits({
+          ...item,
           duration: durationValue,
           durationUnit: 'Days'
         });
@@ -420,6 +435,7 @@ exports.createPrescription = async (req, res) => {
 
         const medicationOrder = new IPDMedicationChart({
           admissionId: ipd_admission_id,
+          hospitalId: ipdAdmission?.hospitalId || req.user?.hospital_id || null,
           patientId: patient_id,
           prescribedBy: doctor_id,
           roundId: round_id || null,
@@ -427,6 +443,9 @@ exports.createPrescription = async (req, res) => {
           medicineId: item.medicine_id || null,
           medicineName: item.medicine_name,
           genericName: item.generic_name,
+          nlemCode: item.nlem_code || '',
+          dosageForm: item.dosage_form || item.medicine_type || '',
+          doseQtyBaseUnits,
           route: item.route_of_administration,
           dosage: item.dosage,
           frequency: item.frequency,
@@ -447,9 +466,14 @@ exports.createPrescription = async (req, res) => {
         await medicationOrder.save();
         convertedMedications.push(medicationOrder._id);
 
-        // ✅ FIX: Auto-create pharmacy request if required
+        // Pharmacy dispense means a real pharmacy issue is required. The request is
+        // created now; the actual sale is created only when pharmacy selects a batch.
         if (requiresPharmacyDispense) {
-          await createPharmacyRequest(medicationOrder, requiredQtyBaseUnits);
+          await createOrUpdatePharmacyRequest({
+            medication: medicationOrder,
+            requestedQuantity: requiredQtyBaseUnits,
+            requestedBy: req.user?._id
+          });
         }
       }
 
@@ -480,7 +504,7 @@ exports.createPrescription = async (req, res) => {
       radiology_requests: createdRadiologyRequests,
       procedure_requests: createdProcedureRequests,
       ipd_medications_count: source_type === 'IPD' ? (convertedMedications?.length || 0) : 0,
-      pharmacy_requests_created: convertedMedications.filter(m => m.requiresPharmacyDispense).length
+      pharmacy_requests_created: processedItems.filter(m => m.requires_pharmacy_dispense).length
     });
   } catch (err) {
     console.error('Error creating prescription:', err);

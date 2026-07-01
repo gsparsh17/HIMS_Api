@@ -10,6 +10,19 @@ const prescriptionItemSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  // Clinical source selected by the doctor (NLEM / generic catalogue). This is
+  // deliberately independent from the hospital's inventory Medicine record.
+  nlem_code: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  dosage_form: {
+    type: String,
+    trim: true
+  },
+  // Optional inventory mapping. Doctors are never required to provide this;
+  // the pharmacist selects the actual stocked brand/product at dispensing.
   medicine_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Medicine'
@@ -32,6 +45,11 @@ const prescriptionItemSchema = new mongoose.Schema({
   frequency: { type: String, required: true },
   duration: { type: String, required: true },
   quantity: { type: Number, min: 1, default: 1 },
+  // Required for IPD stock planning and administration. These remain on the
+  // prescription so the pharmacy sale and medication chart are auditable.
+  dose_qty_base_units: { type: Number, min: 0.0001, default: 1 },
+  required_qty_base_units: { type: Number, min: 0, default: 0 },
+  requires_pharmacy_dispense: { type: Boolean, default: true },
   instructions: { type: String, trim: true },
   timing: { type: String, enum: ['Before food', 'After food', 'With food', 'Anytime'] },
   is_dispensed: { type: Boolean, default: false },

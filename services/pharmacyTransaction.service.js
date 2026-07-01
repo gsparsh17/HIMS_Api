@@ -1,3 +1,4 @@
+// services/pharmacyTransaction.service.js
 const mongoose = require('mongoose');
 const Medicine = require('../models/Medicine');
 const MedicineBatch = require('../models/MedicineBatch');
@@ -15,6 +16,7 @@ const PharmacyReturn = require('../models/PharmacyReturn');
 const Prescription = require('../models/Prescription');
 const Doctor = require('../models/Doctor');
 const Patient = require('../models/Patient');
+const NursingNote = require('../models/NursingNote');
 
 function objectIdOrUndefined(id) {
   return id && mongoose.Types.ObjectId.isValid(id) ? id : undefined;
@@ -382,7 +384,9 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
       purchase_amount: normalizeMoney(quantityBaseUnits * (rawItem.purchase_rate_per_base_unit || rawItem.purchaseRatePerBaseUnit || batch.purchase_price_per_base_unit || 0)),
       gross_profit: normalizeMoney(taxableAmount - (quantityBaseUnits * (rawItem.purchase_rate_per_base_unit || rawItem.purchaseRatePerBaseUnit || batch.purchase_price_per_base_unit || 0))),
       prescription_item_id: objectIdOrUndefined(rawItem.prescription_item_id || rawItem.prescriptionItemId),
-      ipd_medication_chart_id: objectIdOrUndefined(rawItem.ipd_medication_chart_id || rawItem.medicationChartId),
+      // The standard sale screen sends the canonical chart id. Keep the
+      // legacy alias for older callers while persisting only one audit link.
+      ipd_medication_chart_id: objectIdOrUndefined(rawItem.ipd_medication_chart_id || rawItem.ipd_medication_id || rawItem.medicationChartId),
       doctor_id: doctorId,
       doctor_name: doctorName,
       prescribed_by: doctorId,
@@ -516,6 +520,9 @@ async function applyIpdMedicineStock({ items, sale, hospitalId, admissionId, pat
   if (!admissionId || !patientId) return [];
   const updates = [];
   for (const item of items) {
+    // ✅ Skip if this is a return/credit note item
+    if (item.is_return || item.item_type === 'Medicine Return') continue;
+
     const query = { admissionId, patientId, medicineId: item.medicine_id, batchId: item.batch_id };
     const update = {
       $setOnInsert: {
@@ -529,8 +536,14 @@ async function applyIpdMedicineStock({ items, sale, hospitalId, admissionId, pat
         packUnit: item.pack_unit,
         unitsPerPack: item.units_per_pack
       },
-      $inc: { issuedQtyBaseUnits: item.quantity_base_units, currentBalanceBaseUnits: item.quantity_base_units },
-      $addToSet: { sourceSaleIds: sale._id, ...(item.ipd_medication_chart_id ? { medicationChartIds: item.ipd_medication_chart_id } : {}) },
+      $inc: { 
+        issuedQtyBaseUnits: item.quantity_base_units, 
+        currentBalanceBaseUnits: item.quantity_base_units 
+      },
+      $addToSet: { 
+        sourceSaleIds: sale._id, 
+        ...(item.ipd_medication_chart_id ? { medicationChartIds: item.ipd_medication_chart_id } : {}) 
+      },
       $set: { lastIssuedAt: new Date() }
     };
     const doc = await IPDPatientMedicineStock.findOneAndUpdate(query, update, { new: true, upsert: true });
@@ -889,7 +902,74 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, hospitalId
   return { allocated: normalizeMoney(amount - remaining), remaining, allocations };
 }
 
-// ========== UPDATED: createUnifiedSale - Support "Pay Less Now" feature with proper balance sync ==========
+// ========== UPDATED: validateAndPrepareIpdMedicationSale ==========
+// FIX: Direct IPD sales without medication charts skip chart validation
+async function validateAndPrepareIpdMedicationSale({ items, patientId, admissionId, pharmacyId }) {
+  // ✅ Only validate items that have ipd_medication_chart_id
+  const linkedItems = items.filter((item) => item.ipd_medication_chart_id);
+  
+  // ✅ If no linked items, skip validation (direct IPD sale)
+  if (!linkedItems.length) return [];
+
+  if (!patientId || !admissionId) {
+    throw new Error('An IPD medication indent sale requires both patient_id and admission_id.');
+  }
+
+  const prepared = [];
+  for (const item of linkedItems) {
+    const medication = await IPDMedicationChart.findById(item.ipd_medication_chart_id);
+    if (!medication) throw new Error('The linked IPD medication chart was not found.');
+    if (String(medication.patientId) !== String(patientId) || String(medication.admissionId) !== String(admissionId)) {
+      throw new Error('The IPD medication indent does not belong to the selected patient/admission.');
+    }
+    if (!medication.pharmacyRequest?.requestedToPharmacy || medication.pharmacyRequest?.pharmacyStatus !== 'Pending') {
+      throw new Error(`${medication.medicineName} is not a pending pharmacy indent.`);
+    }
+    if (medication.pharmacyRequest?.saleId || medication.pharmacyRequest?.dispensedFromPharmacy) {
+      throw new Error(`${medication.medicineName} has already been dispensed against this indent.`);
+    }
+    if (pharmacyId && medication.pharmacyRequest?.pharmacyId && String(medication.pharmacyRequest.pharmacyId) !== String(pharmacyId)) {
+      throw new Error(`${medication.medicineName} belongs to a different pharmacy indent queue.`);
+    }
+
+    const requestedQuantity = Number(medication.pharmacyRequest?.requestedQuantity || 0);
+    const saleQuantity = Number(item.quantity_base_units || item.quantity || 0);
+    if (!Number.isFinite(saleQuantity) || saleQuantity <= 0 || saleQuantity > requestedQuantity) {
+      throw new Error(`${medication.medicineName} must be dispensed between 1 and ${requestedQuantity} base units for this indent.`);
+    }
+    prepared.push({ medication, item });
+  }
+  return prepared;
+}
+
+async function markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy }) {
+  for (const { medication, item } of preparedIpdItems) {
+    medication.status = 'Active';
+    medication.stockReceiptStatus = 'PENDING_RECEIPT';
+    medication.pharmacyRequest.pharmacyStatus = 'Approved';
+    medication.pharmacyRequest.dispensedFromPharmacy = true;
+    medication.pharmacyRequest.dispensedQuantity = item.quantity_base_units;
+    medication.pharmacyRequest.dispensedBatchId = item.batch_id;
+    medication.pharmacyRequest.dispensedMedicineId = item.medicine_id;
+    medication.pharmacyRequest.dispensedMedicineName = item.medicine_name || '';
+    medication.pharmacyRequest.substitutionReason = item.substitution_reason || item.substitutionReason || '';
+    medication.pharmacyRequest.dispensedAt = new Date();
+    medication.pharmacyRequest.saleId = sale._id;
+    medication.pharmacyRequest.stockReceivedByNurse = false;
+    await medication.save();
+
+    await NursingNote.create({
+      admissionId: medication.admissionId,
+      patientId: medication.patientId,
+      noteType: 'Medication',
+      note: `Pharmacy sale ${sale.sale_number || sale._id}: ${item.quantity_base_units} base unit(s) of ${medication.medicineName} dispatched. Nurse receipt acknowledgement is pending.`,
+      priority: medication.isHighRisk ? 'Important' : 'Normal',
+      createdBy
+    });
+  }
+}
+
+// ========== UPDATED: createUnifiedSale ==========
 async function createUnifiedSale(payload, req = {}) {
   console.log('Creating unified sale with payload:', payload);
   const hospitalId = getHospitalId(req, payload.hospitalId);
@@ -976,6 +1056,11 @@ async function createUnifiedSale(payload, req = {}) {
     defaultDoctor: { doctorId: context.doctorId, doctorName: context.doctorName },
     billDiscount: payload.discount || 0,
     billDiscountType: payload.discount_type || 'percentage'
+  });
+
+  // ✅ Validate IPD medication items (only if they have chart IDs)
+  const preparedIpdItems = await validateAndPrepareIpdMedicationSale({
+    items, patientId, admissionId, pharmacyId
   });
 
   const totals = calculateTotals(items, payload);
@@ -1226,8 +1311,6 @@ async function createUnifiedSale(payload, req = {}) {
     });
 
     // ========== SYNC SALE BALANCE WITH BILL FOR DEFERRED PAYMENTS ==========
-    // The bill already has the correct balance_due with discount applied
-    // Update the sale's balance_due to match the bill
     if (bill) {
       console.log(`🔄 Syncing Sale ${sale.sale_number} balance with bill:`);
       console.log(`   - Bill balance_due: ${bill.balance_due}`);
@@ -1246,6 +1329,7 @@ async function createUnifiedSale(payload, req = {}) {
       await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: true });
     }
 
+    // ✅ Apply IPD medicine stock - this handles both chart-linked and direct IPD sales
     await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
     // Create due ledger entry for the deferred amount
@@ -1290,17 +1374,9 @@ async function createUnifiedSale(payload, req = {}) {
       }
     }
 
-    for (const item of items) {
-      if (item.ipd_medication_chart_id) {
-        await IPDMedicationChart.findByIdAndUpdate(item.ipd_medication_chart_id, {
-          status: 'Active',
-          'pharmacyRequest.pharmacyStatus': 'Dispatched',
-          'pharmacyRequest.dispensedFromPharmacy': true,
-          'pharmacyRequest.dispensedQuantity': item.quantity_base_units,
-          'pharmacyRequest.dispensedBatchId': item.batch_id,
-          'pharmacyRequest.dispensedAt': new Date()
-        });
-      }
+    // ✅ Only mark IPD medication as dispatched if it has a chart ID
+    if (preparedIpdItems.length > 0) {
+      await markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy });
     }
 
     const finalSummary = await getPatientPharmacySummary({ patientId, admissionId });
@@ -1487,6 +1563,8 @@ async function createUnifiedSale(payload, req = {}) {
   }
 
   await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: false });
+  
+  // ✅ Apply IPD medicine stock - this handles both chart-linked and direct IPD sales
   await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
 
   const currentPaymentBreakup = allocatePaymentsForAmount(payments, amountPaidForBill);
@@ -1579,17 +1657,9 @@ async function createUnifiedSale(payload, req = {}) {
     }
   }
 
-  for (const item of items) {
-    if (item.ipd_medication_chart_id) {
-      await IPDMedicationChart.findByIdAndUpdate(item.ipd_medication_chart_id, {
-        status: 'Active',
-        'pharmacyRequest.pharmacyStatus': 'Dispatched',
-        'pharmacyRequest.dispensedFromPharmacy': true,
-        'pharmacyRequest.dispensedQuantity': item.quantity_base_units,
-        'pharmacyRequest.dispensedBatchId': item.batch_id,
-        'pharmacyRequest.dispensedAt': new Date()
-      });
-    }
+  // ✅ Only mark IPD medication as dispatched if it has a chart ID
+  if (preparedIpdItems.length > 0) {
+    await markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy });
   }
 
   const finalSummary = await getPatientPharmacySummary({ patientId, admissionId });
@@ -1631,7 +1701,9 @@ async function createUnifiedSale(payload, req = {}) {
   };
 }
 
-// ========== UPDATED: createReturn - Handle deferred payment returns with sale-bill sync ==========
+// ... (rest of the file - createReturn, createOutstandingSettlement, bulkSettleDeferredPayments, settleSingleDeferredPayment, and exports remain the same)
+
+// ========== UPDATED: createReturn ==========
 async function createReturn(payload, req = {}) {
   console.log('========== CREATE RETURN START ==========');
   console.log('Creating pharmacy return with payload:', JSON.stringify(payload, null, 2));

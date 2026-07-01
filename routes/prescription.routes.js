@@ -3,6 +3,8 @@ const router = express.Router();
 const prescriptionController = require('../controllers/prescription.controller');
 const multer = require('multer');
 const path = require('path');
+const { protect, authorize } = require('../middlewares/auth');
+const { validatePrescriptionMedicationFlow } = require('../middlewares/medicationFlowValidation');
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -24,7 +26,7 @@ router.get('/opd/patient/:patientId/for-ipd', prescriptionController.getOPDPresc
 router.get('/ipd/admission/:admissionId', prescriptionController.getIPDPrescriptions);
 
 // ============== STANDARD CRUD ROUTES ==============
-router.post('/', prescriptionController.createPrescription);
+router.post('/', protect, authorize('doctor', 'admin'), validatePrescriptionMedicationFlow, prescriptionController.createPrescription);
 router.get('/', prescriptionController.getAllPrescriptions);
 router.get('/active', prescriptionController.getActivePrescriptions);
 router.get('/patient/:patientId', prescriptionController.getPrescriptionsByPatientId);

@@ -47,7 +47,14 @@ const pharmacyRequestSchema = new mongoose.Schema({
   },
   requestedQuantity: {
     type: Number,
-    default: 0
+    default: 0,
+    min: 0
+  },
+  // Sale created when pharmacy actually dispenses stock. This is the
+  // idempotency/audit link between the request and the POS transaction.
+  saleId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Sale'
   },
   pharmacyId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -58,7 +65,7 @@ const pharmacyRequestSchema = new mongoose.Schema({
   },
   pharmacyStatus: {
     type: String,
-    enum: ['Pending', 'Approved', 'Dispatched', 'Delivered', 'Rejected', 'OutOfStock'],
+    enum: ['Pending', 'Approved', 'PartiallyDispensed', 'Dispatched', 'Delivered', 'Rejected', 'OutOfStock'],
     default: 'Pending'
   },
   dispensedFromPharmacy: {
@@ -72,6 +79,20 @@ const pharmacyRequestSchema = new mongoose.Schema({
   dispensedBatchId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'MedicineBatch'
+  },
+  // Inventory product selected by pharmacy during the real POS sale. This may
+  // differ from the NLEM/generic medicine ordered by the doctor.
+  dispensedMedicineId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Medicine'
+  },
+  dispensedMedicineName: {
+    type: String,
+    trim: true
+  },
+  substitutionReason: {
+    type: String,
+    trim: true
   },
   dispensedAt: {
     type: Date
@@ -101,6 +122,11 @@ const ipdMedicationChartSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  hospitalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    index: true
+  },
   patientId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Patient',
@@ -128,7 +154,31 @@ const ipdMedicationChartSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  // Unit count given at one administration. Do not derive this from a
+  // strength string such as '500 mg' (which is not 500 tablets).
+  doseQtyBaseUnits: {
+    type: Number,
+    min: 0.0001,
+    default: 1
+  },
+  // Planned quantity for the full prescribed duration, in medicine base units.
+  requiredQtyBaseUnits: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
   genericName: {
+    type: String,
+    trim: true
+  },
+  // Doctor's clinical catalogue identity. The order can exist without any
+  // local inventory Medicine record being mapped.
+  nlemCode: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  dosageForm: {
     type: String,
     trim: true
   },
@@ -293,7 +343,7 @@ ipdMedicationChartSchema.methods.getTimingTimes = function(frequency) {
 };
 
 // Indexes
-ipdMedicationChartSchema.index({ admissionId: 1, status: 1 });
+ipdMedicationChartSchema.index({ hospitalId: 1, admissionId: 1, status: 1 });
 ipdMedicationChartSchema.index({ patientId: 1, startDate: -1 });
 ipdMedicationChartSchema.index({ medicineName: 1 });
 ipdMedicationChartSchema.index({ 'pharmacyRequest.pharmacyStatus': 1 });
