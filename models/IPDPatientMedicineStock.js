@@ -1,3 +1,4 @@
+// models/IPDPatientMedicineStock.js
 const mongoose = require('mongoose');
 
 const ipdPatientMedicineStockSchema = new mongoose.Schema({
@@ -19,9 +20,23 @@ const ipdPatientMedicineStockSchema = new mongoose.Schema({
   medicationChartIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'IPDMedicationChart' }],
   lastIssuedAt: { type: Date },
   lastAdministeredAt: { type: Date },
-  lastReturnedAt: { type: Date }
+  lastReturnedAt: { type: Date },
+  // NEW: Track source of stock (internal pharmacy or external)
+  stockSource: {
+    type: String,
+    enum: ['INTERNAL_PHARMACY', 'EXTERNAL_PHARMACY', 'MANUAL'],
+    default: 'INTERNAL_PHARMACY'
+  },
+  // NEW: Track if nurse has acknowledged receipt
+  receiptAcknowledged: {
+    type: Boolean,
+    default: false
+  },
+  receiptAcknowledgedAt: { type: Date },
+  receiptAcknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
 ipdPatientMedicineStockSchema.index({ admissionId: 1, medicineId: 1, batchId: 1 }, { unique: false });
+ipdPatientMedicineStockSchema.index({ receiptAcknowledged: 1, admissionId: 1 });
 
 module.exports = mongoose.model('IPDPatientMedicineStock', ipdPatientMedicineStockSchema);

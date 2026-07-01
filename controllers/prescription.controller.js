@@ -1,3 +1,4 @@
+// controllers/prescription.controller.js
 const Prescription = require('../models/Prescription');
 const Vital = require('../models/Vital');
 const Medicine = require('../models/Medicine');
@@ -193,32 +194,52 @@ function generateTimingSlots(frequency, durationDays) {
   return timingSlots;
 }
 
-// Helper function to create pharmacy request (single definition)
-async function createPharmacyRequest(medication) {
+// ========== UNIFIED PHARMACY REQUEST FUNCTION ==========
+// FIX: Unified createPharmacyRequest with quantity parameter
+async function createPharmacyRequest(medication, requestedQuantity = null) {
   try {
-    // Find in-house pharmacy
     const pharmacy = await Pharmacy.findOne({ status: 'Active' });
     if (!pharmacy) {
       console.log('No active pharmacy found for medication request');
-      return;
+      return null;
     }
 
-    const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id}`;
+    const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id.toString().substring(0, 6)}`;
 
     medication.pharmacyRequest = {
       requestedToPharmacy: true,
       requestedAt: new Date(),
-      requestedBy: medication.createdBy,
+      requestedBy: medication.createdBy || medication.prescribedBy,
       pharmacyId: pharmacy._id,
       pharmacyRequestNumber: requestNumber,
-      pharmacyStatus: 'Pending'
+      pharmacyStatus: 'Pending',
+      requestedQuantity: requestedQuantity || medication.requiredQtyBaseUnits || 1,
+      dispensedFromPharmacy: false,
+      dispensedQuantity: 0,
+      stockReceivedByNurse: false
     };
 
     medication.status = 'Requested';
+    medication.stockReceiptStatus = 'PENDING_RECEIPT';
     await medication.save();
+
+    // Create nursing note for audit
+    const NursingNote = require('../models/NursingNote');
+    const nursingNote = new NursingNote({
+      admissionId: medication.admissionId,
+      patientId: medication.patientId,
+      noteType: 'Medication',
+      note: `Pharmacy request created for ${medication.medicineName} - Qty: ${requestedQuantity || medication.requiredQtyBaseUnits} ${medication.baseUnit || 'units'}`,
+      priority: medication.isHighRisk ? 'Important' : 'Normal',
+      createdBy: medication.createdBy || medication.prescribedBy
+    });
+    await nursingNote.save();
+
+    return medication;
 
   } catch (error) {
     console.error('Error creating pharmacy request:', error);
+    throw error;
   }
 }
 
@@ -271,7 +292,11 @@ exports.createPrescription = async (req, res) => {
           quantity: item.quantity || requiredQtyBaseUnits,
           required_qty_base_units: requiredQtyBaseUnits,
           instructions: item.instructions || '',
-          timing: item.timing || 'Anytime'
+          timing: item.timing || 'Anytime',
+          // NEW: Include pharmacy dispense flag from frontend
+          requires_pharmacy_dispense: item.requires_pharmacy_dispense !== undefined
+            ? item.requires_pharmacy_dispense
+            : true
         };
       })
       : [];
@@ -388,6 +413,11 @@ exports.createPrescription = async (req, res) => {
           durationUnit: 'Days'
         });
 
+        // Check if pharmacy dispense is required (from frontend)
+        const requiresPharmacyDispense = item.requires_pharmacy_dispense !== undefined
+          ? item.requires_pharmacy_dispense
+          : true;
+
         const medicationOrder = new IPDMedicationChart({
           admissionId: ipd_admission_id,
           patientId: patient_id,
@@ -407,8 +437,9 @@ exports.createPrescription = async (req, res) => {
           requiredQtyBaseUnits,
           costPerUnit,
           totalCost: requiredQtyBaseUnits * costPerUnit,
-          requiresPharmacyDispense: true,
-          status: 'Pending',
+          requiresPharmacyDispense: requiresPharmacyDispense,
+          status: requiresPharmacyDispense ? 'Requested' : 'Active',
+          stockReceiptStatus: requiresPharmacyDispense ? 'PENDING_RECEIPT' : 'NOT_REQUESTED',
           startDate: new Date(),
           createdBy: req.user?._id
         });
@@ -416,25 +447,15 @@ exports.createPrescription = async (req, res) => {
         await medicationOrder.save();
         convertedMedications.push(medicationOrder._id);
 
-        // Create pharmacy request for this medication
-        await createPharmacyRequest(medicationOrder);
+        // ✅ FIX: Auto-create pharmacy request if required
+        if (requiresPharmacyDispense) {
+          await createPharmacyRequest(medicationOrder, requiredQtyBaseUnits);
+        }
       }
 
       prescription.is_converted_to_ipd = true;
       prescription.ipd_medication_ids = convertedMedications;
       await prescription.save();
-
-      // Create nursing note for new IPD medications
-      const NursingNote = require('../models/NursingNote');
-      const nursingNote = new NursingNote({
-        admissionId: ipd_admission_id,
-        patientId: patient_id,
-        noteType: 'Medication',
-        note: `New IPD prescription created with ${convertedMedications.length} medication(s). Pharmacy requests have been initiated.`,
-        priority: 'Normal',
-        createdBy: req.user?._id
-      });
-      await nursingNote.save();
     }
 
     // Update IPDRound with this prescription
@@ -458,7 +479,8 @@ exports.createPrescription = async (req, res) => {
       lab_requests: createdLabRequests,
       radiology_requests: createdRadiologyRequests,
       procedure_requests: createdProcedureRequests,
-      ipd_medications_count: source_type === 'IPD' ? (convertedMedications?.length || 0) : 0
+      ipd_medications_count: source_type === 'IPD' ? (convertedMedications?.length || 0) : 0,
+      pharmacy_requests_created: convertedMedications.filter(m => m.requiresPharmacyDispense).length
     });
   } catch (err) {
     console.error('Error creating prescription:', err);

@@ -1,3 +1,4 @@
+// routes/ipd.routes.js
 const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middlewares/auth');
@@ -322,6 +323,21 @@ router.patch('/medications/:id/receive-external',
   // protect, 
   // authorize('nurse', 'admin'),
   ipdMedicationController.receiveExternalPharmacyStock
+);
+
+// ========== NEW: NURSE STOCK RECEIPT APIS ==========
+// Nurse acknowledges stock receipt from pharmacy
+router.patch('/medications/:id/acknowledge-receipt',
+  // protect,
+  // authorize('nurse', 'admin'),
+  ipdMedicationController.acknowledgeStockReceipt
+);
+
+// Get pending stock receipts for a nurse
+router.get('/medications/admission/:admissionId/pending-receipts',
+  // protect,
+  // authorize('nurse', 'admin'),
+  ipdMedicationController.getPendingStockReceipts
 );
 
 // ========== PHARMACY INTEGRATION FOR MEDICATIONS ==========

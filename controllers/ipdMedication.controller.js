@@ -1,3 +1,4 @@
+// controllers/ipdMedication.controller.js
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDAdmission = require('../models/IPDAdmission');
 const NursingNote = require('../models/NursingNote');
@@ -46,35 +47,55 @@ function generateTimingSlots(frequency, durationDays) {
   return timingSlots;
 }
 
-// Helper function to create pharmacy request
-async function createPharmacyRequest(medication) {
+// ========== UNIFIED PHARMACY REQUEST FUNCTION ==========
+// FIX 3 & 4: Unified createPharmacyRequest with quantity parameter
+async function createPharmacyRequest(medication, requestedQuantity = null) {
   try {
     const pharmacy = await Pharmacy.findOne({ status: 'Active' });
     if (!pharmacy) {
       console.log('No active pharmacy found for medication request');
-      return;
+      return null;
     }
 
-    const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id}`;
+    const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id.toString().substring(0, 6)}`;
 
     medication.pharmacyRequest = {
       requestedToPharmacy: true,
       requestedAt: new Date(),
-      requestedBy: medication.createdBy,
+      requestedBy: medication.createdBy || medication.prescribedBy,
       pharmacyId: pharmacy._id,
       pharmacyRequestNumber: requestNumber,
-      pharmacyStatus: 'Pending'
+      pharmacyStatus: 'Pending',
+      requestedQuantity: requestedQuantity || medication.requiredQtyBaseUnits || 1,
+      dispensedFromPharmacy: false,
+      dispensedQuantity: 0,
+      stockReceivedByNurse: false
     };
 
     medication.status = 'Requested';
+    medication.stockReceiptStatus = 'PENDING_RECEIPT';
     await medication.save();
+
+    // Create nursing note for audit
+    const nursingNote = new NursingNote({
+      admissionId: medication.admissionId,
+      patientId: medication.patientId,
+      noteType: 'Medication',
+      note: `Pharmacy request created for ${medication.medicineName} - Qty: ${requestedQuantity || medication.requiredQtyBaseUnits} ${medication.baseUnit || 'units'}`,
+      priority: medication.isHighRisk ? 'Important' : 'Normal',
+      createdBy: medication.createdBy || medication.prescribedBy
+    });
+    await nursingNote.save();
+
+    return medication;
 
   } catch (error) {
     console.error('Error creating pharmacy request:', error);
+    throw error;
   }
 }
 
-// Helper function to get or create patient medicine stock
+// ========== HELPER: Get or Create Patient Medicine Stock ==========
 async function getOrCreatePatientMedicineStock(admissionId, patientId, medicineId, batchId, medicineName, baseUnit, packUnit, unitsPerPack, sellingPricePerBaseUnit) {
   let stock = await IPDPatientMedicineStock.findOne({
     admissionId,
@@ -98,7 +119,8 @@ async function getOrCreatePatientMedicineStock(admissionId, patientId, medicineI
       returnedQtyBaseUnits: 0,
       currentBalanceBaseUnits: 0,
       sourceSaleIds: [],
-      medicationChartIds: []
+      medicationChartIds: [],
+      receiptAcknowledged: false
     });
     await stock.save();
   }
@@ -106,14 +128,15 @@ async function getOrCreatePatientMedicineStock(admissionId, patientId, medicineI
   return stock;
 }
 
-// Helper function to update patient medicine stock when pharmacy issues medicine
-async function addToPatientMedicineStock(admissionId, patientId, medicineId, batchId, quantityBaseUnits, medicineName, baseUnit, packUnit, unitsPerPack, sellingPricePerBaseUnit, saleId, medicationChartId) {
+// ========== HELPER: Add to Patient Medicine Stock ==========
+async function addToPatientMedicineStock(admissionId, patientId, medicineId, batchId, quantityBaseUnits, medicineName, baseUnit, packUnit, unitsPerPack, sellingPricePerBaseUnit, saleId, medicationChartId, stockSource = 'INTERNAL_PHARMACY') {
   const stock = await getOrCreatePatientMedicineStock(
     admissionId, patientId, medicineId, batchId, medicineName, baseUnit, packUnit, unitsPerPack, sellingPricePerBaseUnit
   );
 
   stock.issuedQtyBaseUnits += quantityBaseUnits;
   stock.currentBalanceBaseUnits += quantityBaseUnits;
+  stock.stockSource = stockSource;
 
   if (saleId && !stock.sourceSaleIds.includes(saleId)) {
     stock.sourceSaleIds.push(saleId);
@@ -129,7 +152,7 @@ async function addToPatientMedicineStock(admissionId, patientId, medicineId, bat
   return stock;
 }
 
-// Helper function to deduct from patient medicine stock when nurse administers
+// ========== HELPER: Deduct from Patient Medicine Stock ==========
 async function deductFromPatientMedicineStock(admissionId, patientId, medicineId, quantityBaseUnits, medicationChartId) {
   const stocks = await IPDPatientMedicineStock.find({
     admissionId,
@@ -161,9 +184,10 @@ async function deductFromPatientMedicineStock(admissionId, patientId, medicineId
   return deducted;
 }
 
-// ========== MEDICATION CHART ==========
+// ========== MEDICATION CHART CRUD ==========
 
 // Create medication order (from Doctor Round)
+// FIX 3: Auto-create pharmacy request if requiresPharmacyDispense
 exports.createMedicationOrder = async (req, res) => {
   try {
     const {
@@ -238,8 +262,8 @@ exports.createMedicationOrder = async (req, res) => {
       requiresPharmacyDispense: requiresPharmacyDispense || false,
       costPerUnit,
       requiredQtyBaseUnits,
-      requiredQtyBaseUnits,
       status: 'Active',
+      stockReceiptStatus: requiresPharmacyDispense ? 'PENDING_RECEIPT' : 'NOT_REQUESTED',
       createdBy: req.user?._id
     });
 
@@ -248,11 +272,16 @@ exports.createMedicationOrder = async (req, res) => {
 
     await medication.save();
 
+    // ✅ FIX 3: Auto-create pharmacy request if needed
+    if (requiresPharmacyDispense) {
+      await createPharmacyRequest(medication, requiredQtyBaseUnits);
+    }
+
     const nursingNote = new NursingNote({
       admissionId,
       patientId,
       noteType: 'Medication',
-      note: `New medication ordered: ${medicineName} ${dosage} ${route} ${frequency}`,
+      note: `New medication ordered: ${medicineName} ${dosage} ${route} ${frequency}${requiresPharmacyDispense ? ' - Pharmacy request auto-created' : ''}`,
       priority: isHighRisk ? 'Important' : 'Normal',
       createdBy: req.user?._id
     });
@@ -260,7 +289,9 @@ exports.createMedicationOrder = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Medication order created successfully',
+      message: requiresPharmacyDispense 
+        ? 'Medication order created with pharmacy request' 
+        : 'Medication order created successfully',
       medication
     });
   } catch (err) {
@@ -316,7 +347,9 @@ exports.getMedicationsByAdmission = async (req, res) => {
           baseUnit: stock.baseUnit || 'unit',
           stockId: stock._id,
           medicineName: medicineName,
-          normalizedName: normalizedName
+          normalizedName: normalizedName,
+          receiptAcknowledged: stock.receiptAcknowledged,
+          stockSource: stock.stockSource
         };
       }
 
@@ -328,7 +361,9 @@ exports.getMedicationsByAdmission = async (req, res) => {
           returnedQty: stock.returnedQtyBaseUnits,
           baseUnit: stock.baseUnit || 'unit',
           stockId: stock._id,
-          medicineName: medicineName
+          medicineName: medicineName,
+          receiptAcknowledged: stock.receiptAcknowledged,
+          stockSource: stock.stockSource
         };
 
         stockByNormalizedNameMap[normalizedName] = {
@@ -338,7 +373,9 @@ exports.getMedicationsByAdmission = async (req, res) => {
           returnedQty: stock.returnedQtyBaseUnits,
           baseUnit: stock.baseUnit || 'unit',
           stockId: stock._id,
-          medicineName: medicineName
+          medicineName: medicineName,
+          receiptAcknowledged: stock.receiptAcknowledged,
+          stockSource: stock.stockSource
         };
       }
     });
@@ -373,7 +410,9 @@ exports.getMedicationsByAdmission = async (req, res) => {
         issuedQty: 0,
         administeredQty: 0,
         returnedQty: 0,
-        baseUnit: med.medicineId?.base_unit || 'unit'
+        baseUnit: med.medicineId?.base_unit || 'unit',
+        receiptAcknowledged: false,
+        stockSource: 'INTERNAL_PHARMACY'
       };
 
       // Calculate required stock for today's pending doses
@@ -384,8 +423,11 @@ exports.getMedicationsByAdmission = async (req, res) => {
         return !isNaN(tDate.getTime()) && tDate.toDateString() === today.toDateString() && t.status === 'Pending';
       }).length;
 
-      // Calculate required stock = number of pending doses (each dose = 1 base unit)
       const requiredStockForToday = todaysPendingDoses;
+
+      // Check if stock receipt is pending
+      const isReceiptPending = med.stockReceiptStatus === 'PENDING_RECEIPT' && 
+                               med.pharmacyRequest?.pharmacyStatus === 'Approved';
 
       return {
         ...med.toObject(),
@@ -393,7 +435,9 @@ exports.getMedicationsByAdmission = async (req, res) => {
         todaysPendingDoses,
         requiredStockForToday,
         isStockSufficient: finalStockInfo.currentBalance >= requiredStockForToday,
-        stockStatus: finalStockInfo.currentBalance === 0 ? 'No Stock' :
+        isReceiptPending,
+        stockStatus: isReceiptPending ? 'Pending Receipt' :
+          finalStockInfo.currentBalance === 0 ? 'No Stock' :
           finalStockInfo.currentBalance < requiredStockForToday ? 'Low Stock' : 'Sufficient'
       };
     });
@@ -460,7 +504,7 @@ exports.getPendingPharmacyRequests = async (req, res) => {
   }
 };
 
-// Pharmacy: Process medication request (Approve/Reject)
+// FIX 5 & 7: Pharmacy: Process medication request with validation and rollback
 exports.processPharmacyRequest = async (req, res) => {
   try {
     const { id } = req.params;
@@ -469,6 +513,25 @@ exports.processPharmacyRequest = async (req, res) => {
     const medication = await IPDMedicationChart.findById(id).populate('medicineId');
     if (!medication) {
       return res.status(404).json({ error: 'Medication not found' });
+    }
+
+    // ✅ FIX 5: Check if already dispensed
+    if (medication.pharmacyRequest?.dispensedFromPharmacy && action === 'approve') {
+      return res.status(400).json({ 
+        error: 'Medication already dispensed to patient. Cannot approve again.' 
+      });
+    }
+
+    // ✅ FIX 5: Check existing patient stock
+    const existingStock = await IPDPatientMedicineStock.findOne({
+      admissionId: medication.admissionId,
+      patientId: medication.patientId,
+      medicineId: medication.medicineId?._id
+    });
+
+    if (existingStock && existingStock.currentBalanceBaseUnits > 0 && action === 'approve') {
+      console.log(`Patient already has ${existingStock.currentBalanceBaseUnits} units of ${medication.medicineName}`);
+      // Proceed but log it - frontend can show a warning
     }
 
     if (action === 'approve') {
@@ -484,6 +547,7 @@ exports.processPharmacyRequest = async (req, res) => {
           return res.status(400).json({ error: 'Insufficient stock in batch' });
         }
 
+        // Deduct from central pharmacy stock
         batch.quantity_base_units -= dispenseQty;
         batch.quantity = batch.quantity_base_units;
         await batch.save();
@@ -495,6 +559,7 @@ exports.processPharmacyRequest = async (req, res) => {
           );
         }
 
+        // Add to patient stock
         await addToPatientMedicineStock(
           medication.admissionId,
           medication.patientId,
@@ -507,7 +572,8 @@ exports.processPharmacyRequest = async (req, res) => {
           medication.medicineId?.units_per_pack || 1,
           batch.selling_price_per_base_unit || 0,
           null,
-          medication._id
+          medication._id,
+          'INTERNAL_PHARMACY'
         );
 
         medication.pharmacyRequest.dispensedBatchId = batchId;
@@ -515,21 +581,59 @@ exports.processPharmacyRequest = async (req, res) => {
         medication.pharmacyRequest.dispensedAt = new Date();
         medication.pharmacyRequest.dispensedFromPharmacy = true;
 
+        // Regenerate timing slots if needed
         const timingSlots = generateTimingSlots(medication.frequency, medication.duration || 1);
         medication.timing = timingSlots;
       }
 
       medication.pharmacyRequest.pharmacyStatus = 'Approved';
       medication.status = 'Active';
+      medication.stockReceiptStatus = 'PENDING_RECEIPT'; // ✅ FIX 2: Stock is ready but needs nurse acknowledgment
 
     } else if (action === 'reject') {
+      // ✅ FIX 7: Rollback stock if it was previously dispensed
+      if (medication.pharmacyRequest?.dispensedFromPharmacy) {
+        // Restore central pharmacy stock
+        const batch = await MedicineBatch.findById(medication.pharmacyRequest.dispensedBatchId);
+        if (batch) {
+          batch.quantity_base_units += medication.pharmacyRequest.dispensedQuantity;
+          batch.quantity = batch.quantity_base_units;
+          await batch.save();
+
+          if (medication.medicineId) {
+            await Medicine.findByIdAndUpdate(
+              medication.medicineId._id,
+              { $inc: { stock_quantity: medication.pharmacyRequest.dispensedQuantity } }
+            );
+          }
+        }
+
+        // Remove from patient stock
+        await IPDPatientMedicineStock.findOneAndUpdate(
+          {
+            admissionId: medication.admissionId,
+            patientId: medication.patientId,
+            medicineId: medication.medicineId?._id,
+            batchId: medication.pharmacyRequest.dispensedBatchId
+          },
+          {
+            $inc: {
+              issuedQtyBaseUnits: -medication.pharmacyRequest.dispensedQuantity,
+              currentBalanceBaseUnits: -medication.pharmacyRequest.dispensedQuantity
+            }
+          }
+        );
+      }
+
       medication.pharmacyRequest.pharmacyStatus = 'Rejected';
       medication.status = 'Stopped';
       medication.stoppedReason = `Pharmacy rejected: ${notes || 'Stock not available'}`;
+      medication.stockReceiptStatus = 'REJECTED';
 
     } else if (action === 'out_of_stock') {
       medication.pharmacyRequest.pharmacyStatus = 'OutOfStock';
       medication.pharmacyRequest.pharmacyNotes = notes;
+      medication.stockReceiptStatus = 'REJECTED';
     }
 
     if (notes) {
@@ -559,9 +663,131 @@ exports.processPharmacyRequest = async (req, res) => {
   }
 };
 
+// ========== NEW API 1: Nurse acknowledges receipt of pharmacy stock ==========
+exports.acknowledgeStockReceipt = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body;
+
+    const medication = await IPDMedicationChart.findById(id).populate('medicineId');
+    if (!medication) {
+      return res.status(404).json({ error: 'Medication not found' });
+    }
+
+    // Check if there's stock to acknowledge
+    if (!medication.pharmacyRequest?.dispensedFromPharmacy) {
+      return res.status(400).json({ 
+        error: 'No stock has been dispensed for this medication' 
+      });
+    }
+
+    // Check if already acknowledged
+    if (medication.pharmacyRequest.stockReceivedByNurse) {
+      return res.status(400).json({ 
+        error: 'Stock already acknowledged by nurse' 
+      });
+    }
+
+    // Update medication
+    medication.pharmacyRequest.stockReceivedByNurse = true;
+    medication.pharmacyRequest.stockReceivedAt = new Date();
+    medication.pharmacyRequest.stockReceivedBy = req.user?._id;
+    medication.stockReceiptStatus = 'RECEIVED';
+    medication.status = 'Active';
+
+    await medication.save();
+
+    // Update patient stock to mark receipt acknowledged
+    await IPDPatientMedicineStock.findOneAndUpdate(
+      {
+        admissionId: medication.admissionId,
+        patientId: medication.patientId,
+        medicineId: medication.medicineId?._id,
+        batchId: medication.pharmacyRequest.dispensedBatchId
+      },
+      {
+        $set: {
+          receiptAcknowledged: true,
+          receiptAcknowledgedAt: new Date(),
+          receiptAcknowledgedBy: req.user?._id
+        }
+      }
+    );
+
+    // Create nursing note
+    const nursingNote = new NursingNote({
+      admissionId: medication.admissionId,
+      patientId: medication.patientId,
+      noteType: 'Medication',
+      note: `Stock receipt acknowledged for ${medication.medicineName}. Qty: ${medication.pharmacyRequest.dispensedQuantity} ${medication.baseUnit || 'units'}. ${notes || ''}`,
+      priority: 'Normal',
+      createdBy: req.user?._id
+    });
+    await nursingNote.save();
+
+    res.json({
+      success: true,
+      message: 'Stock receipt acknowledged successfully',
+      medication
+    });
+  } catch (err) {
+    console.error('Error acknowledging stock receipt:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ========== NEW API 2: Get pending stock receipts for nurse ==========
+exports.getPendingStockReceipts = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+
+    const medications = await IPDMedicationChart.find({
+      admissionId,
+      'pharmacyRequest.dispensedFromPharmacy': true,
+      'pharmacyRequest.stockReceivedByNurse': false,
+      stockReceiptStatus: 'PENDING_RECEIPT',
+      status: { $in: ['Active', 'Requested'] }
+    })
+      .populate('prescribedBy', 'firstName lastName')
+      .populate('medicineId', 'medicine_name base_unit pack_unit units_per_pack')
+      .populate('pharmacyRequest.pharmacyId', 'name')
+      .populate('pharmacyRequest.dispensedBatchId', 'batch_number expiry_date')
+      .sort({ 'pharmacyRequest.dispensedAt': -1 });
+
+    // Get stock details for each medication
+    const medicationsWithStock = await Promise.all(medications.map(async (med) => {
+      const stock = await IPDPatientMedicineStock.findOne({
+        admissionId: med.admissionId,
+        patientId: med.patientId,
+        medicineId: med.medicineId?._id,
+        batchId: med.pharmacyRequest.dispensedBatchId
+      });
+
+      return {
+        ...med.toObject(),
+        stockDetails: stock || null,
+        dispensedQty: med.pharmacyRequest.dispensedQuantity || 0,
+        dispensedAt: med.pharmacyRequest.dispensedAt,
+        batchNumber: med.pharmacyRequest.dispensedBatchId?.batch_number || 'N/A',
+        expiryDate: med.pharmacyRequest.dispensedBatchId?.expiry_date || null
+      };
+    }));
+
+    res.json({
+      success: true,
+      count: medicationsWithStock.length,
+      pendingReceipts: medicationsWithStock
+    });
+  } catch (err) {
+    console.error('Error fetching pending stock receipts:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // ========== MEDICATION ADMINISTRATION (NURSE) ==========
 
 // Nurse: Request medication from pharmacy
+// FIX 4: Uses unified createPharmacyRequest
 exports.requestPharmacy = async (req, res) => {
   try {
     const { id } = req.params;
@@ -572,36 +798,35 @@ exports.requestPharmacy = async (req, res) => {
       return res.status(404).json({ error: 'Medication not found' });
     }
 
-    const pharmacy = await Pharmacy.findOne({ status: 'Active' });
-    if (!pharmacy) {
-      return res.status(400).json({ error: 'No active pharmacy found to handle request.' });
+    // Check if already requested
+    if (medication.pharmacyRequest?.requestedToPharmacy) {
+      return res.status(400).json({ 
+        error: 'Medication already requested from pharmacy' 
+      });
     }
 
-    const requestNumber = `PHARM-REQ-${Date.now()}-${medication._id.toString().substring(0, 6)}`;
+    // Use unified function
+    const updatedMedication = await createPharmacyRequest(
+      medication, 
+      quantity || medication.requiredQtyBaseUnits || 1
+    );
 
-    medication.pharmacyRequest = {
-      requestedToPharmacy: true,
-      requestedAt: new Date(),
-      requestedBy: req.user?._id,
-      pharmacyId: pharmacy._id,
-      pharmacyRequestNumber: requestNumber,
-      pharmacyStatus: 'Pending',
-      requestedQuantity: quantity || medication.requiredQtyBaseUnits || 1
-    };
-
-    await medication.save();
+    if (!updatedMedication) {
+      return res.status(400).json({ 
+        error: 'No active pharmacy found. Please contact administrator.' 
+      });
+    }
 
     res.json({
       success: true,
       message: 'Medication requested from pharmacy successfully',
-      medication
+      medication: updatedMedication
     });
   } catch (err) {
     console.error('Error requesting pharmacy:', err);
     res.status(500).json({ error: err.message });
   }
 };
-
 
 // Get today's medication schedule for nurse
 exports.getNurseTodaySchedule = async (req, res) => {
@@ -619,7 +844,7 @@ exports.getNurseTodaySchedule = async (req, res) => {
 
     const medications = await IPDMedicationChart.find({
       admissionId: { $in: admissionIds },
-      status: 'Active',
+      status: { $in: ['Active', 'Requested'] },
       startDate: { $lte: tomorrow }
     })
       .populate('admissionId', 'admissionNumber bedId')
@@ -637,7 +862,8 @@ exports.getNurseTodaySchedule = async (req, res) => {
       return {
         ...med.toObject(),
         todaysTimings,
-        pendingCount: todaysTimings.length
+        pendingCount: todaysTimings.length,
+        isReceiptPending: med.stockReceiptStatus === 'PENDING_RECEIPT'
       };
     }).filter(med => med.todaysTimings.length > 0);
 
@@ -664,7 +890,7 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
 
     const medications = await IPDMedicationChart.find({
       admissionId,
-      status: 'Active',
+      status: { $in: ['Active', 'Requested'] },
       startDate: { $lte: nextDate }
     })
       .populate('prescribedBy', 'firstName lastName')
@@ -693,7 +919,8 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
         administeredCount: todaysTimings.filter(t => t.status === 'Administered').length,
         pendingCount: todaysTimings.filter(t => t.status === 'Pending').length,
         patientStockBalance,
-        requiredStockForDay: todaysTimings.length
+        requiredStockForDay: todaysTimings.length,
+        isReceiptPending: med.stockReceiptStatus === 'PENDING_RECEIPT'
       };
     })).filter(med => med.todaysTimings.length > 0);
 
@@ -713,6 +940,13 @@ exports.administerMedication = async (req, res) => {
     const medication = await IPDMedicationChart.findById(id).populate('medicineId');
     if (!medication) {
       return res.status(404).json({ error: 'Medication not found' });
+    }
+
+    // Check if stock receipt is pending
+    if (medication.stockReceiptStatus === 'PENDING_RECEIPT') {
+      return res.status(400).json({
+        error: 'Stock receipt pending. Please acknowledge receipt before administering.'
+      });
     }
 
     const timingIndex = medication.timing.findIndex(t => t._id.toString() === timingId);
@@ -922,7 +1156,7 @@ exports.getTodaySchedule = async (req, res) => {
 
     const medications = await IPDMedicationChart.find({
       admissionId,
-      status: 'Active',
+      status: { $in: ['Active', 'Requested'] },
       startDate: { $lte: tomorrow }
     }).populate('prescribedBy', 'firstName lastName');
 
@@ -932,7 +1166,8 @@ exports.getTodaySchedule = async (req, res) => {
         const timingDate = new Date(t.date);
         timingDate.setHours(0, 0, 0, 0);
         return timingDate.getTime() === today.getTime();
-      })
+      }),
+      isReceiptPending: med.stockReceiptStatus === 'PENDING_RECEIPT'
     })));
 
     res.json({ success: true, schedule: todaySchedule.filter(med => med.todaysTimings.length > 0) });
@@ -955,6 +1190,7 @@ exports.getMedicationSummary = async (req, res) => {
       completed: medications.filter(m => m.status === 'Completed').length,
       stopped: medications.filter(m => m.status === 'Stopped').length,
       pendingPharmacy: medications.filter(m => m.pharmacyRequest?.pharmacyStatus === 'Pending').length,
+      pendingReceipt: medications.filter(m => m.stockReceiptStatus === 'PENDING_RECEIPT').length,
       totalDosesAdministered: 0,
       totalDosesSkipped: 0,
       totalDosesHeld: 0,
@@ -974,7 +1210,8 @@ exports.getMedicationSummary = async (req, res) => {
       totalUnitsIssued: patientStocks.reduce((sum, s) => sum + s.issuedQtyBaseUnits, 0),
       totalUnitsAdministered: patientStocks.reduce((sum, s) => sum + s.administeredQtyBaseUnits, 0),
       totalUnitsReturned: patientStocks.reduce((sum, s) => sum + s.returnedQtyBaseUnits, 0),
-      currentBalance: patientStocks.reduce((sum, s) => sum + s.currentBalanceBaseUnits, 0)
+      currentBalance: patientStocks.reduce((sum, s) => sum + s.currentBalanceBaseUnits, 0),
+      pendingReceiptCount: patientStocks.filter(s => !s.receiptAcknowledged).length
     };
 
     res.json({ success: true, summary, stockSummary });
@@ -985,6 +1222,7 @@ exports.getMedicationSummary = async (req, res) => {
 };
 
 // Receive medicine stock from an external pharmacy directly
+// FIX 1: Removed duplicate getOrCreatePatientMedicineStock call
 exports.receiveExternalPharmacyStock = async (req, res) => {
   try {
     const { id } = req.params; // Medication ID
@@ -1000,40 +1238,43 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
     }
 
     if (!medication.medicineId) {
-       return res.status(400).json({ error: 'External stock receiving requires a mapped medicine in the system' });
+      return res.status(400).json({ error: 'External stock receiving requires a mapped medicine in the system' });
     }
 
-    // Get or Create Stock for this patient and medicine
-    await getOrCreatePatientMedicineStock(
-      medication.admissionId,
-      medication.patientId,
-      medication.medicineId._id,
-      null, // batchId
-      medication.medicineName,
-      medication.medicineId.base_unit || 'unit',
-      medication.medicineId.pack_unit || 'pack',
-      medication.medicineId.units_per_pack || 1,
-      0 // External price, not tracked internally for revenue usually
-    );
-
-    // Add stock directly (simulate it being issued by an external pharmacy)
+    // ✅ FIX 1: Directly add stock - addToPatientMedicineStock handles getOrCreate internally
     await addToPatientMedicineStock(
       medication.admissionId,
       medication.patientId,
       medication.medicineId._id,
-      null, // batchId
+      null, // batchId (external)
       quantity, // base units
       medication.medicineName,
       medication.medicineId.base_unit || 'unit',
       medication.medicineId.pack_unit || 'pack',
       medication.medicineId.units_per_pack || 1,
-      0, // cost 
+      0, // cost (external, not tracked for revenue)
       null, // saleId
-      medication._id
+      medication._id,
+      'EXTERNAL_PHARMACY' // stockSource
     );
 
-    // Ensure status is active in case it was pending
+    // Update medication status
     medication.status = 'Active';
+    medication.stockReceiptStatus = 'RECEIVED';
+    medication.pharmacyRequest = {
+      requestedToPharmacy: false,
+      requestedAt: new Date(),
+      requestedBy: req.user?._id,
+      requestedQuantity: quantity,
+      pharmacyStatus: 'Approved',
+      dispensedFromPharmacy: true,
+      dispensedQuantity: quantity,
+      dispensedAt: new Date(),
+      stockReceivedByNurse: true,
+      stockReceivedAt: new Date(),
+      stockReceivedBy: req.user?._id
+    };
+
     await medication.save();
 
     res.json({
@@ -1082,6 +1323,9 @@ module.exports = {
   getMedicationSummary: exports.getMedicationSummary,
   getPatientMedicineStock: exports.getPatientMedicineStock,
   receiveExternalPharmacyStock: exports.receiveExternalPharmacyStock,
+  // NEW API EXPORTS
+  acknowledgeStockReceipt: exports.acknowledgeStockReceipt,
+  getPendingStockReceipts: exports.getPendingStockReceipts,
   // Helper functions for other modules
   addToPatientMedicineStock,
   deductFromPatientMedicineStock

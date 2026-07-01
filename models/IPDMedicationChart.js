@@ -1,3 +1,4 @@
+// models/IPDMedicationChart.js
 const mongoose = require('mongoose');
 
 const medicationTimingSchema = new mongoose.Schema({
@@ -45,7 +46,8 @@ const pharmacyRequestSchema = new mongoose.Schema({
     ref: 'User'
   },
   requestedQuantity: {
-    type: Number
+    type: Number,
+    default: 0
   },
   pharmacyId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -77,6 +79,18 @@ const pharmacyRequestSchema = new mongoose.Schema({
   pharmacyNotes: {
     type: String,
     trim: true
+  },
+  // NEW: Track if nurse has received/acknowledged the stock
+  stockReceivedByNurse: {
+    type: Boolean,
+    default: false
+  },
+  stockReceivedAt: {
+    type: Date
+  },
+  stockReceivedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   }
 });
 
@@ -155,7 +169,7 @@ const ipdMedicationChartSchema = new mongoose.Schema({
   timing: [medicationTimingSchema],
   status: {
     type: String,
-    enum: ['Active', 'Stopped', 'Completed', 'Pending', 'Requested'],
+    enum: ['Active', 'Stopped', 'Completed', 'Pending', 'Requested', 'Dispensed'],
     default: 'Active'
   },
   isHighRisk: {
@@ -189,6 +203,13 @@ const ipdMedicationChartSchema = new mongoose.Schema({
   requiresPharmacyDispense: {
     type: Boolean,
     default: false
+  },
+  
+  // NEW: Stock receipt status for nurse visibility
+  stockReceiptStatus: {
+    type: String,
+    enum: ['NOT_REQUESTED', 'PENDING_RECEIPT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'REJECTED'],
+    default: 'NOT_REQUESTED'
   },
   
   // Billing
@@ -232,6 +253,7 @@ ipdMedicationChartSchema.pre('save', async function(next) {
         scheduleDateTime.setHours(parseInt(hour), parseInt(minute), 0, 0);
         
         timings.push({
+          date: scheduleDateTime,
           time: scheduleDateTime,
           status: 'Pending'
         });
@@ -275,5 +297,6 @@ ipdMedicationChartSchema.index({ admissionId: 1, status: 1 });
 ipdMedicationChartSchema.index({ patientId: 1, startDate: -1 });
 ipdMedicationChartSchema.index({ medicineName: 1 });
 ipdMedicationChartSchema.index({ 'pharmacyRequest.pharmacyStatus': 1 });
+ipdMedicationChartSchema.index({ stockReceiptStatus: 1 });
 
 module.exports = mongoose.model('IPDMedicationChart', ipdMedicationChartSchema);
