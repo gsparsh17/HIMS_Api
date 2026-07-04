@@ -1,190 +1,210 @@
 const mongoose = require('mongoose');
 
+const amendmentSchema = new mongoose.Schema({
+  amendedAt: { type: Date, default: Date.now },
+  amendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  reason: { type: String, required: true, trim: true },
+  snapshot: { type: mongoose.Schema.Types.Mixed }
+}, { _id: false });
+
 const ipdInitialAssessmentSchema = new mongoose.Schema({
-  admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', required: true, index: true },
+  admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', required: true, index: true, unique: true },
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
-  
-  // Header
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
+
+  encounterContext: { type: String, enum: ['OPD', 'IPD', 'Emergency'], default: 'IPD' },
+  arrivalDateTime: Date,
   assessmentTime: { type: Date, default: Date.now },
-  admittedBy: { type: String },
-  relation: { type: String },
+  admittedBy: String,
+  relation: String,
   caseType: { type: String, enum: ['MLC', 'Non MLC'], default: 'Non MLC' },
 
-  // PAGE 1
   allergies: {
-    bloodTransfusion: { type: String },
-    drug: { type: String },
-    foodAndBeverages: { type: String },
+    bloodTransfusion: String,
+    drug: String,
+    foodAndBeverages: String,
     none: { type: Boolean, default: false },
-    other: { type: String }
+    other: String
   },
-  chiefComplaints: { type: String },
-  historyOfPresentingIllness: { type: String },
-  
+  chiefComplaints: String,
+  historyOfPresentingIllness: String,
+
   personalHistory: {
-    occupationalHistory: {
-      significant: { type: Boolean },
-      details: { type: String }
-    },
-    diet: { type: String },
+    occupationalHistory: { significant: Boolean, details: String },
+    diet: String,
     habits: [{
-      type: { type: String }, // Cigarette, Tobacco, Alcohol, Drugs
-      optionalYesNo: { type: String },
-      durationSince: { type: String },
-      frequency: { type: String },
-      quitSince: { type: String }
+      type: String,
+      optionalYesNo: String,
+      durationSince: String,
+      frequency: String,
+      quitSince: String
     }]
   },
 
   pastHistoryMedical: {
     disorders: [{
-      particulars: { type: String }, // Hypertension, COPD, Diabetes, etc.
-      yesNo: { type: String },
-      sinceWhen: { type: String },
-      therapy: { type: String }
+      particulars: String,
+      yesNo: String,
+      sinceWhen: String,
+      therapy: String
     }],
     obstetricHistory: {
       isApplicable: { type: Boolean, default: false },
-      menarche: { type: String },
-      lmp: { type: String },
-      gravida: { type: String },
-      para: { type: String },
-      live: { type: String },
-      abortion: { type: String }
+      menarche: String,
+      lmp: String,
+      gravida: String,
+      para: String,
+      live: String,
+      abortion: String
     },
-    other: { type: String }
+    other: String
   },
 
-  // PAGE 2
   generalExamination: {
-    height: { type: String },
-    weight: { type: String },
-    levelOfConsciousness: { type: String }, // Conscious, Drowsy, Unresponsive
+    height: {
+      value: Number,
+      unit: { type: String, enum: ['cm', 'm', 'ft', ''] },
+      legacy: String
+    },
+    weight: {
+      value: Number,
+      unit: { type: String, enum: ['kg', 'lb', ''] },
+      legacy: String
+    },
+    levelOfConsciousness: String,
     gcs: {
-      e: { type: String },
-      v: { type: String },
-      m: { type: String },
-      total: { type: String }
+      e: String,
+      v: String,
+      m: String,
+      total: String
     },
     orientation: {
-      time: { type: Boolean },
-      place: { type: Boolean },
-      person: { type: Boolean }
+      time: Boolean,
+      place: Boolean,
+      person: Boolean,
+      details: String
     },
     vitals: {
-      temp: { type: String },
-      pulse: { type: String },
-      bp: { type: String },
-      rr: { type: String },
-      spo2: { type: String },
-      rbs: { type: String }
+      temp: String,
+      pulse: String,
+      bp: String,
+      rr: String,
+      spo2: String,
+      rbs: String
     },
     physicalSigns: {
-      pallor: { type: String },
-      clubbing: { type: String },
-      icterus: { type: String },
-      edema: { type: String },
-      emaciated: { type: String }
+      pallor: String,
+      clubbing: String,
+      icterus: String,
+      edema: String,
+      emaciated: String
     },
-    bodyHabitus: { type: String }, // Obese, Average Built, Thin, Cachecic
+    bodyHabitus: String,
     psychological: {
-      anxious: { type: Boolean },
-      depressed: { type: Boolean },
-      angry: { type: Boolean },
-      suicidal: { type: Boolean },
-      homicidal: { type: Boolean },
-      other: { type: String }
+      anxious: Boolean,
+      depressed: Boolean,
+      angry: Boolean,
+      suicidal: Boolean,
+      homicidal: Boolean,
+      other: String
     }
   },
 
   painScore: {
     score: { type: Number, min: 0, max: 10 },
-    duration: { type: String },
-    location: { type: String },
-    increasingFactor: { type: String },
-    decreasingFactor: { type: String }
+    duration: String,
+    location: String,
+    increasingFactor: String,
+    decreasingFactor: String
   },
-
   systemicExamination: [{
-    system: { type: String }, // Constitutional, CVS, Endocrine, etc.
-    nad: { type: Boolean },
-    finding: { type: String }
+    system: String,
+    nad: Boolean,
+    finding: String
   }],
 
-  // PAGE 3
   triageAndTrauma: {
-    airway: { type: String }, // Clear, Silent, Snoring, Gurgling
+    airway: { status: String, details: String },
     breathing: {
-      rr: { type: String },
-      breatheSounds: { type: String },
-      percussionNote: { type: String },
-      spo2RoomAir: { type: String },
-      spo2WithO2: { type: String }
+      rr: String,
+      breatheSounds: String,
+      percussionNote: String,
+      spo2RoomAir: String,
+      spo2WithO2: String
     },
     circulation: {
-      pulse: { type: String },
-      peripheralPulse: { type: String },
-      bloodPressure: { type: String },
-      others: { type: String }
+      pulse: String,
+      peripheralPulse: String,
+      bloodPressure: String,
+      others: String
     },
-    triageCategory: { type: String }, // Red, Yellow, Green, Black
-    
+    triageCategory: String,
     burnChart: {
-      totalScore: { type: Number },
-      allegedCause: { type: String },
-      gastricLavageSample: { type: String },
-      causeOfBurn: { type: String },
-      foreignBodiesFound: { type: String }
+      totalScore: Number,
+      burnAreas: [{ area: String, percentage: Number }],
+      allegedCause: String,
+      gastricLavageSample: String,
+      causeOfBurn: String,
+      foreignBodiesFound: String
     },
-    
     identificationMarks: {
-      mark1: { type: String },
-      mark2: { type: String }
+      mark1: String,
+      mark2: String
     },
-    externalInjuries: { type: String }
+    externalInjuries: String
   },
 
   investigationAdvised: {
-    pathology: [{ type: String }],
-    radiology: [{ type: String }],
-    otherPathology: { type: String },
-    otherRadiology: { type: String }
+    pathology: [String],
+    radiology: [String],
+    otherPathology: String,
+    otherRadiology: String
   },
 
-  // PAGE 4
   planAndDisposition: {
-    provisionalDiagnosis: { type: String },
+    provisionalDiagnosis: String,
     proceduresPerformedInER: [{
-      procedure: { type: String },
-      performedBy: { type: String },
-      sedationUsed: { type: String },
-      time: { type: String },
-      consentObtained: { type: String },
-      sign: { type: String }
+      procedure: String,
+      performedBy: String,
+      sedationUsed: String,
+      time: String,
+      consentObtained: String,
+      consentSignedBy: String,
+      sign: String
     }],
     treatmentPlanned: [{
-      drugNameAndForm: { type: String },
-      dose: { type: String },
-      route: { type: String },
-      frequency: { type: String }
+      drugNameAndForm: String,
+      dose: String,
+      route: String,
+      frequency: String
     }],
-    otherPlan: { type: String },
-    followUpInstructions: { type: String },
-    
+    otherPlan: String,
+    followUpInstructions: String,
+    intendedDischargeDate: Date,
     patientStatus: {
-      disposition: { type: String }, // Home, Ward, OT
+      disposition: String,
       referDetails: {
-        hospitalName: { type: String },
-        reason: { type: String },
-        referBy: { type: String }
+        hospitalName: String,
+        reason: String,
+        referBy: String
       }
     }
   },
 
+  formStatus: {
+    type: String,
+    enum: ['Draft', 'Completed', 'Signed', 'Amended'],
+    default: 'Draft',
+    index: true
+  },
+  signedAt: Date,
+  signedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  signerName: String,
+  amendments: [amendmentSchema],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
-}, {
-  timestamps: true
-});
+}, { timestamps: true });
+
+ipdInitialAssessmentSchema.index({ hospitalId: 1, admissionId: 1 });
 
 module.exports = mongoose.model('IPDInitialAssessment', ipdInitialAssessmentSchema);

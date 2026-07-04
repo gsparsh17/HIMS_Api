@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const { protect, requireModuleAccess } = require('../middlewares/auth');
+// router.use(protect, requireModuleAccess('masters.lab', 'view'));
 
 const LabTest = require('../models/LabTest');
 

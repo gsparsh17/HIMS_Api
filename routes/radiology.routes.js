@@ -2,8 +2,12 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
+const { protect, requireModuleAccess } = require('../middlewares/auth');
 const controller = require('../controllers/radiology.controller');
 const radiologyStaffController = require('../controllers/radiologyStaff.controller');
+
+// Apply authentication and base permission to all routes
+// router.use(protect, requireModuleAccess('masters.radiology', 'view'));
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
@@ -15,7 +19,7 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
   fileFilter: (req, file, cb) => {

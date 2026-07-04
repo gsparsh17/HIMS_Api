@@ -12,7 +12,7 @@ const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDAdmission = require('../models/IPDAdmission');
 const { resolveDoseQtyBaseUnits, calculateMedicationRequiredBaseUnits } = require('../services/ipdMedicationFlow.service');
 
-const connectionString = process.env.MONGO_URI || process.env.MONGODB_URI || process.env.DATABASE_URL;
+const connectionString = process.env.MONGO_URI || process.env.MONGO_URI || process.env.DATABASE_URL;
 const apply = process.argv.includes('--apply');
 
 async function run() {

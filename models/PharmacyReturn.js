@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 
 const pharmacyReturnItemSchema = new mongoose.Schema({
+  transactionGroupId: { type: String, index: true },
+  parentGroupId: { type: String, index: true },
+  idempotencyKey: { type: String, index: true },
+  presentationType: { type: String, trim: true },
   saleItemId: { type: mongoose.Schema.Types.ObjectId },
   medicineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Medicine', required: true },
   batchId: { type: mongoose.Schema.Types.ObjectId, ref: 'MedicineBatch' },
@@ -32,7 +36,16 @@ const pharmacyReturnSchema = new mongoose.Schema({
   returnType: { type: String, enum: ['IPD_UNUSED_MEDICINE', 'OPD_RETURN', 'WALKIN_RETURN'], default: 'IPD_UNUSED_MEDICINE' },
   items: [pharmacyReturnItemSchema],
   totalRefundAmount: { type: Number, default: 0 },
-  refundMode: { type: String, enum: ['Cash', 'UPI', 'Card', 'IPDAdvance', 'PharmacyAdvance', 'NoRefund'], default: 'PharmacyAdvance' },
+  outstandingReduction: { type: Number, default: 0, min: 0 },
+  refundableResidual: { type: Number, default: 0, min: 0 },
+  dueBefore: { type: Number, default: 0, min: 0 },
+  dueAfter: { type: Number, default: 0, min: 0 },
+  transactionGroupId: { type: String, index: true },
+  parentGroupId: { type: String, index: true },
+  idempotencyKey: { type: String, sparse: true, index: true },
+  presentationType: { type: String, trim: true },
+  // No advance/refund is the safe default. The service sets a method only for a real paid residual.
+  refundMode: { type: String, enum: ['Cash', 'UPI', 'Card', 'IPDAdvance', 'PharmacyAdvance', 'NoRefund'], default: 'NoRefund' },
   refundReference: { type: String, trim: true },
   patientOutstandingAfter: { type: Number, default: 0 },
   pharmacyAdvanceAfter: { type: Number, default: 0 },
@@ -64,5 +77,6 @@ pharmacyReturnSchema.pre('validate', async function(next) {
 pharmacyReturnSchema.index({ admissionId: 1, createdAt: -1 });
 pharmacyReturnSchema.index({ patientId: 1, createdAt: -1 });
 pharmacyReturnSchema.index({ returnType: 1, createdAt: -1 });
+pharmacyReturnSchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('PharmacyReturn', pharmacyReturnSchema);

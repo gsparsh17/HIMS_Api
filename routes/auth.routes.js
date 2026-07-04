@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
+const { protect } = require('../middlewares/auth');
 
 const multer = require('multer');
 const path = require('path');
@@ -18,6 +19,7 @@ const upload = multer({ storage: storage });
 
 router.post('/register', upload.single('logo'), authController.registerUser);
 router.post('/login', authController.loginUser);
+router.get('/me', protect, authController.getCurrentUser);
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password/:token', authController.resetPassword);
 

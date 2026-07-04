@@ -26,6 +26,9 @@ const roundMoney = (value) => {
 
 // Valid GST rates in India
 const VALID_GST_RATES = [0, 5, 12, 18, 28];
+const VALID_BASE_UNITS = ['tablet', 'capsule', 'ml', 'vial', 'ampoule', 'bottle', 'tube', 'sachet', 'piece', 'unit', 'other'];
+const VALID_PACK_UNITS = ['strip', 'box', 'bottle', 'tube', 'vial', 'ampoule', 'sachet', 'piece', 'unit', 'other'];
+const normaliseMedicineUnit = (value, fallback, allowed) => allowed.includes(String(value || '').trim()) ? String(value).trim() : fallback;
 
 // Validate HSN code format (4-8 digits)
 const validateHSNCode = (code) => {
@@ -185,6 +188,7 @@ const getPurchaseOrderDateFilter = (dateFilter) => {
 };
 
 const getMedicineUnitInfo = async (medicineId) => {
+  if (!medicineId) return { medicine: null, unitsPerPack: 1, hsnCode: undefined, gstRate: undefined };
   const medicine = await Medicine.findById(medicineId).select(
     'units_per_pack pack_unit base_unit mrp selling_price price_per_unit hsn_code gst_rate'
   );
@@ -221,83 +225,86 @@ async function generateInvoiceNumber() {
 exports.createPurchaseOrder = async (req, res) => {
   try {
     const { supplier_id, items, notes, expected_delivery } = req.body;
+    if (!supplier_id) return res.status(400).json({ error: 'Supplier is required.' });
+    if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'At least one purchase order item is required.' });
 
-    // ========== GST VALIDATION ==========
     let subtotal = 0;
     let totalTax = 0;
     const validatedItems = [];
 
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      
-      // Get medicine details for GST validation
-      let medicine = null;
-      if (item.medicine_id) {
-        medicine = await Medicine.findById(item.medicine_id).select('hsn_code gst_rate name');
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index] || {};
+      const medicineId = item.medicine_id || null;
+      const medicine = medicineId ? await Medicine.findById(medicineId).select('name generic_name brand strength category base_unit pack_unit units_per_pack hsn_code gst_rate') : null;
+      if (medicineId && !medicine) {
+        return res.status(400).json({ error: `Medicine master was not found for line ${index + 1}. Select it again or use a manual/non-NLEM line.` });
       }
-      
-      const hsnCode = item.hsn_code || medicine?.hsn_code;
-      const gstRate = item.gst_rate !== undefined ? item.gst_rate : medicine?.gst_rate;
-      const medicineName = item.medicine_name || medicine?.name || 'Unknown Medicine';
-      
-      // Validate HSN code
-      if (!hsnCode) {
-        return res.status(400).json({
-          error: `HSN code is required for "${medicineName}". Please update the medicine master or provide HSN code.`
-        });
-      }
-      
+
+      const manualLine = !medicine || item.catalog_source === 'MANUAL_NON_NLEM' || item.is_non_nlem === true;
+      const medicineName = String(item.medicine_name || medicine?.name || '').trim();
+      if (!medicineName) return res.status(400).json({ error: `Medicine name is required for line ${index + 1}.` });
+
+      const quantity = toNumber(item.quantity, 0);
+      const unitCost = roundMoney(item.unit_cost);
+      if (quantity < 1) return res.status(400).json({ error: `Quantity must be at least 1 pack for "${medicineName}".` });
+      if (unitCost < 0) return res.status(400).json({ error: `Unit cost cannot be negative for "${medicineName}".` });
+
+      const hsnCode = String(item.hsn_code || medicine?.hsn_code || '').trim();
+      const gstRate = item.gst_rate !== undefined && item.gst_rate !== null ? toNumber(item.gst_rate, -1) : medicine?.gst_rate;
       if (!validateHSNCode(hsnCode)) {
-        return res.status(400).json({
-          error: `Invalid HSN code "${hsnCode}" for "${medicineName}". HSN must be 4-8 digits.`
-        });
+        return res.status(400).json({ error: `A valid 4–8 digit HSN code is required for "${medicineName}".` });
       }
-      
-      // Validate GST rate
-      if (gstRate === undefined || gstRate === null) {
-        return res.status(400).json({
-          error: `GST rate is required for "${medicineName}". Please update the medicine master.`
-        });
-      }
-      
       if (!validateGSTRate(gstRate)) {
-        return res.status(400).json({
-          error: `Invalid GST rate ${gstRate}% for "${medicineName}". Valid rates: 0, 5, 12, 18, 28`
-        });
+        return res.status(400).json({ error: `A valid GST rate is required for "${medicineName}". Allowed rates: ${VALID_GST_RATES.join(', ')}.` });
       }
-      
-      // Calculate item totals
-      const itemSubtotal = item.unit_cost * item.quantity;
-      const itemTax = (itemSubtotal * gstRate) / 100;
-      
+
+      const unitsPerPack = Math.max(1, toNumber(item.units_per_pack ?? medicine?.units_per_pack, 1));
+      const itemSubtotal = roundMoney(quantity * unitCost);
+      const itemTax = roundMoney((itemSubtotal * toNumber(gstRate)) / 100);
       subtotal += itemSubtotal;
       totalTax += itemTax;
-      
+
       validatedItems.push({
-        ...item,
+        medicine_id: medicine?._id || null,
+        medicine_name: medicineName,
+        catalog_source: manualLine ? 'MANUAL_NON_NLEM' : 'MASTER',
+        is_non_nlem: manualLine,
+        generic_name: String(item.generic_name || medicine?.generic_name || '').trim(),
+        brand: String(item.brand || medicine?.brand || '').trim(),
+        strength: String(item.strength || medicine?.strength || '').trim(),
+        category: String(item.category || medicine?.category || (manualLine ? 'Other' : '')).trim(),
+        base_unit: normaliseMedicineUnit(item.base_unit || medicine?.base_unit, 'tablet', VALID_BASE_UNITS),
+        pack_unit: normaliseMedicineUnit(item.pack_unit || medicine?.pack_unit, 'strip', VALID_PACK_UNITS),
+        units_per_pack: unitsPerPack,
         hsn_code: hsnCode,
-        gst_rate: gstRate,
-        tax_amount: item.tax_amount || itemTax
+        gst_rate: toNumber(gstRate),
+        quantity,
+        received: 0,
+        quantity_base_units: quantity * unitsPerPack,
+        received_base_units: 0,
+        unit_cost: unitCost,
+        total_cost: itemSubtotal,
+        tax_amount: itemTax,
+        batch_number: item.batch_number || '',
+        expiry_date: item.expiry_date || null,
+        selling_price: Math.max(0, toNumber(item.selling_price, 0)),
       });
     }
-    
-    const total_amount = subtotal + totalTax;
 
     const purchaseOrder = new PurchaseOrder({
+      hospitalId: req.user?.hospital_id || req.user?.hospitalId || null,
       supplier_id,
       items: validatedItems,
-      subtotal,
-      tax: totalTax,
-      total_amount,
-      notes,
+      subtotal: roundMoney(subtotal),
+      tax: roundMoney(totalTax),
+      total_amount: roundMoney(subtotal + totalTax),
+      notes: String(notes || '').trim(),
       expected_delivery: expected_delivery ? new Date(expected_delivery) : null,
       status: 'Ordered',
-      created_by: req.user?._id
+      created_by: req.user?._id || null,
     });
-
     await purchaseOrder.save();
 
-    // Create invoice with GST breakdown
     const invoice = new Invoice({
       invoice_type: 'Purchase',
       customer_type: 'Supplier',
@@ -305,23 +312,22 @@ exports.createPurchaseOrder = async (req, res) => {
       purchase_order_id: purchaseOrder._id,
       issue_date: new Date(),
       due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      service_items: validatedItems.map(item => ({
-        description: `Purchase - ${item.medicine_name || 'Item'} (HSN: ${item.hsn_code}, GST: ${item.gst_rate}%)`,
+      service_items: validatedItems.map((item) => ({
+        description: `Purchase - ${item.medicine_name} (HSN: ${item.hsn_code}, GST: ${item.gst_rate}%)`,
         quantity: item.quantity,
         unit_price: item.unit_cost,
-        total_price: item.unit_cost * item.quantity,
+        total_price: item.total_cost,
         tax_rate: item.gst_rate,
-        tax_amount: (item.unit_cost * item.quantity * item.gst_rate) / 100,
+        tax_amount: item.tax_amount,
         service_type: 'Purchase',
-        hsn_code: item.hsn_code
+        hsn_code: item.hsn_code,
       })),
-      subtotal: subtotal,
-      tax: totalTax,
-      total: total_amount,
+      subtotal: purchaseOrder.subtotal,
+      tax: purchaseOrder.tax,
+      total: purchaseOrder.total_amount,
       status: 'Issued',
-      notes: `Purchase Order: ${purchaseOrder.order_number} - ${notes || ''}`,
+      notes: `Purchase Order: ${purchaseOrder.order_number} - ${purchaseOrder.notes || ''}`,
     });
-
     await invoice.save();
 
     purchaseOrder.invoice_id = invoice._id;
@@ -333,20 +339,22 @@ exports.createPurchaseOrder = async (req, res) => {
       .populate('created_by', 'name');
 
     res.status(201).json({
-      message: 'Purchase order created successfully',
+      success: true,
+      message: 'Purchase order created successfully.',
       purchaseOrder: populatedPurchaseOrder,
-      invoice: invoice,
+      invoice,
       gst_summary: {
-        subtotal,
-        total_tax: totalTax,
-        total_amount,
-        cgst: totalTax / 2,
-        sgst: totalTax / 2
-      }
+        subtotal: purchaseOrder.subtotal,
+        total_tax: purchaseOrder.tax,
+        total_amount: purchaseOrder.total_amount,
+        cgst: roundMoney(purchaseOrder.tax / 2),
+        sgst: roundMoney(purchaseOrder.tax / 2),
+      },
+      manual_non_nlem_lines: validatedItems.filter((item) => item.catalog_source === 'MANUAL_NON_NLEM').map((item) => item.medicine_name),
     });
   } catch (err) {
     console.error('Error creating purchase order:', err);
-    res.status(400).json({ error: err.message });
+    res.status(400).json({ error: err.message || 'Unable to create purchase order.' });
   }
 };
 
@@ -433,202 +441,136 @@ exports.getPurchaseOrderById = async (req, res) => {
   }
 };
 
+/**
+ * A manual PO line remains master-less until receipt. This prevents a cancelled
+ * purchase order from creating a false stock master. The receipt creates one
+ * local/non-NLEM medicine exactly once and reuses it for partial receipts.
+ */
+async function resolveOrderItemMedicine({ order, orderItem, user }) {
+  if (orderItem.medicine_id) {
+    const existing = await Medicine.findById(orderItem.medicine_id);
+    if (!existing) throw new Error(`Medicine master not found for "${orderItem.medicine_name}".`);
+    return { medicine: existing, materialized: false };
+  }
+
+  const existingFromOrder = await Medicine.findOne({
+    created_from_purchase_order_id: order._id,
+    name: orderItem.medicine_name,
+  });
+  if (existingFromOrder) {
+    orderItem.medicine_id = existingFromOrder._id;
+    orderItem.materialized_at = orderItem.materialized_at || new Date();
+    return { medicine: existingFromOrder, materialized: false };
+  }
+
+  if (!orderItem.is_non_nlem && orderItem.catalog_source !== 'MANUAL_NON_NLEM') {
+    throw new Error(`A medicine master is required for "${orderItem.medicine_name}".`);
+  }
+  if (!validateHSNCode(orderItem.hsn_code)) throw new Error(`A valid HSN code is required for "${orderItem.medicine_name}".`);
+  if (!validateGSTRate(orderItem.gst_rate)) throw new Error(`A valid GST rate is required for "${orderItem.medicine_name}".`);
+
+  const medicine = await Medicine.create({
+    hospitalId: order.hospitalId || user?.hospital_id || user?.hospitalId || null,
+    name: orderItem.medicine_name,
+    generic_name: orderItem.generic_name || '',
+    brand: orderItem.brand || '',
+    strength: orderItem.strength || '',
+    category: orderItem.category || 'Other',
+    hsn_code: orderItem.hsn_code,
+    gst_rate: toNumber(orderItem.gst_rate),
+    base_unit: normaliseMedicineUnit(orderItem.base_unit, 'tablet', VALID_BASE_UNITS),
+    pack_unit: normaliseMedicineUnit(orderItem.pack_unit, 'strip', VALID_PACK_UNITS),
+    units_per_pack: Math.max(1, toNumber(orderItem.units_per_pack, 1)),
+    allow_loose_sale: true,
+    catalog_source: 'LOCAL_NON_NLEM',
+    created_from_purchase_order_id: order._id,
+    is_active: true,
+  });
+
+  orderItem.medicine_id = medicine._id;
+  orderItem.materialized_at = new Date();
+  return { medicine, materialized: true };
+}
+
 exports.receivePurchaseOrder = async (req, res) => {
   try {
     const { id } = req.params;
     const { received_items = [] } = req.body;
-
     if (!Array.isArray(received_items) || received_items.length === 0) {
-      return res.status(400).json({
-        error: 'received_items array is required',
-      });
+      return res.status(400).json({ error: 'received_items array is required.' });
     }
 
     const order = await PurchaseOrder.findById(id);
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
+    if (!order) return res.status(404).json({ error: 'Order not found.' });
     if (!['Ordered', 'Partially Received'].includes(order.status)) {
-      return res.status(400).json({
-        error: `Cannot receive stock for order with status ${order.status}`,
-      });
+      return res.status(400).json({ error: `Cannot receive stock for order with status ${order.status}.` });
     }
 
     const createdBatches = [];
-
+    const createdLocalMedicines = [];
     for (const receivedItem of received_items) {
       const orderItem = order.items.id(receivedItem.item_id);
-
-      if (!orderItem) {
-        return res.status(400).json({
-          error: `Purchase order item not found: ${receivedItem.item_id}`,
-        });
-      }
+      if (!orderItem) return res.status(400).json({ error: `Purchase order item not found: ${receivedItem.item_id}.` });
 
       const alreadyReceivedPacks = toNumber(orderItem.received, 0);
       const orderedPacks = toNumber(orderItem.quantity, 0);
       const pendingPacks = Math.max(0, orderedPacks - alreadyReceivedPacks);
-
-      const receivedPacks = Math.max(
-        0,
-        toNumber(
-          receivedItem.quantity_received_packs ??
-          receivedItem.quantity_received,
-          0
-        )
-      );
-
+      const receivedPacks = Math.max(0, toNumber(receivedItem.quantity_received_packs ?? receivedItem.quantity_received, 0));
       if (receivedPacks <= 0) continue;
-
       if (receivedPacks > pendingPacks) {
-        return res.status(400).json({
-          error: `Cannot receive ${receivedPacks} packs for ${orderItem.medicine_name}. Pending quantity is ${pendingPacks} packs.`,
-        });
+        return res.status(400).json({ error: `Cannot receive ${receivedPacks} packs for ${orderItem.medicine_name}. Pending quantity is ${pendingPacks} packs.` });
       }
 
-      const { medicine, unitsPerPack: medicineUnitsPerPack, hsnCode: medicineHsn, gstRate: medicineGst } = await getMedicineUnitInfo(orderItem.medicine_id);
+      // Receipt-side fields are controlled updates for batch data. Tax and the
+      // manual medicine snapshot stay on the order line for audit consistency.
+      if (receivedItem.hsn_code) orderItem.hsn_code = String(receivedItem.hsn_code).trim();
+      if (receivedItem.gst_rate !== undefined) orderItem.gst_rate = toNumber(receivedItem.gst_rate, -1);
+      if (receivedItem.units_per_pack !== undefined) orderItem.units_per_pack = Math.max(1, toNumber(receivedItem.units_per_pack, 1));
+      if (receivedItem.base_unit) orderItem.base_unit = normaliseMedicineUnit(receivedItem.base_unit, orderItem.base_unit || 'tablet', VALID_BASE_UNITS);
+      if (receivedItem.pack_unit) orderItem.pack_unit = normaliseMedicineUnit(receivedItem.pack_unit, orderItem.pack_unit || 'strip', VALID_PACK_UNITS);
 
-      // ========== GST VALIDATION FOR RECEIVING ==========
-      const hsnCode = orderItem.hsn_code || medicineHsn;
-      const gstRate = orderItem.gst_rate !== undefined ? orderItem.gst_rate : medicineGst;
+      if (!validateHSNCode(orderItem.hsn_code)) return res.status(400).json({ error: `A valid HSN code is required for ${orderItem.medicine_name}.` });
+      if (!validateGSTRate(orderItem.gst_rate)) return res.status(400).json({ error: `A valid GST rate is required for ${orderItem.medicine_name}.` });
 
-      if (!hsnCode) {
-        return res.status(400).json({
-          error: `HSN code is required for ${orderItem.medicine_name}. Please update the medicine master.`
-        });
-      }
+      const { medicine, materialized } = await resolveOrderItemMedicine({ order, orderItem, user: req.user });
+      if (materialized) createdLocalMedicines.push(medicine);
 
-      if (!validateHSNCode(hsnCode)) {
-        return res.status(400).json({
-          error: `Invalid HSN code "${hsnCode}" for ${orderItem.medicine_name}. HSN must be 4-8 digits.`
-        });
-      }
-
-      if (gstRate === undefined || gstRate === null) {
-        return res.status(400).json({
-          error: `GST rate is required for ${orderItem.medicine_name}. Please update the medicine master.`
-        });
-      }
-
-      if (!validateGSTRate(gstRate)) {
-        return res.status(400).json({
-          error: `Invalid GST rate ${gstRate}% for ${orderItem.medicine_name}. Valid rates: 0, 5, 12, 18, 28`
-        });
-      }
-
-      const unitsPerPack = Math.max(
-        1,
-        toNumber(
-          receivedItem.units_per_pack ??
-          orderItem.units_per_pack ??
-          medicineUnitsPerPack,
-          medicineUnitsPerPack
-        )
-      );
-
-      const quantityBaseUnits = Math.max(
-        0,
-        toNumber(
-          receivedItem.quantity_received_base_units,
-          receivedPacks * unitsPerPack
-        )
-      );
-
-      const batchNumber = String(
-        receivedItem.batch_number ||
-        orderItem.batch_number ||
-        ''
-      ).trim();
-
-      if (!batchNumber) {
-        return res.status(400).json({
-          error: `Batch number is required for ${orderItem.medicine_name}`,
-        });
-      }
-
+      const unitsPerPack = Math.max(1, toNumber(receivedItem.units_per_pack ?? orderItem.units_per_pack ?? medicine.units_per_pack, 1));
+      const quantityBaseUnits = Math.max(0, toNumber(receivedItem.quantity_received_base_units, receivedPacks * unitsPerPack));
+      const batchNumber = String(receivedItem.batch_number || orderItem.batch_number || '').trim();
       const expiryDate = receivedItem.expiry_date || orderItem.expiry_date;
-
-      if (!expiryDate) {
-        return res.status(400).json({
-          error: `Expiry date is required for ${orderItem.medicine_name}`,
-        });
-      }
-
+      if (!batchNumber) return res.status(400).json({ error: `Batch number is required for ${orderItem.medicine_name}.` });
+      if (!expiryDate) return res.status(400).json({ error: `Expiry date is required for ${orderItem.medicine_name}.` });
       const expiry = new Date(expiryDate);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      if (Number.isNaN(expiry.getTime()) || expiry <= today) return res.status(400).json({ error: `Expiry date must be in the future for ${orderItem.medicine_name}.` });
 
-      if (Number.isNaN(expiry.getTime()) || expiry <= today) {
-        return res.status(400).json({
-          error: `Expiry date must be a future date for ${orderItem.medicine_name}`,
-        });
-      }
+      const purchasePricePerPack = roundMoney(receivedItem.purchase_price_per_pack ?? receivedItem.purchase_price ?? orderItem.unit_cost ?? 0);
+      const sellingPricePerPack = roundMoney(receivedItem.selling_price_per_pack ?? receivedItem.selling_price ?? orderItem.selling_price ?? medicine.selling_price ?? medicine.mrp ?? purchasePricePerPack);
+      const mrpPerPack = roundMoney(receivedItem.mrp_per_pack ?? orderItem.mrp_per_pack ?? medicine.mrp ?? sellingPricePerPack);
+      const purchasePricePerBaseUnit = roundMoney(receivedItem.purchase_price_per_base_unit ?? purchasePricePerPack / unitsPerPack);
+      const sellingPricePerBaseUnit = roundMoney(receivedItem.selling_price_per_base_unit ?? sellingPricePerPack / unitsPerPack);
 
-      const purchasePricePerPack = roundMoney(
-        receivedItem.purchase_price_per_pack ??
-        receivedItem.purchase_price ??
-        orderItem.unit_cost ??
-        0
-      );
-
-      const sellingPricePerPack = roundMoney(
-        receivedItem.selling_price_per_pack ??
-        receivedItem.selling_price ??
-        orderItem.selling_price ??
-        medicine?.selling_price ??
-        medicine?.price_per_unit ??
-        purchasePricePerPack
-      );
-
-      const mrpPerPack = roundMoney(
-        receivedItem.mrp_per_pack ??
-        orderItem.mrp_per_pack ??
-        medicine?.mrp ??
-        sellingPricePerPack
-      );
-
-      const purchasePricePerBaseUnit = roundMoney(
-        receivedItem.purchase_price_per_base_unit ??
-        purchasePricePerPack / unitsPerPack
-      );
-
-      const sellingPricePerBaseUnit = roundMoney(
-        receivedItem.selling_price_per_base_unit ??
-        sellingPricePerPack / unitsPerPack
-      );
-
-      // Create batch with GST/HSN snapshot
       const batch = new MedicineBatch({
-        medicine_id: orderItem.medicine_id,
+        medicine_id: medicine._id,
         batch_number: batchNumber,
         expiry_date: expiry,
-
         quantity: quantityBaseUnits,
         quantity_base_units: quantityBaseUnits,
         opening_quantity_base_units: quantityBaseUnits,
         units_per_pack: unitsPerPack,
-
         purchase_price: purchasePricePerPack,
         selling_price: sellingPricePerPack,
-
         purchase_price_per_pack: purchasePricePerPack,
         selling_price_per_pack: sellingPricePerPack,
         mrp_per_pack: mrpPerPack,
-
         purchase_price_per_base_unit: purchasePricePerBaseUnit,
         selling_price_per_base_unit: sellingPricePerBaseUnit,
-
-        // ========== GST/HSN SNAPSHOT ==========
-        hsn_code: hsnCode,
-        gst_rate: gstRate,
-
         supplier_id: order.supplier_id,
         purchase_date: order.order_date || new Date(),
         received_date: new Date(),
         is_active: true,
       });
-
       await batch.save();
       createdBatches.push(batch);
 
@@ -640,37 +582,18 @@ exports.receivePurchaseOrder = async (req, res) => {
       orderItem.quantity_base_units = toNumber(orderItem.quantity_base_units, orderedPacks * unitsPerPack);
       orderItem.received_base_units = toNumber(orderItem.received_base_units, 0) + quantityBaseUnits;
 
-      await Medicine.findByIdAndUpdate(orderItem.medicine_id, {
-        $inc: { stock_quantity: quantityBaseUnits },
+      await Medicine.findByIdAndUpdate(medicine._id, {
         $set: {
           units_per_pack: unitsPerPack,
-        },
-        // Optionally update medicine master if it's missing GST/HSN
-        $setOnInsert: {
-          hsn_code: hsnCode,
-          gst_rate: gstRate
+          hsn_code: orderItem.hsn_code,
+          gst_rate: orderItem.gst_rate,
         },
       });
     }
 
-    const totalOrderedPacks = order.items.reduce(
-      (sum, item) => sum + toNumber(item.quantity, 0),
-      0
-    );
-
-    const totalReceivedPacks = order.items.reduce(
-      (sum, item) => sum + toNumber(item.received, 0),
-      0
-    );
-
-    if (totalReceivedPacks <= 0) {
-      order.status = 'Ordered';
-    } else if (totalReceivedPacks < totalOrderedPacks) {
-      order.status = 'Partially Received';
-    } else {
-      order.status = 'Received';
-    }
-
+    const totalOrderedPacks = order.items.reduce((sum, item) => sum + toNumber(item.quantity, 0), 0);
+    const totalReceivedPacks = order.items.reduce((sum, item) => sum + toNumber(item.received, 0), 0);
+    order.status = totalReceivedPacks <= 0 ? 'Ordered' : (totalReceivedPacks < totalOrderedPacks ? 'Partially Received' : 'Received');
     order.received_date = order.status === 'Received' ? new Date() : order.received_date;
     await order.save();
 
@@ -680,26 +603,25 @@ exports.receivePurchaseOrder = async (req, res) => {
       .populate('created_by', 'name');
 
     res.json({
-      message: 'Purchase order stock received successfully',
+      success: true,
+      message: 'Purchase order stock received successfully.',
       order: populatedOrder,
       createdBatches,
+      createdLocalMedicines,
       gst_summary: {
         total_batches: createdBatches.length,
-        batches: createdBatches.map(b => ({
-          batch_number: b.batch_number,
-          medicine_name: order.items.find(i => i.medicine_id.toString() === b.medicine_id.toString())?.medicine_name,
-          hsn_code: b.hsn_code,
-          gst_rate: b.gst_rate,
-          quantity: b.quantity_base_units
-        }))
-      }
+        batches: createdBatches.map((batch) => ({
+          batch_number: batch.batch_number,
+          medicine_name: populatedOrder.items.find((item) => String(item.medicine_id?._id || item.medicine_id) === String(batch.medicine_id))?.medicine_name,
+          hsn_code: batch.tax_snapshot?.hsn_code,
+          gst_rate: batch.tax_snapshot?.gst_rate,
+          quantity: batch.quantity_base_units,
+        })),
+      },
     });
   } catch (err) {
     console.error('Error receiving purchase order:', err);
-    res.status(400).json({
-      error: 'Failed to receive purchase order',
-      message: err.message,
-    });
+    res.status(400).json({ error: 'Failed to receive purchase order', message: err.message });
   }
 };
 

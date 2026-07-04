@@ -2,6 +2,7 @@ const Staff = require('../models/Staff');
 const User = require('../models/User');
 const Nurse = require('../models/Nurse');
 const OTStaff = require('../models/OTStaff');
+const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
 
 const VALID_USER_ROLES = new Set([
   'mediqliq_super_admin',
@@ -150,6 +151,89 @@ const mapStaffRoleToUserRole = (staffRole, explicitUserRole) => {
   }
 
   return 'staff';
+};
+
+
+function applyMainFeaturePermissions(user, permissions, role, grantedBy) {
+  const hasExplicitSelection = Array.isArray(permissions);
+  const rows = hasExplicitSelection
+    ? normalizeFeaturePermissions(permissions, role, { grantedBy })
+    : (Array.isArray(user.modulePermissions) && user.modulePermissions.length
+      ? normalizeFeaturePermissions(user.modulePermissions, role, { grantedBy })
+      : defaultFeaturePermissions(role, { grantedBy }));
+  user.modulePermissions = rows;
+  user.dashboard_access = dashboardAccessFromFeatures(rows);
+}
+
+async function findOrCreateStaffUser(staff, payload, req) {
+  const staffEmail = payload.email || staff.email;
+  const staffPhone = payload.phone || staff.phone;
+  const staffName = payload.fullName || `${staff.first_name || ''} ${staff.last_name || ''}`.trim();
+  const targetRole = mapStaffRoleToUserRole(staff.role, payload.userRole || payload.user_role);
+
+  if (!staffEmail) throw new Error('Email is required to create login credentials');
+
+  let user = staff.user_id ? await User.findById(staff.user_id) : null;
+  if (!user) user = await User.findOne({ email: staffEmail });
+
+  if (!user) {
+    if (!payload.password) throw new Error('Password is required when creating a new login');
+    user = new User({
+      name: staffName,
+      email: staffEmail,
+      phone: staffPhone,
+      role: targetRole,
+      password: payload.password,
+      hospital_id: req.user?.hospital_id || undefined,
+      is_active: staff.status ? staff.status === 'Active' : true
+    });
+  } else {
+    user.name = staffName;
+    user.email = staffEmail;
+    user.phone = staffPhone;
+    user.role = targetRole;
+    user.is_active = staff.status ? staff.status === 'Active' : true;
+    if (payload.password) user.password = payload.password;
+    if (req.user?.hospital_id && !user.hospital_id) user.hospital_id = req.user.hospital_id;
+  }
+
+  applyMainFeaturePermissions(user, payload.modulePermissions || payload.mainFeaturePermissions, targetRole, req.user?._id);
+  await user.save();
+  if (!staff.user_id || String(staff.user_id) !== String(user._id)) {
+    staff.user_id = user._id;
+    await staff.save();
+  }
+  return user;
+}
+
+exports.getStaffLoginAccess = async (req, res) => {
+  try {
+    const staff = await Staff.findById(req.params.id).populate('user_id', 'name email role modulePermissions dashboard_access is_active');
+    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+    const user = staff.user_id || (staff.email ? await User.findOne({ email: staff.email }).select('name email role modulePermissions dashboard_access is_active') : null);
+    return res.json({
+      success: true,
+      staff: { _id: staff._id, name: `${staff.first_name || ''} ${staff.last_name || ''}`.trim(), email: staff.email, role: staff.role },
+      user: user ? { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user), is_active: user.is_active } : null
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+exports.updateStaffLoginAccess = async (req, res) => {
+  try {
+    const staff = await Staff.findById(req.params.id);
+    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+    const user = await findOrCreateStaffUser(staff, req.body || {}, req);
+    return res.json({
+      success: true,
+      message: 'Login credentials and main feature access saved successfully',
+      user: { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user) }
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
 };
 
 exports.createStaff = async (req, res) => {

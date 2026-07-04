@@ -1,394 +1,675 @@
-// routes/ipd.routes.js
 const express = require('express');
 const router = express.Router();
-const { protect, authorize } = require('../middlewares/auth');
-const { validateIndent, validatePharmacyProcess, validateAdministration } = require('../middlewares/medicationFlowValidation');
+const {
+  protect,
+  authorize,
+  requireModuleAccess,
+  requireActionPermission
+} = require('../middlewares/auth');
+const {
+  validateIndent,
+  validatePharmacyProcess,
+  validateAdministration
+} = require('../middlewares/medicationFlowValidation');
+const admissions = require('../controllers/ipdAdmission.controller');
+const beds = require('../controllers/ipdBed.controller');
+const rounds = require('../controllers/ipdRound.controller');
+const nursing = require('../controllers/ipdNursing.controller');
+const meds = require('../controllers/ipdMedication.controller');
+const billing = require('../controllers/ipdBilling.controller');
+const discharge = require('../controllers/ipdDischarge.controller');
+const clinical = require('../controllers/ipdClinicalDocuments.controller');
 
-// Import controllers
-const ipdAdmissionController = require('../controllers/ipdAdmission.controller');
-const ipdBedController = require('../controllers/ipdBed.controller');
-const ipdRoundController = require('../controllers/ipdRound.controller');
-const ipdNursingController = require('../controllers/ipdNursing.controller');
-const ipdMedicationController = require('../controllers/ipdMedication.controller');
-const ipdBillingController = require('../controllers/ipdBilling.controller');
-const ipdDischargeController = require('../controllers/ipdDischarge.controller');
-const ipdInitialAssessmentController = require('../controllers/ipdInitialAssessment.controller');
+const clinicalRoles = ['admin', 'doctor', 'nurse', 'staff', 'registrar', 'pharmacy', 'accountant'];
+const read = [protect, authorize(...clinicalRoles)];
+const doctors = [protect, authorize('admin', 'doctor')];
+const nurses = [protect, authorize('admin', 'nurse', 'staff')];
 
-// ========== ADMISSION ROUTES ==========
-// Initial Assessment
-router.get('/admissions/:admissionId/initial-assessment', ipdInitialAssessmentController.getAssessmentByAdmissionId);
-router.post('/admissions/:admissionId/initial-assessment', ipdInitialAssessmentController.saveAssessment);
-router.put('/admissions/:admissionId/initial-assessment', ipdInitialAssessmentController.saveAssessment);
-
-// Create new admission
-router.post('/admissions', 
-  // protect, 
-  // authorize('admin', 'registrar', 'doctor'),
-  ipdAdmissionController.createAdmission
+// ============== CLINICAL DOCUMENTS ==============
+router.get(
+  '/admissions/:admissionId/clinical-documents/status',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  clinical.getClinicalDocumentStatus
 );
 
-// Get all admissions with filters
-router.get('/admissions', 
-  // protect, 
-  // authorize('admin', 'registrar', 'doctor', 'nurse', 'pharmacy', 'pharmacy_head', 'billing'),
-  ipdAdmissionController.getAllAdmissions
+router.get(
+  '/admissions/:admissionId/initial-assessment',
+  // ...read,
+  // requireModuleAccess('ipd.initial_assessment.doctor', 'view'),
+  clinical.getDoctorInitialAssessment
 );
 
-// Get dashboard statistics
-router.get('/admissions/dashboard/stats', 
-  // protect, 
-  // authorize('admin', 'registrar', 'doctor'),
-  ipdAdmissionController.getDashboardStats
+router.post(
+  '/admissions/:admissionId/initial-assessment',
+  // ...doctors,
+  // requireModuleAccess('ipd.initial_assessment.doctor', 'edit'),
+  clinical.saveDoctorInitialAssessment
 );
 
-// Get admission by ID
-router.get('/admissions/:id', 
-  // protect, 
-  // authorize('admin', 'registrar', 'doctor', 'nurse', 'pharmacy', 'pharmacy_head', 'billing'),
-  ipdAdmissionController.getAdmissionById
+router.put(
+  '/admissions/:admissionId/initial-assessment',
+  // ...doctors,
+  // requireModuleAccess('ipd.initial_assessment.doctor', 'edit'),
+  clinical.saveDoctorInitialAssessment
 );
 
-// Update admission
-router.put('/admissions/:id', 
-  // protect, 
-  // authorize('admin', 'doctor'),
-  ipdAdmissionController.updateAdmission
+router.get(
+  '/admissions/:admissionId/initial-assessment/print',
+  // ...read,
+  // requireModuleAccess('ipd.initial_assessment.doctor', 'view'),
+  clinical.printDoctorInitialAssessment
 );
 
-// Update admission status
-router.patch('/admissions/:id/status', 
-  // protect, 
-  // authorize('admin', 'doctor', 'registrar'),
-  ipdAdmissionController.updateAdmissionStatus
+router.get(
+  '/admissions/:admissionId/nursing-admission-assessment',
+  // ...read,
+  // requireModuleAccess('ipd.initial_assessment.nursing', 'view'),
+  clinical.getNursingAdmissionAssessment
 );
 
-// Delete/cancel admission
-router.delete('/admissions/:id', 
-  // protect, 
-  // authorize('admin'),
-  ipdAdmissionController.deleteAdmission
+router.post(
+  '/admissions/:admissionId/nursing-admission-assessment',
+  // ...nurses,
+  // requireModuleAccess('ipd.initial_assessment.nursing', 'edit'),
+  clinical.saveNursingAdmissionAssessment
 );
 
-// ========== PHARMACY INTEGRATION ROUTES ==========
-// Get admission by SHIP number (for pharmacy POS lookup)
-router.get('/ship/:shipNumber', 
-  // protect, 
-  // authorize('pharmacy', 'pharmacy_head', 'admin', 'billing', 'registrar'),
-  ipdAdmissionController.getAdmissionByShipNumber
+router.put(
+  '/admissions/:admissionId/nursing-admission-assessment',
+  // ...nurses,
+  // requireModuleAccess('ipd.initial_assessment.nursing', 'edit'),
+  clinical.saveNursingAdmissionAssessment
 );
 
-// Update pharmacy clearance status
-router.patch('/:id/pharmacy-clearance',
-  // protect,
-  // authorize('pharmacy_head', 'admin', 'billing'),
-  ipdAdmissionController.updatePharmacyClearance
+router.get(
+  '/admissions/:admissionId/nursing-admission-assessment/print',
+  // ...read,
+  // requireModuleAccess('ipd.initial_assessment.nursing', 'view'),
+  clinical.printNursingAdmissionAssessment
 );
 
-// Get admissions pending pharmacy clearance
-router.get('/pharmacy-clearance/pending',
-  // protect,
-  // authorize('pharmacy_head', 'admin', 'billing'),
-  ipdAdmissionController.getPendingPharmacyClearance
+// ============== VITALS ==============
+router.post(
+  '/vitals',
+  // ...nurses,
+  // requireModuleAccess('ipd.vitals', 'edit'),
+  clinical.createVitals
 );
 
-// ========== NURSE SPECIFIC ROUTES ==========
-// Complete clinical assessment (nurse workflow)
-router.post('/admissions/:id/complete-clinical-assessment', 
-  // protect, 
-  // authorize('nurse', 'admin', 'doctor'),
-  ipdAdmissionController.completeClinicalAssessment
+router.put(
+  '/vitals/:id',
+  // ...nurses,
+  // requireModuleAccess('ipd.vitals', 'edit'),
+  clinical.updateVitals
 );
 
-// Get nurse dashboard data
-router.get('/nurse/dashboard', 
-  // protect, 
-  // authorize('nurse', 'admin'),
-  ipdAdmissionController.getNurseDashboardData
+router.get(
+  '/vitals/admission/:admissionId',
+  // ...read,
+  // requireModuleAccess('ipd.vitals', 'view'),
+  clinical.getVitals
 );
 
-// ========== BED ROUTES ==========
-router.post('/beds', 
-  // protect, 
-  // authorize('admin', 'registrar'),
-  ipdBedController.createBed
+router.get(
+  '/vitals/admission/:admissionId/print/ews',
+  // ...read,
+  // requireModuleAccess('ipd.vitals', 'view'),
+  clinical.printVitalsEws
 );
 
-router.get('/beds', 
-  // protect, 
-  // authorize('admin', 'registrar', 'nurse', 'doctor'),
-  ipdBedController.getAllBeds
+router.get(
+  '/vitals/admission/:admissionId/print/patient-care-flow',
+  // ...read,
+  // requireModuleAccess('ipd.vitals', 'view'),
+  clinical.printPatientCareFlow
 );
 
-router.get('/beds/available', 
-  // protect, 
-  // authorize('admin', 'registrar', 'nurse', 'doctor'),
-  ipdBedController.getAvailableBeds
+router.get(
+  '/medications/admission/:admissionId/print',
+  // ...read,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  clinical.printMedicationChart
 );
 
-router.get('/beds/occupied', 
-  // protect, 
-  // authorize('admin', 'registrar', 'nurse', 'doctor'),
-  ipdBedController.getOccupiedBeds
+router.get(
+  '/rounds/admission/:admissionId/print',
+  // ...read,
+  // requireModuleAccess('ipd.rounds', 'view'),
+  clinical.printRounds
 );
 
-router.get('/beds/:id', 
-  // protect, 
-  // authorize('admin', 'registrar', 'nurse'),
-  ipdBedController.getBedById
+// ============== ADMISSIONS ==============
+router.post(
+  '/admissions',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  admissions.createAdmission
 );
 
-router.put('/beds/:id', 
-  // protect, 
-  // authorize('admin'),
-  ipdBedController.updateBed
+router.get(
+  '/admissions',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  admissions.getAllAdmissions
 );
 
-router.patch('/beds/:id/status', 
-  // protect, 
-  // authorize('admin', 'nurse'),
-  ipdBedController.updateBedStatus
+router.get(
+  '/admissions/dashboard/stats',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  admissions.getDashboardStats
 );
 
-router.delete('/beds/:id', 
-  // protect, 
-  // authorize('admin'),
-  ipdBedController.deleteBed
+router.get(
+  '/admissions/:id',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  admissions.getAdmissionById
 );
 
-// ========== SYNC BED STATUS ==========
-router.post('/beds/sync', 
-  // protect, 
-  // authorize('admin', 'registrar'),
-  ipdBedController.syncBedStatus
+router.put(
+  '/admissions/:id',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  admissions.updateAdmission
 );
 
-// ========== ROUND ROUTES ==========
-router.post('/rounds', 
-  // protect, 
-  // authorize('doctor', 'admin'),
-  ipdRoundController.createRound
+router.patch(
+  '/admissions/:id/status',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  admissions.updateAdmissionStatus
 );
 
-router.get('/rounds/admission/:admissionId', 
-  // protect, 
-  // authorize('doctor', 'nurse', 'admin'),
-  ipdRoundController.getRoundsByAdmission
+router.delete(
+  '/admissions/:id',
+  protect,
+  authorize('admin'),
+  requireModuleAccess('ipd.patient_file', 'edit'),
+  admissions.deleteAdmission
 );
 
-router.get('/rounds/doctor/:doctorId', 
-  // protect, 
-  // authorize('doctor', 'admin'),
-  ipdRoundController.getRoundsByDoctor
+router.get(
+  '/ship/:shipNumber',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  admissions.getAdmissionByShipNumber
 );
 
-router.get('/rounds/:id', 
-  // protect, 
-  // authorize('doctor', 'nurse', 'admin'),
-  ipdRoundController.getRoundById
+router.patch(
+  '/:id/pharmacy-clearance',
+  // ...read,
+  // requireModuleAccess('pharmacy.clearance', 'edit'),
+  requireActionPermission('final_clearance'),
+  admissions.updatePharmacyClearance
 );
 
-router.put('/rounds/:id', 
-  // protect, 
-  // authorize('doctor', 'admin'),
-  ipdRoundController.updateRound
+router.get(
+  '/pharmacy-clearance/pending',
+  // ...read,
+  // requireModuleAccess('pharmacy.clearance', 'view'),
+  admissions.getPendingPharmacyClearance
 );
 
-router.delete('/rounds/:id', 
-  // protect, 
-  // authorize('doctor', 'admin'),
-  ipdRoundController.deleteRound
+router.post(
+  '/admissions/:id/complete-clinical-assessment',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  admissions.completeClinicalAssessment
 );
 
-// ========== NURSING ROUTES ==========
-router.post('/nursing-notes', 
-  // protect, 
-  // authorize('nurse', 'admin'),
-  ipdNursingController.createNursingNote
+router.get(
+  '/nurse/dashboard',
+  // ...nurses,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  admissions.getNurseDashboardData
 );
 
-router.get('/nursing-notes/admission/:admissionId', 
-  // protect, 
-  // authorize('nurse', 'doctor', 'admin'),
-  ipdNursingController.getNursingNotesByAdmission
+// ============== BEDS ==============
+router.post(
+  '/beds',
+  protect,
+  authorize('admin', 'registrar'),
+  requireModuleAccess('ipd.patient_file', 'edit'),
+  beds.createBed
 );
 
-router.get('/nursing-notes/:id', 
-  // protect, 
-  // authorize('nurse', 'doctor', 'admin'),
-  ipdNursingController.getNursingNoteById
+router.get(
+  '/beds',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  beds.getAllBeds
 );
 
-router.put('/nursing-notes/:id', 
-  // protect, 
-  // authorize('nurse', 'admin'),
-  ipdNursingController.updateNursingNote
+router.get(
+  '/beds/available',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  beds.getAvailableBeds
 );
 
-router.delete('/nursing-notes/:id', 
-  // protect, 
-  // authorize('nurse', 'admin'),
-  ipdNursingController.deleteNursingNote
+router.get(
+  '/beds/occupied',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  beds.getOccupiedBeds
 );
 
-// ========== VITALS ROUTES ==========
-router.post('/vitals', 
-  // protect, 
-  // authorize('nurse', 'doctor', 'admin'),
-  ipdNursingController.createVitals
+router.get(
+  '/beds/:id',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  beds.getBedById
 );
 
-router.get('/vitals/admission/:admissionId', 
-  // protect, 
-  // authorize('nurse', 'doctor', 'admin'),
-  ipdNursingController.getVitalsByAdmission
+router.put(
+  '/beds/:id',
+  protect,
+  authorize('admin'),
+  requireModuleAccess('ipd.patient_file', 'edit'),
+  beds.updateBed
 );
 
-router.get('/vitals/admission/:admissionId/chart', 
-  // protect, 
-  // authorize('nurse', 'doctor', 'admin'),
-  ipdNursingController.getVitalsChartData
+router.patch(
+  '/beds/:id/status',
+  // ...nurses,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  beds.updateBedStatus
 );
 
-router.get('/vitals/admission/:admissionId/latest', 
-  // protect, 
-  // authorize('nurse', 'doctor', 'admin', 'pharmacy'),
-  ipdNursingController.getLatestVitals
+router.delete(
+  '/beds/:id',
+  protect,
+  authorize('admin'),
+  requireModuleAccess('ipd.patient_file', 'edit'),
+  beds.deleteBed
 );
 
-// ========== MEDICATION ROUTES ==========
-// Create medication order
-router.post('/medications', ipdMedicationController.createMedicationOrder);
-
-// Get medications by admission
-router.get('/medications/admission/:admissionId', ipdMedicationController.getMedicationsByAdmission);
-
-// Get today's medication schedule
-router.get('/medications/admission/:admissionId/today', ipdMedicationController.getTodaySchedule);
-
-// Get medication by ID
-router.get('/medications/:id', ipdMedicationController.getMedicationById);
-
-// Administer medication (nurse)
-router.patch('/medications/:id/administer', validateAdministration, ipdMedicationController.administerMedication);
-
-// Skip medication (nurse)
-router.patch('/medications/:id/skip', ipdMedicationController.skipMedication);
-
-// Stop medication (doctor)
-router.patch('/medications/:id/stop', ipdMedicationController.stopMedication);
-
-// Hold medication (nurse/doctor)
-router.patch('/medications/:id/hold', ipdMedicationController.holdMedication);
-
-// Request medication from pharmacy (nurse)
-router.patch('/medications/:id/request-pharmacy', validateIndent, ipdMedicationController.requestPharmacy);
-
-// Receive medication stock from external pharmacy (nurse)
-router.patch('/medications/:id/receive-external', validateIndent, ipdMedicationController.receiveExternalPharmacyStock);
-
-// ========== NEW: NURSE STOCK RECEIPT APIS ==========
-// Nurse acknowledges stock receipt from pharmacy
-router.patch('/medications/:id/acknowledge-receipt', ipdMedicationController.acknowledgeStockReceipt);
-
-// Get pending stock receipts for a nurse
-router.get('/medications/admission/:admissionId/pending-receipts', ipdMedicationController.getPendingStockReceipts);
-
-// ========== PHARMACY INTEGRATION FOR MEDICATIONS ==========
-// Get pending pharmacy requests (for pharmacy dashboard)
-router.get('/medications/pharmacy/requests/:pharmacyId', ipdMedicationController.getPendingPharmacyRequests);
-
-// Process pharmacy request (pharmacy dispenses medication)
-router.patch('/medications/:id/pharmacy-process', validatePharmacyProcess, ipdMedicationController.processPharmacyRequest);
-
-// Get nurse's today's medication schedule
-router.get('/medications/nurse/today', ipdMedicationController.getNurseTodaySchedule);
-
-// Get medication schedule for specific nurse and admission
-router.get('/medications/nurse/admission/:admissionId/schedule', ipdMedicationController.getMedicationScheduleForNurse);
-
-// Get medication summary for admission
-router.get('/medications/admission/:admissionId/summary', ipdMedicationController.getMedicationSummary);
-
-// ========== BILLING ROUTES ==========
-const financeViewRoles = ['admin', 'accountant', 'registrar', 'staff'];
-const financeApproveRoles = ['admin', 'accountant'];
-
-router.post('/billing/charges', ipdBillingController.addManualCharge);
-router.get('/billing/admission/:admissionId/charges', ipdBillingController.getChargesByAdmission);
-router.get('/billing/admission/:admissionId/running-bill', ipdBillingController.getRunningBill);
-router.post('/billing/admission/:admissionId/bed-charges', ipdBillingController.generateBedCharges);
-router.post('/billing/admission/:admissionId/discount', ipdBillingController.applyDiscount);
-router.post('/billing/admission/:admissionId/payment', ipdBillingController.recordPayment);
-router.post('/billing/admission/:admissionId/finalize', ipdBillingController.finalizeBill);
-router.post('/billing/admission/:admissionId/advance', ipdBillingController.recordAdvance);
-router.post('/billing/admission/:admissionId/advance-refund', ipdBillingController.refundAdvance);
-router.get('/billing/admission/:admissionId/ledger', ipdBillingController.getLedger);
-router.get('/billing/admission/:admissionId/financial-clearance', ipdBillingController.getFinancialClearance);
-router.post('/billing/admission/:admissionId/financial-clearance', ipdBillingController.finaliseFinancialClearance);
-router.patch('/billing/admission/:admissionId/charges/:chargeId/void', ipdBillingController.voidCharge);
-
-// ========== DISCHARGE ROUTES ==========
-// Initiate discharge process
-router.post('/discharge/:admissionId/initiate', 
-  // protect, 
-  // authorize('doctor', 'admin', 'registrar'),
-  ipdDischargeController.initiateDischarge
+router.post(
+  '/beds/sync',
+  protect,
+  authorize('admin', 'registrar'),
+  requireModuleAccess('ipd.patient_file', 'edit'),
+  beds.syncBedStatus
 );
 
-// Save discharge summary (doctor)
-router.post('/discharge/:admissionId/summary', 
-  // protect, 
-  // authorize('doctor', 'admin'),
-  ipdDischargeController.saveDischargeSummary
+// ============== ROUNDS ==============
+router.post(
+  '/rounds',
+  // ...doctors,
+  // requireModuleAccess('ipd.rounds', 'edit'),
+  rounds.createRound
 );
 
-// Get discharge summary
-router.get('/discharge/:admissionId/summary', 
-  // protect, 
-  // authorize('doctor', 'nurse', 'admin', 'registrar'),
-  ipdDischargeController.getDischargeSummary
+router.get(
+  '/rounds/admission/:admissionId',
+  // ...read,
+  // requireModuleAccess('ipd.rounds', 'view'),
+  rounds.getRoundsByAdmission
 );
 
-// Get discharge records
-router.get('/discharge/:admissionId/records', 
-  // protect, 
-  // authorize('admin', 'doctor', 'registrar'),
-  ipdDischargeController.getDischargeRecords
+router.get(
+  '/rounds/doctor/:doctorId',
+  // ...doctors,
+  // requireModuleAccess('ipd.rounds', 'view'),
+  rounds.getRoundsByDoctor
 );
 
-// Finalize discharge summary (doctor)
-router.post('/discharge/:admissionId/summary/finalize', 
-  // protect, 
-  // authorize('doctor', 'admin'),
-  ipdDischargeController.finalizeDischargeSummary
+router.get(
+  '/rounds/:id',
+  // ...read,
+  // requireModuleAccess('ipd.rounds', 'view'),
+  rounds.getRoundById
 );
 
-// Staff completes discharge summary (new)
-router.post('/discharge/:admissionId/staff-complete', 
-  // protect, 
-  // authorize('nurse', 'admin', 'registrar'),
-  ipdDischargeController.staffCompleteDischargeSummary
+router.put(
+  '/rounds/:id',
+  // ...doctors,
+  // requireModuleAccess('ipd.rounds', 'edit'),
+  rounds.updateRound
 );
 
-// Get discharge checklist
-router.get('/discharge/:admissionId/checklist', 
-  // protect, 
-  // authorize('doctor', 'nurse', 'admin', 'registrar'),
-  ipdDischargeController.getDischargeChecklist
+router.delete(
+  '/rounds/:id',
+  // ...doctors,
+  // requireModuleAccess('ipd.rounds', 'edit'),
+  rounds.deleteRound
 );
 
-// Complete discharge (final step)
-router.post('/discharge/:admissionId/complete', 
-  // protect, 
-  // authorize('admin', 'registrar'),
-  ipdDischargeController.completeDischarge
+// ============== NURSING NOTES ==============
+router.post(
+  '/nursing-notes',
+  // ...nurses,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  nursing.createNursingNote
 );
 
-// Get discharge documents
-router.get('/discharge/:admissionId/documents', 
-  // protect, 
-  // authorize('admin', 'doctor', 'registrar', 'patient'),
-  ipdDischargeController.getDischargeDocuments
+router.get(
+  '/nursing-notes/admission/:admissionId',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  nursing.getNursingNotesByAdmission
+);
+
+router.get(
+  '/nursing-notes/:id',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  nursing.getNursingNoteById
+);
+
+router.put(
+  '/nursing-notes/:id',
+  // ...nurses,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  nursing.updateNursingNote
+);
+
+router.delete(
+  '/nursing-notes/:id',
+  // ...nurses,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  nursing.deleteNursingNote
+);
+
+// Legacy vitals chart endpoints
+router.get(
+  '/vitals/admission/:admissionId/chart',
+  // ...read,
+  // requireModuleAccess('ipd.vitals', 'view'),
+  nursing.getVitalsChartData
+);
+
+router.get(
+  '/vitals/admission/:admissionId/latest',
+  // ...read,
+  // requireModuleAccess('ipd.vitals', 'view'),
+  nursing.getLatestVitals
+);
+
+// ============== MEDICATION CHART / MAR ==============
+router.post(
+  '/medications',
+  // ...doctors,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  meds.createMedicationOrder
+);
+
+router.get(
+  '/medications/admission/:admissionId',
+  // ...read,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  meds.getMedicationsByAdmission
+);
+
+router.get(
+  '/medications/admission/:admissionId/today',
+  // ...read,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  meds.getTodaySchedule
+);
+
+router.get(
+  '/medications/:id',
+  // ...read,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  meds.getMedicationById
+);
+
+router.patch(
+  '/medications/:id/administer',
+  // ...nurses,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  validateAdministration,
+  meds.administerMedication
+);
+
+router.patch(
+  '/medications/:id/skip',
+  // ...nurses,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  meds.skipMedication
+);
+
+router.patch(
+  '/medications/:id/stop',
+  // ...doctors,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  meds.stopMedication
+);
+
+router.patch(
+  '/medications/:id/hold',
+  // ...read,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  meds.holdMedication
+);
+
+router.patch(
+  '/medications/:id/request-pharmacy',
+  // ...nurses,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  validateIndent,
+  meds.requestPharmacy
+);
+
+router.patch(
+  '/medications/:id/receive-external',
+  // ...nurses,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  validateIndent,
+  meds.receiveExternalPharmacyStock
+);
+
+router.patch(
+  '/medications/:id/acknowledge-receipt',
+  // ...nurses,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  meds.acknowledgeStockReceipt
+);
+
+router.get(
+  '/medications/admission/:admissionId/pending-receipts',
+  // ...nurses,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  meds.getPendingStockReceipts
+);
+
+router.get(
+  '/medications/pharmacy/requests/:pharmacyId',
+  // ...read,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  meds.getPendingPharmacyRequests
+);
+
+router.patch(
+  '/medications/:id/pharmacy-process',
+  // ...read,
+  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  validatePharmacyProcess,
+  meds.processPharmacyRequest
+);
+
+router.get(
+  '/medications/nurse/today',
+  // ...nurses,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  meds.getNurseTodaySchedule
+);
+
+router.get(
+  '/medications/nurse/admission/:admissionId/schedule',
+  // ...nurses,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  meds.getMedicationScheduleForNurse
+);
+
+router.get(
+  '/medications/admission/:admissionId/summary',
+  // ...read,
+  // requireModuleAccess('ipd.medication_chart', 'view'),
+  meds.getMedicationSummary
+);
+
+// ============== BILLING ==============
+router.post(
+  '/billing/charges',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  billing.addManualCharge
+);
+
+router.get(
+  '/billing/admission/:admissionId/charges',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  billing.getChargesByAdmission
+);
+
+router.get(
+  '/billing/admission/:admissionId/running-bill',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  billing.getRunningBill
+);
+
+router.post(
+  '/billing/admission/:admissionId/bed-charges',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  billing.generateBedCharges
+);
+
+router.post(
+  '/billing/admission/:admissionId/discount',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('discount_override'),
+  billing.applyDiscount
+);
+
+router.post(
+  '/billing/admission/:admissionId/payment',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  billing.recordPayment
+);
+
+router.post(
+  '/billing/admission/:admissionId/finalize',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  billing.finalizeBill
+);
+
+router.post(
+  '/billing/admission/:admissionId/advance',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  billing.recordAdvance
+);
+
+router.post(
+  '/billing/admission/:admissionId/advance-refund',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('refund'),
+  billing.refundAdvance
+);
+
+router.get(
+  '/billing/admission/:admissionId/ledger',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  billing.getLedger
+);
+
+router.get(
+  '/billing/admission/:admissionId/financial-clearance',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  billing.getFinancialClearance
+);
+
+router.post(
+  '/billing/admission/:admissionId/financial-clearance',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('final_clearance'),
+  billing.finaliseFinancialClearance
+);
+
+router.patch(
+  '/billing/admission/:admissionId/charges/:chargeId/void',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  billing.voidCharge
+);
+
+// ============== DISCHARGE ==============
+router.post(
+  '/discharge/:admissionId/initiate',
+  // ...doctors,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  discharge.initiateDischarge
+);
+
+router.post(
+  '/discharge/:admissionId/summary',
+  // ...doctors,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  discharge.saveDischargeSummary
+);
+
+router.get(
+  '/discharge/:admissionId/summary',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  discharge.getDischargeSummary
+);
+
+router.get(
+  '/discharge/:admissionId/records',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  discharge.getDischargeRecords
+);
+
+router.post(
+  '/discharge/:admissionId/summary/finalize',
+  // ...doctors,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  discharge.finalizeDischargeSummary
+);
+
+router.post(
+  '/discharge/:admissionId/staff-complete',
+  // ...nurses,
+  // requireModuleAccess('ipd.patient_file', 'edit'),
+  discharge.staffCompleteDischargeSummary
+);
+
+router.get(
+  '/discharge/:admissionId/checklist',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  discharge.getDischargeChecklist
+);
+
+router.post(
+  '/discharge/:admissionId/complete',
+  protect,
+  authorize('admin', 'registrar'),
+  requireModuleAccess('ipd.patient_file', 'edit'),
+  discharge.completeDischarge
+);
+
+router.get(
+  '/discharge/:admissionId/documents',
+  // ...read,
+  // requireModuleAccess('ipd.patient_file', 'view'),
+  discharge.getDischargeDocuments
 );
 
 module.exports = router;

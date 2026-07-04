@@ -148,74 +148,23 @@ exports.deleteNursingNote = async (req, res) => {
 // Create vitals record
 exports.createVitals = async (req, res) => {
   try {
-    const {
-      admissionId,
-      patientId,
-      recordedBy,
-      recordedAt,
-      temperature,
-      temperatureUnit,
-      pulse,
-      bloodPressure,
-      respiratoryRate,
-      spo2,
-      bloodSugar,
-      weight,
-      height,
-      painScore,
-      glasgowComaScale,
-      intakeOutput,
-      remarks
-    } = req.body;
-
-    // Verify admission exists
+    const { admissionId } = req.body;
     const admission = await IPDAdmission.findById(admissionId);
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-
-    const vitals = new IPDVitals({
-      admissionId,
-      patientId,
-      recordedBy: recordedBy || req.user?._id,
-      recordedAt: recordedAt || new Date(),
-      temperature,
-      temperatureUnit,
-      pulse,
-      bloodPressure,
-      respiratoryRate,
-      spo2,
-      bloodSugar,
-      weight,
-      height,
-      painScore,
-      glasgowComaScale,
-      intakeOutput,
-      remarks
-    });
-
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    const payload = {
+      ...req.body,
+      patientId: req.body.patientId || admission.patientId,
+      hospitalId: req.body.hospitalId || admission.hospitalId || admission.hospital_id || req.user?.hospital_id,
+      recordedBy: req.body.recordedBy || req.user?._id,
+      recordedByName: req.body.recordedByName || req.user?.name,
+      recordedAt: req.body.recordedAt || new Date()
+    };
+    const vitals = new IPDVitals(payload);
     await vitals.save();
-
-    // Check for critical values and create alert
     if (vitals.isAbnormal) {
-      // Create nursing note for abnormal vitals
-      const alertNote = new NursingNote({
-        admissionId,
-        patientId,
-        nurseId: req.user?._id,
-        noteType: 'Critical Alert',
-        note: `Abnormal vitals recorded: ${vitals.isAbnormal ? 'Multiple parameters outside normal range' : ''}`,
-        priority: 'Critical',
-        createdBy: req.user?._id
-      });
-      await alertNote.save();
+      await NursingNote.create({ admissionId, patientId: vitals.patientId, nurseId: req.user?._id, noteType: 'Critical Alert', note: `Abnormal/EWS trigger vitals recorded. EWS ${vitals.ewsTotal || 0}`, priority: 'Critical', createdBy: req.user?._id });
     }
-
-    res.status(201).json({
-      success: true,
-      message: 'Vitals recorded successfully',
-      vitals
-    });
+    res.status(201).json({ success: true, message: 'Vitals recorded successfully', vitals });
   } catch (err) {
     console.error('Error recording vitals:', err);
     res.status(500).json({ error: err.message });

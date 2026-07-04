@@ -7,7 +7,7 @@ function makeEmployeeCode() {
 }
 
 const hrStaffProfileSchema = new mongoose.Schema({
-  employee_code: { type: String, unique: true, trim: true },
+  employee_code: { type: String, trim: true },
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Staff' },
   doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
@@ -16,7 +16,10 @@ const hrStaffProfileSchema = new mongoose.Schema({
   pathology_staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PathologyStaff' },
   radiology_staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'RadiologyStaff' },
   ot_staff_id: { type: mongoose.Schema.Types.ObjectId, ref: 'OTStaff' },
-  source_model: { type: String, enum: ['Doctor', 'Staff', 'Nurse', 'LabStaff', 'PathologyStaff', 'RadiologyStaff', 'OTStaff', 'Manual'] },
+  source_model: {
+    type: String,
+    enum: ['Doctor', 'Staff', 'Nurse', 'LabStaff', 'PathologyStaff', 'RadiologyStaff', 'OTStaff', 'Manual']
+  },
   source_id: { type: mongoose.Schema.Types.ObjectId },
   full_name: { type: String, required: true, trim: true },
   first_name: { type: String, trim: true },
@@ -28,7 +31,22 @@ const hrStaffProfileSchema = new mongoose.Schema({
   address: { type: String, trim: true },
   staff_type: {
     type: String,
-    enum: ['doctor', 'nurse', 'staff', 'admin', 'hr', 'store', 'pharmacy', 'pathology_staff', 'radiology_staff', 'ot_staff', 'receptionist', 'registrar', 'accountant', 'other'],
+    enum: [
+      'doctor',
+      'nurse',
+      'staff',
+      'admin',
+      'hr',
+      'store',
+      'pharmacy',
+      'pathology_staff',
+      'radiology_staff',
+      'ot_staff',
+      'receptionist',
+      'registrar',
+      'accountant',
+      'other'
+    ],
     default: 'staff'
   },
   designation: { type: String, required: true, trim: true },
@@ -39,12 +57,28 @@ const hrStaffProfileSchema = new mongoose.Schema({
   license_number: { type: String, trim: true },
   shift: { type: mongoose.Schema.Types.ObjectId, ref: 'Shift' },
   joining_date: { type: Date, default: Date.now },
-  employment_type: { type: String, enum: ['Full Time', 'Part Time', 'Contract', 'Visiting', 'Intern', 'Temporary'], default: 'Full Time' },
-  employment_status: { type: String, enum: ['Active', 'Inactive', 'On Leave', 'Suspended', 'Terminated'], default: 'Active' },
-  salary_type: { type: String, enum: ['Salary', 'Per Hour', 'Fee per Visit', 'Contractual Salary', 'Commission'], default: 'Salary' },
+  employment_type: {
+    type: String,
+    enum: ['Full Time', 'Part Time', 'Contract', 'Visiting', 'Intern', 'Temporary'],
+    default: 'Full Time'
+  },
+  employment_status: {
+    type: String,
+    enum: ['Active', 'Inactive', 'On Leave', 'Suspended', 'Terminated'],
+    default: 'Active'
+  },
+  salary_type: {
+    type: String,
+    enum: ['Salary', 'Per Hour', 'Fee per Visit', 'Contractual Salary', 'Commission'],
+    default: 'Salary'
+  },
   salary_amount: { type: Number, default: 0, min: 0 },
   payroll_enabled: { type: Boolean, default: true },
-  pay_cycle: { type: String, enum: ['monthly', 'weekly', 'daily'], default: 'monthly' },
+  pay_cycle: {
+    type: String,
+    enum: ['monthly', 'weekly', 'daily'],
+    default: 'monthly'
+  },
   basic_salary: { type: Number, default: 0, min: 0 },
   hra: { type: Number, default: 0, min: 0 },
   conveyance_allowance: { type: Number, default: 0, min: 0 },
@@ -56,7 +90,11 @@ const hrStaffProfileSchema = new mongoose.Schema({
   tds: { type: Number, default: 0, min: 0 },
   other_deduction: { type: Number, default: 0, min: 0 },
   paid_leave_quota: { type: Number, default: 0, min: 0 },
-  unpaid_leave_policy: { type: String, enum: ['deduct_per_day', 'ignore'], default: 'deduct_per_day' },
+  unpaid_leave_policy: {
+    type: String,
+    enum: ['deduct_per_day', 'ignore'],
+    default: 'deduct_per_day'
+  },
   bank_name: { type: String, trim: true },
   bank_account_number: { type: String, trim: true },
   ifsc_code: { type: String, trim: true },
@@ -77,15 +115,20 @@ const hrStaffProfileSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 hrStaffProfileSchema.pre('save', function(next) {
-  if (!this.employee_code) this.employee_code = makeEmployeeCode();
+  if (!this.employee_code) {
+    this.employee_code = makeEmployeeCode();
+  }
+
   if (!this.first_name && this.full_name) {
     const [first, ...rest] = this.full_name.trim().split(/\s+/);
     this.first_name = first;
     this.last_name = rest.join(' ');
   }
+
   next();
 });
 
+hrStaffProfileSchema.index({ hospital_id: 1, employee_code: 1 }, { unique: true });
 hrStaffProfileSchema.index({ hospital_id: 1, email: 1 }, { unique: true });
 hrStaffProfileSchema.index({ staff_type: 1, employment_status: 1 });
 hrStaffProfileSchema.index({ department: 1 });

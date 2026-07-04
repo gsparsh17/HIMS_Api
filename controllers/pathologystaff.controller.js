@@ -2,6 +2,7 @@
 const PathologyStaff = require('../models/PathologyStaff');
 const User = require('../models/User');
 const LabTest = require('../models/LabTest');
+const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
 
 exports.createPathologyStaff = async (req, res) => {
   try {
@@ -221,6 +222,76 @@ exports.getPathologyStaffById = async (req, res) => {
       message: 'Failed to fetch pathology staff',
       error: error.message
     });
+  }
+};
+
+
+
+function applyPathologyFeaturePermissions(user, permissions, grantedBy) {
+  const rows = Array.isArray(permissions)
+    ? normalizeFeaturePermissions(permissions, 'pathology_staff', { grantedBy })
+    : (Array.isArray(user.modulePermissions) && user.modulePermissions.length
+      ? normalizeFeaturePermissions(user.modulePermissions, role, { grantedBy })
+      : defaultFeaturePermissions(role, { grantedBy }));
+  user.modulePermissions = rows;
+  user.dashboard_access = dashboardAccessFromFeatures(rows);
+}
+
+exports.getPathologyStaffLoginAccess = async (req, res) => {
+  try {
+    const staff = await PathologyStaff.findById(req.params.id).populate('user_id', 'name email role modulePermissions dashboard_access is_active');
+    if (!staff) return res.status(404).json({ success: false, message: 'Pathology staff not found' });
+    const user = staff.user_id || await User.findOne({ email: staff.email }).select('name email role modulePermissions dashboard_access is_active');
+    return res.json({
+      success: true,
+      staff: { _id: staff._id, name: `${staff.first_name || ''} ${staff.last_name || ''}`.trim(), email: staff.email, role: staff.role },
+      user: user ? { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user), is_active: user.is_active } : null
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.updatePathologyStaffLoginAccess = async (req, res) => {
+  try {
+    const staff = await PathologyStaff.findById(req.params.id);
+    if (!staff) return res.status(404).json({ success: false, message: 'Pathology staff not found' });
+    if (!staff.email) return res.status(400).json({ success: false, message: 'Pathology staff email is required to create login credentials' });
+
+    let user = staff.user_id ? await User.findById(staff.user_id) : null;
+    if (!user) user = await User.findOne({ email: staff.email });
+    if (!user) {
+      if (!req.body?.password) return res.status(400).json({ success: false, message: 'Password is required when creating a new login' });
+      user = new User({
+        name: `${staff.first_name || ''} ${staff.last_name || ''}`.trim(),
+        email: staff.email,
+        phone: staff.phone,
+        role: 'pathology_staff',
+        password: req.body.password,
+        hospital_id: req.user?.hospital_id || undefined
+      });
+    } else {
+      user.name = `${staff.first_name || ''} ${staff.last_name || ''}`.trim();
+      user.email = staff.email;
+      user.phone = staff.phone;
+      user.role = 'pathology_staff';
+      if (req.body?.password) user.password = req.body.password;
+      if (req.user?.hospital_id && !user.hospital_id) user.hospital_id = req.user.hospital_id;
+    }
+
+    applyPathologyFeaturePermissions(user, req.body?.modulePermissions || req.body?.mainFeaturePermissions, req.user?._id);
+    await user.save();
+    if (!staff.user_id || String(staff.user_id) !== String(user._id)) {
+      staff.user_id = user._id;
+      await staff.save();
+    }
+    return res.json({
+      success: true,
+      message: 'Login credentials and main feature access saved successfully',
+      user: { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user) }
+    });
+  } catch (error) {
+    return res.status(400).json({ success: false, message: error.message });
   }
 };
 

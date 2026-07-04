@@ -42,6 +42,10 @@ const pharmacyLedgerEntrySchema = new mongoose.Schema({
   settlementAllocationId: { type: mongoose.Schema.Types.ObjectId },
   purchaseOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder' },
   notes: { type: String, trim: true },
+  transactionGroupId: { type: String, trim: true, index: true },
+  parentGroupId: { type: String, trim: true, index: true },
+  idempotencyKey: { type: String, trim: true, sparse: true },
+  presentationType: { type: String, trim: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
@@ -49,5 +53,6 @@ pharmacyLedgerEntrySchema.index({ entryDate: -1, paymentMethod: 1 });
 pharmacyLedgerEntrySchema.index({ patientId: 1, entryDate: -1 });
 pharmacyLedgerEntrySchema.index({ admissionId: 1, entryDate: -1 });
 pharmacyLedgerEntrySchema.index({ entryType: 1, entryDate: -1 });
+pharmacyLedgerEntrySchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('PharmacyLedgerEntry', pharmacyLedgerEntrySchema);

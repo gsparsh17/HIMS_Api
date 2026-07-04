@@ -95,41 +95,37 @@ function calculateRequiredBaseUnits(item = {}) {
   return Math.ceil(calculated);
 }
 
-async function getAdvanceBalance({ admissionId, patientId, walletType = 'PHARMACY_IPD' }) {
+async function getAdvanceBalance({ admissionId, patientId, walletType = 'PHARMACY_IPD', session } = {}) {
   const query = { walletType };
   if (admissionId) query.admissionId = admissionId;
   else if (patientId) query.patientId = patientId;
-  const last = await PatientAdvanceLedger.findOne(query).sort({ createdAt: -1 });
+  let lookup = PatientAdvanceLedger.findOne(query).sort({ createdAt: -1 });
+  if (session) lookup = lookup.session(session);
+  const last = await lookup;
   if (last) return Number(last.balanceAfter || 0);
   if (walletType === 'IPD_SHARED' && admissionId) {
-    const admission = await IPDAdmission.findById(admissionId).select('advanceAmount');
+    let admissionLookup = IPDAdmission.findById(admissionId).select('advanceAmount');
+    if (session) admissionLookup = admissionLookup.session(session);
+    const admission = await admissionLookup;
     return Number(admission?.advanceAmount || 0);
   }
   return 0;
 }
 
-async function createAdvanceLedgerEntry({ hospitalId, patientId, admissionId, walletType = 'PHARMACY_IPD', transactionType, direction, amount, paymentMethod, referenceNumber, sourceModule = 'Pharmacy', sourceId, notes, createdBy }) {
-  const current = await getAdvanceBalance({ admissionId, patientId, walletType });
+async function createAdvanceLedgerEntry({ hospitalId, patientId, admissionId, walletType = 'PHARMACY_IPD', transactionType, direction, amount, paymentMethod, referenceNumber, sourceModule = 'Pharmacy', sourceId, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType, session } = {}) {
+  const current = await getAdvanceBalance({ admissionId, patientId, walletType, session });
   const normalizedAmount = normalizeMoney(amount);
   const balanceAfter = normalizeMoney(direction === 'CREDIT' ? current + normalizedAmount : current - normalizedAmount);
-  const entry = await PatientAdvanceLedger.create({
-    hospitalId,
-    patientId,
-    admissionId,
-    walletType,
-    transactionType,
-    direction,
-    amount: normalizedAmount,
-    paymentMethod,
-    referenceNumber,
-    sourceModule,
-    sourceId,
-    balanceAfter,
-    notes,
-    createdBy
-  });
+  if (direction === 'DEBIT' && balanceAfter < -0.009) throw new Error('Wallet balance cannot fall below zero');
+  const payload = {
+    hospitalId, patientId, admissionId, walletType, transactionType, direction, amount: normalizedAmount, paymentMethod, referenceNumber, sourceModule, sourceId, balanceAfter, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType
+  };
+  const created = await PatientAdvanceLedger.create([payload], session ? { session } : undefined);
+  const entry = Array.isArray(created) ? created[0] : created;
   if (walletType === 'IPD_SHARED' && admissionId) {
-    await IPDAdmission.findByIdAndUpdate(admissionId, { advanceAmount: Math.max(balanceAfter, 0) });
+    const update = IPDAdmission.findByIdAndUpdate(admissionId, { advanceAmount: Math.max(balanceAfter, 0) });
+    if (session) update.session(session);
+    await update;
   }
   return entry;
 }
@@ -215,45 +211,24 @@ async function validateDeferredPaymentReturn(saleId) {
 }
 
 // ========== HELPER: Handle Deferred Payment Return ==========
-async function handleDeferredPaymentReturn(originalSale, refundAmount, refundMode, returnId, createdBy) {
-  const newBalanceDue = normalizeMoney(originalSale.balance_due - refundAmount);
-
-  originalSale.balance_due = Math.max(0, newBalanceDue);
-  originalSale.return_amount = normalizeMoney((originalSale.return_amount || 0) + refundAmount);
+async function handleDeferredPaymentReturn(originalSale, returnAmount) {
+  // Legacy helper retained only for historical callers. It never creates an
+  // advance credit: the authoritative return service performs due-first
+  // allocation and any paid residual refund separately.
+  const dueBefore = normalizeMoney(originalSale.balance_due || 0);
+  const dueReduction = Math.min(normalizeMoney(returnAmount), dueBefore);
+  originalSale.balance_due = normalizeMoney(dueBefore - dueReduction);
+  originalSale.return_amount = normalizeMoney((originalSale.return_amount || 0) + normalizeMoney(returnAmount));
   originalSale.net_amount_after_returns = normalizeMoney(
-    Math.max(0, (originalSale.total_amount || 0) - (originalSale.return_amount || 0))
+    Math.max(0, (originalSale.total_amount || 0) - originalSale.return_amount)
   );
-
-  if (originalSale.balance_due <= 0) {
-    originalSale.status = 'Completed';
-    originalSale.payment_deferred = false;
-    originalSale.settled_at = new Date();
-  } else {
-    originalSale.status = 'PartiallyReturned';
-  }
-
+  originalSale.status = originalSale.net_amount_after_returns <= 0
+    ? 'Refunded'
+    : originalSale.balance_due > 0 ? 'PartiallyReturned' : 'Completed';
+  // Preserve payment_deferred for this legacy path; do not let downstream
+  // legacy code reinterpret a due reduction as cash/advance refundable value.
   await originalSale.save();
-
-  if (refundAmount > 0 && originalSale.admission_id && originalSale.patient_id &&
-    ['IPDAdvance', 'PharmacyAdvance'].includes(refundMode)) {
-    await createAdvanceLedgerEntry({
-      hospitalId: originalSale.hospitalId,
-      patientId: originalSale.patient_id,
-      admissionId: originalSale.admission_id,
-      walletType: refundMode === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED',
-      transactionType: 'PHARMACY_RETURN_CREDIT',
-      direction: 'CREDIT',
-      amount: refundAmount,
-      paymentMethod: refundMode,
-      referenceNumber: returnId,
-      sourceModule: 'Pharmacy',
-      sourceId: returnId,
-      notes: `Medicine return on deferred payment ${originalSale.sale_number}`,
-      createdBy: createdBy || originalSale.created_by
-    });
-  }
-
-  return originalSale;
+  return { originalSale, dueReduction };
 }
 
 // ========== buildSaleItems - Allocate bill discount proportionally before tax calculation ==========
@@ -1704,7 +1679,7 @@ async function createUnifiedSale(payload, req = {}) {
 // ... (rest of the file - createReturn, createOutstandingSettlement, bulkSettleDeferredPayments, settleSingleDeferredPayment, and exports remain the same)
 
 // ========== UPDATED: createReturn ==========
-async function createReturn(payload, req = {}) {
+async function legacyCreateReturn(payload, req = {}) {
   console.log('========== CREATE RETURN START ==========');
   console.log('Creating pharmacy return with payload:', JSON.stringify(payload, null, 2));
 
@@ -3335,6 +3310,15 @@ async function settleSingleDeferredPayment(saleId, payload, req = {}) {
       status: sale.status
     }
   };
+}
+
+
+// Direct callers are routed into the authoritative engine as well. The old
+// implementation above remains only as a migration reference and is not used.
+async function createReturn(payload, req = {}) {
+  const { completeAuthoritativeReturn } = require('./pharmacyReturnClearance.service');
+  const result = await completeAuthoritativeReturn({ payload, req });
+  return result.returnRecord;
 }
 
 module.exports = {

@@ -6,6 +6,17 @@ const compositionSchema = new mongoose.Schema({
 }, { _id: false });
 
 const medicineSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
+  // NLEM is a reference catalogue, not an exclusive purchasing catalogue.
+  // Medicines materialised from a manual/non-NLEM PO line remain traceable.
+  catalog_source: {
+    type: String,
+    enum: ['NLEM', 'LOCAL_NON_NLEM', 'MANUAL'],
+    default: 'MANUAL',
+    index: true
+  },
+  nlem_code: { type: String, trim: true, index: true, sparse: true },
+  created_from_purchase_order_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder', index: true },
   name: { type: String, required: true, trim: true, index: true },
   generic_name: { type: String, trim: true, index: true },
   brand: { type: String, trim: true, index: true },
@@ -136,5 +147,6 @@ function buildCompositionKeywords(doc) {
 medicineSchema.index({ name: 'text', generic_name: 'text', brand: 'text', composition: 'text', category: 'text' });
 medicineSchema.index({ hsn_code: 1, gst_rate: 1 });
 medicineSchema.index({ gst_rate: 1, is_active: 1 });
+medicineSchema.index({ hospitalId: 1, catalog_source: 1, name: 1 });
 
 module.exports = mongoose.model('Medicine', medicineSchema);

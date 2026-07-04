@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const auditLogger = require('./middlewares/auditLogger');
 const app = express();
 
@@ -35,21 +37,24 @@ require('./models/EHRBundle');
 require('./models/ApprovalRequest');
 require('./models/FinancialSequence');
 require('./models/FinancialTransaction');
+require('./models/BillingServiceMaster');
+require('./models/BulkImportJob');
+require('./models/IPDNursingAdmissionAssessment');
 // ... add a require for every model file you have
 
 // Middleware
 app.use(cors());
+
 app.use(auditLogger({ apiPrefix: '/api' }));
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(morgan('dev'));
 
 // Routes
-// In your main server.js or app.js
-const paymentRoutes = require('./routes/paymentRoutes'); // Make sure path is correct
+const paymentRoutes = require('./routes/paymentRoutes');
+app.use('/api/payments', paymentRoutes);
 
-// This line combines the prefix with the specific route
-app.use('/api/payments', paymentRoutes); // <-- Check this line carefully!
 app.use('/api/auth', require('./routes/auth.routes'));
+app.use('/api/imports', require('./routes/bulkImport.routes.js'));
 app.use('/api/mediqliq', require('./routes/mediqliqSuperAdmin.routes'));
 app.use('/api/audit-logs', require('./routes/auditLog.routes'));
 app.use('/api/patients', require('./routes/patient.routes'));
@@ -59,11 +64,10 @@ app.use('/api/nurses', require('./routes/nurse.routes'));
 app.use('/api/staff', require('./routes/staff.routes'));
 app.use('/api/insurance-providers', require('./routes/insuranceProvider.routes'));
 app.use('/api/appointments', require('./routes/appointment.routes'));
+
 // Store management and HR management routes
 app.use('/api/store', require('./routes/store.routes'));
 app.use('/api/hr', require('./routes/hr.routes'));
-
-// app.use('/api/pharmacy', require('./routes/pharmacy.routes'));
 app.use('/api/prescriptions', require('./routes/prescription.routes'));
 app.use('/api/procedurerequests', require('./routes/procedureRequest.routes'));
 app.use('/api/procedures', require('./routes/procedureRoutes'));
@@ -80,6 +84,7 @@ app.use('/api/calendar', require('./routes/calendar.routes'));
 app.use('/api/customers', require('./routes/customer.routes.js'));
 app.use('/api/suppliers', require('./routes/supplierRoutes.js'));
 app.use('/api/episodes', require('./routes/episode.routes.js'));
+
 const medicineRoutes = require('./routes/medicine.routes');
 const batchRoutes = require('./routes/batch.routes');
 const stockAdjustmentRoutes = require('./routes/stockAdjustment.routes');
@@ -93,6 +98,7 @@ const licenseRoutes = require('./routes/license.routes.js');
 const { startBackupScheduler } = require('./scripts/backupScheduler');
 const ipdRoutes = require('./routes/ipd.routes');
 const wardRoutes = require('./routes/ward.routes');
+
 app.use('/api/ipd', ipdRoutes);
 app.use('/api/wards', wardRoutes);
 
@@ -116,22 +122,24 @@ app.use('/api/pathology-staff', pathologyStaffRoutes);
 app.use('/api/labtests', require('./routes/labTest.routes.js'));
 app.use('/api/lab', require('./routes/lab.routes.js'));
 app.use('/api/radiology', require('./routes/radiology.routes.js'));
+
 const externalLabRoutes = require('./routes/externalLab.routes');
 const emailRoutes = require('./routes/emailRoutes.js');
 const pharmacyBillRoutes = require('./routes/pharmacyBill.routes');
+
 app.use('/api/pharmacy-bills', pharmacyBillRoutes);
 app.use('/api/email', emailRoutes);
-
-// Add this with other route registrations
 app.use('/api/external-lab', externalLabRoutes);
-app.use("/api/license", licenseRoutes);
+app.use('/api/license', licenseRoutes);
 app.use('/api/icd11', require('./routes/icd11.routes.js'));
-app.use("/api/ot", require('./routes/ot.routes.js'));
+app.use('/api/ot', require('./routes/ot.routes.js'));
 app.use('/api/approvals', require('./routes/approval.routes.js'));
 
 // Temporary admin-only test route for ABDM gateway token
 const { getGatewayToken } = require('./services/abdm.service');
-app.get('/api/abdm/test-token', async (req, res) => {
+const { protect, isAdmin } = require('./middlewares/auth');
+
+app.get('/api/abdm/test-token', protect, isAdmin, async (req, res) => {
   try {
     const token = await getGatewayToken();
     res.json({ success: true, tokenPreview: token.slice(0, 12) + '...' });
@@ -144,24 +152,24 @@ app.get('/api/abdm/test-token', async (req, res) => {
   }
 });
 
+
+const userAccessRoutes = require('./routes/userAccess.routes');
+
+// Add this near other route declarations
+app.use('/api', userAccessRoutes);
+
 // Error Handlers
 app.use((req, res, next) => {
   res.status(404).json({ error: 'Route not found' });
 });
+
 app.use((err, req, res, next) => {
-  req.auditError = { message: err.message, stack: process.env.NODE_ENV === 'production' ? undefined : err.stack };
+  req.auditError = {
+    message: err.message,
+    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack
+  };
   console.error(err.stack);
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
 module.exports = app;
-
-
-
-
-
-
-
-
-
-

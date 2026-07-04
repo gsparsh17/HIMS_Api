@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 
 const paymentBreakupSchema = new mongoose.Schema({
+  transactionGroupId: { type: String, index: true },
+  parentGroupId: { type: String, index: true },
+  idempotencyKey: { type: String, index: true },
+  presentationType: { type: String, trim: true },
   method: {
     type: String,
     enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Credit', 'Pending', 'NoPayment', 'Adjustment', 'Deferred'],
@@ -144,6 +148,10 @@ const saleSchema = new mongoose.Schema({
     default: 'Cash'
   },
   payments: [paymentBreakupSchema],
+  transactionGroupId: { type: String, index: true },
+  parentGroupId: { type: String, index: true },
+  idempotencyKey: { type: String, sparse: true, index: true },
+  presentationType: { type: String, trim: true },
   status: {
     type: String,
     enum: ['Completed', 'Pending', 'Cancelled', 'Refunded', 'PartiallyReturned'],
@@ -157,6 +165,9 @@ const saleSchema = new mongoose.Schema({
   overpayment_amount: { type: Number, default: 0 },
   overpayment_credited_to: { type: String, enum: ['PHARMACY_IPD', 'IPD_SHARED', null], default: null },
   return_amount: { type: Number, default: 0 },
+  // Sum of the paid component actually refunded after due-first return allocation.
+  // Original receipt rows remain append-only in the ledger.
+  refunded_amount: { type: Number, default: 0, min: 0 },
   net_amount_after_returns: { type: Number, default: 0 },
   return_refs: [saleReturnRefSchema],
   settlement_refs: [settlementRefSchema],
@@ -192,7 +203,7 @@ const saleSchema = new mongoose.Schema({
   },
   discharge_settlement_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Settlement',
+    ref: 'PharmacyLedgerSettlement',
     default: null
   }
 }, { timestamps: true });
@@ -217,7 +228,17 @@ saleSchema.pre('validate', function (next) {
     item.total_price = Number((item.total_price ?? item.net_amount).toFixed(2));
     return item;
   });
-  this.net_amount_after_returns = this.net_amount_after_returns || Math.max(0, (this.total_amount || 0) - (this.return_amount || 0));
+  // Zero is valid after a complete return. Older documents may nevertheless
+  // hydrate this schema default as 0 even though their persisted field was absent.
+  // In that legacy case, infer the open net from total minus recorded returns.
+  const inferredNetAfterReturns = Math.max(0, (this.total_amount || 0) - (this.return_amount || 0));
+  if (
+    this.net_amount_after_returns === undefined ||
+    this.net_amount_after_returns === null ||
+    (Number(this.net_amount_after_returns) === 0 && inferredNetAfterReturns > 0 && Number(this.return_amount || 0) === 0)
+  ) {
+    this.net_amount_after_returns = inferredNetAfterReturns;
+  }
   next();
 });
 
@@ -236,4 +257,5 @@ saleSchema.index({ patient_id: 1, admission_id: 1, sale_date: -1 });
 saleSchema.index({ doctor_id: 1, sale_date: -1 });
 saleSchema.index({ payment_deferred: 1, include_in_discharge_clearance: 1, status: 1 });
 
+saleSchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
 module.exports = mongoose.model('Sale', saleSchema);

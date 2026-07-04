@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const paymentBreakdownSchema = new mongoose.Schema({
   method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment'],
+    enum: ['Cash', 'Card', 'UPI', 'Bank', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment'],
     required: true,
   },
   amount: { type: Number, required: true, min: 0 },
@@ -38,7 +38,7 @@ const pharmacyLedgerSettlementSchema = new mongoose.Schema({
   status: { type: String, enum: ['POSTED', 'REVERSED'], default: 'POSTED', index: true },
   settlement_type: {
     type: String,
-    enum: ['FINAL_CONCESSION', 'RETROACTIVE_INVOICE_DISCOUNT'],
+    enum: ['FINAL_CONCESSION', 'RETROACTIVE_INVOICE_DISCOUNT', 'FINAL_CLEARANCE'],
     required: true,
   },
   discount_scope: {
@@ -83,6 +83,13 @@ const pharmacyLedgerSettlementSchema = new mongoose.Schema({
   approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   idempotency_key: { type: String, trim: true, sparse: true, unique: true },
+  transactionGroupId: { type: String, trim: true, index: true },
+  parentGroupId: { type: String, trim: true, index: true },
+  presentationType: { type: String, trim: true },
+  unusedPharmacyAdvanceDisposition: { type: String, enum: ['none', 'refund', 'retain'], default: 'none' },
+  unusedPharmacyAdvanceAmount: { type: Number, default: 0, min: 0 },
+  unusedPharmacyAdvanceRefundMethod: { type: String, enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', null], default: null },
+  unusedPharmacyAdvanceRefundReference: { type: String, trim: true },
 
   reversed_at: { type: Date },
   reversed_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

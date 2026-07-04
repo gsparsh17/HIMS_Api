@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Department = require('../models/Department');
 const Hospital = require('../models/Hospital');
 const Calendar = require('../models/Calendar');
+const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
 
 // ✅ Create a new doctor
 exports.createDoctor = async (req, res) => {
@@ -189,6 +190,77 @@ exports.getDoctorById = async (req, res) => {
     res.json(doctor);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+};
+
+
+
+function applyDoctorFeaturePermissions(user, permissions, grantedBy) {
+  const rows = Array.isArray(permissions)
+    ? normalizeFeaturePermissions(permissions, 'doctor', { grantedBy })
+    : (Array.isArray(user.modulePermissions) && user.modulePermissions.length
+      ? normalizeFeaturePermissions(user.modulePermissions, 'doctor', { grantedBy })
+      : defaultFeaturePermissions('doctor', { grantedBy }));
+  user.modulePermissions = rows;
+  user.dashboard_access = dashboardAccessFromFeatures(rows);
+}
+
+exports.getDoctorLoginAccess = async (req, res) => {
+  try {
+    const doctor = await Doctor.findById(req.params.id).populate('user_id', 'name email role modulePermissions dashboard_access is_active');
+    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
+    const user = doctor.user_id || await User.findOne({ email: doctor.email }).select('name email role modulePermissions dashboard_access is_active');
+    return res.json({
+      success: true,
+      doctor: { _id: doctor._id, name: `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim(), email: doctor.email },
+      user: user ? { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user), is_active: user.is_active } : null
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+exports.updateDoctorLoginAccess = async (req, res) => {
+  try {
+    const doctor = await Doctor.findById(req.params.id);
+    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
+    if (!doctor.email) return res.status(400).json({ error: 'Doctor email is required to create login credentials' });
+
+    let user = doctor.user_id ? await User.findById(doctor.user_id) : null;
+    if (!user) user = await User.findOne({ email: doctor.email });
+    if (!user) {
+      if (!req.body?.password) return res.status(400).json({ error: 'Password is required when creating a new login' });
+      user = new User({
+        name: `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim(),
+        email: doctor.email,
+        phone: doctor.phone,
+        role: 'doctor',
+        password: req.body.password,
+        hospital_id: req.user?.hospital_id || undefined
+      });
+    } else {
+      user.name = `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim();
+      user.email = doctor.email;
+      user.phone = doctor.phone;
+      user.role = 'doctor';
+      if (req.body?.password) user.password = req.body.password;
+      if (req.user?.hospital_id && !user.hospital_id) user.hospital_id = req.user.hospital_id;
+    }
+
+    applyDoctorFeaturePermissions(user, req.body?.modulePermissions || req.body?.mainFeaturePermissions, req.user?._id);
+    await user.save();
+    if (!doctor.user_id || String(doctor.user_id) !== String(user._id)) {
+      doctor.user_id = user._id;
+      await doctor.save();
+    }
+
+    return res.json({
+      success: true,
+      message: 'Login credentials and main feature access saved successfully',
+      user: { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user) }
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 };
 

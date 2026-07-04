@@ -23,6 +23,7 @@ const medicationTimingSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Nurse'
   },
+  administeredByInitials: { type: String, trim: true },
   remarks: {
     type: String,
     trim: true
@@ -30,7 +31,11 @@ const medicationTimingSchema = new mongoose.Schema({
   witnessedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Nurse'
-  }
+  },
+  administeredByInitials: { type: String, trim: true },
+  witnessedByInitials: { type: String, trim: true },
+  signOffName: { type: String, trim: true },
+  witnessedByInitials: { type: String, trim: true }
 });
 
 const pharmacyRequestSchema = new mongoose.Schema({
@@ -137,6 +142,7 @@ const ipdMedicationChartSchema = new mongoose.Schema({
     ref: 'Doctor',
     required: true
   },
+  prescribedByNameSnapshot: { type: String, trim: true },
   roundId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'IPDRound'
@@ -154,6 +160,8 @@ const ipdMedicationChartSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  emergencyDrug: { type: Boolean, default: false },
+  highRiskCategory: { type: String, trim: true },
   // Unit count given at one administration. Do not derive this from a
   // strength string such as '500 mg' (which is not 500 tablets).
   doseQtyBaseUnits: {
@@ -241,6 +249,7 @@ const ipdMedicationChartSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  stoppedAt: { type: Date },
   stoppedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Doctor'

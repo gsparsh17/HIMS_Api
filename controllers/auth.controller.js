@@ -13,6 +13,7 @@ const PathologyStaff = require('../models/PathologyStaff');
 const OTStaff = require('../models/OTStaff'); // Add OT Staff model
 const HRStaffProfile = require('../models/HRStaffProfile');
 const jwt = require('jsonwebtoken');
+const { effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -262,145 +263,75 @@ exports.registerUser = async (req, res) => {
 };
 
 // UPDATED LOGIN FUNCTION WITH OT STAFF SUPPORT - FIXED
+function loginBase(user, hospital) {
+  return {
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    token: generateToken(user._id, user.role),
+    hospitalID: user.hospital_id || hospital?._id,
+    // Main role-oriented feature list used by navigation and guarded API routes.
+    modulePermissions: effectiveMainFeaturePermissions(user)
+  };
+}
+
+exports.getCurrentUser = async (req, res) => {
+  return res.json({
+    success: true,
+    user: {
+      _id: req.user._id,
+      name: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+      hospitalID: req.user.hospital_id,
+      modulePermissions: effectiveMainFeaturePermissions(req.user)
+    }
+  });
+};
+
 exports.loginUser = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = req.body?.password;
     const user = await User.findOne({ email });
-    const hospital = await Hospital.findOne({});
+    const hospital = user?.hospital_id ? await Hospital.findById(user.hospital_id) : await Hospital.findOne({});
 
-    if (user && await user.matchPassword(password)) {
-
-      // Doctor role
-      if (user.role === "doctor") {
-        const doctor = await Doctor.findOne({ email });
-        res.json({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id, user.role),
-          hospitalID: hospital?._id,
-          doctorId: doctor?._id
-        });
-      }
-
-      // Staff, Registrar, Receptionist roles
-      else if (user.role === "staff" || user.role === "registrar" || user.role === "receptionist") {
-        const staff = await Staff.findOne({ email });
-        res.json({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id, user.role),
-          hospitalID: hospital?._id,
-          staffId: staff?._id
-        });
-      }
-
-      // Nurse role
-      else if (user.role === "nurse") {
-        const nurse = await Staff.findOne({ email });
-        res.json({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id, user.role),
-          hospitalID: hospital?._id,
-          staffId: nurse?._id
-        });
-      }
-
-      else if (["hr", "hr_manager", "store", "store_manager", "inventory_manager", "accountant", "equipment_manager"].includes(user.role)) {
-        const hrProfile = await HRStaffProfile.findOne({ email: user.email });
-        res.json({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id, user.role),
-          hospitalID: hospital?._id,
-          employeeId: hrProfile?._id,
-          employeeCode: hrProfile?.employee_code,
-          dashboard: ["store", "store_manager", "inventory_manager"].includes(user.role) ? "store" : ["hr", "hr_manager"].includes(user.role) ? "hr" : "equipment"
-        });
-      }
-
-      // Pharmacy role
-      else if (user.role === "pharmacy") {
-        const pharmacy = await Pharmacy.findOne({ email });
-        res.json({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id, user.role),
-          hospitalID: hospital?._id,
-          pharmacyId: pharmacy?._id
-        });
-      }
-
-      // Pathology Staff role
-      else if (user.role === "pathology_staff") {
-        const pathologyStaff = await PathologyStaff.findOne({ email: email });
-        res.json({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id, user.role),
-          hospitalID: hospital?._id,
-          pathologyStaffId: pathologyStaff?._id
-        });
-      }
-
-      // OT STAFF ROLE - FIXED: Search by email instead of userId
-      else if (user.role === "ot_staff") {
-        // Try to find OT Staff by email (since Staff record might have the email)
-        let otStaff = await OTStaff.findOne({ userId: user._id });
-
-        // If not found by userId, try to find by email through Staff collection
-        if (!otStaff) {
-          const staffRecord = await Staff.findOne({ email: user.email });
-          if (staffRecord) {
-            otStaff = await OTStaff.findOne({ userId: staffRecord._id });
-          }
-        }
-
-        // If still not found, try to find by employeeId pattern
-        if (!otStaff) {
-          otStaff = await OTStaff.findOne({ employeeId: { $regex: user.email.split('@')[0], $options: 'i' } });
-        }
-
-        res.json({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id, user.role),
-          hospitalID: hospital?._id,
-          otStaffId: otStaff?._id || null,
-          otStaffDesignation: otStaff?.designation || 'OT Staff'
-        });
-      }
-
-      // Default/Admin role
-      else {
-        res.json({
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          token: generateToken(user._id, user.role),
-          hospitalID: hospital?._id
-        });
-      }
-    } else {
-      res.status(401).json({ error: 'Invalid email or password' });
+    if (!user || !(await user.matchPassword(password))) {
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: err.message });
+    if (!user.is_active) return res.status(403).json({ error: 'Account is deactivated. Please contact admin.' });
+
+    const response = loginBase(user, hospital);
+    if (user.role === 'doctor') {
+      const doctor = await Doctor.findOne({ $or: [{ user_id: user._id }, { email: user.email }] });
+      response.doctorId = doctor?._id;
+    } else if (['staff', 'registrar', 'receptionist', 'nurse'].includes(user.role)) {
+      const staff = await Staff.findOne({ $or: [{ user_id: user._id }, { email: user.email }] });
+      response.staffId = staff?._id;
+    } else if (['hr', 'hr_manager', 'store', 'store_manager', 'inventory_manager', 'accountant', 'equipment_manager'].includes(user.role)) {
+      const profile = await HRStaffProfile.findOne({ email: user.email });
+      response.employeeId = profile?._id;
+      response.employeeCode = profile?.employee_code;
+      response.dashboard = ['store', 'store_manager', 'inventory_manager'].includes(user.role) ? 'store'
+        : ['hr', 'hr_manager'].includes(user.role) ? 'hr'
+          : 'equipment';
+    } else if (user.role === 'pharmacy') {
+      const pharmacy = await Pharmacy.findOne({ email: user.email });
+      response.pharmacyId = pharmacy?._id;
+    } else if (user.role === 'pathology_staff') {
+      const pathologyStaff = await PathologyStaff.findOne({ $or: [{ user_id: user._id }, { email: user.email }] });
+      response.pathologyStaffId = pathologyStaff?._id;
+    } else if (user.role === 'ot_staff') {
+      const otStaff = await OTStaff.findOne({ userId: user._id });
+      response.otStaffId = otStaff?._id || null;
+      response.otStaffDesignation = otStaff?.designation || 'OT Staff';
+    }
+
+    return res.json(response);
+  } catch (error) {
+    console.error('Login error:', error);
+    return res.status(500).json({ error: 'Unable to complete login' });
   }
 };
+

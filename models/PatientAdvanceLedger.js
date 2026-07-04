@@ -44,6 +44,9 @@ const patientAdvanceLedgerSchema = new mongoose.Schema({
   balanceAfter: { type: Number, required: true },
   status: { type: String, enum: ['POSTED', 'REVERSED', 'VOID'], default: 'POSTED' },
   idempotencyKey: { type: String, trim: true, sparse: true },
+  transactionGroupId: { type: String, trim: true, index: true },
+  parentGroupId: { type: String, trim: true, index: true },
+  presentationType: { type: String, trim: true },
   notes: { type: String, trim: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });

@@ -1,10 +1,10 @@
 const mongoose = require('mongoose');
 
 const labTestSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   code: {
     type: String,
     required: true,
-    unique: true,
     uppercase: true,
     trim: true,
     index: true
@@ -130,6 +130,9 @@ const labTestSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Tenant-aware natural key. A migration drops the historical global code_1 index.
+labTestSchema.index({ hospitalId: 1, code: 1 }, { unique: true });
 
 // Indexes for search
 labTestSchema.index({ code: 1, name: 1, category: 1 });

@@ -16,7 +16,9 @@ const Prescription = require('../models/Prescription');
 const Patient = require('../models/Patient');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
-const IPDCharge = require('../models/IPDCharge')
+const IPDCharge = require('../models/IPDCharge');
+const Hospital = require('../models/Hospital');
+const Doctor = require('../models/Doctor');
 const {
   objectIdOrUndefined,
   getHospitalId,
@@ -37,7 +39,6 @@ const {
 function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
-
 
 function canViewPharmacyCost(req) {
   const role = String(req.user?.role || req.user?.userType || '').toLowerCase();
@@ -65,6 +66,8 @@ async function getDefaultPharmacyId() {
   const pharmacy = await Pharmacy.findOne({ status: 'Active' }).select('_id');
   return pharmacy?._id;
 }
+
+// ========== EXISTING FUNCTIONS (kept as is) ==========
 
 exports.getSettings = asyncHandler(async (req, res) => {
   const hospitalId = getHospitalId(req);
@@ -212,7 +215,6 @@ exports.searchPharmacyPatients = asyncHandler(async (req, res) => {
   res.json({ success: true, patients: rows.slice(0, Number(limit)) });
 });
 
-// In pharmacyOperations.controller.js - update getSaleBill
 exports.getSaleBill = asyncHandler(async (req, res) => {
   const withCosts = canViewPharmacyCost(req);
   let query = Sale.findById(req.params.saleId)
@@ -233,11 +235,9 @@ exports.getSaleBill = asyncHandler(async (req, res) => {
   const sale = await query.lean();
   if (!sale) return res.status(404).json({ success: false, error: 'Sale bill not found' });
 
-  // Get associated bill and invoice
   const bill = await Bill.findOne({ sale_id: sale._id }).lean();
   const invoice = await Invoice.findOne({ sale_id: sale._id }).lean();
 
-  // Calculate total purchase cost for the sale
   let totalPurchaseCost = 0;
   let totalGrossProfit = 0;
 
@@ -302,7 +302,6 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
 
   const patientId = admission.patientId?._id || admission.patientId;
 
-  // Fetch all required data including deferred payments
   const [sales, returns, ledgers, bills, invoices, deferredSales] = await Promise.all([
     Sale.find({ admission_id: admissionId }).sort({ sale_date: 1 }).lean(),
     PharmacyReturn.find({ admissionId }).sort({ createdAt: 1 }).lean(),
@@ -312,63 +311,38 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     Sale.find({ admission_id: admissionId, payment_deferred: true, status: 'Pending' }).lean()
   ]);
 
-  // Calculate balances
   const balances = {
     IPD_SHARED: await getAdvanceBalance({ admissionId, patientId, walletType: 'IPD_SHARED' }),
     PHARMACY_IPD: await getAdvanceBalance({ admissionId, patientId, walletType: 'PHARMACY_IPD' })
   };
 
-  // ========== CORRECTED CALCULATIONS ==========
-  // 1. Calculate totals from all sales
   const totalSpent = sales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
   const totalPaid = sales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
   const totalReturnsAmount = returns.reduce((sum, ret) => sum + Number(ret.totalRefundAmount || 0), 0);
 
-  // 2. Separate deferred and non-deferred sales
   const nonDeferredSales = sales.filter(s => !s.payment_deferred);
   const deferredSalesList = sales.filter(s => s.payment_deferred === true);
 
-  // 3. Calculate deferred totals
   const totalDeferredAmount = deferredSalesList.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
   const totalDeferredPaid = deferredSalesList.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
   const totalDeferredReturns = deferredSalesList.reduce((sum, sale) => sum + Number(sale.return_amount || 0), 0);
 
-  // 4. Calculate non-deferred totals
   const totalNonDeferred = nonDeferredSales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
   const totalNonDeferredPaid = nonDeferredSales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
   const totalNonDeferredReturns = nonDeferredSales.reduce((sum, sale) => sum + Number(sale.return_amount || 0), 0);
 
-  // 5. Calculate remaining after payments and returns for non-deferred bills
   const nonDeferredRemaining = Math.max(0, totalNonDeferred - totalNonDeferredPaid - totalNonDeferredReturns);
-
-  // 6. Calculate remaining deferred balance (excluding returns)
   const deferredRemaining = Math.max(0, totalDeferredAmount - totalDeferredPaid - totalDeferredReturns);
 
-  // 7. Get pharmacy advance balance
   const pharmacyAdvance = balances.PHARMACY_IPD;
-
-  // 8. CORRECT: Determine how much of the advance is needed for deferred bills
   const advanceUsedForDeferred = Math.min(pharmacyAdvance, deferredRemaining);
-
-  // 9. Remaining advance after deferred bills
   const remainingAdvanceAfterDeferred = Math.max(0, pharmacyAdvance - advanceUsedForDeferred);
-
-  // 10. Use remaining advance for non-deferred bills
   const advanceUsedForNonDeferred = Math.min(remainingAdvanceAfterDeferred, nonDeferredRemaining);
-
-  // 11. Total advance used
   const totalAdvanceUsed = advanceUsedForDeferred + advanceUsedForNonDeferred;
-
-  // 12. CORRECT OUTSTANDING: What the patient still owes after using the advance
   const outstanding = Math.max(0, nonDeferredRemaining - advanceUsedForNonDeferred);
-
-  // 13. CORRECT REFUNDABLE ADVANCE: What's left of the advance after paying all bills
   const refundableAdvance = Math.max(0, pharmacyAdvance - totalAdvanceUsed);
-
-  // 14. Calculate pending bills (legacy)
   const pendingBillsTotal = sales.reduce((sum, s) => sum + (s.balance_due || 0), 0);
 
-  // ========== CALCULATE PURCHASE COSTS ==========
   let totalPurchaseCost = 0;
   let totalGrossProfit = 0;
   let totalItems = 0;
@@ -383,7 +357,6 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
         totalPurchaseCost += purchaseAmount;
       });
     }
-    // Also check for total_purchase_cost on the sale
     if (sale.total_purchase_cost) {
       totalPurchaseCost = Math.max(totalPurchaseCost, Number(sale.total_purchase_cost) || 0);
     }
@@ -391,9 +364,7 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
 
   totalGrossProfit = Math.max(0, totalSpent - totalPurchaseCost);
 
-  // Format bill rows with deferred indicator and purchase costs
   const billRows = sales.map(sale => {
-    // Calculate per-sale purchase cost
     let salePurchaseCost = 0;
     let saleGrossProfit = 0;
     let saleItemsCount = 0;
@@ -430,7 +401,6 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
       paymentMethod: sale.payment_method,
       isDeferred: sale.payment_deferred === true,
       deferralReason: sale.deferral_reason,
-      // ========== PURCHASE COST FIELDS ==========
       purchaseCost: salePurchaseCost,
       grossProfit: saleGrossProfit,
       profitMargin: salePurchaseCost > 0 ? (saleGrossProfit / salePurchaseCost * 100) : 0,
@@ -444,7 +414,6 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
         batch_number: item.batch_number,
         expiry_date: item.expiry_date,
         tax_rate: item.tax_rate,
-        // ========== PURCHASE COST PER ITEM ==========
         purchase_rate_per_base_unit: item.purchase_rate_per_base_unit || item.purchaseRatePerBaseUnit || 0,
         purchase_amount: item.purchase_amount || item.purchaseAmount || 0,
         gross_profit: (item.net_amount || item.total_price || 0) - (item.purchase_amount || item.purchaseRatePerBaseUnit || 0)
@@ -462,7 +431,6 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     items: ret.items || []
   }));
 
-  // ========== CORRECTED SUMMARY ==========
   const summary = {
     totalSales: normalizeMoney(totalSpent),
     totalReturns: normalizeMoney(totalReturnsAmount),
@@ -473,13 +441,11 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     sharedIpdAdvanceBalance: normalizeMoney(balances.IPD_SHARED),
     netPayableBeforeDischarge: normalizeMoney(outstanding + deferredRemaining),
     refundableAdvance: normalizeMoney(refundableAdvance),
-    // Additional helpful fields
     deferredRemaining: normalizeMoney(deferredRemaining),
     nonDeferredRemaining: normalizeMoney(nonDeferredRemaining),
     advanceUsedForDeferred: normalizeMoney(advanceUsedForDeferred),
     advanceUsedForNonDeferred: normalizeMoney(advanceUsedForNonDeferred),
     totalAdvanceUsed: normalizeMoney(totalAdvanceUsed),
-    // ========== PURCHASE COST SUMMARY ==========
     totalPurchaseCost: normalizeMoney(totalPurchaseCost),
     totalGrossProfit: normalizeMoney(totalGrossProfit),
     profitMargin: totalPurchaseCost > 0 ? (totalGrossProfit / totalPurchaseCost * 100) : 0,
@@ -526,7 +492,6 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
 
 // ========== DEFERRED PAYMENTS ENDPOINTS ==========
 
-// Get deferred payments by admission ID
 exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
   const { admissionId } = req.params;
 
@@ -539,7 +504,6 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
     include_in_discharge_clearance: true,
     status: { $ne: 'Cancelled' }
   })
-    // ========== FIX: Select purchase cost fields ==========
     .select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount')
     .populate('patient_id', 'first_name last_name patientId uhid phone')
     .populate('doctor_id', 'firstName lastName')
@@ -549,8 +513,6 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
     .lean();
 
   const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
-
-  // Get associated bills and invoices for these deferred sales
   const saleIds = deferredSales.map(s => s._id);
   const bills = await Bill.find({ sale_id: { $in: saleIds }, is_pharmacy_bill: true }).lean();
   const invoices = await Invoice.find({ sale_id: { $in: saleIds }, is_pharmacy_sale: true }).lean();
@@ -565,7 +527,6 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
   });
 });
 
-// Get all deferred payments across admissions (for dashboard)
 exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
   const { startDate, endDate, admissionId, patientId, limit = 100 } = req.query;
 
@@ -584,7 +545,6 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
   }
 
   const deferredSales = await Sale.find(query)
-    // ========== FIX: Select purchase cost fields ==========
     .select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount')
     .populate('patient_id', 'first_name last_name patientId uhid phone')
     .populate('admission_id', 'admissionNumber shipNumber status')
@@ -604,7 +564,6 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
   });
 });
 
-// ========== UPDATED: Settle a deferred payment (with discount support) ==========
 exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   const { saleId } = req.params;
   const {
@@ -631,7 +590,6 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   let amountToPay = sale.balance_due;
   let discountAmount = 0;
 
-  // Apply discount if specified
   if (discount > 0) {
     if (discountType === 'percentage') {
       discountAmount = normalizeMoney(amountToPay * (discount / 100));
@@ -643,7 +601,6 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
 
   const paidAmount = sale.amount_paid + amountToPay;
 
-  // Update sale
   sale.amount_paid = paidAmount;
   sale.balance_due = 0;
   sale.status = 'Completed';
@@ -651,7 +608,6 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   sale.payment_deferred = false;
   sale.settled_at = new Date();
 
-  // Apply discount
   if (discountAmount > 0) {
     sale.discount_amount = normalizeMoney((sale.discount_amount || 0) + discountAmount);
     sale.discount_reason = sale.discount_reason
@@ -659,7 +615,6 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
       : `Settlement discount ₹${discountAmount}`;
   }
 
-  // Add payment record
   sale.payments = sale.payments || [];
   sale.payments.push({
     method: paymentMethod,
@@ -671,7 +626,6 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
 
   await sale.save();
 
-  // Update associated invoice
   if (sale.invoice_id) {
     const invoice = await Invoice.findById(sale.invoice_id);
     if (invoice) {
@@ -685,7 +639,6 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     }
   }
 
-  // Update associated bill
   if (sale.bill_id) {
     const bill = await Bill.findById(sale.bill_id);
     if (bill) {
@@ -700,14 +653,12 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     }
   }
 
-  // Update patient outstanding balance
   if (sale.patient_id) {
     await Patient.findByIdAndUpdate(sale.patient_id, {
       $inc: { pharmacy_outstanding_balance: -amountToPay }
     });
   }
 
-  // Update IPD charge if applicable
   if (sale.admission_id && sale.patient_id) {
     const ipdCharge = await IPDCharge.findOne({
       admissionId: sale.admission_id,
@@ -721,7 +672,6 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     }
   }
 
-  // Create payment ledger entry
   await PharmacyLedgerEntry.create({
     hospitalId: sale.hospitalId,
     pharmacyId: sale.pharmacy_id,
@@ -737,7 +687,6 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     createdBy: collected_by || getCreatedBy(req)
   });
 
-  // Create discount ledger entry if applicable
   if (discountAmount > 0) {
     await PharmacyLedgerEntry.create({
       hospitalId: sale.hospitalId,
@@ -809,23 +758,18 @@ exports.getDoctorCommissionReport = asyncHandler(async (req, res) => {
   res.json({ success: true, range: { start, end }, totals, rows });
 });
 
-// ========== DOCTOR BILL REPORT ==========
 exports.getDoctorBillReport = asyncHandler(async (req, res) => {
-  // Default to last 1 month
   const start = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
 
-  // Build match query for sales
   const match = {
     sale_date: { $gte: start, $lte: end }
   };
 
-  // Filter by doctor if specified
   if (req.query.doctorId) {
     match.doctor_id = objectIdOrUndefined(req.query.doctorId);
   }
 
-  // Fetch sales with proper population - include all necessary fields
   const sales = await Sale.find(match)
     .populate({
       path: 'patient_id',
@@ -850,7 +794,6 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
     .sort({ sale_date: -1 })
     .lean();
 
-  // Build bill rows with purchase costs
   const rows = [];
   let totalSales = 0;
   let totalPurchaseCost = 0;
@@ -860,50 +803,36 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
   let totalItems = 0;
 
   for (const sale of sales) {
-    // Get bill and invoice if available
     const [bill, invoice] = await Promise.all([
       Bill.findOne({ sale_id: sale._id }).lean(),
       Invoice.findOne({ sale_id: sale._id }).lean()
     ]);
 
-    // Calculate purchase costs for this sale
     let salePurchaseCost = 0;
     let saleGrossProfit = 0;
 
     const itemsWithCost = (sale.items || []).map(item => {
       const quantity = item.quantity_base_units || item.quantity || 0;
 
-      // ========== FIXED: Get purchase rate from multiple sources ==========
       let purchaseRate = 0;
 
-      // 1. Check if item has purchase_rate_per_base_unit directly
       if (item.purchase_rate_per_base_unit) {
         purchaseRate = item.purchase_rate_per_base_unit;
-      }
-      // 2. Check if item has purchase_amount
-      else if (item.purchase_amount) {
+      } else if (item.purchase_amount) {
         purchaseRate = item.purchase_amount / (quantity > 0 ? quantity : 1);
-      }
-      // 3. Check if batch has purchase_price_per_base_unit
-      else if (item.batch_id?.purchase_price_per_base_unit) {
+      } else if (item.batch_id?.purchase_price_per_base_unit) {
         purchaseRate = item.batch_id.purchase_price_per_base_unit;
-      }
-      // 4. Check if batch has purchase_price_per_pack and units_per_pack
-      else if (item.batch_id?.purchase_price_per_pack && item.batch_id?.units_per_pack) {
+      } else if (item.batch_id?.purchase_price_per_pack && item.batch_id?.units_per_pack) {
         purchaseRate = item.batch_id.purchase_price_per_pack / item.batch_id.units_per_pack;
-      }
-      // 5. Check if batch has purchase_price
-      else if (item.batch_id?.purchase_price) {
+      } else if (item.batch_id?.purchase_price) {
         const unitsPerPack = item.batch_id?.units_per_pack || 1;
         purchaseRate = item.batch_id.purchase_price / unitsPerPack;
       }
 
-      // Calculate purchase amount
       let purchaseAmount = item.purchase_amount || (purchaseRate * quantity);
       const netAmount = item.net_amount || item.total_price || 0;
       const profit = netAmount - purchaseAmount;
 
-      // Only add positive purchase amounts (skip returns)
       if (!item.is_return && item.item_type !== 'Medicine Return') {
         salePurchaseCost += purchaseAmount > 0 ? purchaseAmount : 0;
         saleGrossProfit += profit;
@@ -915,7 +844,6 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
         purchase_amount: purchaseAmount,
         profit: profit,
         profit_margin: purchaseAmount > 0 ? (profit / purchaseAmount * 100) : 0,
-        // Ensure medicine name is available
         medicine_name: item.medicine_name || item.medicine_id?.name || 'Unknown',
         composition: item.composition || item.medicine_id?.composition || '',
         batch_number: item.batch_number || item.batch_id?.batch_number || '—',
@@ -924,10 +852,8 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
       };
     });
 
-    // If purchaseCost is still 0 but we have sale items with purchase data, recalculate
     if (salePurchaseCost === 0 && itemsWithCost.length > 0) {
       salePurchaseCost = itemsWithCost.reduce((sum, item) => {
-        // Skip return items
         if (item.is_return || item.item_type === 'Medicine Return') return sum;
         return sum + (item.purchase_amount || 0);
       }, 0);
@@ -935,7 +861,6 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
       saleGrossProfit = (sale.total_amount || 0) - salePurchaseCost;
     }
 
-    // If grossProfit is 0 but we have data, recalculate
     if (saleGrossProfit === 0 && sale.total_amount > 0 && salePurchaseCost > 0) {
       saleGrossProfit = sale.total_amount - salePurchaseCost;
     }
@@ -988,7 +913,6 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
     });
   }
 
-  // Calculate summary totals
   const summary = {
     totalSales: totalSales,
     totalPurchaseCost: totalPurchaseCost,
@@ -1284,7 +1208,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
   const match = { entryDate: { $gte: start, $lte: end } };
   if (req.query.pharmacyId) match.pharmacyId = objectIdOrUndefined(req.query.pharmacyId);
 
-  // ========== FETCH LEDGER ENTRIES ==========
   const entries = await PharmacyLedgerEntry.find(match)
     .populate('patientId', 'first_name last_name patientId uhid phone age gender')
     .populate({
@@ -1311,7 +1234,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     .sort({ entryDate: -1 })
     .lean();
 
-  // Add computed reference numbers to each entry
   const enrichedEntries = entries.map(entry => {
     let referenceNumber = null;
     if (entry.saleId) {
@@ -1348,7 +1270,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     };
   });
 
-  // ========== FETCH BILLS FOR THE SAME DATE RANGE ==========
   const billsQuery = {
     generated_at: { $gte: start, $lte: end },
     is_pharmacy_bill: true
@@ -1374,7 +1295,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     .sort({ generated_at: -1 })
     .lean();
 
-  // ========== ENRICH BILLS WITH PURCHASE COST DATA FROM SALE ==========
   const enrichedBills = bills.map(bill => {
     let wardName = null;
     let bedNumber = null;
@@ -1390,19 +1310,15 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
       admissionNumber = bill.admission_id.admissionNumber || null;
     }
 
-    // ========== CALCULATE PURCHASE COST FROM SALE ITEMS ==========
     let totalPurchaseCost = 0;
     let totalGrossProfit = 0;
     let totalGST = bill.tax_amount || bill.tax || 0;
     let enrichedItems = [];
 
-    // If bill has sale_id, get purchase cost from sale items
     if (bill.sale_id && bill.sale_id.items && Array.isArray(bill.sale_id.items)) {
       const saleItems = bill.sale_id.items;
 
-      // Map bill items to sale items by medicine_id and batch_id
       for (const billItem of (bill.items || [])) {
-        // Find matching sale item by medicine_id and batch_id
         const matchedSaleItem = saleItems.find(si =>
           String(si.medicine_id) === String(billItem.medicine_id) &&
           String(si.batch_id) === String(billItem.batch_id)
@@ -1416,12 +1332,10 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
         let grossProfit = 0;
 
         if (matchedSaleItem) {
-          // ========== USE PURCHASE DATA FROM SALE ITEM ==========
           purchaseRate = matchedSaleItem.purchase_rate_per_base_unit || 0;
           purchaseAmount = matchedSaleItem.purchase_amount || (purchaseRate * quantity);
           grossProfit = matchedSaleItem.gross_profit || (amount - purchaseAmount);
 
-          // If the sale item has explicit purchase_amount, use it
           if (matchedSaleItem.purchase_amount) {
             purchaseAmount = matchedSaleItem.purchase_amount;
           }
@@ -1429,18 +1343,15 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
             grossProfit = matchedSaleItem.gross_profit;
           }
 
-          // If grossProfit is still 0 but we have purchase amount, calculate it
           if (grossProfit === 0 && purchaseAmount > 0) {
             grossProfit = amount - purchaseAmount;
           }
         } else {
-          // Fallback: try to get from bill item itself
           purchaseRate = billItem.purchase_rate_per_base_unit || billItem.purchaseRatePerBaseUnit || 0;
           purchaseAmount = billItem.purchase_amount || billItem.purchaseAmount || (purchaseRate * quantity);
           grossProfit = amount - purchaseAmount;
         }
 
-        // Only add positive purchase costs (exclude returns)
         if (!billItem.isReturned && billItem.item_type !== 'Medicine Return') {
           totalPurchaseCost += purchaseAmount > 0 ? purchaseAmount : 0;
           totalGrossProfit += grossProfit;
@@ -1455,17 +1366,14 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
         });
       }
 
-      // If totalPurchaseCost is still 0 but sale has total_purchase_cost, use it
       if (totalPurchaseCost === 0 && bill.sale_id.total_purchase_cost) {
         totalPurchaseCost = bill.sale_id.total_purchase_cost;
       }
 
-      // If grossProfit is still 0 but sale has gross_profit, use it
       if (totalGrossProfit === 0 && bill.sale_id.gross_profit) {
         totalGrossProfit = bill.sale_id.gross_profit;
       }
     } else {
-      // No sale_id, use bill items directly
       for (const billItem of (bill.items || [])) {
         if (billItem.isReturned || billItem.item_type === 'Medicine Return') continue;
 
@@ -1488,7 +1396,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
       }
     }
 
-    // Calculate GST from bill or from items
     if (!totalGST && bill.items) {
       totalGST = bill.items.reduce((sum, item) => {
         if (item.isReturned || item.item_type === 'Medicine Return') return sum;
@@ -1496,7 +1403,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
       }, 0);
     }
 
-    // ========== CALCULATE GROSS AMOUNT ==========
     const grossAmount = (bill.subtotal || 0) + (bill.discount_amount || bill.discount || 0);
 
     return {
@@ -1510,7 +1416,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
       ward_id: wardId,
       bed_id: bedId,
       admission_number: admissionNumber,
-      // ========== PURCHASE COST FIELDS ==========
       purchase_cost: totalPurchaseCost,
       gross_profit: totalGrossProfit,
       profit_margin: totalPurchaseCost > 0 ? (totalGrossProfit / totalPurchaseCost * 100) : 0,
@@ -1520,7 +1425,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     };
   });
 
-  // ========== CALCULATE BILL TOTALS WITH PURCHASE COST ==========
   const billTotals = {
     totalAmount: enrichedBills.reduce((sum, b) => sum + (b.total_amount || 0), 0),
     totalPaid: enrichedBills.reduce((sum, b) => sum + (b.paid_amount || 0), 0),
@@ -1533,7 +1437,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     pendingCount: enrichedBills.filter(b => b.status === 'Pending' || b.status === 'Partially Paid').length
   };
 
-  // ========== CALCULATE TOTALS FROM LEDGER ENTRIES ==========
   const totals = {
     IN_Cash: 0, OUT_Cash: 0,
     IN_UPI: 0, OUT_UPI: 0,
@@ -1608,7 +1511,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     totalGST: billTotals.totalGST
   };
 
-  // ========== LEGACY TOTALS FOR BACKWARD COMPATIBILITY ==========
   const summaryAgg = await PharmacyLedgerEntry.aggregate([
     { $match: match },
     { $group: { _id: { paymentMethod: '$paymentMethod', direction: '$direction', entryType: '$entryType' }, amount: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -1623,7 +1525,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     return acc;
   }, {});
 
-  // ========== FINAL RESPONSE ==========
   res.json({
     success: true,
     range: { start, end },
@@ -1636,7 +1537,6 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
   });
 });
 
-// Get all active IPD patients with their pharmacy balances
 exports.getIPDPatients = asyncHandler(async (req, res) => {
   const { search = '', status = 'Admitted,Under Treatment', limit = 100 } = req.query;
   const statusArray = status.split(',').map(s => s.trim());
@@ -1679,7 +1579,6 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
       walletType: 'IPD_SHARED'
     });
 
-    // Also fetch deferred payments for this patient
     const deferredPayments = await Sale.find({
       admission_id: admission._id,
       payment_deferred: true,
@@ -1714,7 +1613,6 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
   });
 });
 
-// Get patient's personal pharmacy ledger
 exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
   const { patientId } = req.params;
   const { admissionId, startDate, endDate, limit = 50 } = req.query;
@@ -1724,7 +1622,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'Patient not found' });
   }
 
-  // ========== FIX: Build admission query ==========
   const admissionQuery = { patientId: patient._id };
   if (admissionId) {
     admissionQuery._id = admissionId;
@@ -1737,10 +1634,9 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .populate('wardId', 'name')
     .sort({ admissionDate: -1 });
 
-  // ========== FIX: Build sale filter with admissionId ==========
   const saleFilter = { patient_id: patient._id };
   if (admissionId) {
-    saleFilter.admission_id = admissionId;  // ← CRITICAL: Filter by admission!
+    saleFilter.admission_id = admissionId;
   }
   if (startDate && endDate) {
     saleFilter.sale_date = {
@@ -1749,7 +1645,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     };
   }
 
-  // Include deferred payments in sales list
   const sales = await Sale.find(saleFilter)
     .populate('items.medicine_id', 'name')
     .populate('admission_id', 'admissionNumber')
@@ -1757,10 +1652,9 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .limit(Number(limit))
     .lean();
 
-  // ========== FIX: Advance filters with admissionId ==========
   const advanceFilters = { patientId: patient._id };
   if (admissionId) {
-    advanceFilters.admissionId = admissionId;  // ← CRITICAL: Filter by admission!
+    advanceFilters.admissionId = admissionId;
   }
   if (startDate && endDate) {
     advanceFilters.createdAt = {
@@ -1773,10 +1667,9 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(Number(limit));
 
-  // ========== FIX: Pharmacy ledger query with admissionId ==========
   const pharmacyLedgerQuery = { patientId: patient._id };
   if (admissionId) {
-    pharmacyLedgerQuery.admissionId = admissionId;  // ← CRITICAL: Filter by admission!
+    pharmacyLedgerQuery.admissionId = admissionId;
   }
   if (startDate && endDate) {
     pharmacyLedgerQuery.entryDate = {
@@ -1802,7 +1695,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .limit(Number(limit))
     .lean();
 
-  // Enrich pharmacy ledgers with reference numbers and calculate totals
   let totals = {
     totalIN: 0,
     totalOUT: 0,
@@ -1842,16 +1734,14 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
 
   totals.netBalance = totals.totalIN - totals.totalOUT;
 
-  // ========== FIX: Returns filter with admissionId ==========
   const returnsFilter = { patientId: patient._id };
   if (admissionId) {
-    returnsFilter.admissionId = admissionId;  // ← CRITICAL: Filter by admission!
+    returnsFilter.admissionId = admissionId;
   }
   const returns = await PharmacyReturn.find(returnsFilter)
     .sort({ createdAt: -1 })
     .limit(Number(limit));
 
-  // ========== FIX: Bills query with admissionId ==========
   const saleIds = sales.filter(s => s._id).map(s => s._id);
   const billsQuery = {
     $or: [
@@ -1860,7 +1750,7 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     ]
   };
   if (admissionId) {
-    billsQuery.admission_id = admissionId;  // ← CRITICAL: Filter by admission!
+    billsQuery.admission_id = admissionId;
   }
   if (startDate && endDate) {
     billsQuery.generated_at = {
@@ -1884,7 +1774,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     bill_number: bill.sale_id?.sale_number || bill.sale_number || bill._id
   }));
 
-  // ========== FIX: Calculate balances for the specific admission ==========
   const currentBalances = {
     sharedIpdAdvance: 0,
     pharmacyAdvance: 0,
@@ -1893,7 +1782,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     totalDeferred: 0
   };
 
-  // Only calculate balances for the selected admission(s)
   const targetAdmissions = admissions.length > 0 ? admissions : [];
 
   for (const admission of targetAdmissions) {
@@ -1912,7 +1800,6 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     currentBalances.sharedIpdAdvance += sharedIpdAdvance;
   }
 
-  // Only count sales for the specific admission
   const allSales = await Sale.find({
     patient_id: patient._id,
     ...(admissionId && { admission_id: admissionId })
@@ -2001,25 +1888,20 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
 
   const notes = req.body.notes || 'Final pharmacy clearance advance refund';
 
-  // ========== FIX: Get createdBy properly ==========
   const createdByRaw = getCreatedBy(req);
   const collectedByName = req.body.refunded_by || req.body.collected_by || req.body.collectedBy || 'Pharmacy Staff';
 
-  // Try to resolve createdBy to an ObjectId
   let createdBy = null;
   if (createdByRaw && mongoose.Types.ObjectId.isValid(createdByRaw)) {
     createdBy = createdByRaw;
   } else {
-    // Try to find user by name or email
     try {
       const User = require('../models/User');
       let user = null;
 
-      // Check if collectedByName is an email
       if (collectedByName.includes('@')) {
         user = await User.findOne({ email: collectedByName });
       } else {
-        // Try to find by name
         const nameParts = collectedByName.split(' ');
         if (nameParts.length >= 2) {
           user = await User.findOne({
@@ -2044,12 +1926,10 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     }
   }
 
-  // If still no createdBy, use a fallback or the current user's ID from request
   if (!createdBy) {
     createdBy = req.user?._id || req.user?.id || null;
   }
 
-  // Store the name for display purposes
   const createdByName = collectedByName || req.user?.name || 'Pharmacy Staff';
 
   if (!admissionId) {
@@ -2112,7 +1992,6 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     });
   }
 
-  // ========== CREATE ADVANCE LEDGER ENTRY ==========
   const advanceLedger = await createAdvanceLedgerEntry({
     hospitalId,
     patientId,
@@ -2126,10 +2005,9 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     sourceModule: 'Pharmacy',
     sourceId: admissionId,
     notes,
-    createdBy: createdBy || 'System' // Use ObjectId if available, else string
+    createdBy: createdBy || 'System'
   });
 
-  // ========== CREATE PHARMACY LEDGER ENTRY ==========
   const pharmacyLedger = await PharmacyLedgerEntry.create({
     hospitalId,
     pharmacyId,
@@ -2140,10 +2018,9 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     patientId,
     admissionId,
     notes: `${notes}. Reference: ${referenceNumber}. Refunded by: ${createdByName}`,
-    createdBy: createdBy || 'System' // Use ObjectId if available, else string
+    createdBy: createdBy || 'System'
   });
 
-  // ========== UPDATE PATIENT ==========
   await Patient.findByIdAndUpdate(patientId, {
     $set: {
       pharmacy_advance_balance: Math.max(0, normalizeMoney(advanceLedger.balanceAfter || 0)),
@@ -2151,7 +2028,6 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
     }
   });
 
-  // ========== GET FINAL BALANCES ==========
   const balances = await getPatientPharmacySummary({
     patientId,
     admissionId
@@ -2345,9 +2221,6 @@ exports.getDoseCalculation = asyncHandler(async (req, res) => {
 
 // ========== NEW: Bulk Settle Deferred Payments ==========
 exports.bulkSettleDeferredPayments = asyncHandler(async (req, res) => {
-  // Backward-compatible adapter. The legacy bulk service rewrote original
-  // invoice tax/discount values and reused split-tender balances per sale.
-  // Route old callers into the auditable ledger-settlement engine instead.
   const { postLedgerSettlement } = require('../services/pharmacyLedgerSettlement.service');
   const hospitalId = getHospitalId(req, req.body.hospitalId);
   const pharmacyId = objectIdOrUndefined(req.body.pharmacyId) || await getDefaultPharmacyId();
@@ -2413,7 +2286,6 @@ exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
   const pharmacyAdvance = await getAdvanceBalance({ admissionId, walletType: 'PHARMACY_IPD' });
   const sharedIpdAdvance = await getAdvanceBalance({ admissionId, walletType: 'IPD_SHARED' });
 
-  // Get patient details
   let patientId = null;
   let patientName = null;
   if (deferredSales.length > 0) {
@@ -2441,5 +2313,210 @@ exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
     count: deferredSales.length,
     patientId,
     patientName
+  });
+});
+
+// ========== NEW: Get Inventory Batches for POS ==========
+exports.getInventoryBatches = asyncHandler(async (req, res) => {
+  const { medicineId, status = 'active', limit = 100 } = req.query;
+
+  const query = {};
+  if (medicineId) query.medicine_id = medicineId;
+  if (status === 'active') query.is_active = true;
+  if (status === 'inactive') query.is_active = false;
+
+  // Only show batches with stock
+  query.quantity_base_units = { $gt: 0 };
+
+  const batches = await MedicineBatch.find(query)
+    .populate('medicine_id', 'name base_unit pack_unit units_per_pack gst_rate hsn_code allow_loose_sale')
+    .sort({ expiry_date: 1 })
+    .limit(Number(limit))
+    .lean();
+
+  // Add computed fields for frontend
+  const enrichedBatches = batches.map(batch => {
+    const medicine = batch.medicine_id || {};
+    return {
+      ...batch,
+      sellingPricePerBaseUnit: batch.selling_price_per_base_unit,
+      selling_price_per_base_unit: batch.selling_price_per_base_unit,
+      sellingPricePerPack: batch.selling_price_per_pack,
+      selling_price_per_pack: batch.selling_price_per_pack,
+      purchasePricePerBaseUnit: batch.purchase_price_per_base_unit,
+      purchase_price_per_base_unit: batch.purchase_price_per_base_unit,
+      purchasePricePerPack: batch.purchase_price_per_pack,
+      purchase_price_per_pack: batch.purchase_price_per_pack,
+      mrpPerPack: batch.mrp_per_pack,
+      mrp_per_pack: batch.mrp_per_pack,
+      batchNumber: batch.batch_number,
+      batch_number: batch.batch_number,
+      expiryDate: batch.expiry_date,
+      expiry_date: batch.expiry_date,
+      quantityBaseUnits: batch.quantity_base_units,
+      quantity_base_units: batch.quantity_base_units,
+      unitsPerPack: batch.units_per_pack,
+      units_per_pack: batch.units_per_pack,
+      tax_snapshot: batch.tax_snapshot,
+      // Medicine fields for frontend
+      medicine_name: medicine.name,
+      base_unit: medicine.base_unit,
+      pack_unit: medicine.pack_unit,
+      allow_loose_sale: medicine.allow_loose_sale,
+      gst_rate: batch.tax_snapshot?.gst_rate || medicine.gst_rate,
+      hsn_code: batch.tax_snapshot?.hsn_code || medicine.hsn_code,
+    };
+  });
+
+  res.json({ success: true, batches: enrichedBatches });
+});
+
+// ========== NEW: Get Hospital Details ==========
+exports.getHospitalDetails = asyncHandler(async (req, res) => {
+  const hospitalId = req.user?.hospital_id || req.user?.hospitalId;
+
+  if (!hospitalId) {
+    // Return default if no hospital ID found
+    return res.json({
+      success: true,
+      data: {
+        name: 'CITY HOSPITAL',
+        hospitalName: 'CITY HOSPITAL',
+        address: '123 Healthcare Avenue, Medical District',
+        contact: '+91 12345 67890',
+        email: 'info@cityhospital.com',
+        logo: null,
+        gst: '27AAAAA1234A1Z',
+        gst_number: '27AAAAA1234A1Z'
+      }
+    });
+  }
+
+  const hospital = await Hospital.findById(hospitalId)
+    .select('hospitalName name address contact email logo gst gst_number vitalsEnabled vitalsController')
+    .lean();
+
+  if (!hospital) {
+    return res.json({
+      success: true,
+      data: {
+        name: 'CITY HOSPITAL',
+        hospitalName: 'CITY HOSPITAL',
+        address: '123 Healthcare Avenue, Medical District',
+        contact: '+91 12345 67890',
+        email: 'info@cityhospital.com',
+        logo: null,
+        gst: '27AAAAA1234A1Z',
+        gst_number: '27AAAAA1234A1Z'
+      }
+    });
+  }
+
+  res.json({
+    success: true,
+    data: {
+      name: hospital.hospitalName || hospital.name,
+      hospitalName: hospital.hospitalName || hospital.name,
+      address: hospital.address,
+      contact: hospital.contact,
+      email: hospital.email,
+      logo: hospital.logo,
+      gst: hospital.gst || hospital.gst_number,
+      gst_number: hospital.gst || hospital.gst_number,
+      vitalsEnabled: hospital.vitalsEnabled,
+      vitalsController: hospital.vitalsController
+    }
+  });
+});
+
+// ========== NEW: Enhanced Medicine Search ==========
+exports.searchMedicines = asyncHandler(async (req, res) => {
+  const { query = '', limit = 30, searchBy = 'name' } = req.query;
+
+  if (!query || query.length < 2) {
+    return res.json({ success: true, data: [] });
+  }
+
+  const searchRegex = new RegExp(query, 'i');
+  const searchConditions = [];
+
+  // Search by name
+  if (searchBy === 'name' || searchBy === 'all') {
+    searchConditions.push({ name: searchRegex });
+  }
+
+  // Search by generic name
+  if (searchBy === 'generic' || searchBy === 'all') {
+    searchConditions.push({ generic_name: searchRegex });
+  }
+
+  // Search by composition
+  if (searchBy === 'composition' || searchBy === 'all') {
+    searchConditions.push({ composition: searchRegex });
+    searchConditions.push({ composition_keywords: { $in: [query.toLowerCase()] } });
+  }
+
+  // Search by brand
+  if (searchBy === 'brand' || searchBy === 'all') {
+    searchConditions.push({ brand: searchRegex });
+  }
+
+  // Search by category
+  if (searchBy === 'category' || searchBy === 'all') {
+    searchConditions.push({ category: searchRegex });
+  }
+
+  const medicines = await Medicine.find({
+    is_active: true,
+    $or: searchConditions.length > 0 ? searchConditions : [{ name: searchRegex }]
+  })
+    .select('name generic_name composition brand category strength hsn_code gst_rate base_unit pack_unit units_per_pack allow_loose_sale min_stock_level is_own_brand')
+    .limit(Number(limit))
+    .lean();
+
+  // Enrich with batch stock information
+  const medicineIds = medicines.map(m => m._id);
+  const batches = await MedicineBatch.find({
+    medicine_id: { $in: medicineIds },
+    is_active: true,
+    quantity_base_units: { $gt: 0 }
+  })
+    .sort({ expiry_date: 1 })
+    .select('medicine_id batch_number expiry_date quantity_base_units units_per_pack selling_price_per_base_unit selling_price_per_pack mrp_per_pack purchase_price_per_base_unit tax_snapshot')
+    .lean();
+
+  const batchesByMedicine = batches.reduce((acc, batch) => {
+    const key = String(batch.medicine_id);
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(batch);
+    return acc;
+  }, {});
+
+  const enrichedMedicines = medicines.map(medicine => {
+    const medicineBatches = batchesByMedicine[String(medicine._id)] || [];
+    const totalStock = medicineBatches.reduce((sum, b) => sum + Number(b.quantity_base_units || 0), 0);
+
+    return {
+      ...medicine,
+      stock_quantity: totalStock,
+      batches: medicineBatches,
+      batch_count: medicineBatches.length,
+      earliest_expiry: medicineBatches[0]?.expiry_date || null,
+      sellingPricePerBaseUnit: medicineBatches[0]?.selling_price_per_base_unit || 0,
+      mrp: medicineBatches[0]?.mrp_per_pack || 0,
+      taxRate: medicineBatches[0]?.tax_snapshot?.gst_rate || medicine.gst_rate || 0
+    };
+  });
+
+  // Sort by stock availability (in stock first, then by name)
+  enrichedMedicines.sort((a, b) => {
+    if (a.stock_quantity > 0 && b.stock_quantity <= 0) return -1;
+    if (a.stock_quantity <= 0 && b.stock_quantity > 0) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  res.json({
+    success: true,
+    data: enrichedMedicines.slice(0, Number(limit))
   });
 });
