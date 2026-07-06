@@ -1,3 +1,4 @@
+// models/IPDInitialAssessment.js
 const mongoose = require('mongoose');
 
 const amendmentSchema = new mongoose.Schema({
@@ -17,7 +18,7 @@ const ipdInitialAssessmentSchema = new mongoose.Schema({
   assessmentTime: { type: Date, default: Date.now },
   admittedBy: String,
   relation: String,
-  caseType: { type: String, enum: ['MLC', 'Non MLC'], default: 'Non MLC' },
+  caseType: { type: String, enum: ['MLC', 'Non-MLC'], default: 'Non-MLC' },
 
   allergies: {
     bloodTransfusion: String,
@@ -189,6 +190,18 @@ const ipdInitialAssessmentSchema = new mongoose.Schema({
         referBy: String
       }
     }
+  },
+
+  // ✅ NEW: Prescription references from doctor assessment
+  prescriptionIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Prescription'
+  }],
+
+  // ✅ NEW: Medication summary for quick reference
+  medicationSummary: {
+    type: String,
+    trim: true
   },
 
   formStatus: {

@@ -1,3 +1,4 @@
+// models/IPDNursingAdmissionAssessment.js
 const mongoose = require('mongoose');
 
 const yesNoDetailsSchema = new mongoose.Schema({

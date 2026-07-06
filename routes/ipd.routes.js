@@ -28,6 +28,7 @@ const nurses = [protect, authorize('admin', 'nurse', 'staff')];
 // ============== CLINICAL DOCUMENTS ==============
 router.get(
   '/admissions/:admissionId/clinical-documents/status',
+  protect,  // ✅ Added for getStatus()
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),
   clinical.getClinicalDocumentStatus
@@ -35,6 +36,7 @@ router.get(
 
 router.get(
   '/admissions/:admissionId/initial-assessment',
+  protect,  // ✅ Added for getDoctorAssessment()
   // ...read,
   // requireModuleAccess('ipd.initial_assessment.doctor', 'view'),
   clinical.getDoctorInitialAssessment
@@ -42,6 +44,7 @@ router.get(
 
 router.post(
   '/admissions/:admissionId/initial-assessment',
+  protect,  // ✅ Added for saveDoctorAssessment()
   // ...doctors,
   // requireModuleAccess('ipd.initial_assessment.doctor', 'edit'),
   clinical.saveDoctorInitialAssessment
@@ -49,6 +52,7 @@ router.post(
 
 router.put(
   '/admissions/:admissionId/initial-assessment',
+  protect,  // ✅ Added for saveDoctorAssessment()
   // ...doctors,
   // requireModuleAccess('ipd.initial_assessment.doctor', 'edit'),
   clinical.saveDoctorInitialAssessment
@@ -56,6 +60,7 @@ router.put(
 
 router.get(
   '/admissions/:admissionId/initial-assessment/print',
+  protect,  // ✅ Added for printDoctorAssessment()
   // ...read,
   // requireModuleAccess('ipd.initial_assessment.doctor', 'view'),
   clinical.printDoctorInitialAssessment
@@ -63,6 +68,7 @@ router.get(
 
 router.get(
   '/admissions/:admissionId/nursing-admission-assessment',
+  protect,  // ✅ Added for getNursingAssessment()
   // ...read,
   // requireModuleAccess('ipd.initial_assessment.nursing', 'view'),
   clinical.getNursingAdmissionAssessment
@@ -70,6 +76,7 @@ router.get(
 
 router.post(
   '/admissions/:admissionId/nursing-admission-assessment',
+  protect,  // ✅ Added for saveNursingAssessment()
   // ...nurses,
   // requireModuleAccess('ipd.initial_assessment.nursing', 'edit'),
   clinical.saveNursingAdmissionAssessment
@@ -77,6 +84,7 @@ router.post(
 
 router.put(
   '/admissions/:admissionId/nursing-admission-assessment',
+  protect,  // ✅ Added for saveNursingAssessment()
   // ...nurses,
   // requireModuleAccess('ipd.initial_assessment.nursing', 'edit'),
   clinical.saveNursingAdmissionAssessment
@@ -84,6 +92,7 @@ router.put(
 
 router.get(
   '/admissions/:admissionId/nursing-admission-assessment/print',
+  protect,  // ✅ Added for printNursingAssessment()
   // ...read,
   // requireModuleAccess('ipd.initial_assessment.nursing', 'view'),
   clinical.printNursingAdmissionAssessment
@@ -92,6 +101,7 @@ router.get(
 // ============== VITALS ==============
 router.post(
   '/vitals',
+  protect,  // ✅ Added for saveVitals()
   // ...nurses,
   // requireModuleAccess('ipd.vitals', 'edit'),
   clinical.createVitals
@@ -99,6 +109,7 @@ router.post(
 
 router.put(
   '/vitals/:id',
+  protect,  // ✅ Added for saveVitals() (update)
   // ...nurses,
   // requireModuleAccess('ipd.vitals', 'edit'),
   clinical.updateVitals
@@ -106,6 +117,7 @@ router.put(
 
 router.get(
   '/vitals/admission/:admissionId',
+  protect,  // ✅ Added for listVitals()
   // ...read,
   // requireModuleAccess('ipd.vitals', 'view'),
   clinical.getVitals
@@ -113,6 +125,7 @@ router.get(
 
 router.get(
   '/vitals/admission/:admissionId/print/ews',
+  protect,  // ✅ Added for printVitalsEws()
   // ...read,
   // requireModuleAccess('ipd.vitals', 'view'),
   clinical.printVitalsEws
@@ -120,6 +133,7 @@ router.get(
 
 router.get(
   '/vitals/admission/:admissionId/print/patient-care-flow',
+  protect,  // ✅ Added for printPatientCareFlow()
   // ...read,
   // requireModuleAccess('ipd.vitals', 'view'),
   clinical.printPatientCareFlow
@@ -127,6 +141,7 @@ router.get(
 
 router.get(
   '/medications/admission/:admissionId/print',
+  protect,  // ✅ Added for printMedicationChart()
   // ...read,
   // requireModuleAccess('ipd.medication_chart', 'view'),
   clinical.printMedicationChart
@@ -134,6 +149,7 @@ router.get(
 
 router.get(
   '/rounds/admission/:admissionId/print',
+  protect,  // ✅ Added for printRounds()
   // ...read,
   // requireModuleAccess('ipd.rounds', 'view'),
   clinical.printRounds

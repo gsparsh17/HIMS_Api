@@ -11,18 +11,22 @@ const EWS_CONFIG = {
   escalationTotal: Number(process.env.EWS_ESCALATION_TOTAL || 4),
   escalationParameterScore: Number(process.env.EWS_ESCALATION_PARAMETER_SCORE || 3),
 
-  score({ respiratoryRate, spo2, pulse, systolicBP, temperatureF, consciousnessResponse, noUrineOverSixHours }) {
+  score({ respiratoryRate, spo2, pulse, systolicBP, temperature, temperatureUnit, consciousnessResponse, noUrineOverSixHours }) {
     const band = (value, rules) => {
       if (!Number.isFinite(Number(value))) return 0;
-
       for (const rule of rules) {
         if (rule.when(Number(value))) {
           return rule.score;
         }
       }
-
       return 0;
     };
+
+    // Convert temperature to Fahrenheit if needed
+    let temperatureF = temperature;
+    if (temperatureUnit === 'Celsius') {
+      temperatureF = (temperature * 9 / 5) + 32;
+    }
 
     const consciousness = ['Voice', 'Pain', 'Unresponsive', 'Confusion'].includes(consciousnessResponse) ? 3 : 0;
 
