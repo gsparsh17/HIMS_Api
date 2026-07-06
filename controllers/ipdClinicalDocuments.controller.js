@@ -1159,21 +1159,40 @@ exports.printNursingAdmissionAssessment = async (req, res) => {
 exports.printMedicationChart = async (req, res) => {
   try {
     const admission = await admissionForRequest(req, req.params.admissionId);
-    const q = { admissionId: admission._id };
 
+    // Build query for medications
+    const q = {
+      admissionId: admission._id,
+      status: { $ne: 'Stopped' }
+    };
+
+    // ✅ Date range filter - inclusive of the end date
     if (req.query.from || req.query.to) {
-      q.startDate = {
-        ...(req.query.from ? { $lte: asDate(req.query.to || req.query.from) } : {}),
-        ...(req.query.to ? { $gte: asDate(req.query.from || req.query.to) } : {})
-      };
+      q.startDate = {};
+      if (req.query.from) {
+        q.startDate.$gte = asDate(req.query.from);
+      }
+      if (req.query.to) {
+        // ✅ Add one day to include the entire end date
+        const toDate = asDate(req.query.to);
+        if (toDate) {
+          const inclusiveEnd = new Date(toDate);
+          inclusiveEnd.setDate(inclusiveEnd.getDate() + 1);
+          q.startDate.$lte = inclusiveEnd;
+        }
+      }
     }
+
+    console.log('🔍 Medication filter:', JSON.stringify(q));
 
     const medications = await IPDMedicationChart.find(q)
       .sort({ emergencyDrug: -1, isHighRisk: -1, startDate: 1 })
-      .populate('prescribedBy', 'name')
-      .populate('timing.administeredBy', 'name')
-      .populate('timing.witnessedBy', 'name')
+      .populate('prescribedBy', 'name firstName lastName')
+      .populate('timing.administeredBy', 'name firstName lastName')
+      .populate('timing.witnessedBy', 'name firstName lastName')
       .lean();
+
+    console.log(`✅ Found ${medications.length} medications for admission ${admission._id}`);
 
     res.json({
       success: true,
@@ -1183,10 +1202,11 @@ exports.printMedicationChart = async (req, res) => {
         header: header(admission),
         from: req.query.from || null,
         to: req.query.to || null,
-        medications
+        medications: medications
       }
     });
   } catch (error) {
+    console.error('❌ Error in printMedicationChart:', error);
     res.status(error.status || 500).json({ success: false, message: error.message });
   }
 };
@@ -1199,18 +1219,48 @@ exports.printRounds = async (req, res) => {
       hospitalId: admission.hospitalId || admission.hospital_id
     };
 
-    if (req.query.from || req.query.to) {
+    // ✅ Build date filter only if both from and to are provided and have values
+    const fromDate = req.query.from && req.query.from.trim() !== '' ? asDate(req.query.from) : null;
+    const toDate = req.query.to && req.query.to.trim() !== '' ? asDate(req.query.to) : null;
+
+    if (fromDate && toDate) {
       filter.roundDateTime = {
-        ...(req.query.from ? { $gte: asDate(req.query.from) } : {}),
-        ...(req.query.to ? { $lte: asDate(req.query.to) } : {})
+        $gte: fromDate,
+        $lte: toDate
       };
+    } else if (fromDate) {
+      filter.roundDateTime = { $gte: fromDate };
+    } else if (toDate) {
+      filter.roundDateTime = { $lte: toDate };
     }
+
+    console.log('🔍 Print rounds filter:', JSON.stringify(filter));
+    console.log('📅 From date:', fromDate);
+    console.log('📅 To date:', toDate);
 
     const rounds = await IPDRound.find(filter)
       .sort({ roundDateTime: 1 })
       .populate('doctorId', 'name firstName lastName')
       .populate('vitalId')
+      .populate({
+        path: 'prescriptionId',
+        select: 'items lab_test_requests radiology_test_requests procedure_requests prescription_number _id'
+      })
       .lean();
+
+    console.log(`✅ Found ${rounds.length} rounds for admission ${admission._id}`);
+
+    // ✅ If no rounds found, log for debugging
+    if (rounds.length === 0) {
+      const allRounds = await IPDRound.find({
+        admissionId: admission._id,
+        hospitalId: admission.hospitalId || admission.hospital_id
+      }).lean();
+      console.log(`📊 Total rounds in DB for this admission: ${allRounds.length}`);
+      if (allRounds.length > 0) {
+        console.log('📝 Sample round:', JSON.stringify(allRounds[0], null, 2));
+      }
+    }
 
     res.json({
       success: true,
@@ -1220,10 +1270,11 @@ exports.printRounds = async (req, res) => {
           ? "DOCTOR'S NOTE"
           : 'CONSULTANT DAILY ASSESSMENT AND MANAGEMENT PLAN',
         header: header(admission),
-        rounds
+        rounds: rounds
       }
     });
   } catch (error) {
+    console.error('❌ Error in printRounds:', error);
     res.status(error.status || 500).json({ success: false, message: error.message });
   }
 };

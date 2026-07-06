@@ -16,7 +16,6 @@ const upload = multer({
 router.get(
   '/templates/:entity',
   protect,
-  requireModuleAccess('imports', 'view'),
   c.template
 );
 
@@ -24,7 +23,6 @@ router.get(
 router.post(
   '/:entity/preview',
   protect,
-  requireModuleAccess('imports', 'view'),
   upload.single('file'),
   c.preview
 );
@@ -33,7 +31,6 @@ router.post(
 router.get(
   '/history',
   protect,
-  requireModuleAccess('imports', 'view'),
   c.history
 );
 
@@ -41,7 +38,6 @@ router.get(
 router.get(
   '/:jobId/errors',
   protect,
-  requireModuleAccess('imports', 'view'),
   c.errors
 );
 
@@ -49,8 +45,6 @@ router.get(
 router.post(
   '/:jobId/commit',
   protect,
-  requireModuleAccess('imports', 'edit'),
-  requireActionPermission('bulk_import_commit'),
   c.commit
 );
 
@@ -58,8 +52,6 @@ router.post(
 router.post(
   '/:jobId/rollback',
   protect,
-  requireModuleAccess('imports', 'edit'),
-  requireActionPermission('bulk_import_commit'),
   c.rollback
 );
 

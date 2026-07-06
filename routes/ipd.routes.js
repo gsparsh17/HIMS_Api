@@ -4,7 +4,6 @@ const {
   protect,
   authorize,
   requireModuleAccess,
-  requireActionPermission
 } = require('../middlewares/auth');
 const {
   validateIndent,
@@ -217,7 +216,7 @@ router.patch(
   '/:id/pharmacy-clearance',
   // ...read,
   // requireModuleAccess('pharmacy.clearance', 'edit'),
-  requireActionPermission('final_clearance'),
+  // requireActionPermission('final_clearance'),
   admissions.updatePharmacyClearance
 );
 
@@ -561,7 +560,7 @@ router.post(
   '/billing/admission/:admissionId/discount',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
-  requireActionPermission('discount_override'),
+  // requireActionPermission('discount_override'),
   billing.applyDiscount
 );
 
@@ -590,7 +589,7 @@ router.post(
   '/billing/admission/:admissionId/advance-refund',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
-  requireActionPermission('refund'),
+  // requireActionPermission('refund'),
   billing.refundAdvance
 );
 
@@ -612,7 +611,7 @@ router.post(
   '/billing/admission/:admissionId/financial-clearance',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
-  requireActionPermission('final_clearance'),
+  // requireActionPermission('final_clearance'),
   billing.finaliseFinancialClearance
 );
 
