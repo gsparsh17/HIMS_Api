@@ -1,324 +1,165 @@
-const express = require("express");
-const router = express.Router();
-const operations = require("../controllers/pharmacyOperations.controller");
-const financial = require("../controllers/pharmacyFinancialV2.controller");
-const pharmacyLedgerSettlement = require("../controllers/pharmacyLedgerSettlement.controller");
-const {
-  protect,
-  authorize,
-  requireModuleAccess,
-  requireActionPermission,
-} = require("../middlewares/auth");
+const express = require('express');
 
-// Pharmacy CRUD controllers
+const router = express.Router();
+
+const operations = require('../controllers/pharmacyOperations.controller');
+const financial = require('../controllers/pharmacyFinancialV2.controller');
+const pharmacyLedgerSettlement = require('../controllers/pharmacyLedgerSettlement.controller');
+
+const { protect } = require('../middlewares/auth');
+
 const {
   createPharmacy,
   getAllPharmacies,
   getPharmacyById,
   updatePharmacy,
-  deletePharmacy
+  deletePharmacy,
 } = require('../controllers/pharmacy.controller');
 
-const pharmacyRoles = ["admin", "pharmacy", "accountant", "doctor", "nurse", "staff"];
-const read = [protect, authorize(...pharmacyRoles)];
+/*
+ * Every pharmacy API requires login.
+ *
+ * No requireModuleAccess().
+ * No route-level hospital-context middleware.
+ *
+ * Controllers/services use req.user.hospital_id where required.
+ */
+router.use(protect);
 
-// ========== SETTINGS & CONFIGURATION ==========
-router.get("/settings", ...read, operations.getSettings);
-router.put(
-  "/settings",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "edit"),
-  operations.updateSettings
-);
+// ========== SETTINGS ==========
+router.get('/settings', operations.getSettings);
+router.put('/settings', operations.updateSettings);
 
-// ========== PATIENT SEARCH & MANAGEMENT ==========
-router.get(
-  "/patients/search",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "view"),
-  operations.searchPharmacyPatients
-);
+// ========== POS ==========
+router.post('/pos/quote', financial.quotePos);
+router.post('/pos/complete', financial.completePos);
+router.get('/sales/:saleId/bill', operations.getSaleBill);
 
-// ========== OUTSTANDING SETTLEMENTS ==========
-router.post(
-  "/settlements/outstanding",
-  // ...read,
-  operations.settleOutstanding
-);
-
-// ========== POS (Point of Sale) ==========
-router.post(
-  "/pos/quote",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "view"),
-  financial.quotePos
-);
-router.post(
-  "/pos/complete",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "edit"),
-  financial.completePos
-);
-
-// ========== SALES ==========
-router.post(
-  "/sales/quote",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "view"),
-  operations.quoteSale
-);
-router.post(
-  "/sales",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "edit"),
-  operations.createSale
-);
-router.get(
-  "/sales/:saleId/bill",
-  // ...read,
-  // requireModuleAccess("pharmacy.ledger", "view"),
-  operations.getSaleBill
-);
+// ========== PATIENTS ==========
+router.get('/patients/search', operations.searchPharmacyPatients);
 
 // ========== RETURNS ==========
-router.post(
-  "/returns/preview",
-  // ...read,
-  // requireModuleAccess("pharmacy.returns", "view"),
-  financial.previewReturn
-);
-router.post(
-  "/returns/complete",
-  // ...read,
-  // requireModuleAccess("pharmacy.returns", "edit"),
-  financial.completeReturn
-);
-// Compatibility route intentionally uses the same authoritative return engine.
-router.post(
-  "/returns",
-  // ...read,
-  // requireModuleAccess("pharmacy.returns", "edit"),
-  financial.completeReturn
-);
-router.get(
-  "/returns",
-  // ...read,
-  // requireModuleAccess("pharmacy.returns", "view"),
-  operations.getReturns
-);
+router.post('/returns/preview', financial.previewReturn);
+router.post('/returns/complete', financial.completeReturn);
+router.get('/returns', operations.getReturns);
 
 // ========== CLEARANCE ==========
 router.get(
-  "/clearance/:admissionId/preview",
-  // ...read,
-  // requireModuleAccess("pharmacy.clearance", "view"),
+  '/clearance/:admissionId/preview',
   financial.clearancePreview
 );
+
 router.post(
-  "/clearance/:admissionId/complete",
-  // ...read,
-  // requireModuleAccess("pharmacy.clearance", "edit"),
-  requireActionPermission("final_clearance"),
+  '/clearance/:admissionId/complete',
   financial.clearanceComplete
 );
 
 // ========== LEDGER ==========
-router.get(
-  "/ledger/patient/:patientId",
-  // ...read,
-  // requireModuleAccess("pharmacy.ledger", "view"),
-  financial.groupedLedger
-);
-router.get(
-  "/ledger/daily",
-  // ...read,
-  // requireModuleAccess("pharmacy.ledger", "view"),
-  operations.getLedgerDaily
-);
-router.get(
-  "/inventory/ledger",
-  // ...read,
-  // requireModuleAccess("pharmacy.ledger", "view"),
-  operations.getInventoryLedger
-);
+router.get('/ledger/patient/:patientId', financial.groupedLedger);
+router.get('/ledger/daily', operations.getLedgerDaily);
+router.get('/inventory/ledger', operations.getInventoryLedger);
 
-// ========== DASHBOARD & ANALYTICS ==========
-router.get("/dashboard", ...read, operations.getDashboard);
-router.get(
-  "/analytics/inventory",
-  // ...read,
-  operations.getInventoryAnalytics
-);
-router.get(
-  "/analytics/purchases",
-  // ...read,
-  operations.getPurchaseAnalytics
-);
-router.get(
-  "/reports/doctor-commission",
-  // ...read,
-  operations.getDoctorCommissionReport
-);
-router.get(
-  "/reports/doctor-bills",
-  // ...read,
-  operations.getDoctorBillReport
-);
-router.get(
-  "/dose-calculation",
-  // ...read,
-  operations.getDoseCalculation
-);
+// ========== DASHBOARD / REPORTS ==========
+router.get('/dashboard', operations.getDashboard);
+router.get('/analytics/inventory', operations.getInventoryAnalytics);
+router.get('/analytics/purchases', operations.getPurchaseAnalytics);
+router.get('/reports/doctor-commission', operations.getDoctorCommissionReport);
+router.get('/reports/doctor-bills', operations.getDoctorBillReport);
+router.get('/dose-calculation', operations.getDoseCalculation);
 
-// ========== IPD (In-Patient Department) ==========
-router.get(
-  "/ipd/search-admissions",
-  // ...read,
-  operations.searchIPDAdmissions
-);
-router.get("/ipd/queue", ...read, operations.getIPDQueue);
+// ========== IPD PHARMACY ==========
+router.get('/ipd/search-admissions', operations.searchIPDAdmissions);
+router.get('/ipd/queue', operations.getIPDQueue);
+
+router.post('/ipd/dispense', operations.dispenseIPDMedication);
+router.post('/ipd/advance', operations.depositAdvance);
+
 router.post(
-  "/ipd/dispense",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "edit"),
-  operations.dispenseIPDMedication
-);
-router.post(
-  "/ipd/advance",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "edit"),
-  operations.depositAdvance
-);
-router.post(
-  "/ipd/admissions/:admissionId/refund-advance",
-  // ...read,
-  // requireModuleAccess("pharmacy.returns", "edit"),
-  requireActionPermission("refund"),
+  '/ipd/admissions/:admissionId/refund-advance',
   operations.refundPharmacyAdvance
 );
-router.get("/ipd/patients", ...read, operations.getIPDPatients);
+
+router.get('/ipd/patients', operations.getIPDPatients);
+
 router.get(
-  "/ipd/patient-ledger/:patientId",
-  // ...read,
-  // requireModuleAccess("pharmacy.ledger", "view"),
+  '/ipd/patient-ledger/:patientId',
   operations.getPatientPharmacyLedger
 );
+
 router.get(
-  "/ipd/admissions/:admissionId/file",
-  // ...read,
+  '/ipd/admissions/:admissionId/file',
   operations.getAdmissionPharmacyFile
 );
+
 router.get(
-  "/ipd/admissions/:admissionId/medicine-stock",
-  // ...read,
+  '/ipd/admissions/:admissionId/medicine-stock',
   operations.getAdmissionMedicineStock
 );
+
 router.get(
-  "/ipd/admissions/:admissionId/advance-ledger",
-  // ...read,
+  '/ipd/admissions/:admissionId/advance-ledger',
   operations.getAdvanceLedger
 );
 
-// ========== IPD ADMISSION CLEARANCE ==========
 router.get(
-  "/ipd/admissions/:admissionId/final-clearance",
-  // ...read,
+  '/ipd/admissions/:admissionId/final-clearance',
   operations.getAdmissionFinalClearance
 );
 
 // ========== LEDGER SETTLEMENTS ==========
 router.post(
-  "/ledger-settlements/preview",
-  // ...read,
-  // requireModuleAccess("pharmacy.clearance", "view"),
+  '/ledger-settlements/preview',
   pharmacyLedgerSettlement.preview
 );
+
 router.post(
-  "/ledger-settlements",
-  // ...read,
-  // requireModuleAccess("pharmacy.clearance", "edit"),
-  requireActionPermission("settlement"),
+  '/ledger-settlements',
   pharmacyLedgerSettlement.create
 );
+
 router.get(
-  "/ledger-settlements",
-  // ...read,
-  // requireModuleAccess("pharmacy.ledger", "view"),
+  '/ledger-settlements',
   pharmacyLedgerSettlement.list
 );
+
 router.get(
-  "/ledger-settlements/:settlementId",
-  // ...read,
-  // requireModuleAccess("pharmacy.ledger", "view"),
+  '/ledger-settlements/:settlementId',
   pharmacyLedgerSettlement.getOne
 );
+
 router.post(
-  "/ledger-settlements/:settlementId/reverse",
-  // ...read,
-  // requireModuleAccess("pharmacy.clearance", "edit"),
-  requireActionPermission("refund"),
+  '/ledger-settlements/:settlementId/reverse',
   pharmacyLedgerSettlement.reverse
 );
 
 // ========== DEFERRED PAYMENTS ==========
+router.get('/deferred-payments', operations.getAllDeferredPayments);
+
 router.get(
-  "/deferred-payments",
-  // ...read,
-  operations.getAllDeferredPayments
-);
-router.get(
-  "/ipd/admissions/:admissionId/deferred-payments",
-  // ...read,
+  '/ipd/admissions/:admissionId/deferred-payments',
   operations.getDeferredPaymentsByAdmission
 );
+
 router.post(
-  "/deferred-payments/:saleId/settle",
-  // ...read,
-  // requireModuleAccess("pharmacy.clearance", "edit"),
-  operations.settleDeferredPayment
-);
-router.post(
-  "/deferred-payments/bulk-settle",
-  // ...read,
-  // requireModuleAccess("pharmacy.clearance", "edit"),
-  requireActionPermission("settlement"),
+  '/deferred-payments/bulk-settle',
   operations.bulkSettleDeferredPayments
 );
+
 router.get(
-  "/ipd/admissions/:admissionId/deferred-summary",
-  // ...read,
+  '/ipd/admissions/:admissionId/deferred-summary',
   operations.getDeferredSettlementSummary
 );
 
-// ========== INVENTORY BATCHES ==========
-router.get(
-  "/inventory/batches",
-  // ...read,
-  // requireModuleAccess("pharmacy.ledger", "view"),
-  operations.getInventoryBatches
-);
+// ========== INVENTORY / HOSPITAL ==========
+router.get('/inventory/batches', operations.getInventoryBatches);
+router.get('/hospital/details', operations.getHospitalDetails);
+router.get('/medicines/search', operations.searchMedicines);
 
-// ========== HOSPITAL DETAILS ==========
-router.get(
-  "/hospital/details",
-  // ...read,
-  operations.getHospitalDetails
-);
-
-// ========== MEDICINE SEARCH (enhanced) ==========
-router.get(
-  "/medicines/search",
-  // ...read,
-  // requireModuleAccess("pharmacy.pos", "view"),
-  operations.searchMedicines
-);
-
-// ========== PHARMACY CRUD (ADMIN SCREENS) ==========
-// These routes were in the original pharmacy.routes.js
-router.post('/', ...read, createPharmacy);
-router.get('/', ...read, getAllPharmacies);
-router.get('/:id', ...read, getPharmacyById);
-router.put('/:id', ...read, updatePharmacy);
-router.delete('/:id', ...read, deletePharmacy);
+// ========== PHARMACY MASTER ==========
+router.post('/', createPharmacy);
+router.get('/', getAllPharmacies);
+router.get('/:id', getPharmacyById);
+router.put('/:id', updatePharmacy);
+router.delete('/:id', deletePharmacy);
 
 module.exports = router;

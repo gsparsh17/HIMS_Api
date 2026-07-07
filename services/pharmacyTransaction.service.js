@@ -22,8 +22,16 @@ function objectIdOrUndefined(id) {
   return id && mongoose.Types.ObjectId.isValid(id) ? id : undefined;
 }
 
-function getHospitalId(req, explicitHospitalId) {
-  return objectIdOrUndefined(explicitHospitalId || req.user?.hospital_id || req.user?.hospitalId || req.body?.hospitalId || req.query?.hospitalId);
+function getHospitalId(req = {}, explicitHospitalId) {
+  return objectIdOrUndefined(
+    explicitHospitalId ||
+      req.user?.hospital_id ||
+      req.user?.hospitalId ||
+      req.body?.hospitalId ||
+      req.body?.hospital_id ||
+      req.query?.hospitalId ||
+      req.query?.hospital_id
+  );
 }
 
 function getCreatedBy(req) {
@@ -112,13 +120,13 @@ async function getAdvanceBalance({ admissionId, patientId, walletType = 'PHARMAC
   return 0;
 }
 
-async function createAdvanceLedgerEntry({ hospitalId, patientId, admissionId, walletType = 'PHARMACY_IPD', transactionType, direction, amount, paymentMethod, referenceNumber, sourceModule = 'Pharmacy', sourceId, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType, session } = {}) {
+async function createAdvanceLedgerEntry({ patientId, admissionId, walletType = 'PHARMACY_IPD', transactionType, direction, amount, paymentMethod, referenceNumber, sourceModule = 'Pharmacy', sourceId, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType, session } = {}) {
   const current = await getAdvanceBalance({ admissionId, patientId, walletType, session });
   const normalizedAmount = normalizeMoney(amount);
   const balanceAfter = normalizeMoney(direction === 'CREDIT' ? current + normalizedAmount : current - normalizedAmount);
   if (direction === 'DEBIT' && balanceAfter < -0.009) throw new Error('Wallet balance cannot fall below zero');
   const payload = {
-    hospitalId, patientId, admissionId, walletType, transactionType, direction, amount: normalizedAmount, paymentMethod, referenceNumber, sourceModule, sourceId, balanceAfter, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType
+    patientId, admissionId, walletType, transactionType, direction, amount: normalizedAmount, paymentMethod, referenceNumber, sourceModule, sourceId, balanceAfter, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType
   };
   const created = await PatientAdvanceLedger.create([payload], session ? { session } : undefined);
   const entry = Array.isArray(created) ? created[0] : created;
@@ -159,6 +167,70 @@ function normalizePayments({ total, payment_method, payments, noPayment = false 
 
 function normalizePaymentsWithOverpayment({ total, payment_method, payments }) {
   return normalizePayments({ total, payment_method, payments });
+}
+
+
+const ADVANCE_DEPOSIT_METHODS = new Set([
+  'Cash',
+  'UPI',
+  'Card',
+  'Net Banking',
+]);
+
+function normalizeExternalTenderMethod(method = 'Cash') {
+  const value = String(method || 'Cash').trim();
+  if (value === 'Bank' || value === 'Bank Transfer') return 'Net Banking';
+  return value;
+}
+
+/**
+ * Payments deposited into Pharmacy Advance are intentionally separate from
+ * Sale.payments. Sale.payments means money/wallet value applied to this bill;
+ * advanceDepositPayments means money credited to the wallet for later use.
+ */
+function normalizeAdvanceDepositPayments(payload = {}) {
+  const canonical = payload.advanceDepositPayments || payload.advance_deposit_payments;
+  const legacyAmount = normalizeMoney(payload.immediate_payment_to_advance || 0);
+
+  if (Array.isArray(canonical) && legacyAmount > 0) {
+    throw new Error('Send either advanceDepositPayments or immediate_payment_to_advance, not both.');
+  }
+
+  const source = Array.isArray(canonical)
+    ? canonical
+    : legacyAmount > 0
+      ? [{
+        method: payload.immediate_payment_method || 'Cash',
+        amount: legacyAmount,
+        reference: payload.immediate_payment_reference || '',
+      }]
+      : [];
+
+  return source.map((payment) => {
+    const method = normalizeExternalTenderMethod(
+      payment?.method || payment?.paymentMethod || payment?.payment_method
+    );
+    const amount = normalizeMoney(payment?.amount);
+
+    if (!ADVANCE_DEPOSIT_METHODS.has(method)) {
+      throw new Error(`Unsupported Pharmacy Advance deposit method: ${method}.`);
+    }
+
+    if (amount <= 0) {
+      throw new Error('Every Pharmacy Advance deposit allocation must be positive.');
+    }
+
+    return {
+      method,
+      amount,
+      reference: String(
+        payment?.reference ||
+        payment?.referenceNumber ||
+        payment?.transaction_id ||
+        ''
+      ).trim(),
+    };
+  });
 }
 
 async function resolvePatientContext({ patientId, admissionId, prescriptionId, explicit = {} }) {
@@ -438,7 +510,7 @@ async function getPatientPharmacySummary({ patientId, admissionId } = {}) {
   return { outstanding, pharmacyAdvance, ipdAdvance };
 }
 
-async function deductStockAndCreateLedger({ items, hospitalId, pharmacyId, saleId, createdBy }) {
+async function deductStockAndCreateLedger({ items, saleId, createdBy }) {
   for (const item of items) {
     const batch = await MedicineBatch.findById(item.batch_id);
     const current = Number(batch.quantity_base_units ?? batch.quantity ?? 0);
@@ -448,8 +520,6 @@ async function deductStockAndCreateLedger({ items, hospitalId, pharmacyId, saleI
     batch.quantity = nextQty;
     await batch.save();
     await InventoryLedger.create({
-      hospitalId,
-      pharmacyId,
       medicineId: item.medicine_id,
       batchId: item.batch_id,
       movementType: 'SALE_OUT',
@@ -464,7 +534,7 @@ async function deductStockAndCreateLedger({ items, hospitalId, pharmacyId, saleI
   }
 }
 
-async function restockAndCreateLedger({ items, hospitalId, pharmacyId, returnId, createdBy }) {
+async function restockAndCreateLedger({ items, returnId, createdBy }) {
   for (const item of items) {
     if (!item.restock || !item.batchId) continue;
     const batch = await MedicineBatch.findById(item.batchId);
@@ -475,8 +545,6 @@ async function restockAndCreateLedger({ items, hospitalId, pharmacyId, returnId,
     batch.quantity = nextQty;
     await batch.save();
     await InventoryLedger.create({
-      hospitalId,
-      pharmacyId,
       medicineId: item.medicineId,
       batchId: item.batchId,
       movementType: 'RETURN_IN',
@@ -491,7 +559,7 @@ async function restockAndCreateLedger({ items, hospitalId, pharmacyId, returnId,
   }
 }
 
-async function applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId }) {
+async function applyIpdMedicineStock({ items, sale, admissionId, patientId }) {
   if (!admissionId || !patientId) return [];
   const updates = [];
   for (const item of items) {
@@ -501,7 +569,6 @@ async function applyIpdMedicineStock({ items, sale, hospitalId, admissionId, pat
     const query = { admissionId, patientId, medicineId: item.medicine_id, batchId: item.batch_id };
     const update = {
       $setOnInsert: {
-        hospitalId,
         admissionId,
         patientId,
         medicineId: item.medicine_id,
@@ -531,9 +598,13 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
   const customerType = sale.customer_type === 'WalkIn' || sale.customer_type === 'walkin' ? 'Walk-in' : 'Patient';
   const amountPaid = normalizeMoney(Math.min(sale.amount_paid || 0, sale.net_amount_after_returns || sale.total_amount || 0));
 
+  // A deferred sale can still be partially paid. Invoice status must reflect
+  // that immediate Cash/UPI/Card/etc. was collected even though a balance remains.
   let invoiceStatus = 'Pending';
-  if (!isDeferred) {
-    invoiceStatus = sale.balance_due <= 0 ? 'Paid' : amountPaid > 0 ? 'Partial' : 'Pending';
+  if (sale.balance_due <= 0) {
+    invoiceStatus = 'Paid';
+  } else if (amountPaid > 0) {
+    invoiceStatus = 'Partial';
   }
 
   const grossAmount = totals.grossAmount;
@@ -604,7 +675,7 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
 
 // In createPharmacyBill function, around line ~700-750
 
-async function createPharmacyBill({ sale, items, totals, paymentEntries, hospitalId, patientId, admissionId, createdBy, isDeferred = false }) {
+async function createPharmacyBill({ sale, items, totals, paymentEntries, patientId, admissionId, createdBy, isDeferred = false }) {
   const billItems = items.map(item => ({
     description: item.medicine_name,
     amount: item.net_amount || item.total_price,
@@ -641,56 +712,64 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
     }
   }
 
-  let pharmacyAdvanceUsed = 0;
+  const normalizedPaymentEntries = Array.isArray(paymentEntries)
+    ? paymentEntries.filter((payment) => Number(payment?.amount || 0) > 0)
+    : [];
+
+  // amount_paid always represents the money/wallet value applied to this bill.
+  // A deferred sale with an immediate split is therefore Partially Paid, not Pending.
+  let paymentAmount = isDeferred || sale.payment_deferred === true
+    ? normalizeMoney(sale.amount_paid || 0)
+    : normalizeMoney(
+      normalizedPaymentEntries.reduce(
+        (sum, payment) => sum + Number(payment.amount || 0),
+        0
+      )
+    );
+
+  if (
+    !paymentAmount &&
+    !isDeferred &&
+    sale.payment_method !== 'NoPayment' &&
+    sale.payment_method !== 'Pending' &&
+    sale.payment_method !== 'Deferred'
+  ) {
+    paymentAmount = normalizeMoney(totals.total);
+  }
+
+  const pharmacyAdvanceUsed = normalizeMoney(
+    normalizedPaymentEntries
+      .filter((payment) => payment.method === 'PharmacyAdvance')
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+  );
+
+  // A deferred Pharmacy Advance deposit is recorded separately in
+  // PatientAdvanceLedger and PharmacyLedgerEntry. It must not be treated as a
+  // payment against this bill or as a second patient-balance increment here.
   let pharmacyAdvanceCreated = 0;
-  let paymentAmount = 0;
-
-  // Calculate payment amount correctly for deferred payments
-  if (isDeferred || sale.payment_deferred === true) {
-    // For deferred payments, amount_paid is what's paid towards the bill
-    // If advance mode, amount_paid is 0 (all went to advance)
-    paymentAmount = sale.amount_paid || 0;
-  } else if (paymentEntries && paymentEntries.length > 0) {
-    paymentAmount = paymentEntries.reduce((sum, p) => sum + p.amount, 0);
-  } else if (sale.payment_method !== 'NoPayment' && sale.payment_method !== 'Pending' && sale.payment_method !== 'Deferred') {
-    paymentAmount = totals.total;
+  if (!isDeferred && !sale.payment_deferred && paymentAmount > totals.total) {
+    pharmacyAdvanceCreated = normalizeMoney(paymentAmount - totals.total);
   }
 
-  // For deferred "advance" mode, the advance credit is tracked separately
-  if (isDeferred || sale.payment_deferred === true) {
-    // Check if this is "advance" mode - payment went to advance, not to bill
-    const immediateAdvance = sale.immediate_advance_payment || sale.immediateAdvancePayment || 0;
-    if (immediateAdvance > 0 && sale.amount_paid === 0) {
-      // All collected amount went to advance, none to bill
-      pharmacyAdvanceCreated = immediateAdvance;
-    }
-  }
+  const billBalanceDue = normalizeMoney(Math.max(0, totals.total - paymentAmount));
+  const pharmacyOutstandingAfter = normalizeMoney(
+    Math.max(0, pharmacyOutstandingBefore + billBalanceDue)
+  );
+  const pharmacyAdvanceAfter = normalizeMoney(
+    pharmacyAdvanceBefore - pharmacyAdvanceUsed + pharmacyAdvanceCreated
+  );
 
-  if (sale.payment_method === 'PharmacyAdvance' || (paymentEntries && paymentEntries.some(p => p.method === 'PharmacyAdvance'))) {
-    pharmacyAdvanceUsed = Math.min(pharmacyAdvanceBefore, paymentAmount);
-  }
+  const billStatus = billBalanceDue <= 0
+    ? 'Paid'
+    : paymentAmount > 0
+      ? 'Partially Paid'
+      : 'Pending';
 
-  // Overpayment check - only for non-deferred payments
-  let overpayment = 0;
-  if (!isDeferred && !sale.payment_deferred) {
-    if (paymentAmount > totals.total) {
-      overpayment = paymentAmount - totals.total;
-      pharmacyAdvanceCreated = overpayment;
-    }
-  }
-
-  const pharmacyOutstandingAfter = Math.max(0, totals.total - paymentAmount + pharmacyOutstandingBefore - pharmacyAdvanceUsed);
-  const pharmacyAdvanceAfter = pharmacyAdvanceBefore - pharmacyAdvanceUsed + pharmacyAdvanceCreated;
-
-  // Determine bill status correctly
-  let billStatus = 'Pending';
-  if (!isDeferred && !sale.payment_deferred) {
-    billStatus = sale.payment_method === 'NoPayment' ? 'Pending' : (paymentAmount >= totals.total ? 'Paid' : 'Partially Paid');
-  } else {
-    // For deferred payments, bill is not paid until the deferred amount is settled
-    // But we track the advance credit separately
-    billStatus = 'Pending';
-  }
+  // Bill does not allow "Deferred" as a payment method. Use Pending only
+  // when no tender was recorded; partial and split cases retain their method.
+  const billPaymentMethod = sale.payment_method === 'Deferred'
+    ? 'Pending'
+    : (sale.payment_method || 'Pending');
 
   const bill = await Bill.create({
     patient_id: patientId,
@@ -703,8 +782,8 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
     tax_amount: totals.tax,
     discount: totals.discountAmount,
     discount_type: sale.discount_type || 'percentage',
-    payment_method: isDeferred || sale.payment_deferred ? 'Pending' : (sale.payment_method === 'Deferred' ? 'Pending' : sale.payment_method),
-    payments: paymentEntries.map(p => ({
+    payment_method: billPaymentMethod,
+    payments: normalizedPaymentEntries.map(p => ({
       method: p.method,
       amount: p.amount,
       reference: p.reference,
@@ -713,7 +792,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
     items: billItems,
     status: billStatus,
     paid_amount: paymentAmount,
-    balance_due: totals.total - paymentAmount,
+    balance_due: billBalanceDue,
     created_by: createdBy,
     notes: isDeferred || sale.payment_deferred ? `Deferred payment - ${sale.notes || 'Pending settlement'}` : (sale.notes || `Pharmacy sale: ${sale.sale_number}`),
     is_pharmacy_bill: true,
@@ -727,27 +806,19 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, hospita
   sale.bill_id = bill._id;
   await sale.save();
 
-  // Update patient balances - for deferred payments, outstanding balance increases
+  // Keep legacy patient balance fields aligned with the authoritative Sale.
+  // A wallet debit reduces the wallet, while every unpaid remainder increases
+  // pharmacy outstanding exactly once.
   if (patientId) {
-    if (isDeferred || sale.payment_deferred) {
-      // Deferred payment: outstanding balance is the full bill amount
-      // The advance credit is already added to pharmacy_advance_balance
-      await Patient.findByIdAndUpdate(patientId, {
-        $inc: {
-          pharmacy_outstanding_balance: totals.total - paymentAmount,
-          // pharmacy_advance_balance is already updated when advance was credited
-        },
-        last_pharmacy_transaction: new Date()
-      });
-    } else {
-      await Patient.findByIdAndUpdate(patientId, {
-        $inc: {
-          pharmacy_outstanding_balance: (totals.total - paymentAmount - pharmacyAdvanceUsed),
-          pharmacy_advance_balance: (pharmacyAdvanceCreated - pharmacyAdvanceUsed)
-        },
-        last_pharmacy_transaction: new Date()
-      });
-    }
+    await Patient.findByIdAndUpdate(patientId, {
+      $inc: {
+        pharmacy_outstanding_balance: billBalanceDue,
+        pharmacy_advance_balance: normalizeMoney(
+          pharmacyAdvanceCreated - pharmacyAdvanceUsed
+        )
+      },
+      last_pharmacy_transaction: new Date()
+    });
   }
 
   return bill;
@@ -795,14 +866,13 @@ function allocatePaymentsForAmount(payments, amount) {
   return allocated;
 }
 
-async function consumeAdvancePayment({ p, sale, hospitalId, patientId, admissionId, createdBy }) {
+async function consumeAdvancePayment({ p, sale, patientId, admissionId, createdBy }) {
   if (!['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) return;
   if (!admissionId || !patientId) throw new Error(`${p.method} can only be used for admitted IPD patients.`);
   const walletType = p.walletType || (p.method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED');
   const balance = await getAdvanceBalance({ admissionId, patientId, walletType });
   if (balance + 0.01 < p.amount) throw new Error(`Insufficient ${walletType} balance. Available ₹${balance}, needed ₹${p.amount}.`);
   await createAdvanceLedgerEntry({
-    hospitalId,
     patientId,
     admissionId,
     walletType,
@@ -818,12 +888,10 @@ async function consumeAdvancePayment({ p, sale, hospitalId, patientId, admission
   });
 }
 
-async function createPharmacyLedgerForPayments({ payments, sale, hospitalId, pharmacyId, createdBy, entryType = 'SALE' }) {
+async function createPharmacyLedgerForPayments({ payments, sale, createdBy, entryType = 'SALE' }) {
   for (const p of payments) {
     if (!p.amount) continue;
     await PharmacyLedgerEntry.create({
-      hospitalId,
-      pharmacyId,
       entryType: ['IPDAdvance', 'PharmacyAdvance'].includes(p.method) ? 'ADVANCE_USED' : entryType,
       direction: ['IPDAdvance', 'PharmacyAdvance'].includes(p.method) ? 'NON_CASH' : paymentCashDirection(p.method),
       amount: normalizeMoney(p.amount),
@@ -838,7 +906,7 @@ async function createPharmacyLedgerForPayments({ payments, sale, hospitalId, pha
   }
 }
 
-async function allocatePaymentToOutstanding({ patientId, admissionId, hospitalId, pharmacyId, createdBy, sale, amount, payments }) {
+async function allocatePaymentToOutstanding({ patientId, admissionId, createdBy, sale, amount, payments }) {
   let remaining = normalizeMoney(amount);
   const allocations = [];
   if (!remaining || (!patientId && !admissionId)) return { allocated: 0, remaining, allocations };
@@ -858,8 +926,6 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, hospitalId
     pending.settlement_refs.push({ sale_id: sale?._id, amount: pay, settled_at: new Date() });
     await pending.save();
     await PharmacyLedgerEntry.create({
-      hospitalId,
-      pharmacyId,
       entryType: 'OUTSTANDING_PAYMENT',
       direction: 'IN',
       amount: pay,
@@ -879,7 +945,7 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, hospitalId
 
 // ========== UPDATED: validateAndPrepareIpdMedicationSale ==========
 // FIX: Direct IPD sales without medication charts skip chart validation
-async function validateAndPrepareIpdMedicationSale({ items, patientId, admissionId, pharmacyId }) {
+async function validateAndPrepareIpdMedicationSale({ items, patientId, admissionId }) {
   // ✅ Only validate items that have ipd_medication_chart_id
   const linkedItems = items.filter((item) => item.ipd_medication_chart_id);
   
@@ -902,9 +968,6 @@ async function validateAndPrepareIpdMedicationSale({ items, patientId, admission
     }
     if (medication.pharmacyRequest?.saleId || medication.pharmacyRequest?.dispensedFromPharmacy) {
       throw new Error(`${medication.medicineName} has already been dispensed against this indent.`);
-    }
-    if (pharmacyId && medication.pharmacyRequest?.pharmacyId && String(medication.pharmacyRequest.pharmacyId) !== String(pharmacyId)) {
-      throw new Error(`${medication.medicineName} belongs to a different pharmacy indent queue.`);
     }
 
     const requestedQuantity = Number(medication.pharmacyRequest?.requestedQuantity || 0);
@@ -947,17 +1010,20 @@ async function markIpdMedicationSaleDispatched({ preparedIpdItems, sale, created
 // ========== UPDATED: createUnifiedSale ==========
 async function createUnifiedSale(payload, req = {}) {
   console.log('Creating unified sale with payload:', payload);
-  const hospitalId = getHospitalId(req, payload.hospitalId);
-  const pharmacyId = objectIdOrUndefined(payload.pharmacyId || payload.pharmacy_id);
+
   const createdBy = getCreatedBy(req);
   const patientId = objectIdOrUndefined(payload.patient_id || payload.patientId);
   const admissionId = objectIdOrUndefined(payload.admission_id || payload.admissionId);
   const prescriptionId = objectIdOrUndefined(payload.prescription_id || payload.prescriptionId);
   const context = await resolvePatientContext({ patientId, admissionId, prescriptionId, explicit: payload });
 
-  // ========== CHECK FOR "PAY LESS NOW" FEATURE ==========
-  const immediateAdvancePayment = normalizeMoney(payload.immediate_payment_to_advance || 0);
-  const immediateAdvanceMethod = payload.immediate_payment_method || 'Cash';
+  // Pharmacy Advance deposits are not payments against this bill. They are
+  // received now, credited to PHARMACY_IPD, and later consumed at settlement.
+  const advanceDepositEntries = normalizeAdvanceDepositPayments(payload);
+  const advanceDepositTotal = normalizeMoney(
+    advanceDepositEntries.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+  );
+  const advanceDepositWalletType = payload.advanceWalletType || payload.advance_wallet_type || 'PHARMACY_IPD';
 
   // CREATE/UPDATE CUSTOMER RECORD
   let customerId = null;
@@ -1030,12 +1096,12 @@ async function createUnifiedSale(payload, req = {}) {
     honorLooseSale: payload.allowLooseSale !== false,
     defaultDoctor: { doctorId: context.doctorId, doctorName: context.doctorName },
     billDiscount: payload.discount || 0,
-    billDiscountType: payload.discount_type || 'percentage'
+    billDiscountType: payload.discount_type || payload.discountType || 'percentage'
   });
 
   // ✅ Validate IPD medication items (only if they have chart IDs)
   const preparedIpdItems = await validateAndPrepareIpdMedicationSale({
-    items, patientId, admissionId, pharmacyId
+    items, patientId, admissionId
   });
 
   const totals = calculateTotals(items, payload);
@@ -1059,7 +1125,63 @@ async function createUnifiedSale(payload, req = {}) {
   const expectedPaymentDate = payload.expected_payment_date ? new Date(payload.expected_payment_date) : null;
   const includeInDischargeClearance = payload.include_in_discharge_clearance !== false;
 
-  // ========== IF PAYMENT IS DEFERRED (including "Pay Less Now") ==========
+  // Canonical immediate payment allocations. This permits one or many tenders
+  // (for example Cash + UPI) while the uncollected remainder stays deferred.
+  const deferredPaymentEntries = normalizePayments({
+    total: totals.total,
+    payment_method: payload.payment_method,
+    payments: payload.payments,
+    noPayment,
+  });
+
+  const deferredPaymentTotal = normalizeMoney(
+    deferredPaymentEntries.reduce(
+      (sum, payment) => sum + Number(payment.amount || 0),
+      0
+    )
+  );
+
+  if (paymentDeferred) {
+    if (deferredPaymentTotal > normalizeMoney(totals.total) + 0.009) {
+      throw new Error('Immediate payment allocations cannot exceed the net sale amount.');
+    }
+
+    const calculatedDeferredAmount = normalizeMoney(
+      Math.max(0, totals.total - deferredPaymentTotal)
+    );
+    const requestedDeferredAmount = payload.deferredAmount === undefined || payload.deferredAmount === null
+      ? calculatedDeferredAmount
+      : normalizeMoney(payload.deferredAmount);
+
+    if (Math.abs(calculatedDeferredAmount - requestedDeferredAmount) > 0.009) {
+      throw new Error('Deferred amount must equal net sale amount minus immediate payment allocations.');
+    }
+
+    if (!patientId && !admissionId && !String(customerPhone || '').trim()) {
+      throw new Error('A customer mobile number is required for a deferred walk-in sale.');
+    }
+
+    if (advanceDepositTotal > 0) {
+      if (!patientId || !admissionId) {
+        throw new Error('A Pharmacy Advance deposit requires an IPD patient with an active admission.');
+      }
+      if (advanceDepositWalletType !== 'PHARMACY_IPD') {
+        throw new Error('Only the PHARMACY_IPD wallet can receive this POS advance deposit.');
+      }
+      if (deferredPaymentEntries.length > 0) {
+        throw new Error('Advance deposit cannot be combined with payment applied to the current bill.');
+      }
+      if (requestedDeferredAmount !== normalizeMoney(totals.total)) {
+        throw new Error('A Pharmacy Advance deposit keeps the entire current medicine bill deferred.');
+      }
+    }
+  }
+
+  if (advanceDepositTotal > 0 && !paymentDeferred) {
+    throw new Error('A Pharmacy Advance deposit can only be recorded with a deferred medicine sale.');
+  }
+
+  // ========== IF PAYMENT IS DEFERRED (including split payment + balance due) ==========
   if (paymentDeferred) {
     console.log('Processing deferred payment sale...');
 
@@ -1067,40 +1189,25 @@ async function createUnifiedSale(payload, req = {}) {
     let amountPaid = 0;
     let totalCollected = 0;
 
-    if (payload.payments && payload.payments.length > 0) {
-      const manualPayments = payload.payments.map(p => ({
-        method: p.method,
-        amount: normalizeMoney(p.amount),
-        reference: p.reference || null
-      }));
-      const paymentSum = manualPayments.reduce((sum, p) => sum + p.amount, 0);
-
-      if (immediateAdvancePayment > 0) {
-        totalCollected = paymentSum;
-        amountPaid = 0;
-        balanceDue = totals.total;
-      } else {
-        amountPaid = Math.min(paymentSum, totals.total);
-        balanceDue = totals.total - amountPaid;
-        totalCollected = paymentSum;
-      }
+    if (deferredPaymentEntries.length > 0) {
+      amountPaid = deferredPaymentTotal;
+      balanceDue = normalizeMoney(totals.total - amountPaid);
+      totalCollected = deferredPaymentTotal;
     }
 
-    if (immediateAdvancePayment > 0) {
-      console.log(`💰 Processing immediate advance payment: ${immediateAdvancePayment} via ${immediateAdvanceMethod}`);
-
-      if (!patientId || !admissionId) {
-        throw new Error('Immediate advance payment requires an IPD patient with an active admission.');
-      }
-
-      balanceDue = totals.total;
+    if (advanceDepositTotal > 0) {
+      // Deposit receipts are cash received at the counter, but zero is applied
+      // to this sale. The complete medicine bill remains outstanding.
       amountPaid = 0;
-      totalCollected = immediateAdvancePayment;
+      balanceDue = totals.total;
+      totalCollected = advanceDepositTotal;
     }
 
     const sale = await Sale.create({
-      hospitalId,
-      pharmacy_id: pharmacyId,
+      transactionGroupId: payload.transactionGroupId,
+      parentGroupId: payload.parentGroupId || payload.transactionGroupId,
+      idempotencyKey: payload.idempotencyKey,
+      presentationType: payload.presentationType || 'PHARMACY_SALE',
       customer_type: payload.customer_type || payload.customerType || (admissionId ? 'IPD' : patientId ? 'OPD' : 'WalkIn'),
       source_type: payload.source_type || payload.sourceType || (admissionId ? 'IPD_MEDICATION' : prescriptionId ? 'OPD_PRESCRIPTION' : 'DIRECT'),
       patient_id: patientId,
@@ -1143,8 +1250,8 @@ async function createUnifiedSale(payload, req = {}) {
       commission_amount: totals.commissionAmount,
       return_amount: 0,
       net_amount_after_returns: totals.total,
-      payment_method: payload.payment_method || 'Deferred',
-      payments: payload.payments || [],
+      payment_method: payload.payment_method || (deferredPaymentEntries.length ? 'Split' : 'Deferred'),
+      payments: deferredPaymentEntries,
       status: balanceDue <= 0 ? 'Completed' : 'Pending',
       notes: payload.notes || `Payment deferred. Reason: ${deferralReason}`,
       created_by: createdBy,
@@ -1154,10 +1261,9 @@ async function createUnifiedSale(payload, req = {}) {
       deferral_reason: deferralReason,
       expected_payment_date: expectedPaymentDate,
       include_in_discharge_clearance: includeInDischargeClearance,
-      immediate_advance_payment: immediateAdvancePayment > 0 ? {
-        amount: immediateAdvancePayment,
-        method: immediateAdvanceMethod
-      } : null
+      advance_deposit_total: advanceDepositTotal,
+      advance_deposit_wallet_type: advanceDepositTotal > 0 ? advanceDepositWalletType : null,
+      advance_deposit_payments: advanceDepositEntries,
     });
 
     // ========== DEDUCT STOCK FOR DEFERRED PAYMENTS ==========
@@ -1176,8 +1282,6 @@ async function createUnifiedSale(payload, req = {}) {
           await batch.save();
 
           await InventoryLedger.create({
-            hospitalId,
-            pharmacyId: pharmacyId || sale.pharmacy_id,
             medicineId: item.medicine_id,
             batchId: item.batch_id,
             movementType: 'SALE_OUT',
@@ -1195,68 +1299,25 @@ async function createUnifiedSale(payload, req = {}) {
       }
     }
 
-    // ========== PROCESS IMMEDIATE ADVANCE PAYMENT ==========
-    if (immediateAdvancePayment > 0 && patientId && admissionId) {
-      console.log(`✨ Crediting ${immediateAdvancePayment} to Pharmacy Advance for sale ${sale.sale_number}`);
-
-      await createAdvanceLedgerEntry({
-        hospitalId,
-        patientId,
-        admissionId,
-        walletType: 'PHARMACY_IPD',
-        transactionType: 'PHARMACY_LESS_PAYMENT_ADVANCE',
-        direction: 'CREDIT',
-        amount: immediateAdvancePayment,
-        paymentMethod: immediateAdvanceMethod,
-        referenceNumber: sale.sale_number,
-        sourceModule: 'Pharmacy',
-        sourceId: sale._id,
-        notes: `Less payment (₹${immediateAdvancePayment}) credited to pharmacy advance for deferred sale ${sale.sale_number}`,
-        createdBy
-      });
-
-      await PharmacyLedgerEntry.create({
-        hospitalId,
-        pharmacyId,
-        entryType: 'ADVANCE_RECEIVED',
-        direction: 'IN',
-        amount: immediateAdvancePayment,
-        paymentMethod: immediateAdvanceMethod,
-        patientId,
-        admissionId,
-        saleId: sale._id,
-        invoiceId: sale.invoice_id,
-        notes: `Less payment (₹${immediateAdvancePayment}) credited to pharmacy advance for ${sale.sale_number}`,
-        createdBy
-      });
-
-      await Patient.findByIdAndUpdate(patientId, {
-        $inc: { pharmacy_advance_balance: immediateAdvancePayment },
-        last_pharmacy_transaction: new Date()
-      });
-
-      console.log(`✅ Successfully credited ₹${immediateAdvancePayment} to Pharmacy Advance`);
-    }
-
-    // Process regular payments (if any) - these go to the bill
-    if (payload.payments && payload.payments.length > 0 && immediateAdvancePayment === 0) {
-      const paymentEntries = payload.payments.map(p => ({
-        method: p.method,
-        amount: normalizeMoney(p.amount),
-        reference: p.reference || null
-      }));
-
-      for (const p of paymentEntries) {
-        if (['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) {
-          await consumeAdvancePayment({ p, sale, hospitalId, patientId, admissionId, createdBy });
+    // Process every tender applied to this sale. For a deferred split this
+    // creates one ledger row per tender and debits an advance wallet only for
+    // its own row. Pure advance deposits intentionally have no sale payments.
+    if (deferredPaymentEntries.length > 0) {
+      for (const payment of deferredPaymentEntries) {
+        if (['IPDAdvance', 'PharmacyAdvance'].includes(payment.method)) {
+          await consumeAdvancePayment({
+            p: payment,
+            sale,
+            patientId,
+            admissionId,
+            createdBy
+          });
         }
       }
 
       await createPharmacyLedgerForPayments({
-        payments: paymentEntries,
+        payments: deferredPaymentEntries,
         sale,
-        hospitalId,
-        pharmacyId,
         createdBy,
         entryType: 'SALE'
       });
@@ -1268,7 +1329,7 @@ async function createUnifiedSale(payload, req = {}) {
       customerName: sale.customer_name,
       customerPhone: sale.customer_phone,
       totals,
-      paymentEntries: [],
+      paymentEntries: deferredPaymentEntries,
       createdBy,
       isDeferred: true
     });
@@ -1277,13 +1338,72 @@ async function createUnifiedSale(payload, req = {}) {
       sale,
       items,
       totals,
-      paymentEntries: [],
-      hospitalId,
+      paymentEntries: deferredPaymentEntries,
       patientId,
       admissionId,
       createdBy,
       isDeferred: true
     });
+
+    // Credit each external deposit to the patient wallet only after the bill
+    // has been created. This keeps Bill.paid_amount at zero and the entire
+    // medicine amount due while preserving every deposit tender in both ledgers.
+    if (advanceDepositEntries.length > 0) {
+      for (const deposit of advanceDepositEntries) {
+        await createAdvanceLedgerEntry({
+          patientId,
+          admissionId,
+          walletType: 'PHARMACY_IPD',
+          transactionType: 'PHARMACY_ADVANCE_DEPOSIT',
+          direction: 'CREDIT',
+          amount: deposit.amount,
+          paymentMethod: deposit.method,
+          referenceNumber: deposit.reference || sale.sale_number,
+          sourceModule: 'Pharmacy',
+          sourceId: sale._id,
+          notes: `Pharmacy Advance deposit for deferred sale ${sale.sale_number}`,
+          createdBy,
+          transactionGroupId: payload.transactionGroupId,
+          parentGroupId: payload.parentGroupId || payload.transactionGroupId,
+          idempotencyKey: payload.idempotencyKey,
+          presentationType: 'ADVANCE_DEPOSIT'
+        });
+
+        await PharmacyLedgerEntry.create({
+          transactionGroupId: payload.transactionGroupId,
+          parentGroupId: payload.parentGroupId || payload.transactionGroupId,
+          idempotencyKey: payload.idempotencyKey,
+          presentationType: 'ADVANCE_DEPOSIT',
+          entryType: 'ADVANCE_RECEIVED',
+          direction: 'IN',
+          amount: deposit.amount,
+          paymentMethod: deposit.method,
+          patientId,
+          admissionId,
+          saleId: sale._id,
+          invoiceId: sale.invoice_id,
+          notes: `Pharmacy Advance deposit for deferred sale ${sale.sale_number}`,
+          createdBy
+        });
+      }
+
+      await Patient.findByIdAndUpdate(patientId, {
+        $inc: { pharmacy_advance_balance: advanceDepositTotal },
+        last_pharmacy_transaction: new Date()
+      });
+
+      if (bill) {
+        const walletAfterDeposit = await getAdvanceBalance({
+          patientId,
+          admissionId,
+          walletType: 'PHARMACY_IPD'
+        });
+        bill.pharmacy_advance_created = advanceDepositTotal;
+        bill.advance_balance_after = walletAfterDeposit;
+        bill.notes = `${bill.notes || ''} | Pharmacy Advance deposit: ₹${advanceDepositTotal}`.trim();
+        await bill.save();
+      }
+    }
 
     // ========== SYNC SALE BALANCE WITH BILL FOR DEFERRED PAYMENTS ==========
     if (bill) {
@@ -1305,13 +1425,11 @@ async function createUnifiedSale(payload, req = {}) {
     }
 
     // ✅ Apply IPD medicine stock - this handles both chart-linked and direct IPD sales
-    await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
+    await applyIpdMedicineStock({ items, sale, admissionId, patientId });
 
     // Create due ledger entry for the deferred amount
     if (sale.balance_due > 0) {
       await PharmacyLedgerEntry.create({
-        hospitalId,
-        pharmacyId,
         entryType: 'DUE_CREATED',
         direction: 'OUT',
         amount: sale.balance_due,
@@ -1384,11 +1502,9 @@ async function createUnifiedSale(payload, req = {}) {
       previous_outstanding: previousOutstanding,
       balances: finalSummary,
       customerId: customerId,
-      immediate_advance_payment: immediateAdvancePayment > 0 ? {
-        amount: immediateAdvancePayment,
-        method: immediateAdvanceMethod
-      } : null,
-      pharmacy_advance_credit_amount: immediateAdvancePayment,
+      advance_deposit_total: advanceDepositTotal,
+      advance_deposit_payments: advanceDepositEntries,
+      pharmacy_advance_credit_amount: advanceDepositTotal,
       pharmacy_advance_after: finalSummary.pharmacyAdvance,
       total_collected_amount: totalCollected,
       stock_deducted: true
@@ -1463,8 +1579,10 @@ async function createUnifiedSale(payload, req = {}) {
   console.log(`💵 TOTAL COLLECTED: ${totalCollectedAmount} | Used for bill: ${amountPaidForBill} | Overpayment to advance: ${overpaymentAmount} | Balance due: ${balanceDue}`);
 
   const sale = await Sale.create({
-    hospitalId,
-    pharmacy_id: pharmacyId,
+    transactionGroupId: payload.transactionGroupId,
+    parentGroupId: payload.parentGroupId || payload.transactionGroupId,
+    idempotencyKey: payload.idempotencyKey,
+    presentationType: payload.presentationType || 'PHARMACY_SALE',
     customer_type: payload.customer_type || payload.customerType || (admissionId ? 'IPD' : patientId ? 'OPD' : 'WalkIn'),
     source_type: payload.source_type || payload.sourceType || (admissionId ? 'IPD_MEDICATION' : prescriptionId ? 'OPD_PRESCRIPTION' : 'DIRECT'),
     patient_id: patientId,
@@ -1517,10 +1635,10 @@ async function createUnifiedSale(payload, req = {}) {
   });
 
   // ========== DEDUCT STOCK FOR NON-DEFERRED SALE ==========
-  await deductStockAndCreateLedger({ items, hospitalId, pharmacyId, saleId: sale._id, createdBy });
+  await deductStockAndCreateLedger({ items, saleId: sale._id, createdBy });
 
   const invoice = await createSaleInvoice({ sale, items, customerName: sale.customer_name, customerPhone: sale.customer_phone, totals, paymentEntries: payments, createdBy, isDeferred: false });
-  const bill = await createPharmacyBill({ sale, items, totals, paymentEntries: payments, hospitalId, patientId, admissionId, createdBy, isDeferred: false });
+  const bill = await createPharmacyBill({ sale, items, totals, paymentEntries: payments, patientId, admissionId, createdBy, isDeferred: false });
 
   // ========== SYNC SALE BALANCE WITH BILL FOR NON-DEFERRED PAYMENTS ==========
   if (bill) {
@@ -1540,18 +1658,16 @@ async function createUnifiedSale(payload, req = {}) {
   await createIpdChargeForSale({ sale, total: totals.total, createdBy, isDeferred: false });
   
   // ✅ Apply IPD medicine stock - this handles both chart-linked and direct IPD sales
-  await applyIpdMedicineStock({ items, sale, hospitalId, admissionId, patientId });
+  await applyIpdMedicineStock({ items, sale, admissionId, patientId });
 
   const currentPaymentBreakup = allocatePaymentsForAmount(payments, amountPaidForBill);
   for (const p of currentPaymentBreakup) {
-    await consumeAdvancePayment({ p, sale, hospitalId, patientId, admissionId, createdBy });
+    await consumeAdvancePayment({ p, sale, patientId, admissionId, createdBy });
   }
-  await createPharmacyLedgerForPayments({ payments: currentPaymentBreakup, sale, hospitalId, pharmacyId, createdBy, entryType: 'SALE' });
+  await createPharmacyLedgerForPayments({ payments: currentPaymentBreakup, sale, createdBy, entryType: 'SALE' });
 
   if (sale.balance_due > 0) {
     await PharmacyLedgerEntry.create({
-      hospitalId,
-      pharmacyId,
       entryType: 'DUE_CREATED',
       direction: 'NON_CASH',
       amount: sale.balance_due,
@@ -1567,7 +1683,7 @@ async function createUnifiedSale(payload, req = {}) {
 
   let outstandingAllocation = { allocated: 0, remaining: 0, allocations: [] };
   if (outstandingPaymentAmount > 0) {
-    outstandingAllocation = await allocatePaymentToOutstanding({ patientId, admissionId, hospitalId, pharmacyId, createdBy, sale, amount: outstandingPaymentAmount, payments });
+    outstandingAllocation = await allocatePaymentToOutstanding({ patientId, admissionId, createdBy, sale, amount: outstandingPaymentAmount, payments });
   }
 
   if (overpaymentAmount > 0 && patientId) {
@@ -1575,7 +1691,6 @@ async function createUnifiedSale(payload, req = {}) {
     const overpaymentSourcePayment = payments.find(p => p.amount > 0) || { method: 'Cash', reference: null };
 
     await createAdvanceLedgerEntry({
-      hospitalId,
       patientId,
       admissionId,
       walletType: 'PHARMACY_IPD',
@@ -1591,8 +1706,6 @@ async function createUnifiedSale(payload, req = {}) {
     });
 
     await PharmacyLedgerEntry.create({
-      hospitalId,
-      pharmacyId,
       entryType: 'ADVANCE_RECEIVED',
       direction: 'NON_CASH',
       amount: overpaymentAmount,
@@ -1737,8 +1850,6 @@ async function legacyCreateReturn(payload, req = {}) {
     };
   };
 
-  const hospitalId = getHospitalId(req, payload.hospitalId);
-  const pharmacyId = objectIdOrUndefined(payload.pharmacyId || payload.pharmacy_id);
   const createdBy = getCreatedBy(req);
 
   const originalSaleId = objectIdOrUndefined(
@@ -1824,8 +1935,6 @@ async function legacyCreateReturn(payload, req = {}) {
   console.log('Processed return items:', JSON.stringify(items, null, 2));
 
   const pharmacyReturn = await PharmacyReturn.create({
-    hospitalId,
-    pharmacyId,
     originalSaleId,
     originalInvoiceId: objectIdOrUndefined(
       payload.originalInvoiceId ||
@@ -1852,8 +1961,6 @@ async function legacyCreateReturn(payload, req = {}) {
 
   await restockAndCreateLedger({
     items: pharmacyReturn.items,
-    hospitalId,
-    pharmacyId,
     returnId: pharmacyReturn._id,
     createdBy
   });
@@ -2372,7 +2479,6 @@ async function legacyCreateReturn(payload, req = {}) {
     !originalSale.payment_deferred
   ) {
     await createAdvanceLedgerEntry({
-      hospitalId,
       patientId,
       admissionId,
       walletType: refundMode === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED',
@@ -2391,8 +2497,6 @@ async function legacyCreateReturn(payload, req = {}) {
   }
 
   await PharmacyLedgerEntry.create({
-    hospitalId,
-    pharmacyId,
     entryType: cashRefundModes.includes(refundMode) ? 'REFUND' : 'RETURN',
     direction: cashRefundModes.includes(refundMode) ? 'OUT' : 'NON_CASH',
     amount: refundAmount,
@@ -2436,8 +2540,6 @@ async function legacyCreateReturn(payload, req = {}) {
 }
 
 async function createOutstandingSettlement(payload, req = {}) {
-  const hospitalId = getHospitalId(req, payload.hospitalId);
-  const pharmacyId = objectIdOrUndefined(payload.pharmacyId || payload.pharmacy_id);
   const createdBy = getCreatedBy(req);
   const patientId = objectIdOrUndefined(payload.patient_id || payload.patientId);
   const admissionId = objectIdOrUndefined(payload.admission_id || payload.admissionId);
@@ -2489,8 +2591,6 @@ async function createOutstandingSettlement(payload, req = {}) {
 
         // Create ledger entry for advance usage
         await PharmacyLedgerEntry.create({
-          hospitalId,
-          pharmacyId,
           entryType: 'ADVANCE_USED',
           direction: 'NON_CASH',
           amount: amountToPay,
@@ -2505,7 +2605,6 @@ async function createOutstandingSettlement(payload, req = {}) {
 
         // Create advance ledger entry
         await createAdvanceLedgerEntry({
-          hospitalId,
           patientId,
           admissionId,
           walletType: 'PHARMACY_IPD',
@@ -2558,7 +2657,6 @@ async function createOutstandingSettlement(payload, req = {}) {
           await consumeAdvancePayment({
             p,
             sale: fakeSale,
-            hospitalId,
             patientId,
             admissionId,
             createdBy
@@ -2570,8 +2668,6 @@ async function createOutstandingSettlement(payload, req = {}) {
       const allocation = await allocatePaymentToOutstanding({
         patientId,
         admissionId,
-        hospitalId,
-        pharmacyId,
         createdBy,
         sale: fakeSale,
         amount,
@@ -2582,7 +2678,6 @@ async function createOutstandingSettlement(payload, req = {}) {
       const extra = normalizeMoney(amount - allocation.allocated);
       if (extra > 0) {
         await createAdvanceLedgerEntry({
-          hospitalId,
           patientId,
           admissionId,
           walletType: 'PHARMACY_IPD',
@@ -2620,12 +2715,6 @@ async function createOutstandingSettlement(payload, req = {}) {
 
 // ========== Bulk Settle Deferred Payments ==========
 async function bulkSettleDeferredPayments(payload, req = {}) {
-  const hospitalId = getHospitalId(req, payload.hospitalId);
-  const pharmacyId = objectIdOrUndefined(payload.pharmacyId || payload.pharmacy_id) || (await (async () => {
-    const Pharmacy = mongoose.model('Pharmacy');
-    const pharmacy = await Pharmacy.findOne({ status: 'Active' }).select('_id');
-    return pharmacy?._id;
-  })());
   const createdBy = getCreatedBy(req);
   const admissionId = objectIdOrUndefined(payload.admissionId);
   const patientId = objectIdOrUndefined(payload.patientId);
@@ -2793,7 +2882,6 @@ async function bulkSettleDeferredPayments(payload, req = {}) {
         await consumeAdvancePayment({
           p,
           sale: updatedSale,
-          hospitalId,
           patientId: updatedSale.patient_id,
           admissionId: updatedSale.admission_id,
           createdBy
@@ -2804,8 +2892,6 @@ async function bulkSettleDeferredPayments(payload, req = {}) {
     await createPharmacyLedgerForPayments({
       payments: salePaymentEntries,
       sale: updatedSale,
-      hospitalId,
-      pharmacyId,
       createdBy,
       entryType: 'OUTSTANDING_PAYMENT'
     });
@@ -2999,7 +3085,6 @@ async function bulkSettleDeferredPayments(payload, req = {}) {
 
   if (excessDiscount > 0 && patientId) {
     await createAdvanceLedgerEntry({
-      hospitalId,
       patientId,
       admissionId,
       walletType: 'PHARMACY_IPD',
@@ -3014,8 +3099,6 @@ async function bulkSettleDeferredPayments(payload, req = {}) {
     });
 
     await PharmacyLedgerEntry.create({
-      hospitalId,
-      pharmacyId,
       entryType: 'DISCOUNT_ADJUSTMENT',
       direction: 'NON_CASH',
       amount: excessDiscount,
@@ -3261,14 +3344,9 @@ async function settleSingleDeferredPayment(saleId, payload, req = {}) {
       await ipdCharge.save();
     }
   }
-
-  const hospitalId = getHospitalId(req, sale.hospitalId);
-  const pharmacyId = sale.pharmacy_id;
   const createdBy = collected_by || getCreatedBy(req);
 
   await PharmacyLedgerEntry.create({
-    hospitalId,
-    pharmacyId,
     entryType: 'OUTSTANDING_PAYMENT',
     direction: 'IN',
     amount: amountToPay,
@@ -3283,8 +3361,6 @@ async function settleSingleDeferredPayment(saleId, payload, req = {}) {
 
   if (discountAmount > 0) {
     await PharmacyLedgerEntry.create({
-      hospitalId,
-      pharmacyId,
       entryType: 'DISCOUNT',
       direction: 'NON_CASH',
       amount: discountAmount,

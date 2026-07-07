@@ -164,9 +164,12 @@ const saleSchema = new mongoose.Schema({
 
   overpayment_amount: { type: Number, default: 0 },
   overpayment_credited_to: { type: String, enum: ['PHARMACY_IPD', 'IPD_SHARED', null], default: null },
+
+  advance_deposit_total: { type: Number, default: 0, min: 0 },
+  advance_deposit_wallet_type: { type: String, enum: ['PHARMACY_IPD', null], default: null },
+  advance_deposit_payments: [paymentBreakupSchema],
+
   return_amount: { type: Number, default: 0 },
-  // Sum of the paid component actually refunded after due-first return allocation.
-  // Original receipt rows remain append-only in the ledger.
   refunded_amount: { type: Number, default: 0, min: 0 },
   net_amount_after_returns: { type: Number, default: 0 },
   return_refs: [saleReturnRefSchema],
@@ -228,9 +231,6 @@ saleSchema.pre('validate', function (next) {
     item.total_price = Number((item.total_price ?? item.net_amount).toFixed(2));
     return item;
   });
-  // Zero is valid after a complete return. Older documents may nevertheless
-  // hydrate this schema default as 0 even though their persisted field was absent.
-  // In that legacy case, infer the open net from total minus recorded returns.
   const inferredNetAfterReturns = Math.max(0, (this.total_amount || 0) - (this.return_amount || 0));
   if (
     this.net_amount_after_returns === undefined ||
