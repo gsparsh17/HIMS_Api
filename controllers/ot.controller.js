@@ -8,6 +8,7 @@ const Procedure = require('../models/Procedure');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const mongoose = require('mongoose');
+const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 
 // Configure Cloudinary
 cloudinary.config({
@@ -849,6 +850,7 @@ exports.createOTStaff = async (req, res) => {
     });
 
     await otStaff.save();
+    await syncHRProfileFromSource('OTStaff', otStaff, { hospital_id: req.user?.hospital_id || undefined });
 
     const populated = await OTStaff.findById(otStaff._id).populate('userId', 'name email phone');
 

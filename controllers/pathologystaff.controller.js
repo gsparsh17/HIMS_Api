@@ -3,6 +3,7 @@ const PathologyStaff = require('../models/PathologyStaff');
 const User = require('../models/User');
 const LabTest = require('../models/LabTest');
 const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
+const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 
 exports.createPathologyStaff = async (req, res) => {
   try {
@@ -73,6 +74,7 @@ exports.createPathologyStaff = async (req, res) => {
     });
 
     await staff.save();
+    await syncHRProfileFromSource('PathologyStaff', staff, { hospital_id: req.user?.hospital_id || undefined });
 
     // Populate references
     await staff.populate([

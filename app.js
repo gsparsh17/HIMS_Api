@@ -55,6 +55,7 @@ app.use('/api/payments', paymentRoutes);
 
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/imports', require('./routes/bulkImport.routes.js'));
+app.use('/api/clinical-ai', require('./routes/clinicalAi.routes.js'));
 app.use('/api/mediqliq', require('./routes/mediqliqSuperAdmin.routes'));
 app.use('/api/audit-logs', require('./routes/auditLog.routes'));
 app.use('/api/patients', require('./routes/patient.routes'));

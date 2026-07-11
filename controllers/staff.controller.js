@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Nurse = require('../models/Nurse');
 const OTStaff = require('../models/OTStaff');
 const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
+const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 
 const VALID_USER_ROLES = new Set([
   'mediqliq_super_admin',
@@ -326,6 +327,9 @@ exports.createStaff = async (req, res) => {
       await staff.save();
     }
 
+    let linkedOTStaff = null;
+    let linkedNurse = null;
+
     if (
       isOTStaff ||
       role === 'OT Staff' ||
@@ -345,6 +349,7 @@ exports.createStaff = async (req, res) => {
       });
 
       await otStaff.save();
+      linkedOTStaff = otStaff;
     }
 
     if (role && role.toLowerCase().includes('nurse')) {
@@ -359,6 +364,17 @@ exports.createStaff = async (req, res) => {
       });
 
       await nurse.save();
+      linkedNurse = nurse;
+    }
+
+    // Await the most specific reverse HR link so nurse/OT roles are not flattened
+    // back to generic Staff before the response is returned.
+    if (linkedNurse) {
+      await syncHRProfileFromSource('Nurse', linkedNurse, { hospital_id: req.user?.hospital_id || undefined });
+    } else if (linkedOTStaff) {
+      await syncHRProfileFromSource('OTStaff', linkedOTStaff, { hospital_id: req.user?.hospital_id || undefined });
+    } else {
+      await syncHRProfileFromSource('Staff', staff, { hospital_id: req.user?.hospital_id || undefined });
     }
 
     res.status(201).json({

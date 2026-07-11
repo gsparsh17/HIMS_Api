@@ -4,6 +4,7 @@ const Department = require('../models/Department');
 const Hospital = require('../models/Hospital');
 const Calendar = require('../models/Calendar');
 const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
+const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 
 // ✅ Create a new doctor
 exports.createDoctor = async (req, res) => {
@@ -49,6 +50,13 @@ exports.createDoctor = async (req, res) => {
       aadharNumber,
       panNumber,
       hospitalId: hospitalId || null
+    });
+
+
+    // Explicitly await HR synchronization so the employee record is available
+    // immediately to payroll/attendance APIs without waiting for background hooks.
+    await syncHRProfileFromSource('Doctor', newDoctor, {
+      hospital_id: req.user?.hospital_id || req.body?.hospitalId || undefined
     });
 
     // Add doctor to calendars
@@ -500,7 +508,14 @@ exports.bulkCreateDoctors = async (req, res) => {
         notes: doctor.notes || ''
       });
 
-      // Add doctor to calendars
+  
+    // Explicitly await HR synchronization so the employee record is available
+    // immediately to payroll/attendance APIs without waiting for background hooks.
+    await syncHRProfileFromSource('Doctor', newDoctor, {
+      hospital_id: req.user?.hospital_id || req.body?.hospitalId || undefined
+    });
+
+    // Add doctor to calendars
       try {
         await addDoctorToCalendarForBulkImport(newDoctor);
       } catch (calendarError) {

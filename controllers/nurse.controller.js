@@ -1,10 +1,12 @@
 const Nurse = require('../models/Nurse');
+const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 
 // Create nurse
 exports.createNurse = async (req, res) => {
   try {
     const nurse = new Nurse(req.body);
     await nurse.save();
+    await syncHRProfileFromSource('Nurse', nurse, { hospital_id: req.user?.hospital_id || undefined });
     res.status(201).json(nurse);
   } catch (err) {
     res.status(400).json({ error: err.message });

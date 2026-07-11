@@ -16,7 +16,7 @@ const schema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   entity: {
     type: String,
-    enum: ['employees', 'medicines', 'lab-tests', 'radiology-tests', 'charges'],
+    enum: ['employees', 'medicines', 'lab-tests', 'radiology-tests', 'charges', 'procedures', 'patients', 'appointments', 'ipd-admissions'],
     required: true
   },
   status: {

@@ -1,5 +1,6 @@
 const RadiologyStaff = require('../models/RadiologyStaff');
 const User = require('../models/User');
+const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 
 // Get all radiology staff
 exports.getAllStaff = async (req, res) => {
@@ -102,6 +103,7 @@ exports.createStaff = async (req, res) => {
     });
 
     await staff.save();
+    await syncHRProfileFromSource('RadiologyStaff', staff, { hospital_id: req.user?.hospital_id || undefined });
 
     const populatedStaff = await RadiologyStaff.findById(staff._id)
       .populate('userId', 'name email phone address');
