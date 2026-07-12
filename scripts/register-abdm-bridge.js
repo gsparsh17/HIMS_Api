@@ -21,17 +21,8 @@ async function run() {
       }
     }
 
-    console.log('\n3. Adding HIP Service (CITY_HOSPITAL_HIP)...');
-    const hipRes = await addHipService(bridgeUrl);
-    console.log('✅ HIP Service Addition Response:', hipRes);
-
-    console.log('\n4. Verifying Services (getServices)...');
-    const servicesRes = await getBridgeServices();
-    console.log('✅ Verified Services:');
-    console.log(JSON.stringify(servicesRes, null, 2));
-
-    console.log('\n✅ ALL STEPS COMPLETED SUCCESSFULLY!');
-    console.log('You can now copy the output above and reply to the ABDM support email.');
+    console.log('\n✅ BRIDGE URL SETUP COMPLETED SUCCESSFULLY!');
+    console.log('As per the new ABDM V3 guidelines, you must now link the bridge manually on the NHPR portal.');
   } catch (err) {
     console.error('\n❌ ERROR OCCURRED:');
     console.error(err.message);
