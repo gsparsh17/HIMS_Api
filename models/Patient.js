@@ -123,18 +123,25 @@ const patientSchema = new mongoose.Schema({
     address: { type: String, trim: true, lowercase: true, index: true, sparse: true },
     status: {
       type: String,
-      enum: ['not_linked', 'otp_sent', 'ACTIVE', 'DEACTIVATED', 'DELETED', 'pending_verification', 'manually_captured'],
-      default: 'not_linked',
+      enum: [
+        'UNLINKED', 'OTP_SENT', 'VERIFICATION_PENDING', 'VERIFIED',
+        'ACTIVE', 'DEACTIVATED', 'DELETED',
+        'not_linked', 'otp_sent', 'pending_verification', 'manually_captured'
+      ],
+      default: 'UNLINKED',
       index: true
     },
     type: { type: String, trim: true },
     kycVerified: { type: Boolean, default: false },
     registrationMode: {
       type: String,
-      enum: ['aadhaar_otp', 'mobile_otp', 'manual_capture', 'none'],
+      enum: ['aadhaar_otp', 'mobile_otp', 'mobile_search', 'profile_share', 'manual_capture', 'none'],
       default: 'none'
     },
     linkedAt: Date,
+    verifiedAt: Date,
+    verificationMethod: String,
+    patientReference: { type: String, index: true, sparse: true },
     lastLinkedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     profile: {
       firstName: String,
@@ -152,6 +159,9 @@ const patientSchema = new mongoose.Schema({
     mobileVerificationTxnId: String,
     mobileVerificationStatus: String,
     mobileVerifiedAt: Date,
+    existingSearchTxnId: String,
+    existingLoginTxnId: String,
+    existingSelectedIndex: String,
     session: {
       xToken: { type: String, select: false },
       refreshToken: { type: String, select: false },

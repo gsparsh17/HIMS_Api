@@ -10,13 +10,10 @@ const {
 
 const ADMIN_ROLES = new Set(["admin", "mediqliq_super_admin"]);
 
-// Check if permission checks are disabled - defaults to true if not set
-const isPermissionCheckDisabled = () => {
-  const envValue = process.env.DISABLE_PERMISSION_CHECKS;
-  // If not set or set to "true", return true (disabled)
-  // Only return false if explicitly set to "false"
-  return envValue === undefined || envValue === "true";
-};
+// Permission checks are enabled by default. Set DISABLE_PERMISSION_CHECKS=true only for
+// controlled local troubleshooting; never use that setting in production.
+const isPermissionCheckDisabled = () =>
+  String(process.env.DISABLE_PERMISSION_CHECKS || 'false').toLowerCase() === 'true';
 
 function accessForRequestedModule(user, moduleKey) {
   // If permission checks are disabled, return 'manage' access for all modules

@@ -1,34 +1,49 @@
-require('dotenv').config({ path: __dirname + '/../.env' });
-const { updateBridgeUrl, addHipService, getBridgeServices, getGatewayToken } = require('../services/abdm.service');
+/**
+ * V3 bridge bootstrap helper.
+ *
+ * This script intentionally does NOT call the legacy
+ * /gateway/v1/bridges/addUpdateServices endpoint. Facility registration and
+ * software linkage must be completed through the current NHPR/HFR sandbox flow.
+ */
+require('dotenv').config({ path: `${__dirname}/../.env` });
+const abdmConfig = require('../config/abdm.config');
+const { getGatewayToken } = require('../services/abdmAuth.service');
+const { updateBridgeUrl, getBridgeServices } = require('../services/abdmHttp.service');
 
 async function run() {
-  console.log('--- ABDM Sandbox Registration Script ---');
+  console.log('--- MediQliq ABDM V3 Bridge Bootstrap ---');
   try {
-    console.log('\n1. Verifying Gateway Token...');
+    abdmConfig.assertMasterCredentials();
+    const bridgeUrl = abdmConfig.publicBaseUrl;
+    if (!bridgeUrl) throw new Error('ABDM_PUBLIC_BASE_URL is required');
+
+    console.log(`Environment: ${abdmConfig.environment}`);
+    console.log(`Bridge ID: ${abdmConfig.bridgeId || '(not configured)'}`);
+
+    console.log('\n1. Verifying V3 gateway authentication...');
     const token = await getGatewayToken();
-    console.log(`✅ Token received: ${token.slice(0, 15)}...`);
+    console.log(`✅ Gateway token received: ${token.slice(0, 10)}...`);
 
-    const bridgeUrl = 'https://api.mediqliq.com';
-    console.log(`\n2. Updating Bridge URL to: ${bridgeUrl}`);
+    console.log(`\n2. Updating V3 bridge URL to ${bridgeUrl} ...`);
+    const bridgeResponse = await updateBridgeUrl(bridgeUrl);
+    console.log('✅ Bridge URL request accepted:', JSON.stringify(bridgeResponse, null, 2));
+
+    console.log('\n3. Reading bridge services, if available...');
     try {
-      const bridgeRes = await updateBridgeUrl(bridgeUrl);
-      console.log('✅ Bridge URL Update Response:', bridgeRes);
-    } catch (err) {
-      if (err.details?.error?.code === 'ABDM-1094' || err.details?.error?.message?.includes('Duplicate')) {
-        console.log('✅ Bridge URL already updated (Duplicate patch request). Moving on...');
-      } else {
-        throw err;
-      }
+      const services = await getBridgeServices();
+      console.log(JSON.stringify(services, null, 2));
+    } catch (error) {
+      console.warn(`⚠️ Service lookup was not completed: ${error.message}`);
     }
 
-    console.log('\n✅ BRIDGE URL SETUP COMPLETED SUCCESSFULLY!');
-    console.log('As per the new ABDM V3 guidelines, you must now link the bridge manually on the NHPR portal.');
-  } catch (err) {
-    console.error('\n❌ ERROR OCCURRED:');
-    console.error(err.message);
-    if (err.details) {
-      console.error(JSON.stringify(err.details, null, 2));
-    }
+    console.log('\n✅ Software bridge bootstrap completed.');
+    console.log('NEXT EXTERNAL STEP: Register/approve the hospital in NHPR/HFR and complete Software Linkage with this Bridge ID.');
+    console.log('Do not use the legacy V1 addUpdateServices facility-registration flow.');
+  } catch (error) {
+    console.error('\n❌ ABDM V3 bridge bootstrap failed:');
+    console.error(error.message);
+    if (error.details) console.error(JSON.stringify(error.details, null, 2));
+    process.exitCode = 1;
   }
 }
 

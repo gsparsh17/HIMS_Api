@@ -17,7 +17,18 @@ const ehrBundleSchema = new mongoose.Schema({
   },
   bundleType: {
     type: String,
-    enum: ['EMR_SUMMARY', 'OP_CONSULT', 'PRESCRIPTION', 'DIAGNOSTIC_REPORT', 'DISCHARGE_SUMMARY'],
+    enum: [
+      'EMR_SUMMARY',
+      'OP_CONSULT',
+      'PRESCRIPTION',
+      'DIAGNOSTIC_REPORT',
+      'DISCHARGE_SUMMARY',
+      'OP_CONSULTATION',
+      'IMMUNIZATION_RECORD',
+      'HEALTH_DOCUMENT_RECORD',
+      'WELLNESS_RECORD',
+      'INVOICE'
+    ],
     default: 'EMR_SUMMARY'
   },
   status: {

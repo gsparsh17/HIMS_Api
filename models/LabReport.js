@@ -44,7 +44,7 @@ const labReportSchema = new mongoose.Schema({
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
     abhaNumber: { type: String, index: true },
     abhaAddress: { type: String, index: true },
-    status: { type: String, enum: ['pending_abha', 'linked', 'ready_for_consent', 'shared'], default: 'pending_abha' },
+    status: { type: String, enum: ['pending_abha', 'linked', 'ready_for_consent', 'shared', 'LOCAL_RECORD_READY', 'VERIFICATION_PENDING', 'ABDM_LINK_PENDING', 'ABDM_LINKED', 'ABDM_LINK_FAILED'], default: 'pending_abha' },
     linkedAt: Date,
     source: String,
     ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' }

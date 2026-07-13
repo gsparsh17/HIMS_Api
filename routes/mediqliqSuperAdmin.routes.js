@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/mediqliqSuperAdmin.controller');
 const { protect, isMediQliqSuperAdmin } = require('../middlewares/auth');
+const abdmConfig = require('../config/abdm.config');
+const abdmMasterController = require('../controllers/abdmMasterAdmin.controller');
+const mediqliqAbdmController = require('../controllers/mediqliqAbdmAdmin.controller');
 
 const requireSuperAdmin = [protect, isMediQliqSuperAdmin];
 
@@ -15,6 +18,42 @@ router.patch('/me/password', requireSuperAdmin, controller.changePassword);
 
 // Dashboard
 router.get('/dashboard/stats', requireSuperAdmin, controller.getDashboardStats);
+
+
+// ABDM master control plane. These routes reuse the logged-in MediQliq super-admin
+// session so the static ABDM master admin key is never exposed to the browser.
+if (abdmConfig.isMaster) {
+  router.get('/abdm/overview', requireSuperAdmin, mediqliqAbdmController.getOverview);
+
+  router.get('/abdm/gateway/health', requireSuperAdmin, abdmMasterController.gatewayHealth);
+  router.patch('/abdm/gateway/bridge-url', requireSuperAdmin, abdmMasterController.updateBridge);
+  router.get('/abdm/gateway/services', requireSuperAdmin, abdmMasterController.bridgeServices);
+
+  router.post('/abdm/facilities', requireSuperAdmin, abdmMasterController.createFacility);
+  router.get('/abdm/facilities', requireSuperAdmin, abdmMasterController.listFacilities);
+  router.get('/abdm/facilities/:facilityId', requireSuperAdmin, abdmMasterController.getFacility);
+  router.patch('/abdm/facilities/:facilityId', requireSuperAdmin, abdmMasterController.updateFacility);
+  router.post(
+    '/abdm/facilities/:facilityId/rotate-connector-secret',
+    requireSuperAdmin,
+    abdmMasterController.rotateConnectorSecret
+  );
+  router.post(
+    '/abdm/facilities/:facilityId/check-connector',
+    requireSuperAdmin,
+    abdmMasterController.checkFacilityConnector
+  );
+
+  router.get('/abdm/consents', requireSuperAdmin, mediqliqAbdmController.listConsents);
+  router.get('/abdm/consents/:consentRecordId', requireSuperAdmin, mediqliqAbdmController.getConsent);
+  router.get('/abdm/jobs', requireSuperAdmin, mediqliqAbdmController.listJobs);
+  router.get('/abdm/jobs/:jobId', requireSuperAdmin, mediqliqAbdmController.getJob);
+
+  router.get('/abdm/transactions', requireSuperAdmin, abdmMasterController.transactions);
+  router.get('/abdm/transactions/:transactionId', requireSuperAdmin, mediqliqAbdmController.getTransaction);
+  router.get('/abdm/webhook-events', requireSuperAdmin, abdmMasterController.webhookEvents);
+  router.get('/abdm/webhook-events/:eventId', requireSuperAdmin, mediqliqAbdmController.getWebhookEvent);
+}
 
 // User management
 router.get('/users', requireSuperAdmin, controller.listUsers);

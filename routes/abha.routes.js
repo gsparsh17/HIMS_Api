@@ -8,6 +8,9 @@ const canManageAbha = authorize('admin', 'staff', 'registrar', 'receptionist', '
 router.post('/aadhaar/request-otp', protect, canManageAbha, abhaController.requestAadhaarOtp);
 router.post('/aadhaar/enrol', protect, canManageAbha, abhaController.enrolByAadhaarOtp);
 router.post('/capture-existing', protect, canManageAbha, abhaController.captureExistingAbha);
+router.post('/existing/search-mobile', protect, canManageAbha, abhaController.searchExistingAbhaByMobile);
+router.post('/existing/request-otp', protect, canManageAbha, abhaController.requestExistingAbhaOtp);
+router.post('/existing/verify-otp', protect, canManageAbha, abhaController.verifyExistingAbhaOtp);
 
 router.post('/mobile/request-otp', protect, canManageAbha, abhaController.requestMobileOtp);
 router.post('/mobile/verify-otp', protect, canManageAbha, abhaController.verifyMobileOtp);

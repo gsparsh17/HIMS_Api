@@ -1,22 +1,11 @@
 const crypto = require('crypto');
+const abdmConfig = require('../config/abdm.config');
+const { abhaRequest, updateBridgeUrl: directUpdateBridgeUrl, getBridgeServices, getBridgeByServiceId } = require('./abdmHttp.service');
+const { getGatewayToken: directGetGatewayToken } = require('./abdmAuth.service');
+const { masterRequest } = require('./abdmMasterClient.service');
 
-let cachedGatewayToken = null;
-let gatewayTokenExpiresAt = 0;
 let cachedPublicKey = null;
 let publicKeyExpiresAt = 0;
-
-const fetchFn = (...args) => {
-  if (typeof fetch === 'function') return fetch(...args);
-  return import('node-fetch').then(({ default: fetchImpl }) => fetchImpl(...args));
-};
-
-const ABDM_SESSION_URL = process.env.ABDM_SESSION_URL || 'https://dev.abdm.gov.in/api/hiecm/gateway/v3/sessions';
-const ABDM_ABHA_BASE_URL = process.env.ABDM_ABHA_BASE_URL || 'https://abhasbx.abdm.gov.in/abha/api';
-const ABDM_GATEWAY_BASE_URL = process.env.ABDM_GATEWAY_BASE_URL || 'https://dev.abdm.gov.in/gateway';
-
-function getRequestId() {
-  return crypto.randomUUID();
-}
 
 function toPem(base64PublicKey) {
   if (!base64PublicKey) throw new Error('ABDM public key is empty');
@@ -25,65 +14,48 @@ function toPem(base64PublicKey) {
   return `-----BEGIN PUBLIC KEY-----\n${wrapped}\n-----END PUBLIC KEY-----`;
 }
 
-function baseHeaders(accessToken, extra = {}) {
-  return {
-    'Content-Type': 'application/json',
-    'REQUEST-ID': getRequestId(),
-    TIMESTAMP: new Date().toISOString(),
-    Authorization: `Bearer ${accessToken}`,
-    ...extra
-  };
-}
-
-function jsonSafe(value) {
-  try { return JSON.stringify(value); } catch { return String(value); }
+function usingMasterProxy() {
+  return abdmConfig.isHospital && !abdmConfig.isMaster && Boolean(abdmConfig.masterUrl);
 }
 
 async function getGatewayToken() {
-  if (cachedGatewayToken && Date.now() < gatewayTokenExpiresAt) {
-    return cachedGatewayToken;
+  if (usingMasterProxy()) {
+    throw new Error('Gateway tokens are intentionally kept on the ABDM master and are not exposed to hospital servers');
   }
+  return directGetGatewayToken();
+}
 
-  if (!process.env.ABDM_CLIENT_ID || !process.env.ABDM_CLIENT_SECRET) {
-    throw new Error('ABDM_CLIENT_ID and ABDM_CLIENT_SECRET are required in .env');
-  }
-
-  const response = await fetchFn(ABDM_SESSION_URL, {
+async function proxyAbha({ method, path, body, extraHeaders = {}, responseType = 'json' }) {
+  const data = await masterRequest('/internal/abdm/proxy/abha', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      clientId: process.env.ABDM_CLIENT_ID,
-      clientSecret: process.env.ABDM_CLIENT_SECRET
-    })
+    body: { method, path, body, headers: extraHeaders, responseType }
   });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data?.message || data?.error || `ABDM session failed: ${response.status} ${jsonSafe(data)}`);
+  if (responseType === 'buffer') {
+    return {
+      buffer: Buffer.from(data.dataBase64 || '', 'base64'),
+      contentType: data.contentType || 'application/octet-stream'
+    };
   }
+  return data.data;
+}
 
-  cachedGatewayToken = data.accessToken;
-  const expiresInSeconds = Number(data.expiresIn || 1200);
-  gatewayTokenExpiresAt = Date.now() + Math.max(expiresInSeconds - 60, 60) * 1000;
-  return cachedGatewayToken;
+async function abdmPost(path, body, extraHeaders = {}) {
+  if (usingMasterProxy()) {
+    return proxyAbha({ method: 'POST', path, body, extraHeaders });
+  }
+  return abhaRequest(path, { method: 'POST', body, headers: extraHeaders });
+}
+
+async function abdmGet(path, extraHeaders = {}, responseType = 'json') {
+  if (usingMasterProxy()) {
+    return proxyAbha({ method: 'GET', path, extraHeaders, responseType });
+  }
+  return abhaRequest(path, { method: 'GET', headers: extraHeaders, responseType });
 }
 
 async function getPublicKeyPem() {
-  if (cachedPublicKey && Date.now() < publicKeyExpiresAt) {
-    return cachedPublicKey;
-  }
-
-  const gatewayToken = await getGatewayToken();
-  const response = await fetchFn(`${ABDM_ABHA_BASE_URL}/v3/profile/public/certificate`, {
-    method: 'GET',
-    headers: baseHeaders(gatewayToken)
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data?.message || data?.error || `ABDM certificate failed: ${response.status} ${jsonSafe(data)}`);
-  }
-
+  if (cachedPublicKey && Date.now() < publicKeyExpiresAt) return cachedPublicKey;
+  const data = await abdmGet('/v3/profile/public/certificate');
   cachedPublicKey = toPem(data.publicKey);
   publicKeyExpiresAt = Date.now() + 6 * 60 * 60 * 1000;
   return cachedPublicKey;
@@ -101,141 +73,19 @@ async function encryptForAbdm(plainValue) {
   ).toString('base64');
 }
 
-async function abdmPost(path, body, extraHeaders = {}) {
-  const gatewayToken = await getGatewayToken();
-  const response = await fetchFn(`${ABDM_ABHA_BASE_URL}${path}`, {
-    method: 'POST',
-    headers: baseHeaders(gatewayToken, extraHeaders),
-    body: JSON.stringify(body)
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data?.message || data?.error?.message || data?.error || `ABDM API failed: ${response.status}`);
-    error.statusCode = response.status;
-    error.details = data;
-    throw error;
-  }
-  return data;
-}
-
-async function abdmGet(path, extraHeaders = {}, responseType = 'json') {
-  const gatewayToken = await getGatewayToken();
-  const response = await fetchFn(`${ABDM_ABHA_BASE_URL}${path}`, {
-    method: 'GET',
-    headers: baseHeaders(gatewayToken, extraHeaders)
-  });
-
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    const error = new Error(data?.message || data?.error?.message || data?.error || `ABDM API failed: ${response.status}`);
-    error.statusCode = response.status;
-    error.details = data;
-    throw error;
-  }
-
-  if (responseType === 'buffer') {
-    const arrayBuffer = await response.arrayBuffer();
-    return {
-      buffer: Buffer.from(arrayBuffer),
-      contentType: response.headers.get('content-type') || 'application/octet-stream'
-    };
-  }
-
-  return response.json().catch(() => ({}));
-}
-
 async function updateBridgeUrl(bridgeUrl) {
-  const gatewayToken = await getGatewayToken();
-  const ABDM_HIECM_BASE_URL = process.env.ABDM_HIECM_BASE_URL || 'https://dev.abdm.gov.in/api/hiecm/gateway';
-  
-  const response = await fetchFn(`${ABDM_HIECM_BASE_URL}/v3/bridge/url`, {
-    method: 'PATCH',
-    headers: {
-      'accept': '*/*',
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${gatewayToken}`,
-      'REQUEST-ID': crypto.randomUUID(),
-      'TIMESTAMP': new Date().toISOString(),
-      'X-CM-ID': process.env.ABDM_CM_ID || 'sbx'
-    },
-    body: JSON.stringify({ 
-      bridgeId: process.env.ABDM_BRIDGE_ID || 'SBXID_043402',
-      url: bridgeUrl 
-    })
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data?.message || data?.error || `Bridge URL update failed: ${response.status}`);
-    error.statusCode = response.status;
-    error.details = data;
-    throw error;
+  if (usingMasterProxy()) {
+    throw new Error('Bridge URL management is only available on the ABDM master deployment');
   }
-  return data;
+  return directUpdateBridgeUrl(bridgeUrl);
 }
 
-async function addHipService(publicBaseUrl) {
-  const gatewayToken = await getGatewayToken();
-  const ABDM_GATEWAY_BASE_URL = process.env.ABDM_GATEWAY_BASE_URL || 'https://dev.abdm.gov.in/gateway';
-  
-  const body = [
-    {
-      id: process.env.ABDM_HIP_SERVICE_ID || 'CITY_HOSPITAL_HIP',
-      name: process.env.ABDM_HIP_SERVICE_NAME || 'City Hospital HIP',
-      type: 'HIP',
-      active: true,
-      alias: [process.env.ABDM_HIP_ALIAS || 'city-hospital'],
-      endpoints: [
-        {
-          address: publicBaseUrl,
-          connectionType: 'https',
-          use: 'registration'
-        }
-      ]
-    }
-  ];
-
-  const response = await fetchFn(`${ABDM_GATEWAY_BASE_URL}/v1/bridges/addUpdateServices`, {
-    method: 'POST',
-    headers: {
-      'accept': '*/*',
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${gatewayToken}`
-    },
-    body: JSON.stringify(body)
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data?.message || data?.error || `Add HIP service failed: ${response.status}`);
-    error.statusCode = response.status;
-    error.details = data;
-    throw error;
-  }
-  return data;
-}
-
-async function getBridgeServices() {
-  const gatewayToken = await getGatewayToken();
-  const ABDM_GATEWAY_BASE_URL = process.env.ABDM_GATEWAY_BASE_URL || 'https://dev.abdm.gov.in/gateway';
-  
-  const response = await fetchFn(`${ABDM_GATEWAY_BASE_URL}/v1/bridges/getServices`, {
-    method: 'GET',
-    headers: {
-      'accept': 'application/json',
-      'Authorization': `Bearer ${gatewayToken}`
-    }
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data?.message || data?.error || `Get services failed: ${response.status}`);
-    error.statusCode = response.status;
-    error.details = data;
-    throw error;
-  }
-  return data;
+async function addHipService() {
+  const error = new Error(
+    'Legacy /gateway/v1/bridges/addUpdateServices is disabled. Register each facility in NHPR/HFR and complete Software Linkage with the MediQliq Bridge ID.'
+  );
+  error.code = 'ABDM_LEGACY_FACILITY_REGISTRATION_DISABLED';
+  throw error;
 }
 
 module.exports = {
@@ -245,5 +95,6 @@ module.exports = {
   abdmGet,
   updateBridgeUrl,
   addHipService,
-  getBridgeServices
+  getBridgeServices,
+  getBridgeByServiceId
 };
