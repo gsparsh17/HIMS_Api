@@ -107,12 +107,14 @@ async function processAbdmJob(job) {
 async function markJobFailed(job, error) {
   const attempts = Number(job.attempts || 0) + 1;
   const dead = attempts >= Number(job.maxAttempts || 5);
+  const retentionDays = Math.max(1, Number(process.env.ABDM_JOB_RETENTION_DAYS || 30));
   await AbdmJob.findByIdAndUpdate(job._id, {
     status: dead ? 'DEAD' : 'PENDING',
     attempts,
     runAfter: new Date(Date.now() + Math.min(2 ** attempts * 30000, 30 * 60 * 1000)),
     lastError: { message: error.message, at: new Date() },
-    lockedAt: null
+    lockedAt: null,
+    purgeAt: dead ? new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000) : null
   });
 
   const eventId = job.payload?.eventId;

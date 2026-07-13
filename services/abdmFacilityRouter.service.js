@@ -52,7 +52,10 @@ async function resolveFacilityId({ headers = {}, body = {}, requestId, transacti
 
 async function getFacility(facilityId, options = {}) {
   if (!facilityId) return null;
-  let query = AbdmFacility.findOne({ facilityId, active: true });
+  let query = AbdmFacility.findOne({
+    active: true,
+    $or: [{ 'abdm.hipId': facilityId }, { facilityId }]
+  });
   if (options.includeSecret) {
     query = query.select('+connector.secretEncrypted.ciphertext +connector.secretEncrypted.iv +connector.secretEncrypted.tag');
   }
@@ -66,10 +69,15 @@ async function resolveFacility(input) {
 }
 
 async function forwardToHospital(facility, path, body, options = {}) {
-  const secretFacility = await getFacility(facility.facilityId, { includeSecret: true });
-  if (!secretFacility) throw new Error(`Facility ${facility.facilityId} is not registered or active`);
-  if (secretFacility.connector?.status !== 'ACTIVE') {
+  const hipId = facility.abdm?.hipId || facility.facilityId;
+  const secretFacility = await getFacility(hipId, { includeSecret: true });
+  if (!secretFacility) throw new Error(`HIP ${hipId} is not registered or active`);
+  const allowedStatuses = options.allowPending ? ['ACTIVE', 'PENDING'] : ['ACTIVE'];
+  if (!allowedStatuses.includes(secretFacility.connector?.status)) {
     throw new Error(`Facility connector is ${secretFacility.connector?.status || 'inactive'}`);
+  }
+  if (!secretFacility.connector?.baseUrl || !secretFacility.connector?.keyId || !secretFacility.connector?.secretEncrypted) {
+    throw new Error('Facility connector is incomplete');
   }
 
   const method = String(options.method || 'POST').toUpperCase();
@@ -83,13 +91,14 @@ async function forwardToHospital(facility, path, body, options = {}) {
     method,
     headers: {
       'Content-Type': 'application/json',
-      'X-MediQliq-Facility-ID': secretFacility.facilityId,
+      'X-MediQliq-Facility-ID': hipId,
       'X-MediQliq-Key-ID': secretFacility.connector.keyId,
       'X-MediQliq-Timestamp': timestamp,
       'X-MediQliq-Request-ID': requestId,
       'X-MediQliq-Signature': signature
     },
     body: body === undefined ? undefined : stableBody(body),
+    redirect: 'error',
     signal: AbortSignal.timeout(options.timeoutMs || abdmConfig.callbackTimeoutMs)
   });
 

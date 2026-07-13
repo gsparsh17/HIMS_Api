@@ -4,7 +4,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "abdm:validate": "node scripts/validate-abdm-config.js",
+    "abdm:bridge": "node scripts/register-abdm-bridge.js",
+    "abdm:migrate": "node scripts/migrate-abdm-v2.js"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",

@@ -15,18 +15,33 @@ function abdmGender(value) {
 exports.integrationStatus = async (req, res) => {
   const configured = Boolean(
     abdmConfig.masterUrl &&
-      abdmConfig.facilityId &&
+      abdmConfig.hipId &&
       abdmConfig.connectorKeyId &&
       abdmConfig.connectorSecret
   );
-  res.json({
+  let master = null;
+  let masterError = null;
+  if (configured) {
+    try {
+      master = await masterRequest('/internal/abdm/facility-status', { method: 'GET' });
+    } catch (error) {
+      masterError = error.message;
+    }
+  }
+  return res.json({
     success: true,
     configured,
     appRole: abdmConfig.appRole,
     environment: abdmConfig.environment,
-    facilityId: abdmConfig.facilityId || null,
+    hfrFacilityId: abdmConfig.hfrFacilityId || null,
+    hipId: abdmConfig.hipId || null,
+    facilityId: abdmConfig.hipId || null,
     tenantCode: abdmConfig.tenantCode || null,
     masterUrl: abdmConfig.masterUrl || null,
+    masterConnected: Boolean(master?.success),
+    masterReachable: Boolean(master?.success),
+    masterError,
+    centralStatus: master?.facility || null,
     features: {
       m1: abdmConfig.featureM1,
       m2: abdmConfig.featureM2,
@@ -47,7 +62,7 @@ exports.buildCareContexts = async (req, res) => {
 };
 
 exports.listPatientCareContexts = async (req, res) => {
-  const contexts = await AbdmCareContext.find({ patientId: req.params.patientId }).sort({ createdAt: -1 }).lean();
+  const contexts = await AbdmCareContext.find({ patientId: req.params.patientId, active: { $ne: false } }).sort({ createdAt: -1 }).lean();
   res.json({ success: true, count: contexts.length, contexts });
 };
 

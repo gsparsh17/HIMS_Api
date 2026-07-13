@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const abdmConfig = require('../config/abdm.config');
 const { notifyHealthInformation } = require('./abdmHip.service');
+const { assertSafeOutboundUrl } = require('../utils/safeOutboundUrl');
 
 const fetchFn = (...args) => {
   if (typeof fetch === 'function') return fetch(...args);
@@ -12,15 +13,22 @@ function checksum(content) {
 }
 
 async function externalCryptoAdapter({ transactionId, peerKeyMaterial, records }) {
-  const url = process.env.ABDM_CRYPTO_ADAPTER_URL;
-  if (!url) throw new Error('ABDM_CRYPTO_ADAPTER_URL is required when ABDM_DATA_PUSH_MODE=external');
+  const rawUrl = process.env.ABDM_CRYPTO_ADAPTER_URL;
+  if (!rawUrl) throw new Error('ABDM_CRYPTO_ADAPTER_URL is required when ABDM_DATA_PUSH_MODE=external');
+  const url = await assertSafeOutboundUrl(rawUrl, {
+    label: 'ABDM crypto adapter URL',
+    allowedHosts: abdmConfig.cryptoAdapterAllowedHosts,
+    requireHttps: process.env.NODE_ENV === 'production',
+    allowPrivate: process.env.NODE_ENV !== 'production' && process.env.ABDM_ALLOW_PRIVATE_ADAPTER_URLS === 'true'
+  });
   const headers = { 'Content-Type': 'application/json' };
   if (process.env.ABDM_CRYPTO_ADAPTER_TOKEN) headers.Authorization = `Bearer ${process.env.ABDM_CRYPTO_ADAPTER_TOKEN}`;
   const response = await fetchFn(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({ transactionId, peerKeyMaterial, records }),
-    signal: AbortSignal.timeout(Number(process.env.ABDM_CRYPTO_ADAPTER_TIMEOUT_MS || 20000))
+    signal: AbortSignal.timeout(Number(process.env.ABDM_CRYPTO_ADAPTER_TIMEOUT_MS || 20000)),
+    redirect: 'error'
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !Array.isArray(data.entries) || !data.keyMaterial) {
@@ -67,6 +75,12 @@ async function notifyTransfer({ facilityId, consentId, transactionId, sessionSta
 async function pushHealthInformation({ facilityId, consentId, transactionId, dataPushUrl, peerKeyMaterial, records }) {
   const careContextReferences = records.map((item) => item.careContextReference).filter(Boolean);
   try {
+    const safeDataPushUrl = await assertSafeOutboundUrl(dataPushUrl, {
+      label: 'ABDM data push URL',
+      allowedHosts: abdmConfig.dataPushAllowedHosts,
+      requireHttps: true,
+      allowPrivate: false
+    });
     const encrypted = await prepareEncryptedPackage({ transactionId, peerKeyMaterial, records });
     const entries = encrypted.entries.map((entry, index) => ({
       ...entry,
@@ -79,11 +93,12 @@ async function pushHealthInformation({ facilityId, consentId, transactionId, dat
             : JSON.stringify(records[index]?.content || {})
         )
     }));
-    const response = await fetchFn(dataPushUrl, {
+    const response = await fetchFn(safeDataPushUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transactionId, entries, keyMaterial: encrypted.keyMaterial }),
-      signal: AbortSignal.timeout(Number(process.env.ABDM_DATA_PUSH_TIMEOUT_MS || 30000))
+      signal: AbortSignal.timeout(Number(process.env.ABDM_DATA_PUSH_TIMEOUT_MS || 30000)),
+      redirect: 'error'
     });
     const responseBody = await response.json().catch(() => ({}));
     if (!response.ok) {

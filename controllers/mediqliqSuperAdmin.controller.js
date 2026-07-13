@@ -45,6 +45,9 @@ const hospitalFields = [
   'additionalInfo',
   'vitalsEnabled',
   'vitalsController',
+  'tenantCode',
+  'deployment',
+  'onboarding',
 ];
 
 function pick(body, fields) {
@@ -420,7 +423,11 @@ exports.listHospitals = async (req, res) => {
     }
 
     const [hospitals, total] = await Promise.all([
-      Hospital.find(filter).populate('createdBy', 'name email role').sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Hospital.find(filter)
+        .populate('createdBy', 'name email role')
+        .populate('primaryAdmin', 'name email role is_active')
+        .populate('abdmFacility', 'tenantCode hfr abdm connector onboardingStatus rollout')
+        .sort({ createdAt: -1 }).skip(skip).limit(limit),
       Hospital.countDocuments(filter),
     ]);
 
@@ -432,6 +439,8 @@ exports.listHospitals = async (req, res) => {
 };
 
 exports.createHospital = async (req, res) => {
+  let hospital;
+  let adminUser;
   try {
     const requiredFields = ['registryNo', 'hospitalName', 'name', 'address', 'contact', 'city', 'state', 'email'];
     const missing = requiredFields.filter((field) => !req.body[field]);
@@ -439,17 +448,65 @@ exports.createHospital = async (req, res) => {
       return res.status(400).json({ success: false, message: `Missing required fields: ${missing.join(', ')}` });
     }
 
+    const administrator = req.body.administrator || {};
+    const adminName = administrator.name || req.body.adminName;
+    const adminEmail = String(administrator.email || req.body.adminEmail || '').trim().toLowerCase();
+    const adminPassword = administrator.password || req.body.adminPassword;
+    if (!adminName || !adminEmail || !adminPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'administrator.name, administrator.email and administrator.password are required'
+      });
+    }
+    if (String(adminPassword).length < 8) {
+      return res.status(400).json({ success: false, message: 'Hospital administrator password must be at least 8 characters' });
+    }
+    if (await User.exists({ email: adminEmail })) {
+      return res.status(409).json({ success: false, message: 'Hospital administrator email already exists' });
+    }
+
     const data = pick(req.body, hospitalFields);
     if (req.body.pincode && !data.pinCode) data.pinCode = req.body.pincode;
     if (!data.hospitalID) data.hospitalID = await generateUniqueHospitalId();
+    if (!data.tenantCode) data.tenantCode = data.hospitalID;
     data.createdBy = req.user._id;
+    data.onboarding = {
+      ...(data.onboarding || {}),
+      status: 'CREATED',
+      abdmChoice: data.onboarding?.abdmChoice || 'CONFIGURE_LATER'
+    };
 
-    const hospital = await Hospital.create(data);
+    hospital = await Hospital.create(data);
+    adminUser = await User.create({
+      name: adminName,
+      email: adminEmail,
+      password: adminPassword,
+      role: 'admin',
+      hospital_id: hospital._id,
+      is_active: true
+    });
+
+    hospital.primaryAdmin = adminUser._id;
+    hospital.onboarding.status = 'ADMIN_PROVISIONED';
+    await hospital.save();
+
     req.auditResource = { type: 'Hospital', id: hospital._id.toString() };
-
-    return res.status(201).json({ success: true, hospital });
+    return res.status(201).json({
+      success: true,
+      hospital,
+      administrator: {
+        _id: adminUser._id,
+        name: adminUser.name,
+        email: adminUser.email,
+        role: adminUser.role,
+        hospital_id: hospital._id
+      },
+      nextStep: 'Configure HFR/NHPR and ABDM onboarding from the central MediQliq Super Admin portal.'
+    });
   } catch (error) {
     req.auditError = { message: error.message };
+    if (adminUser?._id) await User.findByIdAndDelete(adminUser._id).catch(() => {});
+    if (hospital?._id) await Hospital.findByIdAndDelete(hospital._id).catch(() => {});
     const status = error.code === 11000 ? 409 : 500;
     return res.status(status).json({ success: false, message: error.message });
   }
@@ -461,7 +518,10 @@ exports.getHospital = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid hospital id' });
     }
 
-    const hospital = await Hospital.findById(req.params.hospitalId).populate('createdBy', 'name email role');
+    const hospital = await Hospital.findById(req.params.hospitalId)
+      .populate('createdBy', 'name email role')
+      .populate('primaryAdmin', 'name email role is_active')
+      .populate('abdmFacility', 'tenantCode hfr abdm connector onboardingStatus rollout');
     if (!hospital) return res.status(404).json({ success: false, message: 'Hospital not found' });
 
     return res.json({ success: true, hospital });

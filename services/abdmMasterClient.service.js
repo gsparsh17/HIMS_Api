@@ -21,7 +21,7 @@ function buildHeaders({ method, path, body, extraHeaders = {} }) {
 
   return {
     'Content-Type': 'application/json',
-    'X-MediQliq-Facility-ID': abdmConfig.facilityId,
+    'X-MediQliq-Facility-ID': abdmConfig.hipId,
     'X-MediQliq-Key-ID': abdmConfig.connectorKeyId,
     'X-MediQliq-Timestamp': timestamp,
     'X-MediQliq-Request-ID': requestId,

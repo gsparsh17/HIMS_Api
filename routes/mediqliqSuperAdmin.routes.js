@@ -43,6 +43,10 @@ if (abdmConfig.isMaster) {
     requireSuperAdmin,
     abdmMasterController.checkFacilityConnector
   );
+  router.post('/abdm/facilities/:facilityId/verify-hfr', requireSuperAdmin, abdmMasterController.verifyHfrFacility);
+  router.post('/abdm/facilities/:facilityId/verify-linkage', requireSuperAdmin, abdmMasterController.verifyFacilityLinkage);
+  router.post('/abdm/facilities/:facilityId/tests/:testType', requireSuperAdmin, abdmMasterController.recordRolloutTest);
+  router.post('/abdm/facilities/:facilityId/activate', requireSuperAdmin, abdmMasterController.activateFacility);
 
   router.get('/abdm/consents', requireSuperAdmin, mediqliqAbdmController.listConsents);
   router.get('/abdm/consents/:consentRecordId', requireSuperAdmin, mediqliqAbdmController.getConsent);

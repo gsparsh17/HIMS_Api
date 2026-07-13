@@ -1,136 +1,92 @@
-// models/Hospital.js
 const mongoose = require('mongoose');
 
-// Function to generate alphanumeric ID
 function generateHospitalId() {
   const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const numbers = '0123456789';
-  
-  // Generate 2 random letters
   let result = '';
-  for (let i = 0; i < 2; i++) {
-    result += letters.charAt(Math.floor(Math.random() * letters.length));
-  }
-  
-  // Generate 4 random numbers
-  for (let i = 0; i < 4; i++) {
-    result += numbers.charAt(Math.floor(Math.random() * numbers.length));
-  }
-  
+  for (let i = 0; i < 2; i += 1) result += letters.charAt(Math.floor(Math.random() * letters.length));
+  for (let i = 0; i < 4; i += 1) result += numbers.charAt(Math.floor(Math.random() * numbers.length));
   return result;
 }
 
-// Function to ensure unique ID
 async function generateUniqueHospitalId(HospitalModel) {
-  let hospitalId;
-  let isUnique = false;
-  let attempts = 0;
-  const maxAttempts = 10;
-  console.log('Generating unique hospital ID...');
-  while (!isUnique && attempts < maxAttempts) {
-    hospitalId = generateHospitalId();
-    
-    // Check if this ID already exists
-    const existingHospital = await HospitalModel.findOne({ hospitalID: hospitalId });
-    if (!existingHospital) {
-      isUnique = true;
-    }
-    
-    attempts++;
+  for (let attempts = 0; attempts < 20; attempts += 1) {
+    const hospitalId = generateHospitalId();
+    // eslint-disable-next-line no-await-in-loop
+    const existingHospital = await HospitalModel.exists({ hospitalID: hospitalId });
+    if (!existingHospital) return hospitalId;
   }
-  
-  if (!isUnique) {
-    throw new Error('Unable to generate unique hospital ID after multiple attempts');
-  }
-  
-  return hospitalId;
+  throw new Error('Unable to generate unique hospital ID after multiple attempts');
 }
 
-const hospitalSchema = new mongoose.Schema({
-  hospitalID: { 
-    type: String, 
-    required: true, 
-    unique: true 
-  },
-  registryNo: { 
-    type: String, 
-    required: true 
-  },
-  hospitalName: { 
-    type: String, 
-    required: true 
-  },
-  logo: { 
-    type: String 
-  }, 
-  companyName: { 
-    type: String 
-  },
-  licenseNumber: { 
-    type: String 
-  },
-  name: { 
-    type: String, 
-    required: true 
-  },
-  address: { 
-    type: String, 
-    required: true 
-  },
-  contact: { 
-    type: String, 
-    required: true 
-  },
-  pinCode: { 
-    type: String 
-  },
-  city: { 
-    type: String, 
-    required: true 
-  },
-  state: { 
-    type: String, 
-    required: true 
-  },
-  email: { 
-    type: String, 
-    required: true 
-  },
-  fireNOC: { 
-    type: String 
-  },
-  policyDetails: { 
-    type: String 
-  },
-  healthBima: { 
-    type: String 
-  },
-  additionalInfo: { 
-    type: String 
-  },
-  vitalsEnabled: { 
-    type: Boolean, 
-    default: true 
-  },
-  vitalsController: { 
-    type: String, 
-    enum: ['doctor', 'nurse', 'registrar'],
-    default: 'nurse' 
-  },
-  createdBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User', 
-    required: true 
-  }
-}, { timestamps: true });
+const hospitalSchema = new mongoose.Schema(
+  {
+    hospitalID: { type: String, required: true, unique: true, trim: true, uppercase: true },
+    tenantCode: { type: String, unique: true, sparse: true, trim: true, uppercase: true, index: true },
+    registryNo: { type: String, required: true, trim: true },
+    hospitalName: { type: String, required: true, trim: true },
+    logo: String,
+    companyName: String,
+    licenseNumber: String,
+    name: { type: String, required: true, trim: true },
+    address: { type: String, required: true, trim: true },
+    contact: { type: String, required: true, trim: true },
+    pinCode: String,
+    city: { type: String, required: true, trim: true },
+    state: { type: String, required: true, trim: true },
+    email: { type: String, required: true, lowercase: true, trim: true },
+    fireNOC: String,
+    policyDetails: String,
+    healthBima: String,
+    additionalInfo: String,
+    vitalsEnabled: { type: Boolean, default: true },
+    vitalsController: {
+      type: String,
+      enum: ['doctor', 'nurse', 'registrar'],
+      default: 'nurse'
+    },
 
-// Pre-save middleware to generate hospitalID
-hospitalSchema.pre('save', async function(next) {
+    deployment: {
+      frontendUrl: String,
+      backendUrl: String,
+      databaseName: String,
+      environment: { type: String, enum: ['development', 'sandbox', 'production'], default: 'production' },
+      status: {
+        type: String,
+        enum: ['PLANNED', 'PROVISIONING', 'READY', 'SUSPENDED'],
+        default: 'PLANNED'
+      },
+      provisionedAt: Date
+    },
+
+    onboarding: {
+      status: {
+        type: String,
+        enum: ['CREATED', 'ADMIN_PROVISIONED', 'PROFILE_PENDING', 'OPERATIONAL_SETUP', 'READY'],
+        default: 'CREATED'
+      },
+      abdmChoice: {
+        type: String,
+        enum: ['EXISTING_HFR', 'NEEDS_HFR_REGISTRATION', 'CONFIGURE_LATER'],
+        default: 'CONFIGURE_LATER'
+      },
+      hfrFacilityId: String,
+      facilityManagerName: String,
+      facilityManagerEmail: String,
+      facilityManagerMobile: String
+    },
+
+    abdmFacility: { type: mongoose.Schema.Types.ObjectId, ref: 'AbdmFacility', sparse: true },
+    primaryAdmin: { type: mongoose.Schema.Types.ObjectId, ref: 'User', sparse: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
+  },
+  { timestamps: true }
+);
+
+hospitalSchema.pre('validate', async function assignIdentifiers(next) {
   try {
-    // Only generate hospitalID if it's a new document (not updating)
-    if (this.isNew && !this.hospitalID) {
-      this.hospitalID = await generateUniqueHospitalId(this.constructor);
-    }
+    if (this.isNew && !this.hospitalID) this.hospitalID = await generateUniqueHospitalId(this.constructor);
+    if (!this.tenantCode && this.hospitalID) this.tenantCode = this.hospitalID;
     next();
   } catch (error) {
     next(error);

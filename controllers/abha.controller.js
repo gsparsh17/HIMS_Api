@@ -38,8 +38,12 @@ function isValidMobile(value) {
   return /^[6-9]\d{9}$/.test(String(value || '').replace(/\D/g, ''));
 }
 
-async function ensurePatient(patientId) {
-  const patient = await Patient.findById(patientId);
+async function ensurePatient(patientId, includeSession = false) {
+  let query = Patient.findById(patientId);
+  if (includeSession) {
+    query = query.select('+abha.session.xToken +abha.session.refreshToken');
+  }
+  const patient = await query;
   if (!patient) {
     const error = new Error('Patient not found');
     error.statusCode = 404;
@@ -351,7 +355,7 @@ exports.verifyMobileOtp = async (req, res) => {
 };
 
 function getRecentXToken(patient, req) {
-  const explicitToken = req.headers['x-token'] || req.body?.xToken || req.query?.xToken;
+  const explicitToken = req.headers['x-token'];
   if (explicitToken) return String(explicitToken).startsWith('Bearer ') ? String(explicitToken) : `Bearer ${explicitToken}`;
   const token = patient?.abha?.session?.xToken;
   const expiresAt = patient?.abha?.session?.expiresAt;
@@ -365,7 +369,7 @@ function getRecentXToken(patient, req) {
 
 exports.getQrCode = async (req, res) => {
   try {
-    const patient = await ensurePatient(req.params.patientId);
+    const patient = await ensurePatient(req.params.patientId, true);
     const xToken = getRecentXToken(patient, req);
     const response = await abdmGet('/v3/profile/account/qrCode', { 'X-token': xToken }, 'buffer');
     res.setHeader('Content-Type', response.contentType);
@@ -377,7 +381,7 @@ exports.getQrCode = async (req, res) => {
 
 exports.getAbhaCard = async (req, res) => {
   try {
-    const patient = await ensurePatient(req.params.patientId);
+    const patient = await ensurePatient(req.params.patientId, true);
     const xToken = getRecentXToken(patient, req);
     const response = await abdmGet('/v3/profile/account/abha-card', { 'X-token': xToken }, 'buffer');
     res.setHeader('Content-Type', response.contentType);
@@ -393,7 +397,8 @@ exports.searchPatientsByAbha = async (req, res) => {
     const { query, status, limit = 20 } = req.query;
     const conditions = [];
     if (query) {
-      const regex = new RegExp(String(query).trim(), 'i');
+      const escaped = String(query).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escaped, 'i');
       conditions.push({ 'abha.number': regex }, { 'abha.address': regex }, { first_name: regex }, { last_name: regex }, { phone: regex }, { patientId: regex }, { uhid: regex });
     }
     const filter = conditions.length ? { $or: conditions } : {};

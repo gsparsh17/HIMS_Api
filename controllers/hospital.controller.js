@@ -1,4 +1,4 @@
-const Hospital = require('../models/Hospital.js');
+const Hospital = require('../models/Hospital');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 
@@ -8,170 +8,118 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Fetches details for all hospitals
+const HOSPITAL_PROFILE_FIELDS = new Set([
+  'registryNo', 'hospitalName', 'logo', 'companyName', 'licenseNumber', 'name',
+  'address', 'contact', 'pinCode', 'city', 'state', 'email', 'fireNOC',
+  'policyDetails', 'healthBima', 'additionalInfo', 'vitalsEnabled', 'vitalsController'
+]);
+
+function isPlatformAdmin(req) {
+  return req.user?.role === 'mediqliq_super_admin';
+}
+
+function ownHospitalId(req) {
+  return req.user?.hospital_id ? String(req.user.hospital_id) : null;
+}
+
+function canAccess(req, hospitalId) {
+  return isPlatformAdmin(req) || (ownHospitalId(req) && ownHospitalId(req) === String(hospitalId));
+}
+
 const getHospitalDetails = async (req, res) => {
   try {
-    const hospitals = await Hospital.find({});
-    if (!hospitals.length) {
-      return res.status(404).json({ message: 'No hospital details found.' });
+    const filter = isPlatformAdmin(req) ? {} : { _id: req.user?.hospital_id };
+    if (!isPlatformAdmin(req) && !req.user?.hospital_id) {
+      return res.status(403).json({ message: 'User is not assigned to a hospital deployment.' });
     }
-    res.status(200).json(hospitals);
+    const hospitals = await Hospital.find(filter).select('-createdBy');
+    if (!hospitals.length) return res.status(404).json({ message: 'No hospital details found.' });
+    return res.status(200).json(hospitals);
   } catch (error) {
-    console.error("Error fetching hospital details:", error);
-    res.status(500).json({ message: 'Server error while fetching hospital details.' });
+    return res.status(500).json({ message: 'Server error while fetching hospital details.' });
   }
 };
 
-// Get single hospital by ID
 const getHospitalById = async (req, res) => {
   try {
-    const { hospitalId } = req.params;
-    const hospital = await Hospital.findById(hospitalId);
-    
-    if (!hospital) {
-      return res.status(404).json({ message: 'Hospital not found' });
-    }
-    
-    res.status(200).json(hospital);
+    if (!canAccess(req, req.params.hospitalId)) return res.status(403).json({ message: 'No access to this hospital.' });
+    const hospital = await Hospital.findById(req.params.hospitalId).select('-createdBy');
+    if (!hospital) return res.status(404).json({ message: 'Hospital not found' });
+    return res.status(200).json(hospital);
   } catch (error) {
-    console.error("Error fetching hospital by ID:", error);
-    res.status(500).json({ message: 'Server error while fetching hospital details.' });
+    return res.status(500).json({ message: 'Server error while fetching hospital details.' });
   }
 };
 
-// Update hospital details
 const updateHospitalDetails = async (req, res) => {
   try {
     const { hospitalId } = req.params;
-    const updateData = req.body; // Accept any fields from the request body
+    if (!canAccess(req, hospitalId)) return res.status(403).json({ message: 'No access to this hospital.' });
 
-    // Validate vitalsController if it's being updated
-    if (updateData.vitalsController) {
-      const validControllers = ['doctor', 'nurse', 'registrar'];
-      if (!validControllers.includes(updateData.vitalsController)) {
-        return res.status(400).json({ 
-          message: 'Invalid vitals controller. Must be one of: doctor, nurse, registrar' 
-        });
-      }
+    const updateData = {};
+    for (const [key, value] of Object.entries(req.body || {})) {
+      if (HOSPITAL_PROFILE_FIELDS.has(key) && value !== undefined) updateData[key] = value;
+    }
+    if (updateData.vitalsController && !['doctor', 'nurse', 'registrar'].includes(updateData.vitalsController)) {
+      return res.status(400).json({ message: 'Invalid vitals controller. Must be doctor, nurse or registrar.' });
     }
 
-    // Handle logo upload if file exists
     if (req.file) {
-      try {
-        const result = await cloudinary.uploader.upload(req.file.path, {
-          folder: 'hospital_logos',
-          resource_type: 'image'
-        });
-        updateData.logo = result.secure_url;
-        fs.unlinkSync(req.file.path); // Clean up local file
-      } catch (uploadErr) {
-        console.error('Logo Upload Error:', uploadErr);
-        // Continue with update even if logo upload fails
-      }
+      const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: 'hospital_logos',
+        resource_type: 'image'
+      });
+      updateData.logo = result.secure_url;
+      fs.unlink(req.file.path, () => {});
     }
 
-    const hospital = await Hospital.findById(hospitalId);
-    if (!hospital) {
-      return res.status(404).json({ message: 'Hospital not found' });
-    }
-
-    // Dynamically update only the fields sent in req.body
-    Object.keys(updateData).forEach((key) => {
-      // Only update if the value is not undefined
-      if (updateData[key] !== undefined) {
-        hospital[key] = updateData[key];
-      }
+    const hospital = await Hospital.findByIdAndUpdate(hospitalId, updateData, {
+      new: true,
+      runValidators: true
     });
-
-    // Update the updatedAt timestamp
-    hospital.updatedAt = Date.now();
-
-    await hospital.save();
-
-    res.status(200).json({
-      message: 'Hospital details updated successfully.',
-      hospital: {
-        _id: hospital._id,
-        hospitalName: hospital.hospitalName,
-        email: hospital.email,
-        vitalsEnabled: hospital.vitalsEnabled,
-        vitalsController: hospital.vitalsController,
-        // Include other fields as needed
-      }
-    });
+    if (!hospital) return res.status(404).json({ message: 'Hospital not found' });
+    return res.status(200).json({ message: 'Hospital details updated successfully.', hospital });
   } catch (error) {
-    console.error('Error updating hospital details:', error);
-    res.status(500).json({ message: 'Server error while updating details.' });
+    return res.status(500).json({ message: 'Server error while updating details.' });
   }
 };
 
-// Get vitals configuration for a hospital
 const getVitalsConfig = async (req, res) => {
   try {
-    const { hospitalId } = req.params;
-    const hospital = await Hospital.findById(hospitalId).select('vitalsEnabled vitalsController');
-    
-    if (!hospital) {
-      return res.status(404).json({ message: 'Hospital not found' });
-    }
-    
-    res.status(200).json({
+    if (!canAccess(req, req.params.hospitalId)) return res.status(403).json({ message: 'No access to this hospital.' });
+    const hospital = await Hospital.findById(req.params.hospitalId).select('vitalsEnabled vitalsController');
+    if (!hospital) return res.status(404).json({ message: 'Hospital not found' });
+    return res.status(200).json({
       vitalsEnabled: hospital.vitalsEnabled,
       vitalsController: hospital.vitalsController
     });
   } catch (error) {
-    console.error("Error fetching vitals config:", error);
-    res.status(500).json({ message: 'Server error while fetching vitals configuration.' });
+    return res.status(500).json({ message: 'Server error while fetching vitals configuration.' });
   }
 };
 
-// Update vitals configuration only
 const updateVitalsConfig = async (req, res) => {
   try {
     const { hospitalId } = req.params;
+    if (!canAccess(req, hospitalId)) return res.status(403).json({ message: 'No access to this hospital.' });
     const { vitalsEnabled, vitalsController } = req.body;
-
-    // Validate vitalsController if provided
-    if (vitalsController) {
-      const validControllers = ['doctor', 'nurse', 'registrar'];
-      if (!validControllers.includes(vitalsController)) {
-        return res.status(400).json({ 
-          message: 'Invalid vitals controller. Must be one of: doctor, nurse, registrar' 
-        });
-      }
+    if (vitalsController && !['doctor', 'nurse', 'registrar'].includes(vitalsController)) {
+      return res.status(400).json({ message: 'Invalid vitals controller.' });
     }
-
-    const hospital = await Hospital.findById(hospitalId);
-    if (!hospital) {
-      return res.status(404).json({ message: 'Hospital not found' });
-    }
-
-    // Update only vitals-related fields
-    if (vitalsEnabled !== undefined) {
-      hospital.vitalsEnabled = vitalsEnabled;
-    }
-    
-    if (vitalsController !== undefined) {
-      hospital.vitalsController = vitalsController;
-    }
-
-    hospital.updatedAt = Date.now();
-    await hospital.save();
-
-    res.status(200).json({
+    const update = {};
+    if (vitalsEnabled !== undefined) update.vitalsEnabled = Boolean(vitalsEnabled);
+    if (vitalsController !== undefined) update.vitalsController = vitalsController;
+    const hospital = await Hospital.findByIdAndUpdate(hospitalId, update, { new: true, runValidators: true });
+    if (!hospital) return res.status(404).json({ message: 'Hospital not found' });
+    return res.status(200).json({
       message: 'Vitals configuration updated successfully.',
-      vitalsConfig: {
-        vitalsEnabled: hospital.vitalsEnabled,
-        vitalsController: hospital.vitalsController
-      }
+      vitalsConfig: { vitalsEnabled: hospital.vitalsEnabled, vitalsController: hospital.vitalsController }
     });
   } catch (error) {
-    console.error('Error updating vitals config:', error);
-    res.status(500).json({ message: 'Server error while updating vitals configuration.' });
+    return res.status(500).json({ message: 'Server error while updating vitals configuration.' });
   }
 };
 
-// Export all functions
 module.exports = {
   getHospitalDetails,
   getHospitalById,

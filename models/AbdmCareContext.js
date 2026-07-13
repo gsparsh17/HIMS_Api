@@ -45,6 +45,7 @@ const abdmCareContextSchema = new mongoose.Schema(
     linkReferenceNumber: String,
     linkedAt: Date,
     lastNotifiedAt: Date,
+    active: { type: Boolean, default: true, index: true },
     metadata: mongoose.Schema.Types.Mixed
   },
   { timestamps: true }

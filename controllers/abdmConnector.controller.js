@@ -5,7 +5,9 @@ const AbdmCounterSequence = require('../models/AbdmCounterSequence');
 const AbdmLinkAuthentication = require('../models/AbdmLinkAuthentication');
 const { buildPatientCareContexts, groupedForAbdm } = require('../services/abdmCareContext.service');
 const { generateAbdmHiBundle } = require('../services/fhir/abdmHiBundle.service');
+const { toAbdmHiType, normalizeInternalHiTypes } = require('../utils/abdmHiTypes');
 const { createOtp, hashOtp, verifyOtp, sendLinkOtp } = require('../services/abdmLinkOtp.service');
+const abdmConfig = require('../config/abdm.config');
 
 function unmaskDigits(value) {
   const string = String(value || '');
@@ -54,8 +56,10 @@ function requestIdFromEnvelope(req) {
 exports.health = async (req, res) => {
   res.json({
     success: true,
-    facilityId: process.env.ABDM_FACILITY_ID,
-    tenantCode: process.env.ABDM_TENANT_CODE,
+    hfrFacilityId: abdmConfig.hfrFacilityId,
+    hipId: abdmConfig.hipId,
+    facilityId: abdmConfig.hipId,
+    tenantCode: abdmConfig.tenantCode,
     timestamp: new Date().toISOString()
   });
 };
@@ -67,32 +71,63 @@ exports.profileShare = async (req, res) => {
     const abhaNumber = shared.abhaNumber ? String(shared.abhaNumber) : undefined;
     const abhaAddress = shared.abhaAddress ? String(shared.abhaAddress).toLowerCase() : undefined;
     const phone = unmaskDigits(shared.phoneNumber);
+    const requestId = requestIdFromEnvelope(req);
 
-    const matches = [];
-    if (abhaAddress) matches.push({ 'abha.address': abhaAddress });
-    if (abhaNumber) matches.push({ 'abha.number': abhaNumber });
-    if (phone && phone.length === 10) matches.push({ phone });
+    let patient = null;
+    const abhaMatches = [];
+    if (abhaAddress) abhaMatches.push({ 'abha.address': abhaAddress });
+    if (abhaNumber) abhaMatches.push({ 'abha.number': abhaNumber });
+    if (abhaMatches.length) patient = await Patient.findOne({ $or: abhaMatches });
 
-    let patient = matches.length ? await Patient.findOne({ $or: matches }) : null;
-    if (!patient) {
-      const dob = parseDob(shared);
-      if (!phone || phone.length !== 10 || !dob) {
-        const requestId = requestIdFromEnvelope(req);
-        return res.json({
-          success: false,
-          summary: 'Profile received but patient could not be created because verified phone/DOB was incomplete.',
-          outbound: [
-            {
+    if (!patient && phone?.length === 10) {
+      const phoneMatches = await Patient.find({ phone }).limit(2);
+      if (phoneMatches.length === 1) {
+        const candidate = phoneMatches[0];
+        const conflictingAbha =
+          (candidate.abha?.number && abhaNumber && candidate.abha.number !== abhaNumber) ||
+          (candidate.abha?.address && abhaAddress && candidate.abha.address !== abhaAddress);
+        if (conflictingAbha) {
+          return res.json({
+            success: false,
+            summary: 'Profile share requires manual reconciliation because the mobile belongs to a different ABHA-linked patient.',
+            outbound: [{
               action: 'ACK_PROFILE_SHARE',
               body: {
-                error: {
-                  code: 'ABDM-1010',
-                  message: 'Patient profile did not contain enough verified data to register patient'
-                },
+                error: { code: 'ABDM-1010', message: 'Patient identity could not be reconciled safely at HIP' },
                 response: { requestId }
               }
+            }]
+          });
+        }
+        patient = candidate;
+      } else if (phoneMatches.length > 1) {
+        return res.json({
+          success: false,
+          summary: 'Multiple local patients share the verified mobile number.',
+          outbound: [{
+            action: 'ACK_PROFILE_SHARE',
+            body: {
+              error: { code: 'ABDM-1010', message: 'Multiple patient matches require manual reconciliation' },
+              response: { requestId }
             }
-          ]
+          }]
+        });
+      }
+    }
+
+    if (!patient) {
+      const dob = parseDob(shared);
+      if (!phone || phone.length !== 10 || !dob || (!abhaNumber && !abhaAddress)) {
+        return res.json({
+          success: false,
+          summary: 'Profile received but patient could not be created because verified ABHA, phone or DOB data was incomplete.',
+          outbound: [{
+            action: 'ACK_PROFILE_SHARE',
+            body: {
+              error: { code: 'ABDM-1010', message: 'Patient profile did not contain enough verified data to register patient' },
+              response: { requestId }
+            }
+          }]
         });
       }
       patient = new Patient({
@@ -140,31 +175,23 @@ exports.profileShare = async (req, res) => {
 
     const context = String(payload.metaData?.context || 'GENERAL');
     const tokenNumber = await nextToken(context);
-    const requestId = requestIdFromEnvelope(req);
-
-    res.json({
+    return res.json({
       success: true,
       summary: { patientId: patient._id, tokenNumber, context },
-      outbound: [
-        {
-          action: 'ACK_PROFILE_SHARE',
-          body: {
-            acknowledgement: {
-              abhaAddress: abhaAddress || patient.abha?.address,
-              status: 'SUCCESS',
-              profile: {
-                context,
-                tokenNumber: String(tokenNumber),
-                expiry: '180'
-              }
-            },
-            response: { requestId }
-          }
+      outbound: [{
+        action: 'ACK_PROFILE_SHARE',
+        body: {
+          acknowledgement: {
+            abhaAddress: abhaAddress || patient.abha?.address,
+            status: 'SUCCESS',
+            profile: { context, tokenNumber: String(tokenNumber), expiry: '180' }
+          },
+          response: { requestId }
         }
-      ]
+      }]
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 };
 
@@ -172,49 +199,59 @@ exports.discover = async (req, res) => {
   try {
     const payload = req.body?.body || {};
     const patientRequest = payload.patient || {};
+    const requestId = requestIdFromEnvelope(req);
     const verifiedMobile = (patientRequest.verifiedIdentifiers || []).find((item) => item.type === 'MOBILE')?.value;
     const cleanMobile = unmaskDigits(verifiedMobile);
-    const conditions = [];
-    if (patientRequest.id) conditions.push({ 'abha.address': String(patientRequest.id).toLowerCase() });
-    if (cleanMobile?.length === 10) conditions.push({ phone: cleanMobile });
 
-    const patient = conditions.length ? await Patient.findOne({ $or: conditions }) : null;
-    const requestId = requestIdFromEnvelope(req);
+    let patient = null;
+    if (patientRequest.id) {
+      patient = await Patient.findOne({ 'abha.address': String(patientRequest.id).toLowerCase() });
+    } else if (cleanMobile?.length === 10) {
+      const matches = await Patient.find({ phone: cleanMobile }).limit(2);
+      if (matches.length === 1) patient = matches[0];
+      if (matches.length > 1) {
+        return res.json({
+          success: true,
+          summary: 'Ambiguous patient match',
+          outbound: [{
+            action: 'RESPOND_DISCOVERY',
+            body: {
+              transactionId: payload.transactionId,
+              error: { code: 'ABDM-1010', message: 'Multiple patients match the verified identifier' },
+              response: { requestId }
+            }
+          }]
+        });
+      }
+    }
+
     if (!patient) {
       return res.json({
         success: true,
         summary: 'No matching patient',
-        outbound: [
-          {
-            action: 'RESPOND_DISCOVERY',
-            body: {
-              transactionId: payload.transactionId,
-              error: { code: 'ABDM-1010', message: 'Patient not found' },
-              response: { requestId }
-            }
+        outbound: [{
+          action: 'RESPOND_DISCOVERY',
+          body: {
+            transactionId: payload.transactionId,
+            error: { code: 'ABDM-1010', message: 'Patient not found' },
+            response: { requestId }
           }
-        ]
+        }]
       });
     }
 
     await buildPatientCareContexts(patient._id);
     const { patientGroups } = await groupedForAbdm(patient._id);
-    res.json({
+    return res.json({
       success: true,
       summary: { patientId: patient._id, careContextGroups: patientGroups.length },
-      outbound: [
-        {
-          action: 'RESPOND_DISCOVERY',
-          body: {
-            transactionId: payload.transactionId,
-            patient: patientGroups,
-            response: { requestId }
-          }
-        }
-      ]
+      outbound: [{
+        action: 'RESPOND_DISCOVERY',
+        body: { transactionId: payload.transactionId, patient: patientGroups, response: { requestId } }
+      }]
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 };
 
@@ -286,9 +323,17 @@ exports.linkInit = async (req, res) => {
       });
     }
 
-    const related = await AbdmCareContext.find({ patientId: patient._id, active: true }).select(
-      'referenceNumber patientReference'
-    );
+    const allActiveContexts = await AbdmCareContext.find({
+      patientId: patient._id,
+      active: { $ne: false }
+    }).select('referenceNumber patientReference hiType');
+    const explicitlySelected = allActiveContexts.filter((item) => candidates.includes(item.referenceNumber));
+    const patientReferenceSelected = candidates.includes(context.patientReference);
+    const related = explicitlySelected.length
+      ? explicitlySelected
+      : patientReferenceSelected
+      ? allActiveContexts
+      : [context];
     const linkRefNumber = crypto.randomUUID();
     const otp = createOtp();
     const { salt, hash } = hashOtp(otp);
@@ -429,9 +474,17 @@ exports.linkConfirm = async (req, res) => {
     auth.verifiedAt = new Date();
     await auth.save();
 
-    const { patientGroups } = await groupedForAbdm(auth.patientId);
+    const { patientGroups: allPatientGroups } = await groupedForAbdm(auth.patientId);
+    const selectedReferences = new Set((auth.careContextReferences || []).map(String));
+    const patientGroups = allPatientGroups
+      .map((group) => ({
+        ...group,
+        careContexts: group.careContexts.filter((item) => selectedReferences.has(String(item.referenceNumber)))
+      }))
+      .filter((group) => group.careContexts.length)
+      .map((group) => ({ ...group, count: group.careContexts.length }));
     await AbdmCareContext.updateMany(
-      { patientId: auth.patientId, referenceNumber: { $in: auth.careContextReferences } },
+      { patientId: auth.patientId, referenceNumber: { $in: auth.careContextReferences }, active: { $ne: false } },
       { linkStatus: 'ABDM_LINKED', linkedAt: new Date() }
     );
 
@@ -471,7 +524,7 @@ exports.linkToken = async (req, res) => {
     referenceNumber: items[0].patientReference,
     display: [patient.first_name, patient.last_name].filter(Boolean).join(' '),
     careContexts: items.map((item) => ({ referenceNumber: item.referenceNumber, display: item.display })),
-    hiType,
+    hiType: toAbdmHiType(hiType),
     count: items.length
   }));
   res.json({
@@ -533,6 +586,27 @@ exports.consentNotify = async (req, res) => {
   });
 };
 
+function hiRequestError(requestId, code, message, transactionId) {
+  return {
+    success: true,
+    summary: { transactionId, localBundlePrepared: false, reason: message },
+    outbound: [{
+      action: 'ACK_HEALTH_INFORMATION',
+      body: { error: { code, message }, response: { requestId } }
+    }]
+  };
+}
+
+function contextWithinDateRange(context, dateRange = {}) {
+  const from = dateRange?.from ? new Date(dateRange.from).getTime() : null;
+  const to = dateRange?.to ? new Date(dateRange.to).getTime() : null;
+  const contextFrom = context.dateFrom ? new Date(context.dateFrom).getTime() : null;
+  const contextTo = context.dateTo ? new Date(context.dateTo).getTime() : contextFrom;
+  if (from && contextTo && contextTo < from) return false;
+  if (to && contextFrom && contextFrom > to) return false;
+  return true;
+}
+
 exports.healthInformationRequest = async (req, res) => {
   try {
     const payload = req.body?.body || {};
@@ -540,98 +614,97 @@ exports.healthInformationRequest = async (req, res) => {
     const requestId = requestIdFromEnvelope(req);
     const transactionId = payload.transactionId || payload.hiRequest?.transactionId || crypto.randomUUID();
     const consentId = payload.hiRequest?.consent?.id;
-    const requestedRefs = Array.from(
-      new Set([
-        ...(consent?.careContextReferences || []),
-        ...(Array.isArray(payload.hiRequest?.careContextReference)
-          ? payload.hiRequest.careContextReference
-          : payload.hiRequest?.careContextReference
-          ? [payload.hiRequest.careContextReference]
-          : [])
-      ].filter(Boolean))
-    );
 
-    let contexts = [];
-    if (requestedRefs.length) {
-      contexts = await AbdmCareContext.find({ referenceNumber: { $in: requestedRefs } }).lean();
-    } else if (consent?.patientReference) {
-      contexts = await AbdmCareContext.find({ patientReference: consent.patientReference }).lean();
+    if (!consent || !consentId || String(consent.consentId) !== String(consentId)) {
+      return res.json(hiRequestError(requestId, 'ABDM-1001', 'A matching consent artifact was not found at HIP', transactionId));
+    }
+    if (consent.status !== 'GRANTED') {
+      return res.json(hiRequestError(requestId, 'ABDM-1001', `Consent is ${consent.status || 'not granted'}`, transactionId));
+    }
+    if (consent.expiresAt && new Date(consent.expiresAt).getTime() <= Date.now()) {
+      return res.json(hiRequestError(requestId, 'ABDM-1001', 'Consent has expired', transactionId));
     }
 
-    if (!contexts.length) {
-      return res.json({
-        success: true,
-        summary: { transactionId, localBundlePrepared: false, reason: 'No consented care contexts could be resolved' },
-        outbound: [
-          {
-            action: 'ACK_HEALTH_INFORMATION',
-            body: {
-              error: { code: 'ABDM-1010', message: 'Consented care contexts were not found at HIP' },
-              response: { requestId }
-            }
-          }
-        ]
-      });
+    const requestRefs = Array.isArray(payload.hiRequest?.careContextReference)
+      ? payload.hiRequest.careContextReference
+      : payload.hiRequest?.careContextReference
+      ? [payload.hiRequest.careContextReference]
+      : [];
+    const consentRefs = Array.from(new Set((consent.careContextReferences || []).map(String)));
+    const requestedRefs = Array.from(new Set((requestRefs.length ? requestRefs : consentRefs).map(String)));
+    if (!requestedRefs.length || requestedRefs.some((ref) => !consentRefs.includes(ref))) {
+      return res.json(hiRequestError(requestId, 'ABDM-1001', 'Requested care contexts are outside the granted consent', transactionId));
+    }
+
+    const contexts = await AbdmCareContext.find({
+      referenceNumber: { $in: requestedRefs },
+      active: { $ne: false },
+      linkStatus: 'ABDM_LINKED'
+    }).lean();
+    if (contexts.length !== requestedRefs.length) {
+      return res.json(hiRequestError(requestId, 'ABDM-1010', 'One or more consented care contexts were not found or linked at HIP', transactionId));
     }
 
     const patientIds = Array.from(new Set(contexts.map((item) => String(item.patientId))));
     if (patientIds.length !== 1) {
-      return res.json({
-        success: true,
-        summary: { transactionId, localBundlePrepared: false, reason: 'Consent resolved to multiple local patients' },
-        outbound: [
-          {
-            action: 'ACK_HEALTH_INFORMATION',
-            body: {
-              error: { code: 'ABDM-1001', message: 'Consent mapping is ambiguous at HIP' },
-              response: { requestId }
-            }
-          }
-        ]
-      });
+      return res.json(hiRequestError(requestId, 'ABDM-1001', 'Consent mapping is ambiguous at HIP', transactionId));
     }
 
-    const hiTypes = Array.from(new Set(contexts.map((item) => item.hiType)));
-    const generated = await generateAbdmHiBundle(patientIds[0], {
-      hiTypes: consent?.hiTypes?.length ? consent.hiTypes : hiTypes,
-      dateRange: payload.hiRequest?.dateRange || consent?.dateRange
-    });
+    const allowedHiTypes = normalizeInternalHiTypes(consent.hiTypes || []);
+    if (allowedHiTypes.length && contexts.some((context) => !allowedHiTypes.includes(context.hiType))) {
+      return res.json(hiRequestError(requestId, 'ABDM-1001', 'Requested health information type is outside the granted consent', transactionId));
+    }
+    const grantedDateRange = consent.dateRange || {};
+    if (contexts.some((context) => !contextWithinDateRange(context, grantedDateRange))) {
+      return res.json(hiRequestError(requestId, 'ABDM-1001', 'Requested care context is outside the granted date range', transactionId));
+    }
 
     const records = [];
-    for (const [hiType, bundle] of Object.entries(generated.bundles || {})) {
-      const matching = contexts.find((item) => item.hiType === hiType) || contexts[0];
+    for (const context of contexts) {
+      // Generate each care context independently so a bundle can never contain records
+      // belonging to another consented or non-consented context.
+      // eslint-disable-next-line no-await-in-loop
+      const generated = await generateAbdmHiBundle(patientIds[0], {
+        hiTypes: [context.hiType],
+        recordReferences: context.records || [],
+        careContextReference: context.referenceNumber,
+        persist: false
+      });
+      const bundle = generated.bundles?.[context.hiType];
+      if (!bundle) {
+        return res.json(hiRequestError(requestId, 'ABDM-1010', `No FHIR data could be generated for ${context.referenceNumber}`, transactionId));
+      }
       records.push({
-        hiType,
-        careContextReference: matching.referenceNumber,
+        hiType: toAbdmHiType(context.hiType),
+        careContextReference: context.referenceNumber,
         content: JSON.stringify(bundle)
       });
     }
 
-    res.json({
+    if (!payload.hiRequest?.dataPushUrl || !payload.hiRequest?.keyMaterial) {
+      return res.json(hiRequestError(requestId, 'ABDM-1001', 'Health information request is missing dataPushUrl or keyMaterial', transactionId));
+    }
+
+    return res.json({
       success: true,
       summary: { transactionId, localBundlePrepared: true, recordCount: records.length },
-      outbound: [
-        {
-          action: 'ACK_HEALTH_INFORMATION',
-          body: {
-            hiRequest: {
-              transactionId,
-              sessionStatus: 'ACKNOWLEDGED'
-            },
-            response: { requestId }
-          }
+      outbound: [{
+        action: 'ACK_HEALTH_INFORMATION',
+        body: {
+          hiRequest: { transactionId, sessionStatus: 'ACKNOWLEDGED' },
+          response: { requestId }
         }
-      ],
+      }],
       healthDataRequest: {
         consentId,
         transactionId,
-        dataPushUrl: payload.hiRequest?.dataPushUrl,
-        peerKeyMaterial: payload.hiRequest?.keyMaterial,
+        dataPushUrl: payload.hiRequest.dataPushUrl,
+        peerKeyMaterial: payload.hiRequest.keyMaterial,
         records
       }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 };
 

@@ -37,6 +37,8 @@ const ehrBundleSchema = new mongoose.Schema({
     default: 'generated'
   },
   sourceModules: [String],
+  careContextReference: { type: String, index: true },
+  contentHash: { type: String, index: true },
   recordCounts: {
     appointments: { type: Number, default: 0 },
     admissions: { type: Number, default: 0 },
@@ -66,5 +68,6 @@ const ehrBundleSchema = new mongoose.Schema({
 ehrBundleSchema.index({ patientId: 1, createdAt: -1 });
 ehrBundleSchema.index({ abhaAddress: 1, createdAt: -1 });
 ehrBundleSchema.index({ status: 1 });
+ehrBundleSchema.index({ patientId: 1, bundleType: 1, careContextReference: 1, contentHash: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('EHRBundle', ehrBundleSchema);

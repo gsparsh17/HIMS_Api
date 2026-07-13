@@ -1,3 +1,4 @@
+const abdmConfig = require('../config/abdm.config');
 const { verifyCallbackToken, getBearer } = require('../services/abdmCallbackAuth.service');
 
 function getClientIp(req) {
@@ -8,22 +9,20 @@ function getClientIp(req) {
 
 module.exports = async function verifyAbdmCallback(req, res, next) {
   try {
-    const allowedIps = String(process.env.ABDM_CALLBACK_ALLOWED_IPS || '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (allowedIps.length && !allowedIps.includes(getClientIp(req))) {
+    abdmConfig.assertSecureCallbackConfiguration();
+
+    if (abdmConfig.callbackAllowedIps.length && !abdmConfig.callbackAllowedIps.includes(getClientIp(req))) {
       return res.status(403).json({ error: 'Callback source IP is not allow-listed' });
     }
 
-    const verifyJwt = String(process.env.ABDM_VERIFY_CALLBACK_JWT || 'false').toLowerCase() === 'true';
-    if (!verifyJwt) return next();
+    if (!abdmConfig.verifyCallbackJwt) return next();
 
     const token = getBearer(req.headers.authorization);
     if (!token) return res.status(401).json({ error: 'Missing ABDM callback authorization token' });
     req.abdmCallbackClaims = await verifyCallbackToken(token);
-    next();
+    return next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid ABDM callback authorization', details: error.message });
+    const status = error.message?.includes('Production ABDM callbacks') ? 503 : 401;
+    return res.status(status).json({ error: 'Invalid or unsafe ABDM callback configuration', details: error.message });
   }
 };

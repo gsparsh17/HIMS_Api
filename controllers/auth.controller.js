@@ -188,6 +188,11 @@ exports.resetPassword = async (req, res) => {
 
 exports.registerUser = async (req, res) => {
   try {
+    if (String(process.env.ALLOW_PUBLIC_HOSPITAL_REGISTRATION || 'false').toLowerCase() !== 'true') {
+      return res.status(403).json({
+        message: 'Hospital self-registration is disabled. New hospitals are provisioned by MediQliq Super Admin.'
+      });
+    }
     const {
       name, email, password, role, registryNo, address, contact,
       policyDetails, healthBima, additionalInfo,

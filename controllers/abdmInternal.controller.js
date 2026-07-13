@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { readiness } = require('../utils/abdmOnboarding');
 const abdmConfig = require('../config/abdm.config');
 const { abhaRequest } = require('../services/abdmHttp.service');
 const {
@@ -15,22 +16,26 @@ const {
 } = require('../services/abdmHip.service');
 const AbdmTransaction = require('../models/AbdmTransaction');
 
-const ALLOWED_ABHA_PATHS = [
-  /^\/v3\/profile\/public\/certificate$/,
-  /^\/v3\/enrollment\//,
-  /^\/v3\/profile\/account\//,
-  /^\/v3\/profile\/login\//,
-  /^\/v3\/phr\/web\//
-];
+const ALLOWED_ABHA_REQUESTS = new Set([
+  'GET /v3/profile/public/certificate',
+  'POST /v3/enrollment/request/otp',
+  'POST /v3/enrollment/enrol/byAadhaar',
+  'POST /v3/enrollment/auth/byAbdm',
+  'POST /v3/profile/account/abha/search',
+  'POST /v3/profile/login/request/otp',
+  'POST /v3/profile/login/verify',
+  'GET /v3/profile/account/qrCode',
+  'GET /v3/profile/account/abha-card'
+]);
 
-function isAllowedAbhaPath(path) {
-  return ALLOWED_ABHA_PATHS.some((pattern) => pattern.test(String(path || '')));
+function isAllowedAbhaRequest(method, path) {
+  return ALLOWED_ABHA_REQUESTS.has(`${String(method || 'GET').toUpperCase()} ${String(path || '')}`);
 }
 
 exports.proxyAbha = async (req, res) => {
   try {
     const { method = 'GET', path, body, headers = {}, responseType = 'json' } = req.body || {};
-    if (!isAllowedAbhaPath(path)) {
+    if (!isAllowedAbhaRequest(method, path)) {
       return res.status(400).json({ error: 'ABHA path is not allow-listed by the ABDM master proxy' });
     }
 
@@ -71,7 +76,7 @@ async function createTransaction(facilityId, flow, requestId, status = 'WAITING_
 
 exports.hipAction = async (req, res) => {
   try {
-    const facilityId = req.abdmFacility.facilityId;
+    const facilityId = req.abdmFacility.abdm?.hipId || req.abdmFacility.facilityId;
     const { action, body, linkToken } = req.body || {};
     const requestId = crypto.randomUUID();
     let result;
@@ -139,7 +144,33 @@ exports.health = async (req, res) => {
     success: true,
     role: abdmConfig.appRole,
     environment: abdmConfig.environment,
-    facilityId: req.abdmFacility?.facilityId || abdmConfig.facilityId,
+    hfrFacilityId: req.abdmFacility?.hfr?.facilityId || abdmConfig.hfrFacilityId,
+    hipId: req.abdmFacility?.abdm?.hipId || req.abdmFacility?.facilityId || abdmConfig.hipId,
+    facilityId: req.abdmFacility?.abdm?.hipId || req.abdmFacility?.facilityId || abdmConfig.hipId,
     timestamp: new Date().toISOString()
+  });
+};
+
+exports.facilityStatus = async (req, res) => {
+  const facility = req.abdmFacility;
+  return res.json({
+    success: true,
+    facility: {
+      hfr: facility.hfr,
+      abdm: facility.abdm,
+      tenantCode: facility.tenantCode,
+      connector: {
+        baseUrl: facility.connector?.baseUrl,
+        keyId: facility.connector?.keyId,
+        status: facility.connector?.status,
+        lastHealthCheckAt: facility.connector?.lastHealthCheckAt,
+        lastHealthCheckStatus: facility.connector?.lastHealthCheckStatus
+      },
+      onboardingStatus: facility.onboardingStatus,
+      rollout: facility.rollout,
+      scanAndShare: facility.scanAndShare,
+      active: facility.active,
+      readiness: readiness(facility)
+    }
   });
 };
