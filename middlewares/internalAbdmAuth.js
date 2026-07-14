@@ -39,7 +39,7 @@ async function findFacilityByHipId(hipId) {
   return AbdmFacility.findOne({
     active: true,
     $or: [{ 'abdm.hipId': hipId }, { facilityId: hipId }]
-  }).select('+connector.secretEncrypted.ciphertext +connector.secretEncrypted.iv +connector.secretEncrypted.tag');
+  }).select('+connector.secretEncrypted +connector.secretEncrypted.ciphertext +connector.secretEncrypted.iv +connector.secretEncrypted.tag');
 }
 
 async function verifyMasterInbound(req, res, next) {
@@ -54,7 +54,7 @@ async function verifyMasterInbound(req, res, next) {
 
     const facility = await findFacilityByHipId(h.facilityId);
     const connectorStatus = facility?.connector?.status;
-    const pendingAllowedPath = req.originalUrl.startsWith('/internal/abdm/facility-status');
+    const pendingAllowedPath = req.originalUrl.startsWith('/internal/abdm/facility-status') || req.originalUrl.startsWith('/internal/abdm/health');
     const allowedStatus = connectorStatus === 'ACTIVE' || (connectorStatus === 'PENDING' && pendingAllowedPath);
     if (!facility || !allowedStatus || facility.connector?.keyId !== h.keyId) {
       return res.status(401).json({ error: 'Unknown, inactive, or not-yet-activated facility connector' });

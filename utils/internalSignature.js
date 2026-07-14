@@ -7,6 +7,7 @@ function sha256(value) {
 function stableBody(body) {
   if (body === undefined || body === null) return '';
   if (typeof body === 'string') return body;
+  if (Object.keys(body).length === 0) return '';
   return JSON.stringify(body);
 }
 

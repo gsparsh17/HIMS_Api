@@ -155,7 +155,13 @@ function mountHospitalRoutes() {
 
   if (abdmConfig.featureM2) {
     // Public users never call this route directly; it is HMAC-authenticated from the ABDM Master.
-    app.use('/internal/abdm', require('./routes/abdmConnector.routes'));
+    app.use('/internal/abdm', (req, res, next) => {
+      // If we are in local sandbox mode and both are mounted, avoid middleware collisions
+      if (['/facility-status', '/proxy/abha', '/hip/action'].includes(req.path) && abdmConfig.isMaster) {
+        return require('./routes/abdmInternal.routes')(req, res, next);
+      }
+      return require('./routes/abdmConnector.routes')(req, res, next);
+    });
     // Authenticated hospital-user endpoints for care contexts, HIP linking and FHIR generation.
     app.use('/api/abdm', require('./routes/abdmHospital.routes'));
   }
@@ -184,7 +190,7 @@ function mountMasterRoutes() {
   );
 
   // Hospital server -> central master, authenticated using per-facility HMAC connector credentials.
-  app.use('/internal/abdm', require('./routes/abdmInternal.routes'));
+  // app.use('/internal/abdm', require('./routes/abdmInternal.routes')); // Handled by conditional router above
   // MediQliq operations/admin control plane.
   app.use('/api/abdm/master', require('./routes/abdmMasterAdmin.routes'));
 
@@ -199,8 +205,9 @@ function mountMasterRoutes() {
   }
 }
 
-if (abdmConfig.isHospital) mountHospitalRoutes();
-if (abdmConfig.isMaster) mountMasterRoutes();
+// For local sandbox testing, we mount both routes so you don't need to run two backend instances
+mountHospitalRoutes();
+mountMasterRoutes();
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });

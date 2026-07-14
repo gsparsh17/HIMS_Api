@@ -57,7 +57,7 @@ async function getFacility(facilityId, options = {}) {
     $or: [{ 'abdm.hipId': facilityId }, { facilityId }]
   });
   if (options.includeSecret) {
-    query = query.select('+connector.secretEncrypted.ciphertext +connector.secretEncrypted.iv +connector.secretEncrypted.tag');
+    query = query.select('+connector.secretEncrypted +connector.secretEncrypted.ciphertext +connector.secretEncrypted.iv +connector.secretEncrypted.tag');
   }
   return query;
 }
