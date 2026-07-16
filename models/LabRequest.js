@@ -1,5 +1,48 @@
 const mongoose = require('mongoose');
 
+const labObservationSchema = new mongoose.Schema({
+  analyteCode: { type: String, trim: true },
+  name: { type: String, required: true, trim: true },
+  resultType: { type: String, enum: ['numeric', 'text'], default: 'text' },
+  resultNumeric: { type: String, trim: true },
+  resultText: { type: String, trim: true },
+  comparator: { type: String, trim: true },
+  printedFlag: { type: String, trim: true },
+  derivedFlag: { type: String, trim: true },
+  referenceLow: { type: String, trim: true },
+  referenceHigh: { type: String, trim: true },
+  referenceText: { type: String, trim: true },
+  unit: { type: String, trim: true },
+  method: { type: String, trim: true },
+  instrument: { type: String, trim: true },
+  comments: { type: String, trim: true }
+}, { _id: false });
+
+const labNarrativeSectionSchema = new mongoose.Schema({
+  key: { type: String, trim: true },
+  label: { type: String, required: true, trim: true },
+  text: { type: String, default: '' },
+  isDefault: { type: Boolean, default: false }
+}, { _id: false });
+
+const manualLabReportSchema = new mongoose.Schema({
+  templateId: { type: String, trim: true },
+  templateNumber: Number,
+  templateVersion: { type: String, trim: true },
+  templateName: { type: String, required: true, trim: true },
+  specimenType: { type: String, trim: true },
+  instrument: { type: String, trim: true },
+  observations: [labObservationSchema],
+  narrativeSections: [labNarrativeSectionSchema],
+  additionalTables: { type: mongoose.Schema.Types.Mixed, default: [] },
+  technicianNotes: { type: String, trim: true },
+  pathologistNotes: { type: String, trim: true },
+  disclaimer: { type: String, trim: true },
+  reportedAt: { type: Date, default: Date.now },
+  reportedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+}, { _id: false });
+
+
 const labRequestSchema = new mongoose.Schema({
   requestNumber: {
     type: String,
@@ -62,6 +105,15 @@ const labRequestSchema = new mongoose.Schema({
   category: {
     type: String,
     required: true
+  },
+  reportTemplateId: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  reportTemplateName: {
+    type: String,
+    trim: true
   },
   
   // Clinical information
@@ -159,6 +211,14 @@ const labRequestSchema = new mongoose.Schema({
   public_id: {
     type: String
   },
+  report_mode: {
+    type: String,
+    enum: ['uploaded', 'manual']
+  },
+  report_file_name: { type: String, trim: true },
+  report_mime_type: { type: String, trim: true },
+  report_file_size: { type: Number, min: 0 },
+  manual_report: manualLabReportSchema,
   
   // Notes
   technician_notes: {

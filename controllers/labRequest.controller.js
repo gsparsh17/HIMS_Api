@@ -4,6 +4,16 @@ const LabStaff = require('../models/LabStaff');
 const IPDAdmission = require('../models/IPDAdmission');
 const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
+const LabReport = require('../models/LabReport');
+const Hospital = require('../models/Hospital');
+const {
+  catalogVersion,
+  listTemplates,
+  getTemplate,
+  matchTemplate,
+  matchTemplateDetailed
+} = require('../services/labReportTemplate.service');
+const { generateLabReportPdf } = require('../services/clinicalPdf.service');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 
@@ -13,6 +23,140 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
+
+
+const cleanText = (value, fallback = '') => {
+  if (value === null || value === undefined) return fallback;
+  return String(value).trim();
+};
+
+const toObservation = (item = {}) => ({
+  analyteCode: cleanText(item.analyteCode || item.analyte_code),
+  name: cleanText(item.name || item.analyteName || item.analyte_name, 'Investigation'),
+  resultType: item.resultType === 'numeric' ? 'numeric' : 'text',
+  resultNumeric: cleanText(item.resultNumeric || item.result_numeric),
+  resultText: cleanText(item.resultText || item.result_text || item.result),
+  comparator: cleanText(item.comparator || item.resultComparator),
+  printedFlag: cleanText(item.printedFlag || item.printed_flag || item.flag),
+  derivedFlag: cleanText(item.derivedFlag || item.derived_flag),
+  referenceLow: cleanText(item.referenceLow || item.reference_low),
+  referenceHigh: cleanText(item.referenceHigh || item.reference_high),
+  referenceText: cleanText(item.referenceText || item.reference_text || item.referenceValue),
+  unit: cleanText(item.unit),
+  method: cleanText(item.method),
+  instrument: cleanText(item.instrument),
+  comments: cleanText(item.comments)
+});
+
+const toNarrativeSection = (section = {}, index = 0) => ({
+  key: cleanText(section.key, `section-${index + 1}`),
+  label: cleanText(section.label || section.title, `Comments ${index + 1}`),
+  text: cleanText(section.text ?? section.defaultText ?? section.default_text),
+  isDefault: Boolean(section.isDefault || section.is_default)
+});
+
+const hasEnteredResult = (observation) => Boolean(
+  cleanText(observation.resultNumeric) || cleanText(observation.resultText)
+);
+
+const parseNumeric = (value) => {
+  const normalized = cleanText(value).replace(/,/g, '');
+  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) return null;
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const deriveSimpleFlag = (observation) => {
+  if (cleanText(observation.derivedFlag)) return observation.derivedFlag;
+  const value = parseNumeric(observation.resultNumeric || observation.resultText);
+  const reference = cleanText(observation.referenceText);
+  if (value === null || !reference) return '';
+
+  const range = reference.match(/^\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*(?:-|–|—|to)\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*$/i);
+  if (range) {
+    const low = Number(range[1]);
+    const high = Number(range[2]);
+    if (value < low) return 'Low';
+    if (value > high) return 'High';
+    return 'Normal';
+  }
+
+  const oneSided = reference.match(/^\s*(<=|>=|<|>|≤|≥)\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*$/);
+  if (!oneSided) return '';
+  const operator = oneSided[1];
+  const boundary = Number(oneSided[2]);
+  const passes = operator === '<' ? value < boundary
+    : operator === '<=' || operator === '≤' ? value <= boundary
+      : operator === '>' ? value > boundary
+        : value >= boundary;
+  if (passes) return 'Normal';
+  return operator.startsWith('<') || operator === '≤' ? 'High' : 'Low';
+};
+
+const safeUnlink = (filePath) => {
+  if (!filePath) return;
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (error) {
+    console.warn('Unable to remove temporary lab-report upload:', error.message);
+  }
+};
+
+const hasValidFileSignature = (file) => {
+  if (!file?.path) return false;
+  const descriptor = fs.openSync(file.path, 'r');
+  try {
+    const buffer = Buffer.alloc(8);
+    fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    if (file.mimetype === 'application/pdf') return buffer.subarray(0, 4).toString() === '%PDF';
+    if (file.mimetype === 'image/png') return buffer.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    if (['image/jpeg', 'image/jpg'].includes(file.mimetype)) {
+      return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    }
+    return false;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+};
+
+async function upsertLabReportRecord(request, userId) {
+  const manual = request.manual_report ? request.manual_report.toObject?.() || request.manual_report : undefined;
+  const setValues = {
+    lab_request_id: request._id,
+    patient_id: request.patientId,
+    doctor_id: request.doctorId,
+    prescription_id: request.prescriptionId || undefined,
+    lab_test_id: request.labTestId,
+    report_type: request.testName || 'Laboratory Report',
+    report_mode: request.report_mode,
+    report_date: request.processing_completed_at || new Date(),
+    notes: request.technician_notes || request.pathologist_notes || '',
+    created_by: userId
+  };
+  const unsetValues = {};
+
+  if (request.report_mode === 'manual' && manual) {
+    setValues.manual_report = manual;
+    unsetValues.file_url = 1;
+    unsetValues.public_id = 1;
+    unsetValues.file_name = 1;
+    unsetValues.mime_type = 1;
+    unsetValues.file_size = 1;
+  } else {
+    setValues.file_url = request.report_url;
+    setValues.public_id = request.public_id;
+    setValues.file_name = request.report_file_name;
+    setValues.mime_type = request.report_mime_type;
+    setValues.file_size = request.report_file_size;
+    unsetValues.manual_report = 1;
+  }
+
+  await LabReport.findOneAndUpdate(
+    { lab_request_id: request._id },
+    { $set: setValues, ...(Object.keys(unsetValues).length ? { $unset: unsetValues } : {}) },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+}
 
 // ============== LAB TEST MASTER CRUD ==============
 
@@ -129,6 +273,151 @@ exports.deleteLabTest = async (req, res) => {
   }
 };
 
+
+// ============== STRUCTURED LAB REPORT TEMPLATES ==============
+
+exports.getReportTemplates = async (req, res) => {
+  try {
+    const templates = listTemplates({ q: req.query.q || '', limit: req.query.limit || 105 });
+    res.json({ success: true, version: catalogVersion, count: templates.length, data: templates });
+  } catch (error) {
+    console.error('Error loading lab report templates:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.getReportTemplate = async (req, res) => {
+  try {
+    const template = getTemplate(req.params.templateId);
+    if (!template) return res.status(404).json({ error: 'Lab report template not found' });
+    res.json({ success: true, version: catalogVersion, data: template });
+  } catch (error) {
+    console.error('Error loading lab report template:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.matchReportTemplate = async (req, res) => {
+  try {
+    const match = matchTemplateDetailed(
+      req.query.testName || '',
+      req.query.testCode || '',
+      req.query.templateId || ''
+    );
+    if (!match) return res.status(404).json({ error: 'No confident lab report template match found' });
+    res.json({
+      success: true,
+      version: catalogVersion,
+      data: match.template,
+      match: {
+        score: match.score,
+        confidence: match.confidence,
+        matchedOn: match.matchedOn
+      }
+    });
+  } catch (error) {
+    console.error('Error matching lab report template:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.saveManualReport = async (req, res) => {
+  try {
+    const request = await LabRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ error: 'Lab request not found' });
+
+    const template = getTemplate(req.body.templateId || request.reportTemplateId)
+      || matchTemplate(request.testName, request.testCode, request.reportTemplateId);
+    if (!template) {
+      return res.status(400).json({ error: 'Select a valid structured report template' });
+    }
+
+    const sourceObservations = Array.isArray(req.body.observations) && req.body.observations.length
+      ? req.body.observations
+      : template.observations;
+    if (sourceObservations.length > 250) {
+      return res.status(400).json({ error: 'A laboratory report cannot contain more than 250 observations' });
+    }
+    const observations = sourceObservations.map(toObservation).map((observation) => ({
+      ...observation,
+      derivedFlag: deriveSimpleFlag(observation)
+    }));
+    if (!observations.some(hasEnteredResult)) {
+      return res.status(400).json({ error: 'Enter at least one laboratory result before submitting' });
+    }
+
+    const sourceNarratives = Array.isArray(req.body.narrativeSections)
+      ? req.body.narrativeSections
+      : template.narrativeSections || [];
+    const narrativeSections = sourceNarratives.map(toNarrativeSection);
+    const completedAt = new Date();
+
+    request.report_mode = 'manual';
+    request.report_url = undefined;
+    request.public_id = undefined;
+    request.report_file_name = undefined;
+    request.report_mime_type = undefined;
+    request.report_file_size = undefined;
+    request.manual_report = {
+      templateId: template.id,
+      templateNumber: template.number,
+      templateVersion: catalogVersion,
+      templateName: cleanText(req.body.templateName, template.name),
+      specimenType: cleanText(req.body.specimenType, template.specimen),
+      instrument: cleanText(req.body.instrument, template.instrument),
+      observations,
+      narrativeSections,
+      // Reference/interpretation tables come from the server-controlled template catalog.
+      additionalTables: template.additionalTables || [],
+      technicianNotes: cleanText(req.body.technicianNotes || req.body.notes),
+      pathologistNotes: cleanText(req.body.pathologistNotes),
+      disclaimer: cleanText(template.disclaimer),
+      reportedAt: completedAt,
+      reportedBy: req.user?._id
+    };
+    request.result_value = observations
+      .filter(hasEnteredResult)
+      .map((item) => `${item.name}: ${item.comparator || ''}${item.resultText || item.resultNumeric}${item.unit ? ` ${item.unit}` : ''}`)
+      .join('; ');
+    request.result_interpretation = narrativeSections
+      .filter((section) => /interpret|comment|impression|diagnosis/i.test(section.label) && cleanText(section.text))
+      .map((section) => `${section.label}: ${section.text}`)
+      .join('\n');
+    request.normal_range_used = observations.map((item) => item.referenceText).filter(Boolean).join('; ');
+    request.is_abnormal = observations.some((item) => /^(h|l|high|low|abnormal|positive|reactive|critical|very high|very low)$/i.test(item.printedFlag || item.derivedFlag));
+    request.technician_notes = cleanText(req.body.technicianNotes || req.body.notes, request.technician_notes || '');
+    request.pathologist_notes = cleanText(req.body.pathologistNotes, request.pathologist_notes || '');
+    request.status = 'Completed';
+    request.processing_completed_at = completedAt;
+    await request.save();
+    await upsertLabReportRecord(request, req.user?._id);
+
+    res.json({ success: true, message: 'Structured laboratory report saved', data: request });
+  } catch (error) {
+    console.error('Error saving structured lab report:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+exports.downloadGeneratedReport = async (req, res) => {
+  try {
+    const request = await LabRequest.findById(req.params.id)
+      .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
+      .populate('doctorId', 'firstName lastName specialization department');
+    if (!request) return res.status(404).json({ error: 'Lab request not found' });
+
+    if (request.report_mode === 'manual' && request.manual_report) {
+      const hospital = req.user?.hospital_id ? await Hospital.findById(req.user.hospital_id) : null;
+      return generateLabReportPdf({ res, request, hospital });
+    }
+    if (request.report_url) return res.redirect(request.report_url);
+    return res.status(404).json({ error: 'Report not found' });
+  } catch (error) {
+    console.error('Error generating lab report PDF:', error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+};
+
 // ============== LAB REQUEST CRUD ==============
 
 // Create lab request (from IPD/OPD)
@@ -158,6 +447,10 @@ exports.createLabRequest = async (req, res) => {
       return res.status(400).json({ error: 'Appointment or Prescription ID is required for OPD requests' });
     }
 
+    // Resolve and snapshot the structured report template at request creation time.
+    const matchedReportTemplate = getTemplate(labTest.report_template_id)
+      || matchTemplate(labTest.name, labTest.code, labTest.report_template_id);
+
     // Increment usage count
     await labTest.incrementUsage();
 
@@ -172,6 +465,8 @@ exports.createLabRequest = async (req, res) => {
       testCode: labTest.code,
       testName: labTest.name,
       category: labTest.category,
+      reportTemplateId: matchedReportTemplate?.id || '',
+      reportTemplateName: matchedReportTemplate?.name || '',
       clinical_indication: clinical_indication || '',
       clinical_history: clinical_history || '',
       priority: priority || 'Routine',
@@ -187,7 +482,7 @@ exports.createLabRequest = async (req, res) => {
     const populated = await LabRequest.findById(request._id)
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('labTestId', 'code name category');
+      .populate('labTestId', 'code name category report_template_id report_template_name report_template_version');
 
     res.status(201).json({ success: true, data: populated });
   } catch (error) {
@@ -223,7 +518,7 @@ exports.getLabRequests = async (req, res) => {
     const requests = await LabRequest.find(filter)
       .populate('patientId', 'first_name last_name patientId phone')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('labTestId', 'code name category base_price')
+      .populate('labTestId', 'code name category base_price report_template_id report_template_name report_template_version')
       .populate('sample_collected_by', 'designation employeeId')
       .populate('processed_by', 'designation employeeId')
       .populate('verifiedBy', 'designation employeeId')
@@ -253,7 +548,7 @@ exports.getLabRequestById = async (req, res) => {
     const request = await LabRequest.findById(id)
       .populate('patientId', 'first_name last_name patientId phone dob gender')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('labTestId', 'code name category base_price')
+      .populate('labTestId', 'code name category base_price report_template_id report_template_name report_template_version')
       .populate('sample_collected_by', 'designation employeeId')
       .populate('processed_by', 'designation employeeId')
       .populate('verifiedBy', 'designation employeeId');
@@ -358,8 +653,13 @@ exports.uploadReport = async (req, res) => {
 
     const request = await LabRequest.findById(id);
     if (!request) {
-      fs.unlinkSync(req.file.path);
+      safeUnlink(req.file.path);
       return res.status(404).json({ error: 'Lab request not found' });
+    }
+
+    if (!hasValidFileSignature(req.file)) {
+      safeUnlink(req.file.path);
+      return res.status(400).json({ error: 'The uploaded file content does not match its PDF/image type' });
     }
 
     // Upload to Cloudinary
@@ -373,21 +673,29 @@ exports.uploadReport = async (req, res) => {
       access_mode: 'public'
     });
 
-    fs.unlinkSync(req.file.path);
+    safeUnlink(req.file.path);
 
     request.report_url = result.secure_url;
     request.public_id = result.public_id;
+    request.report_mode = 'uploaded';
+    request.report_file_name = req.file.originalname;
+    request.report_mime_type = req.file.mimetype;
+    request.report_file_size = req.file.size;
+    request.manual_report = undefined;
+    request.processing_completed_at = request.processing_completed_at || new Date();
+    if (req.body.notes) request.technician_notes = cleanText(req.body.notes);
     
     if (request.status !== 'Reported') {
       request.status = 'Completed';
     }
 
     await request.save();
+    await upsertLabReportRecord(request, req.user?._id);
 
-    res.json({ success: true, message: 'Report uploaded successfully', report_url: result.secure_url });
+    res.json({ success: true, message: 'Report uploaded successfully', report_url: result.secure_url, data: request });
   } catch (error) {
     console.error('Error uploading report:', error);
-    if (req.file?.path) fs.unlinkSync(req.file.path);
+    safeUnlink(req.file?.path);
     res.status(500).json({ error: error.message });
   }
 };
@@ -396,12 +704,16 @@ exports.uploadReport = async (req, res) => {
 exports.downloadReport = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await LabRequest.findById(id);
+    const request = await LabRequest.findById(id)
+      .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
+      .populate('doctorId', 'firstName lastName specialization department');
     
-    if (!request || !request.report_url) {
-      return res.status(404).json({ error: 'Report not found' });
+    if (!request) return res.status(404).json({ error: 'Report not found' });
+    if (request.report_mode === 'manual' && request.manual_report) {
+      const hospital = req.user?.hospital_id ? await Hospital.findById(req.user.hospital_id) : null;
+      return generateLabReportPdf({ res, request, hospital });
     }
-
+    if (!request.report_url) return res.status(404).json({ error: 'Report not found' });
     res.redirect(request.report_url);
   } catch (error) {
     console.error('Error downloading report:', error);
@@ -454,7 +766,7 @@ exports.getPendingIPDRequests = async (req, res) => {
       sourceType: 'IPD',
       status: { $in: ['Pending', 'Approved', 'Sample Collected', 'Processing'] }
     })
-      .populate('labTestId', 'code name category turnaround_time_hours')
+      .populate('labTestId', 'code name category turnaround_time_hours report_template_id report_template_name report_template_version')
       .sort({ priority: -1, requestedDate: 1 });
     
     res.json({ success: true, data: requests });

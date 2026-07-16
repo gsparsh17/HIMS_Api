@@ -124,6 +124,11 @@ const prescriptionSchema = new mongoose.Schema({
   diagnosis_icd11_code: { type: String, trim: true, index: true },
   symptoms: { type: String, trim: true },
   investigation: { type: String, trim: true },
+  provisional_diagnosis: { type: String, trim: true },
+  treatment_plan: { type: String, trim: true },
+  physical_examination: { type: String, trim: true },
+  outcome_expected: { type: String, trim: true },
+  diet_advice: { type: String, trim: true },
 
   // Medication Items
   items: [prescriptionItemSchema],

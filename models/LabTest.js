@@ -42,6 +42,21 @@ const labTestSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+
+  // Optional link to one of the 105 structured report templates.
+  report_template_id: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  report_template_name: {
+    type: String,
+    trim: true
+  },
+  report_template_version: {
+    type: String,
+    trim: true
+  },
   
   // Specimen requirements
   specimen_type: {

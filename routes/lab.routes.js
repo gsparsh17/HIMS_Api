@@ -3,6 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const controller = require('../controllers/labRequest.controller');
+const { protect, authorize } = require('../middlewares/auth');
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
@@ -13,6 +14,11 @@ const storage = multer.diskStorage({
     cb(null, Date.now() + path.extname(file.originalname));
   }
 });
+
+const labReportAccess = [
+  protect,
+  authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pathology_staff')
+];
 
 const upload = multer({ 
   storage: storage,
@@ -34,14 +40,21 @@ router.get('/tests/:id', controller.getLabTestById);
 router.put('/tests/:id', controller.updateLabTest);
 router.delete('/tests/:id', controller.deleteLabTest);
 
+// ============== STRUCTURED REPORT TEMPLATE ROUTES ==============
+router.get('/templates', ...labReportAccess, controller.getReportTemplates);
+router.get('/templates/match', ...labReportAccess, controller.matchReportTemplate);
+router.get('/templates/:templateId', ...labReportAccess, controller.getReportTemplate);
+
 // ============== LAB REQUEST ROUTES ==============
 router.post('/requests', controller.createLabRequest);
 router.get('/requests', controller.getLabRequests);
 router.get('/requests/:id', controller.getLabRequestById);
 router.patch('/requests/:id/status', controller.updateRequestStatus);
-router.post('/requests/:id/results', controller.addTestResults);
-router.post('/requests/:id/upload', upload.single('report'), controller.uploadReport);
-router.get('/requests/:id/download', controller.downloadReport);
+router.post('/requests/:id/results', ...labReportAccess, controller.addTestResults);
+router.post('/requests/:id/manual-report', ...labReportAccess, controller.saveManualReport);
+router.post('/requests/:id/upload', ...labReportAccess, upload.single('report'), controller.uploadReport);
+router.get('/requests/:id/report.pdf', ...labReportAccess, controller.downloadGeneratedReport);
+router.get('/requests/:id/download', ...labReportAccess, controller.downloadReport);
 router.patch('/requests/:id/billed', controller.markAsBilled);
 
 // ============== SPECIALIZED QUERIES ==============

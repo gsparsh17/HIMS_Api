@@ -11,6 +11,8 @@ const ImagingTest = require('../models/ImagingTest');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const Pharmacy = require('../models/Pharmacy');
 const Procedure = require('../models/Procedure');
+const Hospital = require('../models/Hospital');
+const { generatePrescriptionPdf } = require('../services/clinicalPdf.service');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 
@@ -258,6 +260,11 @@ exports.createPrescription = async (req, res) => {
       diagnosis_icd11_code,
       symptoms,
       investigation,
+      provisional_diagnosis,
+      treatment_plan,
+      physical_examination,
+      outcome_expected,
+      diet_advice,
       items,
       lab_test_requests = [],
       radiology_test_requests = [],
@@ -330,6 +337,11 @@ exports.createPrescription = async (req, res) => {
       diagnosis_icd11_code: diagnosis_icd11_code || null,
       symptoms: symptoms || '',
       investigation: investigation || '',
+      provisional_diagnosis: provisional_diagnosis || diagnosis || '',
+      treatment_plan: treatment_plan || notes || '',
+      physical_examination: physical_examination || '',
+      outcome_expected: outcome_expected || '',
+      diet_advice: diet_advice || '',
       items: processedItems,
       notes: notes || '',
       prescription_image: prescription_image || null,
@@ -509,6 +521,38 @@ exports.createPrescription = async (req, res) => {
   } catch (err) {
     console.error('Error creating prescription:', err);
     res.status(500).json({ error: err.message });
+  }
+};
+
+
+// Generate the hospital prescription template as a two-page PDF.
+exports.downloadPrescriptionPdf = async (req, res) => {
+  try {
+    const prescription = await Prescription.findById(req.params.id)
+      .populate('patient_id', 'salutation first_name middle_name last_name patientId uhid phone dob gender address city state zipCode allergies medical_history registered_at patient_type')
+      .populate({
+        path: 'doctor_id',
+        select: 'firstName lastName specialization department',
+        populate: { path: 'department', select: 'name' }
+      })
+      .populate('appointment_id', 'token appointment_date');
+
+    if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
+
+    const [vitals, hospital] = await Promise.all([
+      Vital.findOne({
+        $or: [
+          { prescription_id: prescription._id },
+          ...(prescription.appointment_id ? [{ appointment_id: prescription.appointment_id }] : [])
+        ]
+      }).sort({ recorded_at: -1 }).lean(),
+      req.user?.hospital_id ? Hospital.findById(req.user.hospital_id).lean() : null
+    ]);
+
+    return generatePrescriptionPdf({ res, prescription, hospital, vitals });
+  } catch (error) {
+    console.error('Error generating prescription PDF:', error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
   }
 };
 

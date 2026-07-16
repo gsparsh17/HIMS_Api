@@ -7,7 +7,9 @@
     "dev": "nodemon server.js",
     "abdm:validate": "node scripts/validate-abdm-config.js",
     "abdm:bridge": "node scripts/register-abdm-bridge.js",
-    "abdm:migrate": "node scripts/migrate-abdm-v2.js"
+    "abdm:migrate": "node scripts/migrate-abdm-v2.js",
+    "labtests:audit-templates": "node scripts/syncLabTestsFromReportTemplates.js",
+    "labtests:sync-templates": "node scripts/syncLabTestsFromReportTemplates.js --apply"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",

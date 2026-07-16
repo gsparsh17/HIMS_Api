@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const labReportSchema = new mongoose.Schema({
+  lab_request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'LabRequest', index: true },
   patient_id: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Patient', 
@@ -28,6 +29,11 @@ const labReportSchema = new mongoose.Schema({
   public_id: { 
     type: String 
   },
+  report_mode: { type: String, enum: ['uploaded', 'manual'] },
+  file_name: { type: String, trim: true },
+  mime_type: { type: String, trim: true },
+  file_size: { type: Number, min: 0 },
+  manual_report: { type: mongoose.Schema.Types.Mixed },
   report_date: { 
     type: Date, 
     required: true,
@@ -68,6 +74,7 @@ const labReportSchema = new mongoose.Schema({
 });
 
 // Indexes
+labReportSchema.index({ lab_request_id: 1 }, { unique: true, sparse: true });
 labReportSchema.index({ patient_id: 1, report_date: -1 });
 labReportSchema.index({ prescription_id: 1 });
 labReportSchema.index({ lab_test_id: 1 });

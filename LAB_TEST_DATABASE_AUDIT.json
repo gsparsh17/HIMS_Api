@@ -1,0 +1,476 @@
+{
+  "generatedAt": "2026-07-15T18:45:07.060Z",
+  "catalogVersion": "2026.07",
+  "databaseTestCount": 173,
+  "activeTestCount": 4,
+  "inactiveTestCount": 169,
+  "templateCount": 105,
+  "presentTemplateCount": 47,
+  "missingTemplateCount": 58,
+  "missingTemplates": [
+    {
+      "templateId": "lab-template-001",
+      "number": 1,
+      "code": "LT-RPT-001",
+      "name": "Absolute Basophil Count (ABC)",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-003",
+      "number": 3,
+      "code": "LT-RPT-003",
+      "name": "Absolute Lymphocyte Count (ALC)",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-004",
+      "number": 4,
+      "code": "LT-RPT-004",
+      "name": "Absolute Monocyte Count (AMC)",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-005",
+      "number": 5,
+      "code": "LT-RPT-005",
+      "name": "Absolute Polymorphs Count (APC)",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-008",
+      "number": 8,
+      "code": "LT-RPT-008",
+      "name": "Aldolase",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-009",
+      "number": 9,
+      "code": "LT-RPT-009",
+      "name": "Arthritis Profile",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-011",
+      "number": 11,
+      "code": "LT-RPT-011",
+      "name": "Bilirubin, Total",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-013",
+      "number": 13,
+      "code": "LT-RPT-013",
+      "name": "Bone Mineral Density (BMD)",
+      "category": "Other",
+      "specimen_type": "Other"
+    },
+    {
+      "templateId": "lab-template-014",
+      "number": 14,
+      "code": "LT-RPT-014",
+      "name": "CA 15-3 Breast Cancer Marker",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-015",
+      "number": 15,
+      "code": "LT-RPT-015",
+      "name": "CA 19-9 Pancreatic Cancer Marker",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-017",
+      "number": 17,
+      "code": "LT-RPT-017",
+      "name": "Calcitonin",
+      "category": "Endocrinology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-019",
+      "number": 19,
+      "code": "LT-RPT-019",
+      "name": "Complete Blood Count (CBC) with Absolute Count",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-021",
+      "number": 21,
+      "code": "LT-RPT-021",
+      "name": "Complete Blood Count (CBC) with ESR",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-022",
+      "number": 22,
+      "code": "LT-RPT-022",
+      "name": "Comprehensive Metabolic Panel (CMP)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-023",
+      "number": 23,
+      "code": "LT-RPT-023",
+      "name": "Coagulation Profile",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-024",
+      "number": 24,
+      "code": "LT-RPT-024",
+      "name": "Cortisone",
+      "category": "Endocrinology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-025",
+      "number": 25,
+      "code": "LT-RPT-025",
+      "name": "SARS-CoV-2 (COVID-19) Qualitative",
+      "category": "Microbiology",
+      "specimen_type": "Swab"
+    },
+    {
+      "templateId": "lab-template-026",
+      "number": 26,
+      "code": "LT-RPT-026",
+      "name": "C-Peptide, Fasting",
+      "category": "Endocrinology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-029",
+      "number": 29,
+      "code": "LT-RPT-029",
+      "name": "Dengue Fever Antibody, IgG",
+      "category": "Immunology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-030",
+      "number": 30,
+      "code": "LT-RPT-030",
+      "name": "Dengue Fever Antibody, IgM",
+      "category": "Immunology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-031",
+      "number": 31,
+      "code": "LT-RPT-031",
+      "name": "Dengue Fever Antigen, NS1",
+      "category": "Immunology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-032",
+      "number": 32,
+      "code": "LT-RPT-032",
+      "name": "Dengue Fever Panel",
+      "category": "Immunology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-034",
+      "number": 34,
+      "code": "LT-RPT-034",
+      "name": "Digoxin",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-035",
+      "number": 35,
+      "code": "LT-RPT-035",
+      "name": "Double Marker / Maternal Serum Dual Marker",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-036",
+      "number": 36,
+      "code": "LT-RPT-036",
+      "name": "Electrolytes",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-038",
+      "number": 38,
+      "code": "LT-RPT-038",
+      "name": "Fasting Blood Sugar (FBS)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-042",
+      "number": 42,
+      "code": "LT-RPT-042",
+      "name": "Follicle Stimulating Hormone (FSH)",
+      "category": "Endocrinology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-044",
+      "number": 44,
+      "code": "LT-RPT-044",
+      "name": "Neisseria gonorrhoeae PCR, Qualitative",
+      "category": "Microbiology",
+      "specimen_type": "Urine"
+    },
+    {
+      "templateId": "lab-template-045",
+      "number": 45,
+      "code": "LT-RPT-045",
+      "name": "Haptoglobin",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-050",
+      "number": 50,
+      "code": "LT-RPT-050",
+      "name": "HER2 (ERBB2) Amplification by FISH",
+      "category": "Other",
+      "specimen_type": "Tissue"
+    },
+    {
+      "templateId": "lab-template-053",
+      "number": 53,
+      "code": "LT-RPT-053",
+      "name": "Karyotype",
+      "category": "Other",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-054",
+      "number": 54,
+      "code": "LT-RPT-054",
+      "name": "Kidney Function Test (KFT)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-055",
+      "number": 55,
+      "code": "LT-RPT-055",
+      "name": "Lactic Acid (Lactate)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-058",
+      "number": 58,
+      "code": "LT-RPT-058",
+      "name": "Liver Function Test (LFT)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-059",
+      "number": 59,
+      "code": "LT-RPT-059",
+      "name": "Luteinising Hormone (LH)",
+      "category": "Endocrinology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-061",
+      "number": 61,
+      "code": "LT-RPT-061",
+      "name": "Mean Corpuscular Hemoglobin Concentration (MCHC)",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-062",
+      "number": 62,
+      "code": "LT-RPT-062",
+      "name": "Mean Corpuscular Hemoglobin (MCH)",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-063",
+      "number": 63,
+      "code": "LT-RPT-063",
+      "name": "Mean Corpuscular Volume (MCV)",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-066",
+      "number": 66,
+      "code": "LT-RPT-066",
+      "name": "Platelet Distribution Width (PDW)",
+      "category": "Hematology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-069",
+      "number": 69,
+      "code": "LT-RPT-069",
+      "name": "Post-Prandial Blood Sugar (PPBS)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-071",
+      "number": 71,
+      "code": "LT-RPT-071",
+      "name": "Prealbumin",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-072",
+      "number": 72,
+      "code": "LT-RPT-072",
+      "name": "Progesterone",
+      "category": "Endocrinology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-077",
+      "number": 77,
+      "code": "LT-RPT-077",
+      "name": "Random Blood Sugar (RBS)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-080",
+      "number": 80,
+      "code": "LT-RPT-080",
+      "name": "Stool Culture",
+      "category": "Microbiology",
+      "specimen_type": "Stool"
+    },
+    {
+      "templateId": "lab-template-082",
+      "number": 82,
+      "code": "LT-RPT-082",
+      "name": "Thyroid Antibodies",
+      "category": "Immunology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-083",
+      "number": 83,
+      "code": "LT-RPT-083",
+      "name": "Thyroid Profile, Total",
+      "category": "Endocrinology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-089",
+      "number": 89,
+      "code": "LT-RPT-089",
+      "name": "Triple Marker / Maternal Serum Triple Marker",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-090",
+      "number": 90,
+      "code": "LT-RPT-090",
+      "name": "Troponin I, High Sensitive",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-091",
+      "number": 91,
+      "code": "LT-RPT-091",
+      "name": "Troponin T, High Sensitive",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-093",
+      "number": 93,
+      "code": "LT-RPT-093",
+      "name": "Typhidot",
+      "category": "Immunology",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-094",
+      "number": 94,
+      "code": "LT-RPT-094",
+      "name": "Urine Cotinine",
+      "category": "Biochemistry",
+      "specimen_type": "Urine"
+    },
+    {
+      "templateId": "lab-template-095",
+      "number": 95,
+      "code": "LT-RPT-095",
+      "name": "Urine Culture & Sensitivity",
+      "category": "Microbiology",
+      "specimen_type": "Urine"
+    },
+    {
+      "templateId": "lab-template-096",
+      "number": 96,
+      "code": "LT-RPT-096",
+      "name": "Urine Culture",
+      "category": "Microbiology",
+      "specimen_type": "Urine"
+    },
+    {
+      "templateId": "lab-template-097",
+      "number": 97,
+      "code": "LT-RPT-097",
+      "name": "Urine Protein-Creatinine Ratio (UPCR)",
+      "category": "Microbiology",
+      "specimen_type": "Urine"
+    },
+    {
+      "templateId": "lab-template-100",
+      "number": 100,
+      "code": "LT-RPT-100",
+      "name": "Vitamin C (Ascorbic Acid)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-102",
+      "number": 102,
+      "code": "LT-RPT-102",
+      "name": "Vitamin B9 (Folic Acid / Folate)",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-103",
+      "number": 103,
+      "code": "LT-RPT-103",
+      "name": "Vitamin K",
+      "category": "Biochemistry",
+      "specimen_type": "Blood"
+    },
+    {
+      "templateId": "lab-template-105",
+      "number": 105,
+      "code": "LT-RPT-105",
+      "name": "Widal Slide Agglutination Test",
+      "category": "Immunology",
+      "specimen_type": "Blood"
+    }
+  ]
+}

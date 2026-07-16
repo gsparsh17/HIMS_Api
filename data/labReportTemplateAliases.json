@@ -1,0 +1,459 @@
+{
+  "version": "1.0.0",
+  "aliases": {
+    "lab-template-001": [
+      "ABC",
+      "Absolute basophil count"
+    ],
+    "lab-template-002": [
+      "AEC",
+      "Absolute eosinophil count"
+    ],
+    "lab-template-003": [
+      "ALC",
+      "Absolute lymphocyte count"
+    ],
+    "lab-template-004": [
+      "AMC",
+      "Absolute monocyte count"
+    ],
+    "lab-template-005": [
+      "APC",
+      "Absolute polymorph count",
+      "Absolute neutrophil count"
+    ],
+    "lab-template-006": [
+      "AFP",
+      "Alpha-Fetoprotein (AFP)",
+      "Alpha fetoprotein tumor marker",
+      "AFP tumor marker"
+    ],
+    "lab-template-007": [
+      "Serum Albumin",
+      "Albumin serum"
+    ],
+    "lab-template-008": [
+      "Serum Aldolase",
+      "Aldolase serum"
+    ],
+    "lab-template-009": [
+      "Arthritis panel",
+      "Rheumatoid arthritis profile"
+    ],
+    "lab-template-010": [
+      "Beta-hCG (Quantitative)",
+      "Beta HCG quantitative",
+      "Serum beta HCG",
+      "Pregnancy beta HCG"
+    ],
+    "lab-template-011": [
+      "Total Bilirubin",
+      "Serum total bilirubin",
+      "Bilirubin total serum"
+    ],
+    "lab-template-012": [
+      "BUN",
+      "Blood Urea Nitrogen"
+    ],
+    "lab-template-013": [
+      "BMD",
+      "DEXA bone density",
+      "Bone density test",
+      "DEXA scan bone density"
+    ],
+    "lab-template-014": [
+      "CA 15-3",
+      "CA15-3",
+      "Cancer Antigen 15-3"
+    ],
+    "lab-template-015": [
+      "CA 19-9",
+      "CA19-9",
+      "Cancer Antigen 19-9"
+    ],
+    "lab-template-016": [
+      "CA 125",
+      "CA-125",
+      "Cancer Antigen 125 (CA-125)"
+    ],
+    "lab-template-017": [
+      "Serum Calcitonin"
+    ],
+    "lab-template-018": [
+      "Serum Calcium",
+      "Total Calcium"
+    ],
+    "lab-template-019": [
+      "CBC with absolute count",
+      "Complete hemogram with absolute count"
+    ],
+    "lab-template-020": [
+      "CBC",
+      "Complete Blood Count",
+      "Complete hemogram",
+      "Hemogram"
+    ],
+    "lab-template-021": [
+      "CBC with ESR",
+      "Complete hemogram with ESR"
+    ],
+    "lab-template-022": [
+      "CMP",
+      "Comprehensive metabolic panel"
+    ],
+    "lab-template-023": [
+      "Coagulation panel",
+      "Coagulation profile",
+      "Coagulogram"
+    ],
+    "lab-template-024": [
+      "Serum Cortisone"
+    ],
+    "lab-template-025": [
+      "COVID-19 RT-PCR",
+      "SARS CoV 2 RT PCR",
+      "COVID PCR",
+      "Coronavirus RT-PCR"
+    ],
+    "lab-template-026": [
+      "Fasting C-Peptide",
+      "C peptide fasting"
+    ],
+    "lab-template-027": [
+      "CK",
+      "CPK",
+      "Creatine Phosphokinase (CPK)",
+      "Total CK",
+      "Creatine kinase total"
+    ],
+    "lab-template-028": [
+      "CRP",
+      "C-Reactive Protein (CRP)"
+    ],
+    "lab-template-029": [
+      "Dengue IgG",
+      "Dengue antibody IgG"
+    ],
+    "lab-template-030": [
+      "Dengue IgM",
+      "Dengue antibody IgM"
+    ],
+    "lab-template-031": [
+      "Dengue NS1",
+      "Dengue NS1 antigen"
+    ],
+    "lab-template-032": [
+      "Dengue IgG IgM panel",
+      "Dengue antibody panel"
+    ],
+    "lab-template-033": [
+      "DLC",
+      "Differential leucocyte count",
+      "Differential leukocyte count"
+    ],
+    "lab-template-034": [
+      "Serum Digoxin"
+    ],
+    "lab-template-035": [
+      "Double marker",
+      "Dual marker",
+      "Maternal serum dual marker"
+    ],
+    "lab-template-036": [
+      "Serum electrolytes",
+      "Electrolyte panel"
+    ],
+    "lab-template-037": [
+      "ESR",
+      "Erythrocyte Sedimentation Rate (ESR)"
+    ],
+    "lab-template-038": [
+      "FBS",
+      "Fasting blood glucose",
+      "Fasting plasma glucose"
+    ],
+    "lab-template-039": [
+      "Serum Ferritin"
+    ],
+    "lab-template-040": [
+      "Plasma fibrinogen test",
+      "Fibrinogen test"
+    ],
+    "lab-template-041": [
+      "FNAC",
+      "Fine Needle Aspiration Cytology (FNAC)"
+    ],
+    "lab-template-042": [
+      "FSH",
+      "Serum FSH"
+    ],
+    "lab-template-043": [
+      "Serum Globulin"
+    ],
+    "lab-template-044": [
+      "Gonorrhea PCR",
+      "Neisseria gonorrhoeae PCR"
+    ],
+    "lab-template-045": [
+      "Serum Haptoglobin"
+    ],
+    "lab-template-046": [
+      "HbA1c",
+      "HbA1c (Glycosylated Hemoglobin)",
+      "Glycated hemoglobin"
+    ],
+    "lab-template-047": [
+      "PCV",
+      "HCT",
+      "Packed Cell Volume (PCV)",
+      "Hematocrit"
+    ],
+    "lab-template-048": [
+      "HDL",
+      "HDL Cholesterol"
+    ],
+    "lab-template-049": [
+      "Hemoglobin",
+      "Haemoglobin",
+      "Haemoglobin estimation",
+      "Hemoglobin estimation"
+    ],
+    "lab-template-050": [
+      "HER2 FISH",
+      "ERBB2 FISH",
+      "HER2 amplification"
+    ],
+    "lab-template-051": [
+      "HIV 1/2 Antibody test",
+      "HIV antibody screening",
+      "HIV 1 and 2 antibodies"
+    ],
+    "lab-template-052": [
+      "Serum Iron",
+      "Iron serum"
+    ],
+    "lab-template-053": [
+      "Chromosome analysis",
+      "Cytogenetic karyotype"
+    ],
+    "lab-template-054": [
+      "KFT",
+      "Renal function test",
+      "Kidney function panel",
+      "RFT"
+    ],
+    "lab-template-055": [
+      "Serum Lactate",
+      "Plasma lactate"
+    ],
+    "lab-template-056": [
+      "LDL",
+      "LDL Cholesterol"
+    ],
+    "lab-template-057": [
+      "Lipid Profile - Total Cholesterol",
+      "Lipid panel",
+      "Lipid profile test"
+    ],
+    "lab-template-058": [
+      "LFT",
+      "Liver function panel",
+      "Hepatic function panel"
+    ],
+    "lab-template-059": [
+      "LH",
+      "Serum LH"
+    ],
+    "lab-template-060": [
+      "Serum Magnesium"
+    ],
+    "lab-template-061": [
+      "MCHC"
+    ],
+    "lab-template-062": [
+      "MCH"
+    ],
+    "lab-template-063": [
+      "MCV"
+    ],
+    "lab-template-064": [
+      "Stool Occult Blood",
+      "Fecal occult blood",
+      "FOBT"
+    ],
+    "lab-template-065": [
+      "Pap smear",
+      "Cervical cytology",
+      "PAP test"
+    ],
+    "lab-template-066": [
+      "PDW"
+    ],
+    "lab-template-067": [
+      "Peripheral blood smear",
+      "Peripheral smear examination",
+      "PBS"
+    ],
+    "lab-template-068": [
+      "Platelet count"
+    ],
+    "lab-template-069": [
+      "PPBS",
+      "Post prandial blood glucose",
+      "Postprandial glucose"
+    ],
+    "lab-template-070": [
+      "Serum Potassium"
+    ],
+    "lab-template-071": [
+      "Serum Prealbumin"
+    ],
+    "lab-template-072": [
+      "Serum Progesterone"
+    ],
+    "lab-template-073": [
+      "Serum Prolactin",
+      "PRL"
+    ],
+    "lab-template-074": [
+      "Serum Protein Electrophoresis (SPEP)",
+      "Protein electrophoresis",
+      "Serum protein fractions"
+    ],
+    "lab-template-075": [
+      "Total Immunoglobulin E (IgE)",
+      "Total IgE",
+      "RAST"
+    ],
+    "lab-template-076": [
+      "Total RBC count",
+      "RBC count"
+    ],
+    "lab-template-077": [
+      "RBS",
+      "Random blood glucose",
+      "Random plasma glucose"
+    ],
+    "lab-template-078": [
+      "Reticulocyte count"
+    ],
+    "lab-template-079": [
+      "Semen analysis (Morphology, Vitality, pH, fructose, Viscosity)",
+      "Semen analysis",
+      "Seminogram"
+    ],
+    "lab-template-080": [
+      "Stool culture test",
+      "Fecal culture"
+    ],
+    "lab-template-081": [
+      "Serum Testosterone (Total)",
+      "Total testosterone"
+    ],
+    "lab-template-082": [
+      "Anti thyroid antibodies",
+      "Thyroid antibody panel",
+      "TPO and Tg antibodies"
+    ],
+    "lab-template-083": [
+      "Thyroid profile",
+      "T3 T4 TSH"
+    ],
+    "lab-template-084": [
+      "Total/Free Thyroxine (T4)",
+      "Total T4",
+      "T4 total"
+    ],
+    "lab-template-085": [
+      "TIBC",
+      "Total Iron Binding Capacity (TIBC)"
+    ],
+    "lab-template-086": [
+      "TORCH Panel (Toxoplasma, Rubella, CMV, HSV 1&2)",
+      "TORCH panel"
+    ],
+    "lab-template-087": [
+      "TLC",
+      "Total leucocyte count",
+      "Total leukocyte count"
+    ],
+    "lab-template-088": [
+      "Total Triiodothyronine (T3)",
+      "Total T3",
+      "T3 total"
+    ],
+    "lab-template-089": [
+      "Triple marker",
+      "Maternal serum triple marker"
+    ],
+    "lab-template-090": [
+      "High sensitivity Troponin I",
+      "hs Troponin I",
+      "hs-cTnI"
+    ],
+    "lab-template-091": [
+      "High sensitivity Troponin T",
+      "hs Troponin T",
+      "hs-cTnT"
+    ],
+    "lab-template-092": [
+      "TSH",
+      "Thyroid Stimulating Hormone (TSH)"
+    ],
+    "lab-template-093": [
+      "Typhidot test",
+      "Typhoid IgM IgG rapid test"
+    ],
+    "lab-template-094": [
+      "Cotinine urine",
+      "Nicotine metabolite urine"
+    ],
+    "lab-template-095": [
+      "Urine C and S",
+      "Urine C/S",
+      "Urine culture sensitivity"
+    ],
+    "lab-template-096": [
+      "Urine culture test"
+    ],
+    "lab-template-097": [
+      "UPCR",
+      "Urine PCR",
+      "Urine protein creatinine ratio"
+    ],
+    "lab-template-098": [
+      "Syphilis serology (VDRL/RPR/TPHA)",
+      "VDRL",
+      "RPR"
+    ],
+    "lab-template-099": [
+      "Vitamin B12",
+      "Cobalamin"
+    ],
+    "lab-template-100": [
+      "Vitamin C",
+      "Ascorbic acid"
+    ],
+    "lab-template-101": [
+      "Vitamin D (25-Hydroxy)",
+      "25 OH Vitamin D",
+      "Vitamin D 25 hydroxy"
+    ],
+    "lab-template-102": [
+      "Folate",
+      "Folic acid",
+      "Vitamin B9"
+    ],
+    "lab-template-103": [
+      "Serum Vitamin K"
+    ],
+    "lab-template-104": [
+      "VLDL Cholesterol",
+      "VLDL"
+    ],
+    "lab-template-105": [
+      "Widal test",
+      "Widal slide test"
+    ]
+  }
+}

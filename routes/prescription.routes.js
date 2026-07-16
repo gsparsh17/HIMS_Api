@@ -4,6 +4,7 @@ const prescriptionController = require('../controllers/prescription.controller')
 const multer = require('multer');
 const path = require('path');
 const { validatePrescriptionMedicationFlow } = require('../middlewares/medicationFlowValidation');
+const { protect, authorize } = require('../middlewares/auth');
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -30,6 +31,7 @@ router.get('/', prescriptionController.getAllPrescriptions);
 router.get('/active', prescriptionController.getActivePrescriptions);
 router.get('/patient/:patientId', prescriptionController.getPrescriptionsByPatientId);
 router.get('/doctor/:doctorId', prescriptionController.getPrescriptionsByDoctorId);
+router.get('/:id/print', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff'), prescriptionController.downloadPrescriptionPdf);
 router.get('/:id', prescriptionController.getPrescriptionById);
 router.put('/:id', prescriptionController.updatePrescription);
 router.put('/:prescriptionId/dispense/:itemIndex', prescriptionController.dispenseMedication);
