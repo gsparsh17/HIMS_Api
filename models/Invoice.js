@@ -551,7 +551,7 @@ const invoiceSchema = new mongoose.Schema({
   refunded_amount: { type: Number, default: 0, min: 0 },
   linked_invoice_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   receipt_numbers: [{ type: String, trim: true }],
-  idempotency_key: { type: String, trim: true, sparse: true },
+  idempotency_key: { type: String, trim: true },
   discount_details: {
     type: { type: String, enum: ['fixed', 'percentage'], default: 'fixed' },
     reason: String,
