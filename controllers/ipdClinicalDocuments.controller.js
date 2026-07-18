@@ -12,6 +12,18 @@ const { DEFAULT_TIMEZONE, EWS_CONFIG } = require('../config/clinicalScoring');
 const id = v => v?._id || v;
 const safeText = v => String(v || '').trim();
 const initials = name => safeText(name).split(/\s+/).filter(Boolean).map(n => n[0]).join('').slice(0, 4).toUpperCase();
+const allergySnapshot = (allergies = {}, fallback = '') => {
+  if (allergies?.none === true) return 'No known allergies';
+  const values = [
+    ['Blood transfusion', allergies?.bloodTransfusion],
+    ['Drug', allergies?.drug],
+    ['Food & beverages', allergies?.foodAndBeverages],
+    ['Other', allergies?.other]
+  ]
+    .filter(([, value]) => safeText(value))
+    .map(([label, value]) => `${label}: ${safeText(value)}`);
+  return values.join('; ') || safeText(fallback);
+};
 const asDate = v => {
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
@@ -749,6 +761,11 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
             ipd_admission_id: admission._id,
             source_type: 'IPD',
             diagnosis: patch.planAndDisposition?.provisionalDiagnosis || '',
+            pain_score: patch.painScore?.score,
+            allergy_snapshot: allergySnapshot(
+              patch.allergies,
+              admission.patientId?.allergies
+            ),
             items: items.map(item => ({
               medicine_name: item.medicine_name,
               generic_name: item.generic_name || item.medicine_name,

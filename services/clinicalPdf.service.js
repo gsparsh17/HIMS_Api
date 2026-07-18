@@ -771,12 +771,12 @@ function drawPainScale(doc, x, y, width, height, selectedValue) {
   doc.text('Unbearable', x + width - mm(30), y + height - mm(5), { width: mm(27), align: 'center' });
 }
 
-function drawVitalsPanel(doc, x, y, width, height, patient, vitals) {
+function drawVitalsPanel(doc, x, y, width, height, patient, vitals, allergySnapshot) {
   doc.rect(x, y, width, height).lineWidth(0.4).strokeColor(COLORS.ink).stroke();
   doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(7.2).text('ALLERGY:', x + 4, y + 3, {
     width: mm(20), lineBreak: false
   });
-  doc.font('Helvetica').text(text(patient.allergies, 'None reported'), x + mm(22), y + 3, {
+  doc.font('Helvetica').text(text(allergySnapshot || patient.allergies, 'None reported'), x + mm(22), y + 3, {
     width: width - mm(24), height: mm(5), ellipsis: true
   });
   doc.font('Helvetica-Bold').text('VITALS:', x + 4, y + mm(8), { width: width - 8 });
@@ -845,8 +845,17 @@ function drawPrescriptionPageOne(doc, prescription, hospital, vitals) {
   const painWidth = mm(82);
   const panelHeight = mm(26);
   const panelY = doc.y;
-  drawPainScale(doc, left, panelY, painWidth, panelHeight, prescription.pain_score || vitals?.pain_score);
-  drawVitalsPanel(doc, left + painWidth, panelY, width - painWidth, panelHeight, patient, vitals);
+  drawPainScale(doc, left, panelY, painWidth, panelHeight, prescription.pain_score ?? vitals?.pain_score);
+  drawVitalsPanel(
+    doc,
+    left + painWidth,
+    panelY,
+    width - painWidth,
+    panelHeight,
+    patient,
+    vitals,
+    prescription.allergy_snapshot
+  );
   doc.y = panelY + panelHeight;
 
   const chiefY = doc.y;
@@ -863,11 +872,16 @@ function drawPrescriptionPageOne(doc, prescription, hospital, vitals) {
     left + halfWidth, historyY, halfWidth, mm(50));
   doc.y = historyY + mm(50);
 
-  const investigations = prescription.investigation || [
+  const structuredInvestigations = [
     ...(prescription.lab_test_requests || []).map((item) => item.lab_test_name),
     ...(prescription.radiology_test_requests || []).map((item) => item.imaging_test_name),
     ...(prescription.procedure_requests || []).map((item) => item.procedure_name)
-  ].filter(Boolean).join(', ');
+  ].filter(Boolean);
+  const investigationNotes = text(prescription.investigation);
+  const investigations = [
+    structuredInvestigations.length ? `Ordered: ${structuredInvestigations.join(', ')}` : '',
+    investigationNotes ? `${structuredInvestigations.length ? 'Additional notes: ' : ''}${investigationNotes}` : ''
+  ].filter(Boolean).join('\n');
   const investigationY = doc.y;
   const remainingHeight = Math.max(mm(25), CONTENT_BOTTOM - investigationY - mm(2));
   drawClinicalBox(doc, 'INVESTIGATIONS ADVISED', investigations, left, investigationY, width, remainingHeight);
@@ -957,8 +971,15 @@ function drawMedicationTable(doc, items) {
 
 function drawPrescriptionPageTwo(doc, prescription, hospital) {
   drawCompactPrescriptionHeader(doc, prescription, hospital);
-  drawCompactField(doc, 'PROVISIONAL DIAGNOSIS / DIFFERENTIAL DIAGNOSIS',
-    prescription.provisional_diagnosis || prescription.diagnosis, mm(12));
+  const primaryDiagnosis = text(prescription.diagnosis);
+  const differentialDiagnosis = text(prescription.provisional_diagnosis);
+  const diagnoses = [
+    primaryDiagnosis ? `Primary: ${primaryDiagnosis}` : '',
+    differentialDiagnosis && differentialDiagnosis.toLowerCase() !== primaryDiagnosis.toLowerCase()
+      ? `Differential / additional: ${differentialDiagnosis}`
+      : ''
+  ].filter(Boolean).join('\n');
+  drawCompactField(doc, 'DIAGNOSIS', diagnoses, mm(14));
   drawCompactField(doc, 'TREATMENT PLAN', prescription.treatment_plan || prescription.notes, mm(11));
 
   const left = PAGE.margin;

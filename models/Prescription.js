@@ -122,6 +122,10 @@ const prescriptionSchema = new mongoose.Schema({
   history_of_presenting_complaint: { type: String, trim: true },
   diagnosis: { type: String, trim: true },
   diagnosis_icd11_code: { type: String, trim: true, index: true },
+  pain_score: { type: Number, min: 0, max: 10 },
+  // Snapshot captured when the prescription is created so historical PDFs do
+  // not change if the patient's master allergy record is edited later.
+  allergy_snapshot: { type: String, trim: true },
   symptoms: { type: String, trim: true },
   investigation: { type: String, trim: true },
   provisional_diagnosis: { type: String, trim: true },

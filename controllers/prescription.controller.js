@@ -4,6 +4,8 @@ const Vital = require('../models/Vital');
 const Medicine = require('../models/Medicine');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDAdmission = require('../models/IPDAdmission');
+const IPDRound = require('../models/IPDRound');
+const Patient = require('../models/Patient');
 const LabRequest = require('../models/LabRequest');
 const LabTest = require('../models/LabTest');
 const RadiologyRequest = require('../models/RadiologyRequest');
@@ -258,6 +260,8 @@ exports.createPrescription = async (req, res) => {
       history_of_presenting_complaint,
       diagnosis,
       diagnosis_icd11_code,
+      pain_score,
+      allergy_snapshot,
       symptoms,
       investigation,
       provisional_diagnosis,
@@ -323,6 +327,28 @@ exports.createPrescription = async (req, res) => {
       }
     }
 
+    // Capture immutable clinical context for the generated prescription PDF.
+    // Existing callers remain compatible: allergy is taken from the patient
+    // master when omitted, and IPD ward-round pain is taken from the linked
+    // round when the caller does not send it explicitly.
+    let resolvedAllergySnapshot = String(allergy_snapshot || '').trim();
+    if (!resolvedAllergySnapshot && patient_id) {
+      const patient = await Patient.findById(patient_id).select('allergies').lean();
+      resolvedAllergySnapshot = String(patient?.allergies || '').trim();
+    }
+
+    let resolvedPainScore = pain_score;
+    if ((resolvedPainScore === undefined || resolvedPainScore === null || resolvedPainScore === '') && round_id) {
+      const linkedRound = await IPDRound.findById(round_id).select('painScore').lean();
+      resolvedPainScore = linkedRound?.painScore;
+    }
+    if (resolvedPainScore !== undefined && resolvedPainScore !== null && resolvedPainScore !== '') {
+      resolvedPainScore = Number(resolvedPainScore);
+      if (!Number.isFinite(resolvedPainScore)) resolvedPainScore = undefined;
+    } else {
+      resolvedPainScore = undefined;
+    }
+
     // Create prescription first
     const prescription = new Prescription({
       patient_id,
@@ -335,6 +361,8 @@ exports.createPrescription = async (req, res) => {
       history_of_presenting_complaint: history_of_presenting_complaint || '',
       diagnosis: diagnosis || '',
       diagnosis_icd11_code: diagnosis_icd11_code || null,
+      pain_score: resolvedPainScore,
+      allergy_snapshot: resolvedAllergySnapshot,
       symptoms: symptoms || '',
       investigation: investigation || '',
       provisional_diagnosis: provisional_diagnosis || diagnosis || '',
@@ -496,7 +524,6 @@ exports.createPrescription = async (req, res) => {
 
     // Update IPDRound with this prescription
     if (source_type === 'IPD' && round_id) {
-      const IPDRound = require('../models/IPDRound');
       await IPDRound.findByIdAndUpdate(round_id, { prescriptionId: prescription._id });
     }
 
@@ -553,6 +580,39 @@ exports.downloadPrescriptionPdf = async (req, res) => {
   } catch (error) {
     console.error('Error generating prescription PDF:', error);
     if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+};
+
+// Get the prescription linked to a specific appointment.
+exports.getPrescriptionByAppointmentId = async (req, res) => {
+  try {
+    const prescription = await Prescription.findOne({ appointment_id: req.params.appointmentId })
+      .populate('patient_id', 'first_name last_name patientId phone dob gender')
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate')
+      .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate')
+      .populate('procedure_requests.request_id', 'requestNumber status priority scheduledDate')
+      .sort({ issue_date: -1 });
+
+    if (!prescription) {
+      return res.status(404).json({ error: 'No prescription found for this appointment' });
+    }
+
+    const vitals = await Vital.findOne({
+      $or: [
+        { prescription_id: prescription._id },
+        { appointment_id: req.params.appointmentId }
+      ]
+    }).sort({ recorded_at: -1 });
+
+    return res.json({
+      success: true,
+      prescription,
+      vitals: vitals || null
+    });
+  } catch (err) {
+    console.error('Error fetching prescription by appointment:', err);
+    return res.status(err?.name === 'CastError' ? 400 : 500).json({ error: err.message });
   }
 };
 
