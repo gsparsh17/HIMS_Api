@@ -14,6 +14,7 @@ const ProcedureRequest = require('../models/ProcedureRequest');
 const Pharmacy = require('../models/Pharmacy');
 const Procedure = require('../models/Procedure');
 const Hospital = require('../models/Hospital');
+const Doctor = require('../models/Doctor');
 const { generatePrescriptionPdf } = require('../services/clinicalPdf.service');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
@@ -62,7 +63,13 @@ async function createLabRequests(prescription, labTestRequests, userId, sourceTy
       request_id: labRequest._id,
       lab_test_id: labTest._id,
       lab_test_code: labTest.code,
-      lab_test_name: labTest.name
+      lab_test_name: labTest.name,
+      category: labTest.category,
+      clinical_history: labReq.clinical_history || '',
+      priority: labReq.priority || 'Routine',
+      scheduled_date: labReq.scheduled_date || null,
+      notes: labReq.notes || '',
+      cost: labTest.base_price || 0
     });
   }
 
@@ -105,7 +112,13 @@ async function createRadiologyRequests(prescription, radiologyRequests, userId, 
       request_id: radiologyRequest._id,
       imaging_test_id: imagingTest._id,
       imaging_test_code: imagingTest.code,
-      imaging_test_name: imagingTest.name
+      imaging_test_name: imagingTest.name,
+      category: imagingTest.category,
+      clinical_history: radReq.clinical_history || '',
+      priority: radReq.priority || 'Routine',
+      scheduled_date: radReq.scheduled_date || null,
+      notes: radReq.notes || '',
+      cost: imagingTest.base_price || 0
     });
   }
 
@@ -153,7 +166,13 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
       procedure_id: procedure._id,
       procedure_code: procedure.code,
       procedure_name: procedure.name,
-      cost: procedure.base_price
+      category: procedure.category,
+      clinical_history: procReq.clinical_history || '',
+      clinical_indication: procReq.clinical_indication || '',
+      priority: procReq.priority || 'Routine',
+      scheduled_date: procReq.scheduled_date || null,
+      notes: procReq.notes || procReq.pre_procedure_instructions || '',
+      cost: procedure.base_price || 0
     });
   }
 
@@ -406,6 +425,12 @@ exports.createPrescription = async (req, res) => {
         lab_test_id: req.lab_test_id,
         lab_test_code: req.lab_test_code,
         lab_test_name: req.lab_test_name,
+        category: req.category,
+        clinical_history: req.clinical_history,
+        priority: req.priority,
+        scheduled_date: req.scheduled_date,
+        notes: req.notes,
+        cost: req.cost,
         request_id: req.request_id,
         created_at: new Date()
       }));
@@ -416,6 +441,12 @@ exports.createPrescription = async (req, res) => {
         imaging_test_id: req.imaging_test_id,
         imaging_test_code: req.imaging_test_code,
         imaging_test_name: req.imaging_test_name,
+        category: req.category,
+        clinical_history: req.clinical_history,
+        priority: req.priority,
+        scheduled_date: req.scheduled_date,
+        notes: req.notes,
+        cost: req.cost,
         request_id: req.request_id,
         created_at: new Date()
       }));
@@ -426,6 +457,12 @@ exports.createPrescription = async (req, res) => {
         procedure_id: req.procedure_id,
         procedure_code: req.procedure_code,
         procedure_name: req.procedure_name,
+        category: req.category,
+        clinical_history: req.clinical_history,
+        clinical_indication: req.clinical_indication,
+        priority: req.priority,
+        scheduled_date: req.scheduled_date,
+        notes: req.notes,
         request_id: req.request_id,
         cost: req.cost,
         created_at: new Date()
@@ -587,11 +624,11 @@ exports.downloadPrescriptionPdf = async (req, res) => {
 exports.getPrescriptionByAppointmentId = async (req, res) => {
   try {
     const prescription = await Prescription.findOne({ appointment_id: req.params.appointmentId })
-      .populate('patient_id', 'first_name last_name patientId phone dob gender')
+      .populate('patient_id', 'first_name last_name patientId phone dob gender allergies')
       .populate('doctor_id', 'firstName lastName specialization')
-      .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate')
-      .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate')
-      .populate('procedure_requests.request_id', 'requestNumber status priority scheduledDate')
+      .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
+      .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
+      .populate('procedure_requests.request_id', 'requestNumber status priority scheduledDate clinical_history clinical_indication pre_procedure_instructions is_billed')
       .sort({ issue_date: -1 });
 
     if (!prescription) {
@@ -623,9 +660,9 @@ exports.getPrescriptionById = async (req, res) => {
       .populate('patient_id', 'first_name last_name patientId phone dob gender')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('ipd_medication_ids', 'medicineName dosage frequency status')
-      .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate')
-      .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate')
-      .populate('procedure_requests.request_id', 'requestNumber status priority scheduledDate');
+      .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
+      .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
+      .populate('procedure_requests.request_id', 'requestNumber status priority scheduledDate clinical_history clinical_indication pre_procedure_instructions is_billed');
 
     if (!prescription) {
       return res.status(404).json({ error: 'Prescription not found' });
@@ -955,30 +992,398 @@ exports.getActivePrescriptions = async (req, res) => {
   }
 };
 
+const PRESCRIPTION_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function normaliseRequestId(value) {
+  if (!value) return null;
+  return value._id || value.id || value;
+}
+
+function embeddedRequestObject(value) {
+  return typeof value?.toObject === 'function' ? value.toObject() : { ...value };
+}
+
+function editableWorkflowRequest(request) {
+  return request && request.status === 'Pending' && !request.is_billed;
+}
+
+async function reconcilePrescriptionRequests({
+  prescription,
+  incoming,
+  embeddedField,
+  RequestModel,
+  createRequests,
+  updateExisting,
+  toEmbedded,
+  userId
+}) {
+  const existingEmbedded = Array.isArray(prescription[embeddedField])
+    ? prescription[embeddedField].map(embeddedRequestObject)
+    : [];
+  const existingIds = existingEmbedded.map((item) => normaliseRequestId(item.request_id)).filter(Boolean);
+  const requestDocuments = existingIds.length
+    ? await RequestModel.find({ _id: { $in: existingIds }, prescriptionId: prescription._id })
+    : [];
+  const documentsById = new Map(requestDocuments.map((item) => [String(item._id), item]));
+  const lockedIds = new Set(
+    requestDocuments.filter((item) => !editableWorkflowRequest(item)).map((item) => String(item._id))
+  );
+
+  const lockedEmbedded = existingEmbedded.filter((item) => {
+    const requestId = normaliseRequestId(item.request_id);
+    return requestId && lockedIds.has(String(requestId));
+  });
+  const retainedEditableIds = new Set();
+  const updatedEmbedded = [];
+  const newIncoming = [];
+
+  for (const item of Array.isArray(incoming) ? incoming : []) {
+    const requestId = normaliseRequestId(item.request_id);
+    if (!requestId) {
+      newIncoming.push(item);
+      continue;
+    }
+
+    const requestDocument = documentsById.get(String(requestId));
+    if (!requestDocument) {
+      newIncoming.push({ ...item, request_id: null });
+      continue;
+    }
+    if (!editableWorkflowRequest(requestDocument)) continue;
+
+    const embedded = await updateExisting(requestDocument, item);
+    retainedEditableIds.add(String(requestDocument._id));
+    updatedEmbedded.push(embedded);
+  }
+
+  const removedIds = requestDocuments
+    .filter((item) => editableWorkflowRequest(item) && !retainedEditableIds.has(String(item._id)))
+    .map((item) => item._id);
+
+  const created = await createRequests(
+    prescription,
+    newIncoming,
+    userId,
+    prescription.source_type || 'OPD',
+    prescription.ipd_admission_id || null
+  );
+
+  if (removedIds.length) {
+    await RequestModel.deleteMany({ _id: { $in: removedIds }, prescriptionId: prescription._id });
+  }
+
+  // Locked requests may already be processing, billed, or completed. They remain
+  // attached exactly as stored; pending unbilled requests are updated in place.
+  return [
+    ...lockedEmbedded,
+    ...updatedEmbedded,
+    ...created.map(toEmbedded)
+  ];
+}
+
+function normaliseUpdatedMedicationItems(existingPrescription, incomingItems) {
+  const existingById = new Map(
+    (existingPrescription.items || []).map((item) => [String(item._id), item])
+  );
+  const incoming = Array.isArray(incomingItems) ? incomingItems : [];
+  const incomingIds = new Set(incoming.map((item) => normaliseRequestId(item._id)).filter(Boolean).map(String));
+
+  for (const existing of existingPrescription.items || []) {
+    const locked = existing.is_dispensed || Number(existing.dispensed_quantity) > 0;
+    if (locked && !incomingIds.has(String(existing._id))) {
+      const error = new Error(`Dispensed medicine "${existing.medicine_name}" cannot be removed.`);
+      error.statusCode = 409;
+      throw error;
+    }
+  }
+
+  return incoming.map((item) => {
+    const existing = normaliseRequestId(item._id)
+      ? existingById.get(String(normaliseRequestId(item._id)))
+      : null;
+    const locked = existing && (existing.is_dispensed || Number(existing.dispensed_quantity) > 0);
+
+    const doseQtyBaseUnits = resolveDoseQtyBaseUnits(item);
+    const requiredQtyBaseUnits = calculateMedicationRequiredBaseUnits({
+      ...item,
+      duration: parseInt(item.duration, 10) || 1,
+      durationUnit: 'Days'
+    });
+    const normalised = {
+      medicine_name: String(item.medicine_name || '').trim(),
+      generic_name: String(item.generic_name || item.medicine_name || '').trim(),
+      nlem_code: String(item.nlem_code || item.nlemCode || '').trim(),
+      dosage_form: item.dosage_form || item.dosageForm || item.medicine_type || '',
+      medicine_id: item.medicine_id || null,
+      medicine_type: item.medicine_type || 'Tablet',
+      route_of_administration: item.route_of_administration || 'Oral',
+      dosage: String(item.dosage || '').trim(),
+      frequency: item.frequency,
+      duration: item.duration,
+      quantity: Number(item.quantity) || requiredQtyBaseUnits || 1,
+      dose_qty_base_units: doseQtyBaseUnits,
+      required_qty_base_units: requiredQtyBaseUnits,
+      requires_pharmacy_dispense: normaliseBoolean(item.requires_pharmacy_dispense, true),
+      instructions: String(item.instructions || '').trim(),
+      timing: item.timing || 'Anytime'
+    };
+
+    if (!normalised.medicine_name || !normalised.dosage || !normalised.frequency || !normalised.duration) {
+      const error = new Error('Every medicine requires a name, dosage, frequency, and duration.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (locked) {
+      const comparableFields = [
+        'medicine_name', 'generic_name', 'nlem_code', 'dosage_form', 'medicine_type',
+        'route_of_administration', 'dosage', 'frequency', 'duration', 'quantity',
+        'dose_qty_base_units', 'requires_pharmacy_dispense', 'instructions', 'timing'
+      ];
+      const changed = comparableFields.some((field) => String(existing[field] ?? '') !== String(normalised[field] ?? ''));
+      if (changed) {
+        const error = new Error(`Dispensed medicine "${existing.medicine_name}" cannot be changed.`);
+        error.statusCode = 409;
+        throw error;
+      }
+      return existing.toObject();
+    }
+
+    return normalised;
+  });
+}
+
 // Update prescription
 exports.updatePrescription = async (req, res) => {
   try {
-    const { id } = req.params;
-    const updates = req.body;
+    const prescription = await Prescription.findById(req.params.id);
+    if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
 
-    const prescription = await Prescription.findByIdAndUpdate(
-      id,
-      updates,
-      { new: true, runValidators: true }
-    );
-
-    if (!prescription) {
-      return res.status(404).json({ error: 'Prescription not found' });
+    const createdAt = prescription.createdAt || prescription.issue_date;
+    if (!createdAt || Date.now() - new Date(createdAt).getTime() > PRESCRIPTION_EDIT_WINDOW_MS) {
+      return res.status(403).json({ error: 'Prescription editing is allowed only within 24 hours of creation.' });
     }
 
-    res.json({
+    if (req.user?.role === 'doctor') {
+      const doctor = await Doctor.findOne({
+        $or: [{ user_id: req.user._id }, { email: req.user.email }]
+      }).select('_id').lean();
+      if (!doctor || String(doctor._id) !== String(prescription.doctor_id)) {
+        return res.status(403).json({ error: 'You can edit only prescriptions created for your own appointments.' });
+      }
+    }
+
+    const updates = req.body || {};
+    const diagnosis = String(updates.diagnosis ?? prescription.diagnosis ?? '').trim();
+    if (!diagnosis) return res.status(400).json({ error: 'Diagnosis is required.' });
+
+    let painScore = updates.pain_score;
+    if (painScore === '' || painScore === null || painScore === undefined) painScore = undefined;
+    else {
+      painScore = Number(painScore);
+      if (!Number.isFinite(painScore) || painScore < 0 || painScore > 10) {
+        return res.status(400).json({ error: 'Pain score must be between 0 and 10.' });
+      }
+    }
+
+    if (Array.isArray(updates.items)) {
+      if (prescription.is_converted_to_ipd) {
+        return res.status(409).json({
+          error: 'Medication items cannot be edited after this prescription has been converted to an IPD medication chart.'
+        });
+      }
+      prescription.items = normaliseUpdatedMedicationItems(prescription, updates.items);
+    }
+
+    const clinicalFields = [
+      'presenting_complaint', 'history_of_presenting_complaint', 'diagnosis_icd11_code',
+      'allergy_snapshot', 'symptoms', 'investigation', 'provisional_diagnosis',
+      'treatment_plan', 'physical_examination', 'outcome_expected', 'diet_advice',
+      'notes', 'prescription_image', 'status'
+    ];
+    for (const field of clinicalFields) {
+      if (Object.prototype.hasOwnProperty.call(updates, field)) prescription[field] = updates[field];
+    }
+    prescription.diagnosis = diagnosis;
+    prescription.pain_score = painScore;
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'follow_up_date')) {
+      prescription.follow_up_date = updates.follow_up_date ? new Date(updates.follow_up_date) : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'validity_days')) {
+      prescription.validity_days = Math.max(1, Number(updates.validity_days) || 30);
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'is_repeatable')) {
+      prescription.is_repeatable = normaliseBoolean(updates.is_repeatable, false);
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'repeat_count')) {
+      prescription.repeat_count = prescription.is_repeatable
+        ? Math.max(0, Number(updates.repeat_count) || 0)
+        : 0;
+    }
+
+    if (Array.isArray(updates.lab_test_requests)) {
+      prescription.lab_test_requests = await reconcilePrescriptionRequests({
+        prescription,
+        incoming: updates.lab_test_requests,
+        embeddedField: 'lab_test_requests',
+        RequestModel: LabRequest,
+        createRequests: createLabRequests,
+        userId: req.user?._id,
+        updateExisting: async (requestDocument, item) => {
+          const labTestId = item.lab_test_id || requestDocument.labTestId;
+          const labTest = labTestId
+            ? await LabTest.findById(labTestId)
+            : await LabTest.findOne({ code: item.lab_test_code });
+          if (!labTest) {
+            const error = new Error(`Lab test not found: ${item.lab_test_code || item.lab_test_name}`);
+            error.statusCode = 400;
+            throw error;
+          }
+          Object.assign(requestDocument, {
+            labTestId: labTest._id,
+            testCode: labTest.code,
+            testName: labTest.name,
+            category: labTest.category,
+            clinical_history: item.clinical_history || '',
+            priority: item.priority || 'Routine',
+            scheduledDate: item.scheduled_date || null,
+            patient_notes: item.notes || '',
+            cost: labTest.base_price || 0
+          });
+          await requestDocument.save();
+          return {
+            request_id: requestDocument._id,
+            lab_test_id: labTest._id,
+            lab_test_code: labTest.code,
+            lab_test_name: labTest.name,
+            category: labTest.category,
+            clinical_history: item.clinical_history || '',
+            priority: item.priority || 'Routine',
+            scheduled_date: item.scheduled_date || null,
+            notes: item.notes || '',
+            cost: labTest.base_price || 0,
+            created_at: new Date()
+          };
+        },
+        toEmbedded: (item) => ({ ...item, created_at: new Date() })
+      });
+    }
+    if (Array.isArray(updates.radiology_test_requests)) {
+      prescription.radiology_test_requests = await reconcilePrescriptionRequests({
+        prescription,
+        incoming: updates.radiology_test_requests,
+        embeddedField: 'radiology_test_requests',
+        RequestModel: RadiologyRequest,
+        createRequests: createRadiologyRequests,
+        userId: req.user?._id,
+        updateExisting: async (requestDocument, item) => {
+          const imagingTestId = item.imaging_test_id || requestDocument.imagingTestId;
+          const imagingTest = imagingTestId
+            ? await ImagingTest.findById(imagingTestId)
+            : await ImagingTest.findOne({ code: item.imaging_test_code });
+          if (!imagingTest) {
+            const error = new Error(`Imaging test not found: ${item.imaging_test_code || item.imaging_test_name}`);
+            error.statusCode = 400;
+            throw error;
+          }
+          Object.assign(requestDocument, {
+            imagingTestId: imagingTest._id,
+            testCode: imagingTest.code,
+            testName: imagingTest.name,
+            category: imagingTest.category,
+            clinical_history: item.clinical_history || '',
+            priority: item.priority || 'Routine',
+            scheduledDate: item.scheduled_date || null,
+            patient_notes: item.notes || '',
+            cost: imagingTest.base_price || 0
+          });
+          await requestDocument.save();
+          return {
+            request_id: requestDocument._id,
+            imaging_test_id: imagingTest._id,
+            imaging_test_code: imagingTest.code,
+            imaging_test_name: imagingTest.name,
+            category: imagingTest.category,
+            clinical_history: item.clinical_history || '',
+            priority: item.priority || 'Routine',
+            scheduled_date: item.scheduled_date || null,
+            notes: item.notes || '',
+            cost: imagingTest.base_price || 0,
+            created_at: new Date()
+          };
+        },
+        toEmbedded: (item) => ({ ...item, created_at: new Date() })
+      });
+    }
+    if (Array.isArray(updates.procedure_requests)) {
+      prescription.procedure_requests = await reconcilePrescriptionRequests({
+        prescription,
+        incoming: updates.procedure_requests,
+        embeddedField: 'procedure_requests',
+        RequestModel: ProcedureRequest,
+        createRequests: createProcedureRequests,
+        userId: req.user?._id,
+        updateExisting: async (requestDocument, item) => {
+          const procedureId = item.procedure_id || requestDocument.procedureId;
+          const procedure = procedureId
+            ? await Procedure.findById(procedureId)
+            : await Procedure.findOne({ code: item.procedure_code });
+          if (!procedure) {
+            const error = new Error(`Procedure not found: ${item.procedure_code || item.procedure_name}`);
+            error.statusCode = 400;
+            throw error;
+          }
+          Object.assign(requestDocument, {
+            procedureId: procedure._id,
+            procedureCode: procedure.code,
+            procedureName: procedure.name,
+            category: procedure.category,
+            subcategory: procedure.subcategory,
+            clinical_history: item.clinical_history || '',
+            clinical_indication: item.clinical_indication || '',
+            priority: item.priority || 'Routine',
+            scheduledDate: item.scheduled_date || null,
+            pre_procedure_instructions: item.notes || '',
+            cost: procedure.base_price || 0
+          });
+          await requestDocument.save();
+          return {
+            request_id: requestDocument._id,
+            procedure_id: procedure._id,
+            procedure_code: procedure.code,
+            procedure_name: procedure.name,
+            category: procedure.category,
+            clinical_history: item.clinical_history || '',
+            clinical_indication: item.clinical_indication || '',
+            priority: item.priority || 'Routine',
+            scheduled_date: item.scheduled_date || null,
+            notes: item.notes || '',
+            cost: procedure.base_price || 0,
+            created_at: new Date()
+          };
+        },
+        toEmbedded: (item) => ({ ...item, created_at: new Date() })
+      });
+    }
+
+    await prescription.save();
+
+    const populatedPrescription = await Prescription.findById(prescription._id)
+      .populate('patient_id', 'first_name last_name patientId phone allergies')
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
+      .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
+      .populate('procedure_requests.request_id', 'requestNumber status priority scheduledDate clinical_history clinical_indication pre_procedure_instructions is_billed');
+
+    return res.json({
       success: true,
-      message: 'Prescription updated successfully',
-      prescription
+      message: 'Prescription and linked clinical orders updated successfully',
+      prescription: populatedPrescription
     });
   } catch (err) {
     console.error('Error updating prescription:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 

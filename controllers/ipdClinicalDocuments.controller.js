@@ -542,13 +542,13 @@ exports.getClinicalDocumentStatus = async (req, res) => {
     const today = dateKey(new Date(), DEFAULT_TIMEZONE);
 
     const [doctor, nursing, latestVitals, latestRound, medicationOrders] = await Promise.all([
-      IPDInitialAssessment.findOne({ admissionId: admission._id, hospitalId }).select('formStatus updatedAt signedAt').lean(),
-      IPDNursingAdmissionAssessment.findOne({ admissionId: admission._id, hospitalId }).select('status updatedAt signedAt').lean(),
-      IPDVitals.findOne({ admissionId: admission._id, hospitalId, chartDate: today })
+      IPDInitialAssessment.findOne({ admissionId: admission._id }).select('formStatus updatedAt signedAt').lean(),
+      IPDNursingAdmissionAssessment.findOne({ admissionId: admission._id }).select('status updatedAt signedAt').lean(),
+      IPDVitals.findOne({ admissionId: admission._id, chartDate: today })
         .sort({ recordedAt: -1 })
         .select('recordedAt chartDate ewsTotal status')
         .lean(),
-      IPDRound.findOne({ admissionId: admission._id, hospitalId })
+      IPDRound.findOne({ admissionId: admission._id })
         .sort({ roundDateTime: -1 })
         .select('roundDateTime status')
         .lean(),
@@ -575,7 +575,7 @@ exports.getDoctorInitialAssessment = async (req, res) => {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const assessment = await IPDInitialAssessment.findOne({
       admissionId: admission._id,
-      hospitalId: admission.hospitalId || admission.hospital_id
+      // hospitalId: admission.hospitalId || admission.hospital_id
     });
 
     res.json({ success: true, assessment });
@@ -589,7 +589,7 @@ exports.getNursingAdmissionAssessment = async (req, res) => {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const assessment = await IPDNursingAdmissionAssessment.findOne({
       admissionId: admission._id,
-      hospitalId: admission.hospitalId || admission.hospital_id
+      // hospitalId: admission.hospitalId || admission.hospital_id
     });
 
     res.json({ success: true, assessment });
@@ -600,7 +600,7 @@ exports.getNursingAdmissionAssessment = async (req, res) => {
 
 exports.saveDoctorInitialAssessment = async (req, res) => {
   try {
-    if (!['nurse', 'admin', 'mediqliq_super_admin', 'staff', 'registrar', 'receptionist'].includes(req.user.role)) {
+    if (req.user.role !== 'doctor') {
       throw statusError(403, 'Only a doctor may create, sign, or amend the Doctor Initial Assessment');
     }
 

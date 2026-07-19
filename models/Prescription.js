@@ -29,7 +29,7 @@ const prescriptionItemSchema = new mongoose.Schema({
   },
   medicine_type: {
     type: String,
-    enum: ['Capsule', 'Tablet', 'Injection', 'Syrup', 'Cream', 'Ointment', 'Drops', 'Inhaler', 'Other'],
+    enum: ['Capsule', 'Tablet', 'Injection', 'Syrup', 'Cream', 'Ointment', 'Drops', 'Inhaler', 'Suppository', 'Powder', 'Lotion', 'Suspension', 'Solution', 'Gel', 'Spray', 'Patch', 'Implants', 'Inhalation', 'Other'],
     trim: true,
     default: 'Tablet'
   },
@@ -37,7 +37,7 @@ const prescriptionItemSchema = new mongoose.Schema({
     type: String,
     enum: ["Oral", "Sublingual", "Intramuscular Injection", "Intravenous Injection",
       "Subcutaneous Injection", "Topical Application", "Inhalation", "Nasal", 'Intravenous', 'Intramuscular', 'Subcutaneous', 'Topical', 'Inhalation',
-      "Eye Drops", "Ear Drops", "Rectal", "Other"],
+      "Eye Drops", "Ear Drops", "Rectal", "Transdermal", "Vaginal", "Other"],
     trim: true,
     default: 'Oral'
   },
@@ -70,6 +70,7 @@ const labTestRequestSchema = new mongoose.Schema({
   priority: { type: String, enum: ['Routine', 'Urgent', 'Stat'], default: 'Routine' },
   scheduled_date: { type: Date },
   notes: { type: String, trim: true },
+  cost: { type: Number, default: 0 },
   request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'LabRequest' }, // Reference to created LabRequest
   created_at: { type: Date, default: Date.now }
 });
@@ -87,15 +88,19 @@ const radiologyTestRequestSchema = new mongoose.Schema({
   priority: { type: String, enum: ['Routine', 'Urgent', 'Emergency'], default: 'Routine' },
   scheduled_date: { type: Date },
   notes: { type: String, trim: true },
+  cost: { type: Number, default: 0 },
   request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'RadiologyRequest' }, // Reference to created RadiologyRequest
   created_at: { type: Date, default: Date.now }
 });
 
 // Procedure Request Schema
 const procedureRequestSchema = new mongoose.Schema({
+  procedure_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Procedure' },
   procedure_code: { type: String, required: true },
   procedure_name: { type: String, required: true },
   category: { type: String },
+  clinical_history: { type: String, trim: true },
+  clinical_indication: { type: String, trim: true },
   notes: { type: String, trim: true },
   priority: { type: String, enum: ['Routine', 'Urgent', 'Emergency'], default: 'Routine' },
   scheduled_date: { type: Date },

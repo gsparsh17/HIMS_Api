@@ -34,7 +34,7 @@ router.get('/doctor/:doctorId', prescriptionController.getPrescriptionsByDoctorI
 router.get('/appointment/:appointmentId', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff'), prescriptionController.getPrescriptionByAppointmentId);
 router.get('/:id/print', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff'), prescriptionController.downloadPrescriptionPdf);
 router.get('/:id', prescriptionController.getPrescriptionById);
-router.put('/:id', prescriptionController.updatePrescription);
+router.put('/:id', protect, authorize('admin', 'doctor'), prescriptionController.updatePrescription);
 router.put('/:prescriptionId/dispense/:itemIndex', prescriptionController.dispenseMedication);
 router.delete('/:id', prescriptionController.deletePrescription);
 
