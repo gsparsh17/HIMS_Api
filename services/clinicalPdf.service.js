@@ -771,14 +771,20 @@ function drawPainScale(doc, x, y, width, height, selectedValue) {
   doc.text('Unbearable', x + width - mm(30), y + height - mm(5), { width: mm(27), align: 'center' });
 }
 
-function drawVitalsPanel(doc, x, y, width, height, patient, vitals, allergySnapshot) {
+function drawVitalsPanel(doc, x, y, width, height, patient, vitals, allergySnapshot, options = {}) {
   doc.rect(x, y, width, height).lineWidth(0.4).strokeColor(COLORS.ink).stroke();
   doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(7.2).text('ALLERGY:', x + 4, y + 3, {
     width: mm(20), lineBreak: false
   });
-  doc.font('Helvetica').text(text(allergySnapshot || patient.allergies, 'None reported'), x + mm(22), y + 3, {
-    width: width - mm(24), height: mm(5), ellipsis: true
-  });
+  const emptyClinicalFields = Boolean(options.emptyClinicalFields);
+  doc.font('Helvetica').text(
+    text(allergySnapshot || patient.allergies, emptyClinicalFields ? '' : 'None reported'),
+    x + mm(22),
+    y + 3,
+    {
+      width: width - mm(24), height: mm(5), ellipsis: true
+    }
+  );
   doc.font('Helvetica-Bold').text('VITALS:', x + 4, y + mm(8), { width: width - 8 });
   const cells = [
     ['BP', vitals?.bp], ['TEMP', vitals?.temperature], ['PULSE', vitals?.pulse], ['RR', vitals?.respiratory_rate],
@@ -793,9 +799,14 @@ function drawVitalsPanel(doc, x, y, width, height, patient, vitals, allergySnaps
     doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(6.7).text(`${label}:`, cellX, cellY, {
       width: mm(10), lineBreak: false
     });
-    doc.font('Helvetica').fontSize(7).text(text(value, '-'), cellX + mm(9), cellY, {
-      width: cellWidth - mm(9), lineBreak: false, ellipsis: true
-    });
+    doc.font('Helvetica').fontSize(7).text(
+      text(value, emptyClinicalFields ? '' : '-'),
+      cellX + mm(9),
+      cellY,
+      {
+        width: cellWidth - mm(9), lineBreak: false, ellipsis: true
+      }
+    );
   });
 }
 
@@ -854,7 +865,8 @@ function drawPrescriptionPageOne(doc, prescription, hospital, vitals) {
     panelHeight,
     patient,
     vitals,
-    prescription.allergy_snapshot
+    prescription.allergy_snapshot,
+    { emptyClinicalFields: Boolean(prescription.is_blank_manual_form) }
   );
   doc.y = panelY + panelHeight;
 

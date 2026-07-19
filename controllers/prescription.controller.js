@@ -15,6 +15,7 @@ const Pharmacy = require('../models/Pharmacy');
 const Procedure = require('../models/Procedure');
 const Hospital = require('../models/Hospital');
 const Doctor = require('../models/Doctor');
+const Appointment = require('../models/Appointment');
 const { generatePrescriptionPdf } = require('../services/clinicalPdf.service');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
@@ -588,6 +589,105 @@ exports.createPrescription = async (req, res) => {
   }
 };
 
+
+// Generate a blank standard clinical prescription for a scheduled appointment.
+// The PDF is not persisted as a prescription record; it is intended for walk-in/manual prescribing.
+exports.downloadBlankPrescriptionPdfByAppointment = async (req, res) => {
+  try {
+    const appointment = await Appointment.findById(req.params.appointmentId)
+      .populate(
+        'patient_id',
+        'salutation first_name middle_name last_name patientId uhid phone dob gender address city state zipCode registered_at patient_type occupation nationality father_name fatherName marital_status maritalStatus mother_name motherName'
+      )
+      .populate({
+        path: 'doctor_id',
+        select: 'firstName lastName specialization department',
+        populate: { path: 'department', select: 'name' }
+      })
+      .populate('hospital_id')
+      .lean();
+
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const appointmentHospitalId = appointment.hospital_id?._id || appointment.hospital_id;
+    const userHospitalId = req.user?.hospital_id?._id || req.user?.hospital_id;
+    const isSuperAdmin = req.user?.role === 'mediqliq_super_admin';
+
+    if (
+      !isSuperAdmin &&
+      (!userHospitalId || String(appointmentHospitalId) !== String(userHospitalId))
+    ) {
+      return res.status(403).json({ error: 'Cross-hospital access denied' });
+    }
+
+    const patient = {
+      ...(appointment.patient_id || {}),
+      // Keep all clinical writing areas empty even when the patient master has history.
+      medical_history: ''
+    };
+    const sourceType =
+      String(patient.patient_type || '').toUpperCase() === 'IPD' ||
+      String(appointment.token || '').toUpperCase().startsWith('IPD-')
+        ? 'IPD'
+        : 'OPD';
+    const appointmentReference =
+      appointment.token || String(appointment._id).slice(-8).toUpperCase();
+
+    const blankPrescription = {
+      prescription_number: `MANUAL-${appointmentReference}`,
+      is_blank_manual_form: true,
+      patient_id: patient,
+      doctor_id: appointment.doctor_id || {},
+      appointment_id: {
+        _id: appointment._id,
+        token: appointment.token || '',
+        appointment_date: appointment.appointment_date
+      },
+      source_type: sourceType,
+      issue_date:
+        appointment.start_time ||
+        appointment.appointment_date ||
+        appointment.created_at ||
+        new Date(),
+      consultation_fee: '',
+      pain_score: null,
+      allergy_snapshot: '',
+      presenting_complaint: '',
+      symptoms: '',
+      history_of_presenting_complaint: '',
+      physical_examination: '',
+      investigation: '',
+      diagnosis: '',
+      provisional_diagnosis: '',
+      treatment_plan: '',
+      notes: '',
+      outcome_expected: '',
+      diet_advice: '',
+      follow_up_date: null,
+      lab_test_requests: [],
+      radiology_test_requests: [],
+      procedure_requests: [],
+      items: []
+    };
+
+    return generatePrescriptionPdf({
+      res,
+      prescription: blankPrescription,
+      hospital: appointment.hospital_id || null,
+      vitals: null
+    });
+  } catch (error) {
+    console.error('Error generating blank appointment prescription PDF:', error);
+    if (!res.headersSent) {
+      return res.status(error?.name === 'CastError' ? 400 : 500).json({
+        error: error?.name === 'CastError' ? 'Invalid appointment ID' : error.message
+      });
+    }
+    return undefined;
+  }
+};
 
 // Generate the hospital prescription template as a two-page PDF.
 exports.downloadPrescriptionPdf = async (req, res) => {
