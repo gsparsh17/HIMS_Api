@@ -134,7 +134,9 @@ exports.downloadGeneratedReport = async (req, res) => {
     const request = await RadiologyRequest.findById(req.params.id)
       .populate('patientId')
       .populate('doctorId')
-      .populate('admissionId');
+      .populate('admissionId', 'admissionNumber hospitalId')
+      .populate('appointmentId', 'token')
+      .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
     if (!request || request.report_mode !== 'manual' || !request.manual_report) return res.status(404).json({ error: 'Structured radiology report not found' });
     const hospitalId = request.admissionId?.hospitalId || req.user?.hospital_id;
     let hospital = hospitalId ? await Hospital.findById(hospitalId) : null;

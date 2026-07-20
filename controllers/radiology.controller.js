@@ -134,7 +134,7 @@ exports.deleteImagingTest = async (req, res) => {
 exports.createRadiologyRequest = async (req, res) => {
   try {
     const {
-      sourceType, admissionId, patientId, doctorId,
+      sourceType, admissionId, appointmentId, prescriptionId, patientId, doctorId,
       imagingTestId, clinical_indication, clinical_history,
       priority, scheduledDate, patient_notes
     } = req.body;
@@ -161,6 +161,8 @@ exports.createRadiologyRequest = async (req, res) => {
     const request = new RadiologyRequest({
       sourceType: sourceType || 'IPD',
       admissionId: admissionId || null,
+      appointmentId: appointmentId || null,
+      prescriptionId: prescriptionId || null,
       patientId,
       doctorId,
       imagingTestId,

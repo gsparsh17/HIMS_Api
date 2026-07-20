@@ -299,7 +299,7 @@ function drawLabPatientBanner(doc, request, report) {
   const left = PAGE.margin;
   const width = PAGE.width - PAGE.margin * 2;
   const y = doc.y;
-  const height = mm(28);
+  const height = mm(33);
   const col1 = mm(68);
   const col2 = mm(67);
   const col3 = width - col1 - col2;
@@ -320,8 +320,12 @@ function drawLabPatientBanner(doc, request, report) {
   });
   drawLabelValue(doc, 'Age / Sex', ageGender, left + 4, y + mm(7), mm(18), col1 - mm(21));
   drawLabelValue(doc, 'Patient ID', patientId, left + 4, y + mm(12), mm(18), col1 - mm(21));
-  drawLabelValue(doc, 'Mobile', patient.phone || patient.mobile, left + 4, y + mm(17), mm(18), col1 - mm(21));
-  drawLabelValue(doc, 'Address', firstText(patient.address, patient.city), left + 4, y + mm(22), mm(18), col1 - mm(21), {
+  const visitNumber = request.sourceType === 'IPD'
+    ? firstText(request.admissionId?.admissionNumber, request.admissionNumber)
+    : firstText(request.appointmentId?.token, request.prescriptionId?.appointment_id?.token, request.opdNumber);
+  drawLabelValue(doc, `${text(request.sourceType, 'OPD').toUpperCase()} No.`, visitNumber, left + 4, y + mm(17), mm(18), col1 - mm(21));
+  drawLabelValue(doc, 'Mobile', patient.phone || patient.mobile, left + 4, y + mm(22), mm(18), col1 - mm(21));
+  drawLabelValue(doc, 'Address', firstText(patient.address, patient.city), left + 4, y + mm(26), mm(18), col1 - mm(21), {
     fontSize: 6.8, valueSize: 6.8, height: mm(4)
   });
 

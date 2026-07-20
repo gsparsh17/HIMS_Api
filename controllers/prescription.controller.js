@@ -43,6 +43,7 @@ async function createLabRequests(prescription, labTestRequests, userId, sourceTy
       requestNumber: `LAB-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       sourceType: sourceType || 'OPD',
       admissionId: admissionId || null,
+      appointmentId: prescription.appointment_id || null,
       prescriptionId: prescription._id,
       patientId: prescription.patient_id,
       doctorId: prescription.doctor_id,

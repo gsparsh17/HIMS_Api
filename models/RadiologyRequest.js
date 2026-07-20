@@ -47,6 +47,14 @@ const radiologyRequestSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'IPDAdmission'
   },
+  appointmentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Appointment'
+  },
+  prescriptionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Prescription'
+  },
   patientId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Patient',

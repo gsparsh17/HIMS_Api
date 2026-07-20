@@ -76,9 +76,12 @@ function drawHeader(doc, hospital, request, report) {
   label(left + 4, y + mm(12), 'Age / Sex', `${age(patient.dob)} / ${clean(patient.gender, '-').toUpperCase()}`);
   label(left + 4, y + mm(17), 'Mobile', patient.phone || patient.mobile);
 
+  const visitNumber = request.sourceType === 'IPD'
+    ? clean(request.admissionId?.admissionNumber)
+    : clean(request.appointmentId?.token || request.prescriptionId?.appointment_id?.token || request.opdNumber);
   label(left + col + 4, y + mm(2), 'Request No.', request.requestNumber);
   label(left + col + 4, y + mm(7), 'Ref. By', fullName(doctor) ? `Dr. ${fullName(doctor)}` : '-');
-  label(left + col + 4, y + mm(12), 'Source', request.sourceType);
+  label(left + col + 4, y + mm(12), `${clean(request.sourceType, 'OPD').toUpperCase()} No.`, visitNumber);
   label(left + col + 4, y + mm(17), 'Priority', request.priority);
 
   label(left + col * 2 + 4, y + mm(2), 'Registered', formatDate(request.requestedDate || request.createdAt, true));
@@ -140,22 +143,49 @@ async function drawImages(doc, images, redrawHeader) {
   ensureSpace(doc, mm(20), redrawHeader);
   doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(9).text('ATTACHED IMAGES', PAGE.margin, doc.y);
   doc.y += mm(3);
-  for (const image of valid) {
-    let buffer = null;
-    try { buffer = await fetchImageBuffer(image.url); } catch (_) { buffer = null; }
-    if (!buffer) continue;
-    ensureSpace(doc, mm(85), redrawHeader);
-    const y = doc.y;
-    try {
-      doc.image(buffer, PAGE.margin, y, { fit: [PAGE.width - PAGE.margin * 2, mm(78)], align: 'center', valign: 'center' });
-      doc.y = y + mm(79);
-      if (image.caption) {
-        doc.fillColor(COLORS.muted).font('Helvetica-Oblique').fontSize(7).text(image.caption, PAGE.margin, doc.y, { width: PAGE.width - PAGE.margin * 2, align: 'center' });
-        doc.y += mm(5);
+
+  const gap = mm(4);
+  const totalWidth = PAGE.width - PAGE.margin * 2;
+  const cellWidth = (totalWidth - gap) / 2;
+  const imageHeight = mm(61);
+  const captionHeight = mm(8);
+  const rowHeight = imageHeight + captionHeight + mm(4);
+
+  for (let index = 0; index < valid.length; index += 2) {
+    ensureSpace(doc, rowHeight, redrawHeader);
+    const rowY = doc.y;
+    const row = valid.slice(index, index + 2);
+
+    for (let column = 0; column < row.length; column += 1) {
+      const image = row[column];
+      const x = PAGE.margin + column * (cellWidth + gap);
+      let buffer = null;
+      try { buffer = await fetchImageBuffer(image.url); } catch (_) { buffer = null; }
+
+      doc.rect(x, rowY, cellWidth, imageHeight).lineWidth(0.4).strokeColor(COLORS.border).stroke();
+      if (buffer) {
+        try {
+          doc.image(buffer, x + 3, rowY + 3, {
+            fit: [cellWidth - 6, imageHeight - 6],
+            align: 'center',
+            valign: 'center'
+          });
+        } catch (_) {
+          doc.fillColor(COLORS.muted).font('Helvetica').fontSize(7).text(
+            'Image preview unavailable', x + 4, rowY + imageHeight / 2 - 4,
+            { width: cellWidth - 8, align: 'center' }
+          );
+        }
       }
-    } catch (_) {
-      // Ignore unsupported image encodings in generated preview.
+
+      if (image.caption) {
+        doc.fillColor(COLORS.muted).font('Helvetica-Oblique').fontSize(7).text(
+          clean(image.caption), x + 3, rowY + imageHeight + 3,
+          { width: cellWidth - 6, height: captionHeight, align: 'center', ellipsis: true }
+        );
+      }
     }
+    doc.y = rowY + rowHeight;
   }
 }
 

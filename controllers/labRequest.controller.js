@@ -403,7 +403,10 @@ exports.downloadGeneratedReport = async (req, res) => {
   try {
     const request = await LabRequest.findById(req.params.id)
       .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
-      .populate('doctorId', 'firstName lastName specialization department');
+      .populate('doctorId', 'firstName lastName specialization department')
+      .populate('admissionId', 'admissionNumber')
+      .populate('appointmentId', 'token')
+      .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
     if (!request) return res.status(404).json({ error: 'Lab request not found' });
 
     if (request.report_mode === 'manual' && request.manual_report) {
