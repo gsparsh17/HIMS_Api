@@ -9,7 +9,9 @@
     "abdm:bridge": "node scripts/register-abdm-bridge.js",
     "abdm:migrate": "node scripts/migrate-abdm-v2.js",
     "labtests:audit-templates": "node scripts/syncLabTestsFromReportTemplates.js",
-    "labtests:sync-templates": "node scripts/syncLabTestsFromReportTemplates.js --apply"
+    "labtests:sync-templates": "node scripts/syncLabTestsFromReportTemplates.js --apply",
+    "radiology:audit-templates": "node scripts/syncRadiologyTestsFromReportTemplates.js",
+    "radiology:sync-templates": "node scripts/syncRadiologyTestsFromReportTemplates.js --apply"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",

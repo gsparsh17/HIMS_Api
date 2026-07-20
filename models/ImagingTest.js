@@ -15,6 +15,15 @@ const imagingTestSchema = new mongoose.Schema({
     trim: true,
     index: true
   },
+  report_template_id: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  report_template_name: {
+    type: String,
+    trim: true
+  },
   category: {
     type: String,
     enum: [

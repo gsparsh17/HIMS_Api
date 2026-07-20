@@ -2,65 +2,74 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const { protect, requireModuleAccess } = require('../middlewares/auth');
+const { protect, authorize } = require('../middlewares/auth');
 const controller = require('../controllers/radiology.controller');
+const reportController = require('../controllers/radiologyReport.controller');
 const radiologyStaffController = require('../controllers/radiologyStaff.controller');
 
-// Apply authentication and base permission to all routes
-// router.use(protect, requireModuleAccess('masters.radiology', 'view'));
+const reportAccess = [
+  protect,
+  authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'radiology_staff')
+];
+const manageAccess = [protect, authorize('admin', 'staff', 'registrar', 'radiology_staff')];
 
-// Configure multer for file upload
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
+  destination: (req, file, cb) => cb(null, 'uploads/'),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(16).slice(2)}${path.extname(file.originalname)}`)
 });
 
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
+const uploadReport = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg', 'image/dicom'];
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only PDF, JPG, PNG, and DICOM are allowed.'));
-    }
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+    cb(allowedTypes.includes(file.mimetype) ? null : new Error('Invalid file type. Only PDF, JPG, and PNG are allowed.'), allowedTypes.includes(file.mimetype));
   }
 });
 
-// ============== IMAGING TEST MASTER ROUTES ==============
-router.post('/tests', controller.createImagingTest);
-router.get('/tests', controller.getImagingTests);
-router.put('/tests/:id', controller.updateImagingTest);
-router.delete('/tests/:id', controller.deleteImagingTest);
+const uploadImages = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024, files: 6 },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg'];
+    cb(allowedTypes.includes(file.mimetype) ? null : new Error('Only JPG and PNG images can be embedded in a structured report.'), allowedTypes.includes(file.mimetype));
+  }
+});
 
-// ============== RADIOLOGY REQUEST ROUTES ==============
-router.post('/requests', controller.createRadiologyRequest);
-router.get('/requests', controller.getRadiologyRequests);
-router.get('/requests/:id', controller.getRadiologyRequestById);
-router.patch('/requests/:id/status', controller.updateRequestStatus);
-router.post('/requests/:id/upload', upload.single('report'), controller.uploadReport);
-router.get('/requests/:id/download', controller.downloadReport);
-router.patch('/requests/:id/billed', controller.markAsBilled);
+// Imaging test master
+router.post('/tests', ...manageAccess, controller.createImagingTest);
+router.get('/tests', ...reportAccess, controller.getImagingTests);
+router.put('/tests/:id', ...manageAccess, controller.updateImagingTest);
+router.delete('/tests/:id', ...manageAccess, controller.deleteImagingTest);
 
-// ============== ADMISSION-BASED QUERIES ==============
-router.get('/admission/:admissionId/requests', controller.getRequestsByAdmission);
-router.get('/admission/:admissionId/pending', controller.getPendingIPDRequests);
-router.get('/patient/:patientId/requests', controller.getRequestsByPatient);
-router.get('/dashboard/stats', controller.getDashboardStats);
+// Structured radiology report templates
+router.get('/templates', ...reportAccess, reportController.getTemplates);
+router.get('/templates/match', ...reportAccess, reportController.matchTemplate);
+router.get('/templates/:templateId', ...reportAccess, reportController.getTemplate);
 
-// ============== RADIOLOGY STAFF ROUTES ==============
-router.get('/staff', radiologyStaffController.getAllStaff);
-router.get('/staff/:id', radiologyStaffController.getStaffById);
-router.post('/staff', radiologyStaffController.createStaff);
-router.put('/staff/:id', radiologyStaffController.updateStaff);
-router.patch('/staff/:id/toggle-status', radiologyStaffController.toggleStaffStatus);
-router.delete('/staff/:id', radiologyStaffController.deleteStaff);
-router.get('/staff/designation/:designation', radiologyStaffController.getStaffByDesignation);
-router.get('/staff/available', radiologyStaffController.getAvailableStaff);
+// Requests and reports
+router.post('/requests', ...reportAccess, controller.createRadiologyRequest);
+router.get('/requests', ...reportAccess, controller.getRadiologyRequests);
+router.get('/requests/:id', ...reportAccess, controller.getRadiologyRequestById);
+router.patch('/requests/:id/status', ...manageAccess, controller.updateRequestStatus);
+router.post('/requests/:id/manual-report', ...manageAccess, uploadImages.array('images', 6), reportController.saveManualReport);
+router.post('/requests/:id/upload', ...manageAccess, uploadReport.single('report'), controller.uploadReport);
+router.get('/requests/:id/report.pdf', ...reportAccess, reportController.downloadGeneratedReport);
+router.get('/requests/:id/download', ...reportAccess, controller.downloadReport);
+router.patch('/requests/:id/billed', ...manageAccess, controller.markAsBilled);
+
+router.get('/admission/:admissionId/requests', ...reportAccess, controller.getRequestsByAdmission);
+router.get('/admission/:admissionId/pending', ...reportAccess, controller.getPendingIPDRequests);
+router.get('/patient/:patientId/requests', ...reportAccess, controller.getRequestsByPatient);
+router.get('/dashboard/stats', ...reportAccess, controller.getDashboardStats);
+
+router.get('/staff', ...reportAccess, radiologyStaffController.getAllStaff);
+router.get('/staff/available', ...reportAccess, radiologyStaffController.getAvailableStaff);
+router.get('/staff/designation/:designation', ...reportAccess, radiologyStaffController.getStaffByDesignation);
+router.get('/staff/:id', ...reportAccess, radiologyStaffController.getStaffById);
+router.post('/staff', ...manageAccess, radiologyStaffController.createStaff);
+router.put('/staff/:id', ...manageAccess, radiologyStaffController.updateStaff);
+router.patch('/staff/:id/toggle-status', ...manageAccess, radiologyStaffController.toggleStaffStatus);
+router.delete('/staff/:id', ...manageAccess, radiologyStaffController.deleteStaff);
 
 module.exports = router;

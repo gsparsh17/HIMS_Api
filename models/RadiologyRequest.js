@@ -1,5 +1,35 @@
 const mongoose = require('mongoose');
 
+const radiologySectionSchema = new mongoose.Schema({
+  key: { type: String, trim: true },
+  label: { type: String, required: true, trim: true },
+  text: { type: String, default: '' }
+}, { _id: false });
+
+const radiologyImageSchema = new mongoose.Schema({
+  url: { type: String, required: true },
+  publicId: { type: String, trim: true },
+  caption: { type: String, trim: true },
+  fileName: { type: String, trim: true },
+  mimeType: { type: String, trim: true },
+  fileSize: { type: Number, min: 0 }
+}, { _id: false });
+
+const manualRadiologyReportSchema = new mongoose.Schema({
+  templateId: { type: String, required: true, trim: true },
+  templateNumber: Number,
+  templateVersion: { type: String, trim: true },
+  templateName: { type: String, required: true, trim: true },
+  sections: [radiologySectionSchema],
+  tables: { type: mongoose.Schema.Types.Mixed, default: [] },
+  images: [radiologyImageSchema],
+  radiologistName: { type: String, trim: true },
+  technicianName: { type: String, trim: true },
+  disclaimer: { type: String, trim: true },
+  reportedAt: { type: Date, default: Date.now },
+  reportedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+}, { _id: false });
+
 const radiologyRequestSchema = new mongoose.Schema({
   requestNumber: {
     type: String,
@@ -46,6 +76,15 @@ const radiologyRequestSchema = new mongoose.Schema({
   category: {
     type: String,
     required: true
+  },
+  reportTemplateId: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  reportTemplateName: {
+    type: String,
+    trim: true
   },
   
   // Clinical information
@@ -117,6 +156,14 @@ const radiologyRequestSchema = new mongoose.Schema({
   public_id: {
     type: String
   },
+  report_mode: {
+    type: String,
+    enum: ['uploaded', 'manual']
+  },
+  report_file_name: { type: String, trim: true },
+  report_mime_type: { type: String, trim: true },
+  report_file_size: { type: Number, min: 0 },
+  manual_report: manualRadiologyReportSchema,
   
   // Notes
   technician_notes: {

@@ -89,7 +89,8 @@ function preloadHospitalModels() {
     './models/AbdmCounterSequence',
     './models/AbdmLinkAuthentication',
     './models/Immunization',
-    './models/ClinicalDocument'
+    './models/ClinicalDocument',
+    './models/IPDConsent'
   ].forEach((modelPath) => require(modelPath));
 }
 
@@ -128,6 +129,7 @@ function mountHospitalRoutes() {
   app.use('/api/customers', require('./routes/customer.routes.js'));
   app.use('/api/suppliers', require('./routes/supplierRoutes.js'));
   app.use('/api/episodes', require('./routes/episode.routes.js'));
+  app.use('/api/ipd/consents', require('./routes/ipdConsent.routes'));
   app.use('/api/ipd', require('./routes/ipd.routes'));
   app.use('/api/wards', require('./routes/ward.routes'));
   app.use('/api/admin/backups', require('./routes/backup.routes'));
@@ -146,6 +148,7 @@ function mountHospitalRoutes() {
   app.use('/api/radiology', require('./routes/radiology.routes.js'));
   app.use('/api/pharmacy-bills', require('./routes/pharmacyBill.routes'));
   app.use('/api/email', require('./routes/emailRoutes.js'));
+  app.use('/api/support-tickets', require('./routes/supportTicket.routes.js'));
   app.use('/api/external-lab', require('./routes/externalLab.routes'));
   app.use('/api/license', require('./routes/license.routes.js'));
   app.use('/api/icd11', require('./routes/icd11.routes.js'));

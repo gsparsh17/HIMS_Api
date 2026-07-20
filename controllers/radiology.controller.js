@@ -7,6 +7,27 @@ const Doctor = require('../models/Doctor');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 
+
+const safeUnlink = (filePath) => {
+  if (!filePath) return;
+  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (_) {}
+};
+
+const hasValidReportSignature = (file) => {
+  if (!file?.path) return false;
+  const fd = fs.openSync(file.path, 'r');
+  try {
+    const buffer = Buffer.alloc(8);
+    fs.readSync(fd, buffer, 0, buffer.length, 0);
+    if (file.mimetype === 'application/pdf') return buffer.subarray(0, 5).toString('ascii') === '%PDF-';
+    if (file.mimetype === 'image/png') return buffer.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    if (['image/jpeg', 'image/jpg'].includes(file.mimetype)) return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    return false;
+  } finally {
+    fs.closeSync(fd);
+  }
+};
+
 // Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -146,6 +167,8 @@ exports.createRadiologyRequest = async (req, res) => {
       testCode: imagingTest.code,
       testName: imagingTest.name,
       category: imagingTest.category,
+      reportTemplateId: imagingTest.report_template_id || '',
+      reportTemplateName: imagingTest.report_template_name || '',
       clinical_indication: clinical_indication || '',
       clinical_history: clinical_history || '',
       priority: priority || 'Routine',
@@ -161,7 +184,7 @@ exports.createRadiologyRequest = async (req, res) => {
     const populated = await RadiologyRequest.findById(request._id)
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('imagingTestId', 'code name category');
+      .populate('imagingTestId', 'code name category report_template_id report_template_name');
 
     res.status(201).json({ success: true, data: populated });
   } catch (error) {
@@ -196,7 +219,7 @@ exports.getRadiologyRequests = async (req, res) => {
     const requests = await RadiologyRequest.find(filter)
       .populate('patientId', 'first_name last_name patientId phone')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('imagingTestId', 'code name category base_price')
+      .populate('imagingTestId', 'code name category base_price report_template_id report_template_name')
       .populate('approvedBy', 'designation employeeId')
       .populate('performedBy', 'designation employeeId')
       .populate('reportedBy', 'designation employeeId')
@@ -226,7 +249,7 @@ exports.getRadiologyRequestById = async (req, res) => {
     const request = await RadiologyRequest.findById(id)
       .populate('patientId', 'first_name last_name patientId phone dob gender')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('imagingTestId', 'code name category base_price preparation_instructions')
+      .populate('imagingTestId', 'code name category base_price preparation_instructions report_template_id report_template_name')
       .populate('approvedBy', 'designation employeeId')
       .populate('performedBy', 'designation employeeId')
       .populate('reportedBy', 'designation employeeId');
@@ -291,10 +314,14 @@ exports.uploadReport = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
+    if (!hasValidReportSignature(req.file)) {
+      safeUnlink(req.file.path);
+      return res.status(400).json({ error: 'The uploaded report content does not match a valid PDF, JPG, or PNG file.' });
+    }
 
     const request = await RadiologyRequest.findById(id);
     if (!request) {
-      fs.unlinkSync(req.file.path);
+      safeUnlink(req.file.path);
       return res.status(404).json({ error: 'Radiology request not found' });
     }
 
@@ -309,12 +336,17 @@ exports.uploadReport = async (req, res) => {
       access_mode: 'public'
     });
 
-    fs.unlinkSync(req.file.path);
+    safeUnlink(req.file.path);
 
     request.findings = findings || '';
     request.impression = impression || '';
     request.report_url = result.secure_url;
     request.public_id = result.public_id;
+    request.report_mode = 'uploaded';
+    request.report_file_name = req.file.originalname;
+    request.report_mime_type = req.file.mimetype;
+    request.report_file_size = req.file.size;
+    request.manual_report = undefined;
     
     if (request.status !== 'Reported') {
       request.status = 'Reported';
@@ -326,7 +358,7 @@ exports.uploadReport = async (req, res) => {
     res.json({ success: true, message: 'Report uploaded successfully', report_url: result.secure_url });
   } catch (error) {
     console.error('Error uploading report:', error);
-    if (req.file?.path) fs.unlinkSync(req.file.path);
+    safeUnlink(req.file?.path);
     res.status(500).json({ error: error.message });
   }
 };
@@ -365,7 +397,7 @@ exports.getRequestsByAdmission = async (req, res) => {
     })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('imagingTestId', 'code name category base_price')
+      .populate('imagingTestId', 'code name category base_price report_template_id report_template_name')
       .populate('performedBy', 'name')
       .populate('reportedBy', 'name')
       .populate('approvedBy', 'name')
