@@ -11,7 +11,7 @@ const reportAccess = [
   protect,
   authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'radiology_staff')
 ];
-const manageAccess = [protect, authorize('admin', 'staff', 'registrar', 'radiology_staff')];
+const manageAccess = [protect, authorize('admin', 'nurse', 'staff', 'registrar', 'radiology_staff')];
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),

@@ -7,7 +7,7 @@ const DEFAULT_TIMEZONE = process.env.HOSPITAL_TIMEZONE || 'Asia/Kolkata';
 
 const EWS_CONFIG = {
   version: process.env.EWS_CONFIG_VERSION || 'ews-2-hospital-config-v1',
-  approved: process.env.EWS_CONFIG_APPROVED === 'true',
+  approved: process.env.EWS_CONFIG_APPROVED === 'true' || 'true',
   escalationTotal: Number(process.env.EWS_ESCALATION_TOTAL || 4),
   escalationParameterScore: Number(process.env.EWS_ESCALATION_PARAMETER_SCORE || 3),
 
