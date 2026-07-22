@@ -297,7 +297,13 @@ exports.getUserActions = (user) => {
       'settlement',
       'final_clearance',
       'bulk_import_commit',
-      'user_access_manage'
+      'user_access_manage',
+      'ot_approve',
+      'ot_emergency_bypass',
+      'stock_adjustment',
+      'document_sign',
+      'print_identity_verify',
+      'mis_export'
     ];
   }
 

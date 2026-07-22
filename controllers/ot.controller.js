@@ -9,6 +9,7 @@ const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const mongoose = require('mongoose');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
+const { requireHospitalId } = require('../services/tenantScope.service');
 
 // Configure Cloudinary
 cloudinary.config({
@@ -833,12 +834,14 @@ exports.createOTStaff = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const existing = await OTStaff.findOne({ employeeId });
+    const hospitalId = requireHospitalId(req);
+    const existing = await OTStaff.findOne({ hospitalId, employeeId });
     if (existing) {
       return res.status(400).json({ error: 'Employee ID already exists' });
     }
 
     const otStaff = new OTStaff({
+      hospitalId,
       userId,
       employeeId,
       designation,
@@ -852,7 +855,7 @@ exports.createOTStaff = async (req, res) => {
     await otStaff.save();
     await syncHRProfileFromSource('OTStaff', otStaff, { hospital_id: req.user?.hospital_id || undefined });
 
-    const populated = await OTStaff.findById(otStaff._id).populate('userId', 'name email phone');
+    const populated = await OTStaff.findOne({ _id: otStaff._id, hospitalId }).populate('userId', 'name email phone');
 
     res.status(201).json({
       success: true,
@@ -869,7 +872,7 @@ exports.createOTStaff = async (req, res) => {
 exports.getOTStaff = async (req, res) => {
   try {
     const { is_active, designation } = req.query;
-    const filter = {};
+    const filter = { hospitalId: requireHospitalId(req) };
     if (is_active !== undefined) filter.is_active = is_active === 'true';
     if (designation) filter.designation = designation;
 
@@ -891,7 +894,7 @@ exports.getOTStaff = async (req, res) => {
 // Get Available OT Staff (active only)
 exports.getAvailableOTStaff = async (req, res) => {
   try {
-    const staff = await OTStaff.find({ is_active: true })
+    const staff = await OTStaff.find({ hospitalId: requireHospitalId(req), is_active: true })
       .populate('userId', 'name email')
       .sort({ designation: 1 });
 
@@ -911,12 +914,15 @@ exports.updateOTStaff = async (req, res) => {
     const { id } = req.params;
     const updates = req.body;
 
-    const staff = await OTStaff.findByIdAndUpdate(id, updates, { new: true, runValidators: true });
+    const hospitalId = requireHospitalId(req);
+    delete updates.hospitalId;
+    delete updates.hospital_id;
+    const staff = await OTStaff.findOneAndUpdate({ _id: id, hospitalId }, updates, { new: true, runValidators: true });
     if (!staff) {
       return res.status(404).json({ error: 'OT staff not found' });
     }
 
-    const populated = await OTStaff.findById(staff._id).populate('userId', 'name email phone');
+    const populated = await OTStaff.findOne({ _id: staff._id, hospitalId }).populate('userId', 'name email phone');
 
     res.json({
       success: true,
@@ -933,7 +939,7 @@ exports.updateOTStaff = async (req, res) => {
 exports.toggleOTStaffStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const staff = await OTStaff.findById(id);
+    const staff = await OTStaff.findOne({ _id: id, hospitalId: requireHospitalId(req) });
 
     if (!staff) {
       return res.status(404).json({ error: 'OT staff not found' });
@@ -957,7 +963,7 @@ exports.toggleOTStaffStatus = async (req, res) => {
 exports.deleteOTStaff = async (req, res) => {
   try {
     const { id } = req.params;
-    const staff = await OTStaff.findByIdAndDelete(id);
+    const staff = await OTStaff.findOneAndDelete({ _id: id, hospitalId: requireHospitalId(req) });
 
     if (!staff) {
       return res.status(404).json({ error: 'OT staff not found' });
@@ -1023,7 +1029,7 @@ exports.getAvailableOTRooms = async (req, res) => {
 exports.getRequestsByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const requests = await OTRequest.find({ admissionId })
+    const requests = await OTRequest.find({ hospitalId: requireHospitalId(req), admissionId })
       .populate('doctorId', 'firstName lastName')
       .populate('primarySurgeonId', 'firstName lastName')
       .populate('otRoomId', 'room_number')
@@ -1040,7 +1046,7 @@ exports.getRequestsByAdmission = async (req, res) => {
 exports.getRequestsByDoctor = async (req, res) => {
   try {
     const { doctorId } = req.params;
-    const requests = await OTRequest.find({ doctorId })
+    const requests = await OTRequest.find({ hospitalId: requireHospitalId(req), doctorId })
       .populate('patientId', 'first_name last_name patientId')
       .populate('otRoomId', 'room_number')
       .sort({ requestedDate: -1 });
@@ -1053,10 +1059,13 @@ exports.getRequestsByDoctor = async (req, res) => {
 };
 exports.getDashboardStats = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
+    const hospitalObjectId = new mongoose.Types.ObjectId(hospitalId);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
+    const scope = { hospitalId };
 
     const [
       pending,
@@ -1067,45 +1076,23 @@ exports.getDashboardStats = async (req, res) => {
       inProgress,
       cancelled
     ] = await Promise.all([
-      OTRequest.countDocuments({ status: 'Requested' }),
-      OTRequest.countDocuments({ paymentStatus: 'Pending', status: { $ne: 'Completed' } }),
-      OTRequest.countDocuments({
-        scheduledDate: { $gte: today, $lt: tomorrow },
-        status: { $in: ['Scheduled'] }
-      }),
-      OTRequest.countDocuments(),
-      OTRequest.countDocuments({
-        status: 'Completed',
-        completedAt: { $gte: today, $lt: tomorrow }
-      }),
-      OTRequest.countDocuments({ status: 'In Progress' }),
-      OTRequest.countDocuments({ status: 'Cancelled' })
+      OTRequest.countDocuments({ ...scope, status: 'Requested' }),
+      OTRequest.countDocuments({ ...scope, paymentStatus: 'Pending', status: { $ne: 'Completed' } }),
+      OTRequest.countDocuments({ ...scope, scheduledDate: { $gte: today, $lt: tomorrow }, status: { $in: ['Scheduled'] } }),
+      OTRequest.countDocuments(scope),
+      OTRequest.countDocuments({ ...scope, status: 'Completed', completedAt: { $gte: today, $lt: tomorrow } }),
+      OTRequest.countDocuments({ ...scope, status: 'In Progress' }),
+      OTRequest.countDocuments({ ...scope, status: 'Cancelled' })
     ]);
-
-    const availableRooms = await Room.countDocuments({
-      type: 'Operation Theater',
-      status: 'Available'
-    });
 
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59);
-
     const monthlyRevenue = await OTRequest.aggregate([
-      {
-        $match: {
-          status: 'Completed',
-          completedAt: { $gte: startOfMonth, $lte: endOfMonth }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$total_cost' }
-        }
-      }
+      { $match: { hospitalId: hospitalObjectId, status: 'Completed', completedAt: { $gte: startOfMonth, $lte: endOfMonth } } },
+      { $group: { _id: null, total: { $sum: '$total_cost' } } }
     ]);
 
-    res.json({
+    return res.json({
       success: true,
       stats: {
         pending,
@@ -1115,13 +1102,13 @@ exports.getDashboardStats = async (req, res) => {
         completedToday,
         inProgress,
         cancelled,
-        availableRooms,
+        availableRooms: null,
         monthlyRevenue: monthlyRevenue[0]?.total || 0
       }
     });
   } catch (error) {
     console.error('Error fetching dashboard stats:', error);
-    res.status(500).json({ error: error.message });
+    return res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
@@ -1135,6 +1122,7 @@ exports.getDailySchedule = async (req, res) => {
     nextDate.setDate(targetDate.getDate() + 1);
 
     const requests = await OTRequest.find({
+      hospitalId: requireHospitalId(req),
       scheduledDate: { $gte: targetDate, $lt: nextDate },
       status: { $in: ['Scheduled', 'In Progress', 'Completed'] },
       paymentStatus: 'Completed'  // Only show paid requests
@@ -1171,6 +1159,7 @@ exports.getMonthlyReports = async (req, res) => {
     const data = await OTRequest.aggregate([
       {
         $match: {
+          hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
           status: 'Completed',
           completedAt: { $gte: startDate, $lte: endDate }
         }
@@ -1211,6 +1200,7 @@ exports.getProcedureStats = async (req, res) => {
     const data = await OTRequest.aggregate([
       {
         $match: {
+          hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
           status: 'Completed',
           completedAt: { $gte: startDate, $lte: endDate }
         }
@@ -1249,6 +1239,7 @@ exports.getSurgeonStats = async (req, res) => {
     const data = await OTRequest.aggregate([
       {
         $match: {
+          hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
           status: 'Completed',
           completedAt: { $gte: startDate, $lte: endDate }
         }
@@ -1289,6 +1280,7 @@ exports.exportOTReports = async (req, res) => {
     endDate.setHours(23, 59, 59, 999);
 
     const requests = await OTRequest.find({
+      hospitalId: requireHospitalId(req),
       status: 'Completed',
       completedAt: { $gte: startDate, $lte: endDate }
     }).populate('patientId', 'first_name last_name patientId')
@@ -1331,7 +1323,7 @@ exports.exportOTReports = async (req, res) => {
 exports.getRequestsByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const requests = await OTRequest.find({ admissionId })
+    const requests = await OTRequest.find({ hospitalId: requireHospitalId(req), admissionId })
       .populate('doctorId', 'firstName lastName')
       .populate('primarySurgeonId', 'firstName lastName')
       .populate('otRoomId', 'room_number')
@@ -1348,7 +1340,7 @@ exports.getRequestsByAdmission = async (req, res) => {
 exports.getRequestsByDoctor = async (req, res) => {
   try {
     const { doctorId } = req.params;
-    const requests = await OTRequest.find({ doctorId })
+    const requests = await OTRequest.find({ hospitalId: requireHospitalId(req), doctorId })
       .populate('patientId', 'first_name last_name patientId')
       .populate('otRoomId', 'room_number')
       .sort({ requestedDate: -1 });

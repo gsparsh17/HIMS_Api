@@ -13,6 +13,9 @@ const purchaseOrderItemSchema = new mongoose.Schema({
   description: { type: String, trim: true },
   quantity: { type: Number, required: true, min: 1 },
   received_quantity: { type: Number, default: 0, min: 0 },
+  accepted_quantity: { type: Number, default: 0, min: 0 },
+  rejected_quantity: { type: Number, default: 0, min: 0 },
+  returned_quantity: { type: Number, default: 0, min: 0 },
   unit: { type: String, default: 'pcs' },
   unit_price: { type: Number, required: true, min: 0 },
   tax_rate: { type: Number, default: 0, min: 0, max: 100 },
@@ -41,7 +44,7 @@ const storePurchaseOrderSchema = new mongoose.Schema({
   payment_method: { type: String, enum: ['Cash', 'Card', 'Bank Transfer', 'UPI', 'Cheque', 'Online'], default: 'Bank Transfer' },
   status: {
     type: String,
-    enum: ['Draft', 'Submitted', 'Approved', 'Partially Received', 'Received', 'Cancelled'],
+    enum: ['Draft', 'Submitted', 'Approved', 'Dispatched', 'Partially Received', 'QC Pending', 'Partially Posted', 'Received', 'Closed', 'Cancelled'],
     default: 'Draft'
   },
   create_expense: { type: Boolean, default: true },
@@ -50,7 +53,11 @@ const storePurchaseOrderSchema = new mongoose.Schema({
   hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital' },
   created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  received_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  received_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  revision: { type: Number, default: 1 },
+  grn_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'GoodsReceiptNote' }],
+  terms: String,
+  delivery_schedule: [{ expectedDate: Date, quantity: Number, notes: String }]
 }, { timestamps: true });
 
 storePurchaseOrderSchema.pre('save', function(next) {

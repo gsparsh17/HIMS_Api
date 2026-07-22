@@ -1,0 +1,21 @@
+const express = require('express');
+const controller = require('../controllers/mis.controller');
+const { protect, authorize } = require('../middlewares/auth');
+const router = express.Router();
+
+router.use(protect, authorize('admin', 'mediqliq_super_admin', 'doctor', 'staff', 'nurse', 'ot_staff', 'store', 'store_manager', 'inventory_manager', 'accountant', 'hr', 'hr_manager', 'pathology_staff', 'radiology_staff', 'pharmacy'));
+router.get('/catalog', controller.catalog);
+router.post('/query', controller.query);
+router.get('/reports/:key', controller.run);
+router.get('/exports', controller.listExports);
+router.post('/exports', controller.createExport);
+router.get('/exports/:id', controller.getExport);
+router.get('/exports/:id/download', controller.downloadExport);
+router.get('/schedules', controller.listSchedules);
+router.post('/schedules', controller.createSchedule);
+router.put('/schedules/:id', controller.updateSchedule);
+router.delete('/schedules/:id', controller.deleteSchedule);
+router.get('/snapshots', controller.listSnapshots);
+router.post('/snapshots', controller.createSnapshot);
+router.get('/data-quality', controller.dataQuality);
+module.exports = router;

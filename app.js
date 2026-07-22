@@ -90,7 +90,29 @@ function preloadHospitalModels() {
     './models/AbdmLinkAuthentication',
     './models/Immunization',
     './models/ClinicalDocument',
-    './models/IPDConsent'
+    './models/IPDConsent',
+    './models/DomainEvent',
+    './models/UserPrintIdentity',
+    './models/PrintIdentityAsset',
+    './models/DocumentSignature',
+    './models/EncounterDocument',
+    './models/HospitalSequence',
+    './models/StoreLocation',
+    './models/InventoryLot',
+    './models/StockReservation',
+    './models/GoodsReceiptNote',
+    './models/StoreIssueReturn',
+    './models/StockTransfer',
+    './models/StockCount',
+    './models/PurchaseReturn',
+    './models/OTReadinessChecklist',
+    './models/OTSurgicalSafetyChecklist',
+    './models/OTPreAnaesthesiaAssessment',
+    './models/OTAnesthesiaRecord',
+    './models/OTOperativeNote',
+    './models/OTRecoveryRecord',
+    './models/OTCaseInventoryUsage',
+    './models/OTSpecimen'
   ].forEach((modelPath) => require(modelPath));
 }
 
@@ -153,6 +175,9 @@ function mountHospitalRoutes() {
   app.use('/api/license', require('./routes/license.routes.js'));
   app.use('/api/icd11', require('./routes/icd11.routes.js'));
   app.use('/api/ot', require('./routes/ot.routes.js'));
+  app.use('/api/print-identities', require('./routes/printIdentity.routes.js'));
+  app.use('/api/documents', require('./routes/document.routes.js'));
+  app.use('/api/mis', require('./routes/mis.routes.js'));
   app.use('/api/approvals', require('./routes/approval.routes.js'));
   app.use('/api', require('./routes/userAccess.routes'));
 

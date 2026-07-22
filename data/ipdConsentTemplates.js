@@ -13,6 +13,50 @@ const commonSignatureFields = [
 
 const templates = [
   {
+    id: 'general-consent',
+    name: 'General Consent Form',
+    bilingualName: 'सामान्य सहमति / मान्यता पत्र',
+    version: '1.0',
+    description: 'General consent for admission, examination, investigations, medicines, supportive care and emergency treatment.',
+    fields: [
+      { key: 'admissionAndCareConsent', label: 'Consent to admission and routine hospital care', type: 'checkbox', required: true },
+      { key: 'examinationInvestigationConsent', label: 'Consent to examination and clinically required investigations', type: 'checkbox', required: true },
+      { key: 'medicineTreatmentConsent', label: 'Consent to medicines, injections, IV treatment and supportive care', type: 'checkbox', required: true },
+      { key: 'emergencyTreatmentConsent', label: 'Consent to emergency and life-saving treatment when delay is unsafe', type: 'checkbox', required: true },
+      { key: 'informationExplained', label: 'Hospital policies, expected care, limitations and responsibilities explained', type: 'checkbox', required: true },
+      { key: 'questionsAnswered', label: 'Questions answered satisfactorily', type: 'checkbox', required: true },
+      { key: 'specialLimitations', label: 'Special limitations / remarks', type: 'textarea' },
+      ...commonSignatureFields
+    ],
+    printSections: [
+      { title: 'General Authorization', text: 'I authorize admission, clinical examination, appropriate investigations, medicines, injections, IV fluids and other supportive care considered necessary by the treating team.' },
+      { title: 'Emergency Care', text: 'When delay may threaten life or health, I authorize the hospital to provide reasonable emergency and life-saving care according to clinical judgement.' },
+      { title: 'Acknowledgement', text: 'The proposed care, hospital policies, possible limitations and my opportunity to ask questions have been explained in a language I understand.' }
+    ]
+  },
+  {
+    id: 'infectious-disease-screening-consent',
+    name: 'Consent for HIV / HBsAg / HCV Testing',
+    bilingualName: 'एचआईवी / एचबीएसएजी / एचसीवी जांच हेतु सहमति',
+    version: '1.0',
+    description: 'Voluntary informed consent and pre-test counselling record for HIV, hepatitis B and hepatitis C screening.',
+    fields: [
+      { key: 'testsRequested', label: 'Tests Requested', type: 'checkbox-group', required: true, options: ['HIV', 'HBsAg', 'HCV', 'Other communicable disease test'] },
+      { key: 'clinicalReason', label: 'Clinical Reason / Indication', type: 'textarea' },
+      { key: 'purposeExplained', label: 'Purpose and testing procedure explained', type: 'checkbox', required: true },
+      { key: 'possibleResultsExplained', label: 'Reactive, non-reactive and inconclusive result possibilities explained', type: 'checkbox', required: true },
+      { key: 'confidentialityExplained', label: 'Confidentiality and disclosure policy explained', type: 'checkbox', required: true },
+      { key: 'voluntaryConsent', label: 'Consent is voluntary and without pressure', type: 'checkbox', required: true },
+      { key: 'questionsAnswered', label: 'Questions answered satisfactorily', type: 'checkbox', required: true },
+      ...commonSignatureFields
+    ],
+    printSections: [
+      { title: 'Information and Counselling', text: 'The purpose, procedure, limitations and possible results of HIV, hepatitis B and hepatitis C testing have been explained in an understandable language.' },
+      { title: 'Confidentiality', text: 'Results will be handled confidentially and disclosed only according to applicable law, hospital policy and clinical necessity.' },
+      { title: 'Voluntary Consent', text: 'I voluntarily consent to the selected tests and understand that appropriate post-test counselling and follow-up will be offered.' }
+    ]
+  },
+  {
     id: 'surgery-consent',
     name: 'Surgery Consent Form',
     bilingualName: 'शल्य चिकित्सा सहमति पत्र',

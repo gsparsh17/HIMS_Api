@@ -18,12 +18,26 @@ const storeIssueSchema = new mongoose.Schema({
   requisition: { type: mongoose.Schema.Types.ObjectId, ref: 'StoreRequisition' },
   items: [{
     item: { type: mongoose.Schema.Types.ObjectId, ref: 'StoreItem', required: true },
+    lot: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryLot' },
+    serial_number: String,
+    from_location: { type: mongoose.Schema.Types.ObjectId, ref: 'StoreLocation' },
     quantity: { type: Number, required: true, min: 1 },
     unit_cost: { type: Number, default: 0, min: 0 },
     total_cost: { type: Number, default: 0, min: 0 },
+    returned_quantity: { type: Number, default: 0, min: 0 },
+    used_quantity: { type: Number, default: 0, min: 0 },
+    wasted_quantity: { type: Number, default: 0, min: 0 },
     remarks: { type: String, trim: true }
   }],
-  status: { type: String, enum: ['Issued', 'Returned', 'Cancelled'], default: 'Issued' },
+  status: { type: String, enum: ['Draft', 'Issued', 'Partially Acknowledged', 'Acknowledged', 'Partially Returned', 'Returned', 'Closed', 'Cancelled'], default: 'Issued' },
+  destination_location: { type: mongoose.Schema.Types.ObjectId, ref: 'StoreLocation' },
+  admission_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission' },
+  patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },
+  ot_case_id: { type: mongoose.Schema.Types.ObjectId, ref: 'OTRequest' },
+  reservation_id: { type: mongoose.Schema.Types.ObjectId, ref: 'StockReservation' },
+  acknowledged_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  acknowledged_at: Date,
+  version: { type: Number, default: 1 },
   notes: { type: String, trim: true },
   hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital' }
 }, { timestamps: true });

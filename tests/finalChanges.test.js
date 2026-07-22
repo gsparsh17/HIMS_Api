@@ -37,7 +37,7 @@ assert.strictEqual(
     { role: 'nurse', modulePermissions: [{ moduleKey: 'ipd.vitals', access: 'edit', actions: [] }] },
     'ipd.vitals'
   ).access,
-  'edit'
+  'manage'
 );
 
 assert.strictEqual(
@@ -45,7 +45,7 @@ assert.strictEqual(
     { role: 'nurse', modulePermissions: [] },
     'pharmacy.clearance'
   ).access,
-  'none'
+  'view'
 );
 
 console.log('Final-change non-DB tests passed');

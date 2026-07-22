@@ -3,99 +3,82 @@ const IPDAdmission = require('../models/IPDAdmission');
 const Hospital = require('../models/Hospital');
 const { version, templates } = require('../data/ipdConsentTemplates');
 const { generateConsentPdf } = require('../services/consentPdf.service');
+const { requireHospitalId } = require('../services/tenantScope.service');
+const { appendDomainEvent } = require('../services/auditEvent.service');
 
 const findTemplate = (id) => templates.find((template) => template.id === id);
+const scopeKey = (body = {}, query = {}) => body.scopeKey || query.scopeKey || (body.relatedOTCaseId || query.relatedOTCaseId ? `ot:${body.relatedOTCaseId || query.relatedOTCaseId}` : body.relatedProcedureId || query.relatedProcedureId ? `procedure:${body.relatedProcedureId || query.relatedProcedureId}` : 'admission');
 
-exports.listTemplates = async (req, res) => {
-  res.json({ success: true, version, data: templates });
-};
+async function admissionFor(req) {
+  const admission = await IPDAdmission.findOne({ _id: req.params.admissionId, hospitalId: requireHospitalId(req) });
+  if (!admission) throw Object.assign(new Error('IPD admission not found'), { statusCode: 404 });
+  return admission;
+}
 
-exports.listAdmissionConsents = async (req, res) => {
+exports.listTemplates = async (_req, res) => res.json({ success: true, version, data: templates });
+
+exports.listAdmissionConsents = async (req, res, next) => {
   try {
-    const admission = await IPDAdmission.findById(req.params.admissionId).select('_id patientId hospitalId');
-    if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
-    const records = await IPDConsent.find({ admissionId: admission._id }).sort({ updatedAt: -1 });
-    const recordMap = new Map(records.map((record) => [record.templateId, record]));
-    res.json({
-      success: true,
-      version,
-      data: templates.map((template) => ({ template, consent: recordMap.get(template.id) || null }))
-    });
-  } catch (error) {
-    console.error('Error loading IPD consent forms:', error);
-    res.status(500).json({ error: error.message });
-  }
+    const admission = await admissionFor(req);
+    const filter = { hospitalId: admission.hospitalId, admissionId: admission._id };
+    if (req.query.relatedOTCaseId) filter.relatedOTCaseId = req.query.relatedOTCaseId;
+    const records = await IPDConsent.find(filter).sort({ updatedAt: -1 });
+    res.json({ success: true, version, data: templates.map((template) => ({ template, consents: records.filter((record) => record.templateId === template.id), consent: records.find((record) => record.templateId === template.id && record.scopeKey === 'admission') || null })) });
+  } catch (error) { next(error); }
 };
 
-exports.getConsent = async (req, res) => {
+exports.getConsent = async (req, res, next) => {
   try {
     const template = findTemplate(req.params.templateId);
     if (!template) return res.status(404).json({ error: 'Consent template not found' });
-    const consent = await IPDConsent.findOne({ admissionId: req.params.admissionId, templateId: template.id });
+    const admission = await admissionFor(req);
+    const consent = await IPDConsent.findOne({ hospitalId: admission.hospitalId, admissionId: admission._id, templateId: template.id, scopeKey: scopeKey({}, req.query) });
     res.json({ success: true, data: { template, consent } });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { next(error); }
 };
 
-exports.saveConsent = async (req, res) => {
+exports.saveConsent = async (req, res, next) => {
   try {
     const template = findTemplate(req.params.templateId);
     if (!template) return res.status(404).json({ error: 'Consent template not found' });
-    const admission = await IPDAdmission.findById(req.params.admissionId);
-    if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
+    const admission = await admissionFor(req);
     const responses = req.body.responses && typeof req.body.responses === 'object' ? req.body.responses : {};
-    const status = req.body.status === 'Completed' ? 'Completed' : 'Draft';
-    if (status === 'Completed') {
+    const requestedStatus = ['Completed', 'Signed'].includes(req.body.status) ? req.body.status : 'Draft';
+    if (requestedStatus !== 'Draft') {
       const missing = (template.fields || []).filter((field) => field.required).filter((field) => {
         const value = responses[field.key];
         return value === undefined || value === null || value === '' || value === false || (Array.isArray(value) && !value.length);
       });
       if (missing.length) return res.status(400).json({ error: `Complete required fields: ${missing.map((field) => field.label).join(', ')}` });
     }
+    const key = scopeKey(req.body);
+    const existing = await IPDConsent.findOne({ hospitalId: admission.hospitalId, admissionId: admission._id, templateId: template.id, scopeKey: key });
     const update = {
-      hospitalId: admission.hospitalId || req.user?.hospital_id,
-      patientId: admission.patientId,
-      templateId: template.id,
-      templateName: template.name,
-      templateVersion: template.version,
-      status,
-      responses,
-      notes: req.body.notes || '',
-      updatedBy: req.user?._id,
-      ...(status === 'Completed' ? { completedAt: new Date(), completedBy: req.user?._id } : {})
+      hospitalId: admission.hospitalId, patientId: admission.patientId, templateId: template.id, templateName: template.name,
+      templateVersion: template.version, formRevision: Number(existing?.formRevision || 0) + 1, scopeKey: key,
+      relatedOTCaseId: req.body.relatedOTCaseId, relatedProcedureId: req.body.relatedProcedureId,
+      status: requestedStatus, responses, signatures: Array.isArray(req.body.signatures) ? req.body.signatures : existing?.signatures || [], notes: req.body.notes || '', updatedBy: req.user._id,
+      ...(requestedStatus !== 'Draft' ? { completedAt: new Date(), completedBy: req.user._id } : {})
     };
     const consent = await IPDConsent.findOneAndUpdate(
-      { admissionId: admission._id, templateId: template.id },
-      { $set: update, $setOnInsert: { admissionId: admission._id, createdBy: req.user?._id } },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      { hospitalId: admission.hospitalId, admissionId: admission._id, templateId: template.id, scopeKey: key },
+      { $set: update, $setOnInsert: { admissionId: admission._id, createdBy: req.user._id } },
+      { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
     );
-    res.json({ success: true, message: status === 'Completed' ? 'Consent form completed' : 'Consent draft saved', data: consent });
-  } catch (error) {
-    console.error('Error saving IPD consent:', error);
-    res.status(500).json({ error: error.message });
-  }
+    await appendDomainEvent({ req, eventType: requestedStatus === 'Draft' ? 'consent.draft_saved' : 'consent.completed', entityType: 'IPDConsent', entityId: consent._id, hospitalId: admission.hospitalId, patientId: admission.patientId, encounterId: admission._id, revision: consent.formRevision, afterSummary: { templateId: template.id, status: requestedStatus, scopeKey: key } });
+    res.json({ success: true, message: requestedStatus === 'Draft' ? 'Consent draft saved' : 'Consent completed', data: consent });
+  } catch (error) { next(error); }
 };
 
-exports.printConsent = async (req, res) => {
+exports.printConsent = async (req, res, next) => {
   try {
     const template = findTemplate(req.params.templateId);
     if (!template) return res.status(404).json({ error: 'Consent template not found' });
-    const [consent, admission] = await Promise.all([
-      IPDConsent.findOne({ admissionId: req.params.admissionId, templateId: template.id }),
-      IPDAdmission.findById(req.params.admissionId)
-        .populate('patientId')
-        .populate('wardId', 'name wardName')
-        .populate('bedId', 'bedNumber name')
-    ]);
+    const admission = await admissionFor(req);
+    const consent = await IPDConsent.findOne({ hospitalId: admission.hospitalId, admissionId: admission._id, templateId: template.id, scopeKey: scopeKey({}, req.query) });
     if (!consent) return res.status(404).json({ error: 'Consent form has not been saved' });
-    if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
-    const hospitalId = admission.hospitalId || req.user?.hospital_id;
-    let hospital = hospitalId ? await Hospital.findById(hospitalId) : null;
-    if (!hospital) hospital = await Hospital.findOne();
+    await admission.populate('patientId wardId bedId');
+    const hospital = await Hospital.findById(admission.hospitalId);
     generateConsentPdf({ consent, template, admission, hospital, res });
-  } catch (error) {
-    console.error('Error printing IPD consent:', error);
-    if (!res.headersSent) res.status(500).json({ error: error.message });
-  }
+  } catch (error) { if (!res.headersSent) next(error); }
 };

@@ -20,6 +20,16 @@ function getUserId(req) {
   return req.user?._id || req.user?.id || req.body?.created_by || null;
 }
 
+async function hospitalRecordFilter(req, id, extra = {}) {
+  const hospitalId = await resolveHospitalId(req);
+  if (!hospitalId) {
+    const error = new Error('Authenticated user is not linked to a hospital');
+    error.statusCode = 403;
+    throw error;
+  }
+  return { _id: id, hospital_id: hospitalId, ...extra };
+}
+
 function parsePagination(query) {
   const page = Math.max(1, parseInt(query.page || '1', 10));
   const limit = Math.max(1, Math.min(200, parseInt(query.limit || '50', 10)));
@@ -204,7 +214,7 @@ exports.getCategories = async (req, res) => {
 
 exports.updateCategory = async (req, res) => {
   try {
-    const category = await StoreCategory.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    const category = await StoreCategory.findOneAndUpdate(await hospitalRecordFilter(req, req.params.id), req.body, { new: true, runValidators: true });
     if (!category) return res.status(404).json({ error: 'Store category not found' });
     res.json({ message: 'Store category updated', category });
   } catch (error) {
@@ -214,7 +224,7 @@ exports.updateCategory = async (req, res) => {
 
 exports.deleteCategory = async (req, res) => {
   try {
-    const category = await StoreCategory.findByIdAndUpdate(req.params.id, { is_active: false }, { new: true });
+    const category = await StoreCategory.findOneAndUpdate(await hospitalRecordFilter(req, req.params.id), { is_active: false }, { new: true });
     if (!category) return res.status(404).json({ error: 'Store category not found' });
     res.json({ message: 'Store category deactivated', category });
   } catch (error) {
@@ -303,7 +313,7 @@ exports.getItems = async (req, res) => {
 
 exports.getItemById = async (req, res) => {
   try {
-    const item = await StoreItem.findById(req.params.id).populate('category', 'name code').populate('supplier_id');
+    const item = await StoreItem.findOne(await hospitalRecordFilter(req, req.params.id)).populate('category', 'name code').populate('supplier_id');
     if (!item) return res.status(404).json({ error: 'Store item not found' });
     res.json(item);
   } catch (error) {
@@ -313,8 +323,8 @@ exports.getItemById = async (req, res) => {
 
 exports.updateItem = async (req, res) => {
   try {
-    const item = await StoreItem.findByIdAndUpdate(
-      req.params.id,
+    const item = await StoreItem.findOneAndUpdate(
+      await hospitalRecordFilter(req, req.params.id),
       { ...req.body, updated_by: getUserId(req) },
       { new: true, runValidators: true }
     ).populate('category', 'name code').populate('supplier_id');
@@ -327,7 +337,7 @@ exports.updateItem = async (req, res) => {
 
 exports.deleteItem = async (req, res) => {
   try {
-    const item = await StoreItem.findByIdAndUpdate(req.params.id, { is_active: false, updated_by: getUserId(req) }, { new: true });
+    const item = await StoreItem.findOneAndUpdate(await hospitalRecordFilter(req, req.params.id), { is_active: false, updated_by: getUserId(req) }, { new: true });
     if (!item) return res.status(404).json({ error: 'Store item not found' });
     res.json({ message: 'Store item deactivated', item });
   } catch (error) {
@@ -338,7 +348,7 @@ exports.deleteItem = async (req, res) => {
 exports.adjustStock = async (req, res) => {
   try {
     const { quantity, adjustment_type, unit_cost, remarks } = req.body;
-    const item = await StoreItem.findById(req.params.id);
+    const item = await StoreItem.findOne(await hospitalRecordFilter(req, req.params.id));
     if (!item) return res.status(404).json({ error: 'Store item not found' });
 
     const qty = toNumber(quantity, 0);
@@ -451,7 +461,7 @@ exports.updateRequisitionStatus = async (req, res) => {
       if (Array.isArray(items)) update.items = items;
     }
 
-    const requisition = await StoreRequisition.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true })
+    const requisition = await StoreRequisition.findOneAndUpdate(await hospitalRecordFilter(req, req.params.id), update, { new: true, runValidators: true })
       .populate('items.item', 'name item_code unit current_stock')
       .populate('requested_by approved_by', 'name email role');
     if (!requisition) return res.status(404).json({ error: 'Store requisition not found' });
@@ -468,7 +478,7 @@ exports.createIssue = async (req, res) => {
 
     const preparedItems = [];
     for (const line of items) {
-      const item = await StoreItem.findById(line.item);
+      const item = await StoreItem.findOne(await hospitalRecordFilter(req, line.item));
       if (!item) return res.status(404).json({ error: `Store item not found: ${line.item}` });
       const qty = toNumber(line.quantity, 0);
       if (qty <= 0) return res.status(400).json({ error: 'Issue quantity must be greater than zero' });
@@ -504,7 +514,7 @@ exports.createIssue = async (req, res) => {
     }
 
     if (issue.requisition) {
-      await StoreRequisition.findByIdAndUpdate(issue.requisition, { status: 'Issued' });
+      await StoreRequisition.findOneAndUpdate({ _id: issue.requisition, hospital_id: issue.hospital_id }, { status: 'Issued' });
     }
 
     await issue.populate('items.item', 'name item_code unit');
@@ -580,7 +590,7 @@ exports.getPurchaseOrders = async (req, res) => {
 
 exports.getPurchaseOrderById = async (req, res) => {
   try {
-    const po = await StorePurchaseOrder.findById(req.params.id)
+    const po = await StorePurchaseOrder.findOne(await hospitalRecordFilter(req, req.params.id))
       .populate('items.item', 'name item_code unit current_stock average_cost')
       .populate('expense_id')
       .populate('created_by approved_by received_by', 'name email role');
@@ -596,7 +606,7 @@ exports.updatePurchaseOrderStatus = async (req, res) => {
     const { status } = req.body;
     const update = { status };
     if (status === 'Approved') update.approved_by = getUserId(req);
-    const po = await StorePurchaseOrder.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true })
+    const po = await StorePurchaseOrder.findOneAndUpdate(await hospitalRecordFilter(req, req.params.id), update, { new: true, runValidators: true })
       .populate('items.item', 'name item_code unit');
     if (!po) return res.status(404).json({ error: 'Store purchase order not found' });
     res.json({ message: 'Purchase order status updated', purchaseOrder: po });
@@ -607,7 +617,7 @@ exports.updatePurchaseOrderStatus = async (req, res) => {
 
 exports.receivePurchaseOrder = async (req, res) => {
   try {
-    const po = await StorePurchaseOrder.findById(req.params.id).populate('items.item');
+    const po = await StorePurchaseOrder.findOne(await hospitalRecordFilter(req, req.params.id)).populate('items.item');
     if (!po) return res.status(404).json({ error: 'Store purchase order not found' });
     if (po.status === 'Cancelled') return res.status(400).json({ error: 'Cannot receive a cancelled purchase order' });
 
@@ -727,7 +737,7 @@ async function createLinkedExpense({ equipment, req, type, amount, vendor, descr
 exports.updateCondition = async (req, res) => {
   try {
     const { condition_status, operational_status, remarks, next_maintenance_due } = req.body;
-    const item = await StoreItem.findById(req.params.id);
+    const item = await StoreItem.findOne(await hospitalRecordFilter(req, req.params.id));
     if (!item || !item.is_active) return res.status(404).json({ error: 'Store item not found' });
 
     item.condition_status = condition_status || item.condition_status;
@@ -753,7 +763,7 @@ exports.updateCondition = async (req, res) => {
 exports.assignItem = async (req, res) => {
   try {
     const { assigned_to_employee, department, location, room_no, operational_status = 'In Use' } = req.body;
-    const item = await StoreItem.findById(req.params.id);
+    const item = await StoreItem.findOne(await hospitalRecordFilter(req, req.params.id));
     if (!item || !item.is_active) return res.status(404).json({ error: 'Store item not found' });
 
     let employeeName = '';
@@ -782,7 +792,7 @@ exports.assignItem = async (req, res) => {
 
 exports.addMaintenanceRecord = async (req, res) => {
   try {
-    const item = await StoreItem.findById(req.params.id);
+    const item = await StoreItem.findOne(await hospitalRecordFilter(req, req.params.id));
     if (!item || !item.is_active) return res.status(404).json({ error: 'Store item not found' });
 
     const cost = toNumber(req.body.cost, 0);

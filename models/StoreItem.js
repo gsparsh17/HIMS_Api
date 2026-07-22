@@ -54,7 +54,7 @@ const maintenanceRecordSchema = new mongoose.Schema({
 }, { _id: true });
 
 const storeItemSchema = new mongoose.Schema({
-  item_code: { type: String, unique: true, trim: true },
+  item_code: { type: String, trim: true },
   name: { type: String, required: true, trim: true },
   description: { type: String, trim: true },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'StoreCategory' },
@@ -69,9 +69,17 @@ const storeItemSchema = new mongoose.Schema({
   model_no: { type: String, trim: true },
   serial_tracking: { type: Boolean, default: false },
   batch_tracking: { type: Boolean, default: false },
+  expiry_tracking: { type: Boolean, default: false },
+  tracking_policy: { type: String, enum: ['none', 'batch', 'serial', 'batch_and_serial'], default: 'none' },
+  valuation_method: { type: String, enum: ['weighted_average', 'fifo', 'actual_lot_cost'], default: 'weighted_average' },
+  issue_policy: { type: String, enum: ['FEFO', 'FIFO', 'Manual'], default: 'FEFO' },
+  unit_conversions: [{ from_unit: String, to_unit: String, multiplier: Number }],
   current_stock: { type: Number, default: 0, min: 0 },
   minimum_stock: { type: Number, default: 0, min: 0 },
+  maximum_stock: { type: Number, default: 0, min: 0 },
   reorder_level: { type: Number, default: 0, min: 0 },
+  safety_stock: { type: Number, default: 0, min: 0 },
+  lead_time_days: { type: Number, default: 0, min: 0 },
   opening_stock: { type: Number, default: 0, min: 0 },
   average_cost: { type: Number, default: 0, min: 0 },
   last_purchase_price: { type: Number, default: 0, min: 0 },
@@ -116,6 +124,10 @@ const storeItemSchema = new mongoose.Schema({
     enum: ['Low', 'Medium', 'High', 'Critical'],
     default: 'Medium'
   },
+  abc_class: { type: String, enum: ['A', 'B', 'C', ''], default: '' },
+  ved_class: { type: String, enum: ['Vital', 'Essential', 'Desirable', ''], default: '' },
+  fsn_class: { type: String, enum: ['Fast', 'Slow', 'Non Moving', ''], default: '' },
+  default_location_id: { type: mongoose.Schema.Types.ObjectId, ref: 'StoreLocation' },
   condition_notes: { type: String, trim: true },
   last_condition_checked_at: { type: Date },
   next_maintenance_due: { type: Date },
@@ -157,8 +169,9 @@ storeItemSchema.virtual('maintenance_overdue').get(function() {
 storeItemSchema.set('toJSON', { virtuals: true });
 storeItemSchema.set('toObject', { virtuals: true });
 
+storeItemSchema.index({ hospital_id: 1, item_code: 1 }, { unique: true });
 storeItemSchema.index({ hospital_id: 1, name: 1 });
-storeItemSchema.index({ item_code: 1 });
+storeItemSchema.index({ hospital_id: 1, category: 1, is_active: 1 });
 storeItemSchema.index({ category: 1 });
 storeItemSchema.index({ current_stock: 1, reorder_level: 1 });
 storeItemSchema.index({ is_active: 1 });

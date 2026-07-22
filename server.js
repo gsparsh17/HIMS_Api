@@ -24,6 +24,11 @@ const startServer = async () => {
       startAbdmJobWorker();
     }
 
+    if (abdmConfig.isHospital) {
+      const { startMISScheduleJob } = require('./jobs/misScheduleJob');
+      startMISScheduleJob();
+    }
+
     const shutdown = (signal) => {
       console.log(`\n${signal} received. Closing HTTP server...`);
       server.close(() => process.exit(0));

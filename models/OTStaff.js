@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const otStaffSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -50,11 +51,15 @@ const otStaffSchema = new mongoose.Schema({
   experience_years: { type: Number, default: 0 },
   license_number: String,
   is_active: { type: Boolean, default: true },
-  joined_date: { type: Date, default: Date.now }
+  joined_date: { type: Date, default: Date.now },
+  credential_valid_until: Date,
+  shiftAvailability: [{ dayOfWeek: Number, startTime: String, endTime: String }],
+  unavailableRanges: [{ from: Date, to: Date, reason: String }],
+  maxSimultaneousCases: { type: Number, default: 1, min: 1 }
 }, { timestamps: true });
 
-otStaffSchema.index({ employeeId: 1 });
-otStaffSchema.index({ designation: 1 });
+otStaffSchema.index({ hospitalId: 1, employeeId: 1 }, { unique: true });
+otStaffSchema.index({ hospitalId: 1, designation: 1, is_active: 1 });
 otStaffSchema.index({ is_active: 1 });
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');

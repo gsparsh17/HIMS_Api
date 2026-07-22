@@ -1,10 +1,25 @@
 const mongoose = require('mongoose');
 
 const otRequestSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
+  encounterType: { type: String, enum: ['IPD', 'OPD', 'Emergency'], default: 'IPD' },
+  encounterId: { type: mongoose.Schema.Types.ObjectId, index: true },
+  version: { type: Number, default: 1, min: 1 },
+  workflowPolicyVersion: { type: String, default: 'ot-v1' },
+  readinessStatus: { type: String, enum: ['Not Evaluated', 'Pending', 'Ready', 'Ready With Bypass'], default: 'Not Evaluated', index: true },
+  clinicalClosureStatus: { type: String, enum: ['Open', 'Pending Documents', 'Closed'], default: 'Open' },
+  inventoryClosureStatus: { type: String, enum: ['Not Required', 'Pending', 'Reconciled'], default: 'Not Required' },
+  billingClosureStatus: { type: String, enum: ['Pending', 'Cleared', 'Exception Approved'], default: 'Pending' },
+  emergencyOverride: {
+    enabled: { type: Boolean, default: false },
+    reason: String,
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approvedAt: Date
+  },
   requestNumber: {
     type: String,
-    unique: true,
-    required: true
+    required: true,
+    index: true
   },
   
   // Source References
@@ -66,6 +81,10 @@ const otRequestSchema = new mongoose.Schema({
   },
   scheduledDate: Date,
   scheduledTime: String,
+  scheduledStart: Date,
+  scheduledEnd: Date,
+  setupBufferMinutes: { type: Number, default: 15 },
+  cleaningBufferMinutes: { type: Number, default: 20 },
   estimated_duration_minutes: {
     type: Number,
     default: 60
@@ -101,15 +120,20 @@ const otRequestSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: [
-      'Requested',           // Initial request submitted
-      'Payment Pending',     // Awaiting payment before scheduling
-      'Payment Received',    // Payment completed, ready to schedule
-      'Approved',            // Approved by OT department
-      'Scheduled',           // OT room and time assigned
-      'In Progress',         // Surgery started
-      'Completed',           // Surgery completed
-      'Cancelled',           // Cancelled
-      'Postponed'            // Postponed
+      'Requested',
+      'Readiness Pending',
+      'Payment Pending',
+      'Payment Received',
+      'Approved',
+      'Scheduled',
+      'Patient Received',
+      'In Progress',
+      'Recovery',
+      'Transferred',
+      'Closed',
+      'Completed',
+      'Cancelled',
+      'Postponed'
     ],
     default: 'Requested'
   },
@@ -151,6 +175,12 @@ const otRequestSchema = new mongoose.Schema({
   approvedAt: Date,
   startedAt: Date,
   completedAt: Date,
+  patientReceivedAt: Date,
+  recoveryStartedAt: Date,
+  transferredAt: Date,
+  closedAt: Date,
+  postponedAt: Date,
+  postponementReason: String,
   cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   cancelledAt: Date,
   cancellationReason: String,
@@ -207,9 +237,12 @@ const otRequestSchema = new mongoose.Schema({
 
 // Calculate due amount before save
 otRequestSchema.pre('save', function(next) {
-  this.dueAmount = this.total_cost - this.paidAmount;
-  
-  // Update payment status based on paid amount
+  this.total_cost = Math.max(0, Number(this.total_cost || 0));
+  this.paidAmount = Math.max(0, Number(this.paidAmount || 0));
+  this.dueAmount = Math.max(0, this.total_cost - this.paidAmount);
+
+  // Zero-value/insured cases may be explicitly marked as not requiring payment.
+  if (this.paymentStatus === 'Not Required' && this.total_cost === 0) return next();
   if (this.paidAmount >= this.total_cost && this.total_cost > 0) {
     this.paymentStatus = 'Completed';
   } else if (this.paidAmount > 0) {
@@ -217,21 +250,24 @@ otRequestSchema.pre('save', function(next) {
   } else {
     this.paymentStatus = 'Pending';
   }
-  
+
   next();
 });
 
 // Generate request number
 otRequestSchema.pre('validate', async function(next) {
-  if (this.isNew && !this.requestNumber) {
-    const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const OTRequest = mongoose.model('OTRequest');
-    const count = await OTRequest.countDocuments();
-    this.requestNumber = `OT-${year}${month}-${String(count + 1).padStart(4, '0')}`;
+  try {
+    if (this.isNew && !this.requestNumber) {
+      if (!this.hospitalId) return next(new Error('hospitalId is required before generating an OT number'));
+      const { nextSequence, financialYear } = require('../services/hospitalSequence.service');
+      const sequence = await nextSequence(this.hospitalId, `OT:${financialYear()}`);
+      this.requestNumber = `OT/${financialYear()}/${String(sequence).padStart(5, '0')}`;
+    }
+    if (!this.encounterId) this.encounterId = this.admissionId;
+    next();
+  } catch (error) {
+    next(error);
   }
-  next();
 });
 
 // Virtual for payment status
@@ -244,12 +280,13 @@ otRequestSchema.virtual('canSchedule').get(function() {
 });
 
 // Indexes
-otRequestSchema.index({ admissionId: 1, status: 1 });
-otRequestSchema.index({ patientId: 1 });
-otRequestSchema.index({ doctorId: 1 });
+otRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });
+otRequestSchema.index({ hospitalId: 1, admissionId: 1, status: 1 });
+otRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
+otRequestSchema.index({ hospitalId: 1, doctorId: 1, status: 1 });
 otRequestSchema.index({ requestedDate: -1 });
-otRequestSchema.index({ scheduledDate: 1 });
-otRequestSchema.index({ otRoomId: 1 });
+otRequestSchema.index({ hospitalId: 1, scheduledStart: 1, scheduledEnd: 1 });
+otRequestSchema.index({ hospitalId: 1, otRoomId: 1, scheduledStart: 1, scheduledEnd: 1 });
 otRequestSchema.index({ paymentStatus: 1 });
 otRequestSchema.index({ status: 1, paymentStatus: 1 });
 
