@@ -140,8 +140,9 @@ async function getOrCreateSafety(otCase) {
 exports.createCase = async (req, res, next) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const admission = await IPDAdmission.findOne({ _id: req.body.admissionId, hospitalId });
-    if (!admission || ['Discharged', 'Cancelled'].includes(admission.status)) return res.status(404).json({ error: 'Active IPD admission not found' });
+    const admission = await IPDAdmission.findById(req.body.admissionId);
+    if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
+    if (['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'].includes(admission.status)) return res.status(400).json({ error: `Cannot create OT case: IPD admission status is ${admission.status}` });
     const patientId = req.body.patientId || admission.patientId;
     if (String(patientId) !== String(admission.patientId)) return res.status(400).json({ error: 'Patient does not match admission' });
     const otCase = await OTRequest.create({
