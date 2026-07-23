@@ -1,10 +1,10 @@
 const mongoose = require('mongoose');
 
 const roomSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   room_number: { 
     type: String, 
-    required: true, 
-    unique: true 
+    required: true 
   },
   wardId: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -19,11 +19,13 @@ const roomSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Department' 
   },
-  status: { 
-    type: String, 
-    enum: ['Available', 'Occupied', 'Maintenance'], 
-    default: 'Available' 
+  status: {
+    type: String,
+    enum: ['Available', 'Occupied', 'Partially Occupied', 'Full', 'Maintenance', 'Closed'],
+    default: 'Available'
   },
+  capacity: { type: Number, default: 1, min: 1 },
+  operationalStatus: { type: String, enum: ['open', 'maintenance', 'closed'], default: 'open' },
   assigned_patient_id: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Patient' 
@@ -50,4 +52,6 @@ roomSchema.pre('validate', async function(next) {
   next();
 });
 
+roomSchema.index({ hospitalId: 1, room_number: 1 }, { unique: true });
+roomSchema.index({ hospitalId: 1, wardId: 1, operationalStatus: 1 });
 module.exports = mongoose.model('Room', roomSchema);

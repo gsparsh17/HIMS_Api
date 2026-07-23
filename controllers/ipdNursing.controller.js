@@ -20,7 +20,8 @@ exports.createNursingNote = async (req, res) => {
       shift,
       shiftHandoverFrom,
       shiftHandoverTo,
-      attachments
+      attachments,
+      copiedFromNoteId
     } = req.body;
 
     // Verify admission exists
@@ -41,6 +42,7 @@ exports.createNursingNote = async (req, res) => {
       shiftHandoverFrom,
       shiftHandoverTo,
       attachments,
+      copiedFromNoteId: copiedFromNoteId || null,
       createdBy: req.user?._id
     });
 
@@ -70,6 +72,7 @@ exports.getNursingNotesByAdmission = async (req, res) => {
       .populate('nurseId', 'first_name last_name')
       .populate('shiftHandoverFrom', 'first_name last_name')
       .populate('shiftHandoverTo', 'first_name last_name')
+      .populate('copiedFromNoteId', 'noteDateTime noteType shift')
       .sort({ noteDateTime: -1 })
       .limit(parseInt(limit));
 

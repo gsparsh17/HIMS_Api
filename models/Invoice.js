@@ -450,6 +450,17 @@ const radiologyItemSchema = new mongoose.Schema({
 });
 
 const invoiceSchema = new mongoose.Schema({
+  payer_allocation: {
+    coverage_id: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+    payer_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
+    claim_id: { type: mongoose.Schema.Types.ObjectId, ref: 'ClaimCase' },
+    standard_amount: { type: Number, default: 0 },
+    contracted_amount: { type: Number, default: 0 },
+    patient_liability: { type: Number, default: 0 },
+    sponsor_liability: { type: Number, default: 0 },
+    non_admissible_amount: { type: Number, default: 0 },
+    sponsor_paid_amount: { type: Number, default: 0 }
+  },
   invoice_number: {
     type: String,
     unique: true,

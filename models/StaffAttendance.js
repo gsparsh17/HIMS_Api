@@ -20,7 +20,10 @@ const staffAttendanceSchema = new mongoose.Schema({
   approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital' },
   created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  updated_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  reconciliation_status: { type: String, enum: ['not_required', 'pending', 'reconciled', 'exception', 'approved'], default: 'not_required' },
+  reconciliation_exceptions: [String],
+  raw_punch_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AttendancePunch' }],
 }, { timestamps: true });
 
 staffAttendanceSchema.pre('save', function(next) {

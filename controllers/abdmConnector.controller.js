@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const Patient = require('../models/Patient');
+const Hospital = require('../models/Hospital');
 const AbdmCareContext = require('../models/AbdmCareContext');
 const AbdmCounterSequence = require('../models/AbdmCounterSequence');
 const AbdmLinkAuthentication = require('../models/AbdmLinkAuthentication');
@@ -53,6 +54,13 @@ function requestIdFromEnvelope(req) {
   return req.body?.headers?.['request-id'] || req.body?.headers?.requestId || crypto.randomUUID();
 }
 
+
+async function connectorHospitalId() {
+  const tenant = abdmConfig.tenantCode || process.env.HOSPITAL_ID || process.env.TENANT_CODE;
+  const hospital = await Hospital.findOne({ $or: [{ tenantCode: tenant }, { hospitalID: tenant }, { 'onboarding.hfrFacilityId': abdmConfig.hfrFacilityId }] }).select('_id').lean();
+  if (!hospital) { const error = new Error('ABDM connector is not mapped to a hospital tenant'); error.statusCode = 503; throw error; }
+  return hospital._id;
+}
 exports.health = async (req, res) => {
   res.json({
     success: true,
@@ -66,6 +74,7 @@ exports.health = async (req, res) => {
 
 exports.profileShare = async (req, res) => {
   try {
+    const hospitalId = await connectorHospitalId();
     const payload = req.body?.body || {};
     const shared = payload.profile?.patient || {};
     const abhaNumber = shared.abhaNumber ? String(shared.abhaNumber) : undefined;
@@ -77,10 +86,10 @@ exports.profileShare = async (req, res) => {
     const abhaMatches = [];
     if (abhaAddress) abhaMatches.push({ 'abha.address': abhaAddress });
     if (abhaNumber) abhaMatches.push({ 'abha.number': abhaNumber });
-    if (abhaMatches.length) patient = await Patient.findOne({ $or: abhaMatches });
+    if (abhaMatches.length) patient = await Patient.findOne({ hospitalId, $or: abhaMatches });
 
     if (!patient && phone?.length === 10) {
-      const phoneMatches = await Patient.find({ phone }).limit(2);
+      const phoneMatches = await Patient.find({ hospitalId, phone }).limit(2);
       if (phoneMatches.length === 1) {
         const candidate = phoneMatches[0];
         const conflictingAbha =
@@ -131,6 +140,7 @@ exports.profileShare = async (req, res) => {
         });
       }
       patient = new Patient({
+        hospitalId,
         ...splitName(shared.name),
         phone,
         gender: normalizeGender(shared.gender),

@@ -112,7 +112,18 @@ function preloadHospitalModels() {
     './models/OTOperativeNote',
     './models/OTRecoveryRecord',
     './models/OTCaseInventoryUsage',
-    './models/OTSpecimen'
+    './models/OTSpecimen',
+    './models/Payer',
+    './models/RateCard',
+    './models/RateCardItem',
+    './models/AdmissionCoverage',
+    './models/ClaimCase',
+    './models/SponsorLedgerEntry',
+    './models/IPDBedTransfer',
+    './models/IPDAccommodationSegment',
+    './models/BiometricDevice',
+    './models/BiometricEmployeeMap',
+    './models/AttendancePunch'
   ].forEach((modelPath) => require(modelPath));
 }
 
@@ -135,11 +146,15 @@ function mountHospitalRoutes() {
   app.use('/api/appointments', require('./routes/appointment.routes'));
   app.use('/api/store', require('./routes/store.routes'));
   app.use('/api/hr', require('./routes/hr.routes'));
+  app.use('/api/biometric', require('./routes/biometric.routes'));
   app.use('/api/prescriptions', require('./routes/prescription.routes'));
   app.use('/api/procedurerequests', require('./routes/procedureRequest.routes'));
   app.use('/api/procedures', require('./routes/procedureRoutes'));
   app.use('/api/NLEMmedicines', require('./routes/NLEMmedicineRoutes'));
   app.use('/api/billing', require('./routes/billing.routes'));
+  app.use('/api', require('./routes/tariff.routes'));
+  app.use('/api', require('./routes/coverage.routes'));
+  app.use('/api', require('./routes/claims.routes'));
   app.use('/api/departments', require('./routes/department.routes'));
   app.use('/api/rooms', require('./routes/room.routes'));
   app.use('/api/shifts', require('./routes/shift.routes'));
@@ -153,6 +168,7 @@ function mountHospitalRoutes() {
   app.use('/api/episodes', require('./routes/episode.routes.js'));
   app.use('/api/ipd/consents', require('./routes/ipdConsent.routes'));
   app.use('/api/ipd', require('./routes/ipd.routes'));
+  app.use('/api/ipd', require('./routes/ipdTransfer.routes'));
   app.use('/api/wards', require('./routes/ward.routes'));
   app.use('/api/admin/backups', require('./routes/backup.routes'));
   app.use('/api/salaries', require('./routes/salary.routes'));

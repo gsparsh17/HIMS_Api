@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const labTestSchema = new mongoose.Schema({
-  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   code: {
     type: String,
     required: true,

@@ -34,6 +34,8 @@ exports.createRound = async (req, res) => {
       dischargeSuggested,
       painScore,
       notes,
+      templateId,
+      copiedFromRoundId,
       doctorVisitRate  // Rate sent from frontend
     } = req.body;
     
@@ -64,6 +66,8 @@ exports.createRound = async (req, res) => {
       dischargeSuggested,
       painScore,
       notes,
+      templateId: templateId || null,
+      copiedFromRoundId: copiedFromRoundId || null,
       createdBy: req.user?._id
     });
     
@@ -117,7 +121,12 @@ exports.getRoundsByAdmission = async (req, res) => {
     
     const rounds = await IPDRound.find({ admissionId })
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('prescriptionId')
+      .populate({
+        path: 'prescriptionId',
+        select: 'diagnosis items lab_test_requests radiology_test_requests procedure_requests issue_date createdAt'
+      })
+      .populate('templateId', 'name diseaseName templateType')
+      .populate('copiedFromRoundId', 'roundDateTime diagnosis')
       .sort({ roundDateTime: -1 });
     
     res.json({ success: true, rounds });

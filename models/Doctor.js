@@ -1,11 +1,12 @@
 const mongoose = require('mongoose');
 
 const doctorSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  doctorId: { type: String, unique: true },
+  doctorId: { type: String, trim: true },
   firstName: { type: String, required: true },
   lastName: { type: String },
-  email: { type: String, required: true, unique: true },
+  email: { type: String, required: true, lowercase: true, trim: true },
   phone: { type: String, required: true },
   dateOfBirth: { type: Date },
   gender: { type: String },
@@ -15,7 +16,7 @@ const doctorSchema = new mongoose.Schema({
   zipCode: { type: String },
   department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true },
   specialization: { type: String },
-  licenseNumber: { type: String, required: true, unique: true },
+  licenseNumber: { type: String, required: true, trim: true },
   experience: { type: Number },
   education: { type: String },
   shift: { type: String },
@@ -79,9 +80,9 @@ function generateRandomCode(length = 4) {
 doctorSchema.pre('save', async function (next) {
   try {
     if (!this.doctorId) {
-      const hospital = await Hospital.findOne();
+      const hospital = this.hospitalId ? await Hospital.findById(this.hospitalId) : await Hospital.findOne();
       if (!hospital || !hospital.hospitalID) throw new Error('Hospital ID not found');
-      this.hospitalId = hospital.hospitalID;
+      this.hospitalId = hospital._id;
       this.doctorId = `${hospital.hospitalID}-${generateRandomCode(4)}`;
     }
 
@@ -99,6 +100,12 @@ doctorSchema.pre('save', async function (next) {
     next(err);
   }
 });
+
+
+doctorSchema.index({ hospitalId: 1, doctorId: 1 }, { unique: true, sparse: true });
+doctorSchema.index({ hospitalId: 1, email: 1 }, { unique: true });
+doctorSchema.index({ hospitalId: 1, licenseNumber: 1 }, { unique: true });
+doctorSchema.index({ hospitalId: 1, department: 1, isFullTime: 1 });
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(doctorSchema, 'Doctor');

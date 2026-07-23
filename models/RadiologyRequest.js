@@ -31,9 +31,9 @@ const manualRadiologyReportSchema = new mongoose.Schema({
 }, { _id: false });
 
 const radiologyRequestSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   requestNumber: {
     type: String,
-    unique: true
   },
   
   // Source context
@@ -122,7 +122,7 @@ const radiologyRequestSchema = new mongoose.Schema({
   // Status tracking
   status: {
     type: String,
-    enum: ['Pending', 'Approved', 'Scheduled', 'In Progress', 'Completed', 'Cancelled', 'Reported'],
+    enum: ['Pending', 'Approved', 'Scheduled', 'In Progress', 'Completed', 'Result Entered', 'Verified', 'Reported', 'Amended', 'Cancelled'],
     default: 'Pending'
   },
   
@@ -230,6 +230,54 @@ const radiologyRequestSchema = new mongoose.Schema({
     source: String,
     ehrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' }
   },
+  modality: { type: String, trim: true, index: true },
+  scheduledStart: Date,
+  scheduledEnd: Date,
+  assignedTechnician: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  assignedRadiologist: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  contrastRequired: { type: Boolean, default: false },
+  patientPreparation: {
+    instructions: String,
+    status: { type: String, enum: ['not_required', 'pending', 'complete', 'failed'], default: 'pending' },
+    completedAt: Date,
+    completedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+  safetyChecklist: {
+    pregnancyChecked: Boolean,
+    renalFunctionChecked: Boolean,
+    allergyChecked: Boolean,
+    implantChecked: Boolean,
+    contrastConsentChecked: Boolean,
+    notes: String,
+    completedAt: Date,
+    completedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+  resultEnteredAt: Date,
+  verifiedAt: Date,
+  verifiedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  releasedAt: Date,
+  releasedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  amendmentVersion: { type: Number, default: 0 },
+  amendments: [{
+    version: Number,
+    reason: String,
+    amendedAt: Date,
+    amendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    previousReport: mongoose.Schema.Types.Mixed
+  }],
+  workflowHistory: [{
+    from: String,
+    to: String,
+    at: { type: Date, default: Date.now },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    note: String
+  }],
+  turnaroundDueAt: Date,
+  payerContext: {
+    coverageId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+    payerName: String,
+    preAuthStatus: String
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -244,7 +292,7 @@ radiologyRequestSchema.pre('save', async function(next) {
     const date = new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
-    const count = await mongoose.model('RadiologyRequest').countDocuments();
+    const count = await mongoose.model('RadiologyRequest').countDocuments({ hospitalId: this.hospitalId, requestedDate: { $gte: new Date(year, date.getMonth(), 1), $lt: new Date(year, date.getMonth() + 1, 1) } });
     const sequence = String(count + 1).padStart(4, '0');
     this.requestNumber = `RAD-${year}${month}-${sequence}`;
   }
@@ -260,10 +308,10 @@ radiologyRequestSchema.virtual('sourceDisplay').get(function() {
 });
 
 // Indexes
-radiologyRequestSchema.index({ patientId: 1, requestedDate: -1 });
+radiologyRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
 radiologyRequestSchema.index({ doctorId: 1, status: 1 });
 radiologyRequestSchema.index({ status: 1, scheduledDate: 1 });
-radiologyRequestSchema.index({ requestNumber: 1 });
+radiologyRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });
 radiologyRequestSchema.index({ admissionId: 1, sourceType: 'IPD' });
 radiologyRequestSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 radiologyRequestSchema.index({ 'abdmRecordLink.abhaAddress': 1 });

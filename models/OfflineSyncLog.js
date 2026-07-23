@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const offlineSyncLogSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   // Reference to frontend's localId
   localId: {
     type: String,
@@ -70,7 +71,8 @@ const offlineSyncLogSchema = new mongoose.Schema({
 });
 
 // Index for efficient querying
-offlineSyncLogSchema.index({ status: 1, createdAt: 1 });
-offlineSyncLogSchema.index({ entityType: 1, status: 1 });
+offlineSyncLogSchema.index({ hospitalId: 1, status: 1, createdAt: 1 });
+offlineSyncLogSchema.index({ hospitalId: 1, entityType: 1, status: 1 });
+offlineSyncLogSchema.index({ hospitalId: 1, localId: 1, entityType: 1 }, { unique: true });
 
 module.exports = mongoose.model('OfflineSyncLog', offlineSyncLogSchema);

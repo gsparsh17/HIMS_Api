@@ -52,6 +52,9 @@ router.put('/:id', appointmentController.updateAppointment);
 // Complete appointment
 router.put('/:id/complete', appointmentController.completeAppointment);
 
+// Cancel appointment and retain the reason/history
+router.patch('/:id/cancel', appointmentController.cancelAppointment);
+
 // Update vitals
 router.put('/:id/vitals', appointmentController.updateVitals);
 

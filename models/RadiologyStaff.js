@@ -1,15 +1,14 @@
 const mongoose = require('mongoose');
 
 const radiologyStaffSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-    unique: true
+    required: true
   },
   employeeId: {
     type: String,
-    unique: true,
     required: true
   },
   designation: {
@@ -37,6 +36,8 @@ const radiologyStaffSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  modalityAssignments: [{ type: String, trim: true }],
+  availabilityStatus: { type: String, enum: ['Available', 'Busy', 'Unavailable', 'On Leave'], default: 'Available', index: true },
   joined_date: {
     type: Date,
     default: Date.now
@@ -46,9 +47,10 @@ const radiologyStaffSchema = new mongoose.Schema({
 });
 
 // Indexes
-radiologyStaffSchema.index({ employeeId: 1 });
-radiologyStaffSchema.index({ designation: 1 });
-radiologyStaffSchema.index({ is_active: 1 });
+radiologyStaffSchema.index({ hospitalId: 1, employeeId: 1 }, { unique: true });
+radiologyStaffSchema.index({ hospitalId: 1, userId: 1 }, { unique: true });
+radiologyStaffSchema.index({ hospitalId: 1, designation: 1 });
+radiologyStaffSchema.index({ hospitalId: 1, is_active: 1, availabilityStatus: 1 });
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(radiologyStaffSchema, 'RadiologyStaff');

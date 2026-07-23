@@ -1,0 +1,15 @@
+const express = require('express');
+const router = express.Router();
+const controller = require('../controllers/tariff.controller');
+const { protect, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
+router.use(protect);
+router.get('/payers', requireModuleAccess('billing_finance', 'view'), controller.listPayers);
+router.post('/payers', requireModuleAccess('billing_finance', 'manage'), controller.createPayer);
+router.put('/payers/:id', requireModuleAccess('billing_finance', 'manage'), controller.updatePayer);
+router.get('/rate-cards', requireModuleAccess('billing_finance', 'view'), controller.listRateCards);
+router.post('/rate-cards', requireModuleAccess('billing_finance', 'manage'), controller.createRateCard);
+router.get('/rate-cards/:id', requireModuleAccess('billing_finance', 'view'), controller.getRateCard);
+router.post('/rate-cards/:id/items', requireModuleAccess('billing_finance', 'manage'), controller.upsertRateCardItems);
+router.post('/rate-cards/:id/approve', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('rate_card_approve'), controller.approveRateCard);
+router.post('/pricing/quote', requireModuleAccess('billing_finance', 'view'), controller.quote);
+module.exports = router;

@@ -91,19 +91,19 @@ exports.exportMISReport = async (req, res) => {
 
 exports.getRunningBill = async (req, res) => {
   try {
-    res.json(await financial.getRunningBill(req.params.admissionId));
+    res.json(await financial.getRunningBill(req.params.admissionId, req.user));
   } catch (error) { sendError(res, error); }
 };
 
 exports.getFinancialLedger = async (req, res) => {
   try {
-    res.json(await financial.getFinancialLedger(req.params.admissionId));
+    res.json(await financial.getFinancialLedger(req.params.admissionId, req.user));
   } catch (error) { sendError(res, error); }
 };
 
 exports.getFinancialClearance = async (req, res) => {
   try {
-    res.json(await financial.getFinancialClearance(req.params.admissionId));
+    res.json(await financial.getFinancialClearance(req.params.admissionId, req.user));
   } catch (error) { sendError(res, error); }
 };
 

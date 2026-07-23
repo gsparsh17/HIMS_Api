@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const bedSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   bedNumber: {
     type: String,
     required: true,
@@ -8,7 +9,6 @@ const bedSchema = new mongoose.Schema({
   },
   bedCode: {
     type: String,
-    unique: true,
     uppercase: true,
     trim: true
   },
@@ -35,6 +35,14 @@ const bedSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'IPDAdmission'
   },
+  reservedTransferId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDBedTransfer', index: true },
+  reservationExpiresAt: Date,
+  cleaningStartedAt: Date,
+  cleaningCompletedAt: Date,
+  cleaningNote: String,
+  genderPolicy: { type: String, enum: ['any', 'male', 'female'], default: 'any' },
+  isolationCapable: { type: Boolean, default: false },
+  equipmentFeatures: [String],
   dailyCharge: {
     type: Number,
     default: 0,
@@ -74,7 +82,9 @@ bedSchema.pre('validate', async function(next) {
 });
 
 // Indexes
-bedSchema.index({ status: 1, wardId: 1, bedType: 1 });
+bedSchema.index({ hospitalId: 1, status: 1, wardId: 1, bedType: 1 });
+bedSchema.index({ hospitalId: 1, bedCode: 1 }, { unique: true });
+bedSchema.index({ hospitalId: 1, roomId: 1, bedNumber: 1 }, { unique: true });
 bedSchema.index({ roomId: 1 });
 bedSchema.index({ currentAdmissionId: 1 });
 

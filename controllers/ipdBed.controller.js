@@ -1,368 +1,309 @@
-// controllers/ipdBed.controller.js
 const Bed = require('../models/Bed');
 const Room = require('../models/Room');
-const Ward = require('../models/Ward');
 const IPDAdmission = require('../models/IPDAdmission');
+const { requireHospitalId } = require('../services/tenantScope.service');
 
-// ========== BED CRUD ==========
+function fail(res, e) {
+  res.status(e.statusCode || 400).json({ success: false, error: e.message });
+}
 
-// Create new bed
+function filters(req, hospitalId, base = {}) {
+  const f = { hospitalId, isActive: true, ...base };
+
+  ['status', 'wardId', 'roomId', 'bedType'].forEach((k) => {
+    if (req.query[k]) f[k] = req.query[k];
+  });
+
+  return f;
+}
+
+function populate(query) {
+  return query
+    .populate('roomId', 'room_number type operationalStatus')
+    .populate('wardId', 'name code floor type')
+    .populate({
+      path: 'currentAdmissionId',
+      select: 'admissionNumber patientId primaryDoctorId admissionDate status coverageId',
+      populate: [
+        { path: 'patientId', select: 'first_name last_name patientId uhid phone gender' },
+        { path: 'primaryDoctorId', select: 'firstName lastName specialization' }
+      ]
+    });
+}
+
 exports.createBed = async (req, res) => {
   try {
-    const { bedNumber, roomId, wardId, bedType, dailyCharge, features } = req.body;
-    
-    // Validate required fields
-    if (!bedNumber) {
-      return res.status(400).json({ error: 'Bed number is required' });
+    const hospitalId = requireHospitalId(req);
+
+    if (!req.body.bedNumber || !req.body.roomId || !req.body.bedType) {
+      return res.status(400).json({
+        success: false,
+        error: 'bedNumber, roomId and bedType are required'
+      });
     }
-    if (!roomId) {
-      return res.status(400).json({ error: 'Room ID is required' });
-    }
-    if (!bedType) {
-      return res.status(400).json({ error: 'Bed type is required' });
-    }
-    
-    // Verify room exists
-    const room = await Room.findById(roomId);
+
+    const room = await Room.findOne({ _id: req.body.roomId, hospitalId });
+
     if (!room) {
-      return res.status(404).json({ error: 'Room not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Room not found'
+      });
     }
-    
-    // Generate bed code manually
-    const count = await Bed.countDocuments();
-    const bedCode = `BED${String(count + 1).padStart(4, '0')}`;
-    
-    const bed = new Bed({
-      bedNumber,
-      bedCode,
-      roomId,
-      wardId: wardId || null,
-      bedType,
-      dailyCharge: dailyCharge || 0,
-      features: features || [],
+
+    const count = await Bed.countDocuments({ hospitalId });
+
+    const bed = await Bed.create({
+      ...req.body,
+      hospitalId,
+      bedCode: req.body.bedCode || `BED${String(count + 1).padStart(4, '0')}`,
+      wardId: req.body.wardId || room.wardId,
       status: 'Available',
-      createdBy: req.user?._id
+      createdBy: req.user._id
     });
-    
-    await bed.save();
-    
+
     res.status(201).json({
       success: true,
       message: 'Bed created successfully',
       bed
     });
-  } catch (err) {
-    console.error('Error creating bed:', err);
-    // Check for duplicate key error
-    if (err.code === 11000) {
-      return res.status(400).json({ error: 'Bed code already exists' });
-    }
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Get all beds with full admission details
 exports.getAllBeds = async (req, res) => {
   try {
-    const { status, wardId, roomId, bedType } = req.query;
-    
-    const filter = { isActive: true };
-    if (status) filter.status = status;
-    if (wardId) filter.wardId = wardId;
-    if (roomId) filter.roomId = roomId;
-    if (bedType) filter.bedType = bedType;
-    
-    const beds = await Bed.find(filter)
-      .populate('roomId', 'room_number type')
-      .populate('wardId', 'name floor')
-      .populate({
-        path: 'currentAdmissionId',
-        select: 'admissionNumber patientId primaryDoctorId admissionDate status',
-        populate: [
-          { path: 'patientId', select: 'first_name last_name patientId uhid phone gender' },
-          { path: 'primaryDoctorId', select: 'firstName lastName specialization' }
-        ]
-      })
+    const hospitalId = requireHospitalId(req);
+    const beds = await populate(Bed.find(filters(req, hospitalId)))
       .sort({ bedNumber: 1 });
-    
+
     res.json({ success: true, beds });
-  } catch (err) {
-    console.error('Error fetching beds:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Get available beds
 exports.getAvailableBeds = async (req, res) => {
   try {
-    const { wardId, roomId, bedType } = req.query;
-    
-    const filter = { status: 'Available', isActive: true };
-    if (wardId) filter.wardId = wardId;
-    if (roomId) filter.roomId = roomId;
-    if (bedType) filter.bedType = bedType;
-    
-    const beds = await Bed.find(filter)
-      .populate('roomId', 'room_number type')
-      .populate('wardId', 'name floor')
+    const hospitalId = requireHospitalId(req);
+    const f = filters(req, hospitalId, { status: 'Available' });
+
+    if (req.query.isolation === 'true') {
+      f.isolationCapable = true;
+    }
+
+    if (req.query.gender) {
+      f.genderPolicy = { $in: ['any', req.query.gender] };
+    }
+
+    const beds = await populate(Bed.find(f))
       .sort({ dailyCharge: 1, bedNumber: 1 });
-    
+
     res.json({ success: true, beds });
-  } catch (err) {
-    console.error('Error fetching available beds:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Get occupied beds with full details
 exports.getOccupiedBeds = async (req, res) => {
   try {
-    const beds = await Bed.find({ status: 'Occupied', isActive: true })
-      .populate('roomId', 'room_number type')
-      .populate('wardId', 'name floor')
-      .populate({
-        path: 'currentAdmissionId',
-        select: 'admissionNumber patientId primaryDoctorId admissionDate status',
-        populate: [
-          { path: 'patientId', select: 'first_name last_name patientId uhid phone gender' },
-          { path: 'primaryDoctorId', select: 'firstName lastName specialization' }
-        ]
-      })
+    const hospitalId = requireHospitalId(req);
+    const beds = await populate(Bed.find(filters(req, hospitalId, { status: 'Occupied' })))
       .sort({ bedNumber: 1 });
-    
+
     res.json({ success: true, beds });
-  } catch (err) {
-    console.error('Error fetching occupied beds:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Get bed by ID
 exports.getBedById = async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    const bed = await Bed.findById(id)
-      .populate('roomId', 'room_number type')
-      .populate('wardId', 'name floor')
-      .populate({
-        path: 'currentAdmissionId',
-        select: 'admissionNumber patientId primaryDoctorId admissionDate status',
-        populate: [
-          { path: 'patientId', select: 'first_name last_name patientId' },
-          { path: 'primaryDoctorId', select: 'firstName lastName specialization' }
-        ]
-      });
-    
+    const hospitalId = requireHospitalId(req);
+    const bed = await populate(Bed.findOne({
+      _id: req.params.id,
+      hospitalId
+    }));
+
     if (!bed) {
-      return res.status(404).json({ error: 'Bed not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Bed not found'
+      });
     }
-    
+
     res.json({ success: true, bed });
-  } catch (err) {
-    console.error('Error fetching bed:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Update bed
 exports.updateBed = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { bedNumber, roomId, wardId, bedType, dailyCharge, features, status } = req.body;
-    
-    const bed = await Bed.findById(id);
+    const hospitalId = requireHospitalId(req);
+
+    const blocked = [
+      'currentAdmissionId',
+      'reservedTransferId',
+      'reservationExpiresAt',
+      'hospitalId'
+    ];
+
+    const patch = { ...req.body };
+    blocked.forEach((k) => delete patch[k]);
+
+    const bed = await Bed.findOneAndUpdate(
+      { _id: req.params.id, hospitalId },
+      patch,
+      { new: true, runValidators: true }
+    );
+
     if (!bed) {
-      return res.status(404).json({ error: 'Bed not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Bed not found'
+      });
     }
-    
-    // Update fields
-    if (bedNumber) bed.bedNumber = bedNumber;
-    if (roomId) bed.roomId = roomId;
-    if (wardId !== undefined) bed.wardId = wardId;
-    if (bedType) bed.bedType = bedType;
-    if (dailyCharge !== undefined) bed.dailyCharge = dailyCharge;
-    if (features) bed.features = features;
-    if (status) bed.status = status;
-    
-    await bed.save();
-    
+
     res.json({
       success: true,
       message: 'Bed updated successfully',
       bed
     });
-  } catch (err) {
-    console.error('Error updating bed:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Update bed status
 exports.updateBedStatus = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { status } = req.body;
-    
-    const bed = await Bed.findById(id);
-    if (!bed) {
-      return res.status(404).json({ error: 'Bed not found' });
-    }
-    
-    // If marking as Available, clear currentAdmissionId
-    if (status === 'Available') {
-      bed.currentAdmissionId = null;
-    }
-    
-    bed.status = status;
-    await bed.save();
-    
-    res.json({
-      success: true,
-      message: `Bed status updated to ${status}`,
-      bed
+    const hospitalId = requireHospitalId(req);
+
+    const bed = await Bed.findOne({
+      _id: req.params.id,
+      hospitalId
     });
-  } catch (err) {
-    console.error('Error updating bed status:', err);
-    res.status(500).json({ error: err.message });
+
+    if (!bed) {
+      return res.status(404).json({
+        success: false,
+        error: 'Bed not found'
+      });
+    }
+
+    if (
+      ['Occupied', 'Reserved'].includes(bed.status) &&
+      req.body.status === 'Available' &&
+      (bed.currentAdmissionId || bed.reservedTransferId)
+    ) {
+      return res.status(409).json({
+        success: false,
+        error: 'Use discharge, transfer cancellation, or cleaning completion to release this bed'
+      });
+    }
+
+    bed.status = req.body.status;
+
+    if (req.body.status === 'Available') {
+      bed.currentAdmissionId = null;
+      bed.reservedTransferId = null;
+      bed.reservationExpiresAt = null;
+    }
+
+    await bed.save();
+
+    res.json({ success: true, bed });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Delete bed (soft delete)
 exports.deleteBed = async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    const bed = await Bed.findById(id);
+    const hospitalId = requireHospitalId(req);
+
+    const bed = await Bed.findOne({
+      _id: req.params.id,
+      hospitalId
+    });
+
     if (!bed) {
-      return res.status(404).json({ error: 'Bed not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Bed not found'
+      });
     }
-    
-    if (bed.status === 'Occupied') {
-      return res.status(400).json({ error: 'Cannot delete occupied bed' });
+
+    if (['Occupied', 'Reserved'].includes(bed.status)) {
+      return res.status(409).json({
+        success: false,
+        error: 'Cannot deactivate an occupied or reserved bed'
+      });
     }
-    
+
     bed.isActive = false;
     await bed.save();
-    
+
     res.json({
       success: true,
       message: 'Bed deactivated successfully'
     });
-  } catch (err) {
-    console.error('Error deleting bed:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// ========== SYNC BED STATUS ==========
-// Sync bed status with actual admissions
 exports.syncBedStatus = async (req, res) => {
   try {
-    // Get all beds that are marked as Occupied
-    const occupiedBeds = await Bed.find({ status: 'Occupied', isActive: true });
-    
+    const hospitalId = requireHospitalId(req);
+
+    const activeStatuses = [
+      'Admitted',
+      'Under Treatment',
+      'Discharge Initiated',
+      'Discharge Summary Pending',
+      'Billing Pending',
+      'Payment Pending',
+      'Ready for Discharge'
+    ];
+
+    const beds = await Bed.find({ hospitalId, isActive: true });
     const updates = [];
-    const errors = [];
-    
-    // Check occupied beds for active admissions
-    for (const bed of occupiedBeds) {
-      try {
-        // Check if there's an active admission for this bed
-        const activeAdmission = await IPDAdmission.findOne({
+
+    for (const bed of beds) {
+      if (bed.status === 'Reserved') continue;
+
+      const admission = await IPDAdmission.findOne({
+        hospitalId,
+        bedId: bed._id,
+        status: { $in: activeStatuses }
+      });
+
+      const target = admission
+        ? 'Occupied'
+        : bed.status === 'Cleaning' || bed.status === 'Maintenance'
+          ? bed.status
+          : 'Available';
+
+      if (
+        bed.status !== target ||
+        String(bed.currentAdmissionId || '') !== String(admission?._id || '')
+      ) {
+        updates.push({
           bedId: bed._id,
-          status: { 
-            $in: ['Admitted', 'Under Treatment', 'Discharge Initiated', 
-                  'Discharge Summary Pending', 'Billing Pending', 
-                  'Payment Pending', 'Ready for Discharge'] 
-          }
+          from: bed.status,
+          to: target
         });
-        
-        if (!activeAdmission) {
-          // No active admission found - mark bed as Available
-          bed.status = 'Available';
-          bed.currentAdmissionId = null;
-          await bed.save();
-          updates.push({
-            bedId: bed._id,
-            bedNumber: bed.bedNumber,
-            oldStatus: 'Occupied',
-            newStatus: 'Available',
-            reason: 'No active admission found'
-          });
-        } else {
-          // Verify the currentAdmissionId matches
-          if (!bed.currentAdmissionId || 
-              bed.currentAdmissionId.toString() !== activeAdmission._id.toString()) {
-            bed.currentAdmissionId = activeAdmission._id;
-            await bed.save();
-            updates.push({
-              bedId: bed._id,
-              bedNumber: bed.bedNumber,
-              action: 'Updated currentAdmissionId',
-              admissionId: activeAdmission._id,
-              admissionNumber: activeAdmission.admissionNumber
-            });
-          }
-        }
-      } catch (err) {
-        errors.push({
-          bedId: bed._id,
-          bedNumber: bed.bedNumber,
-          error: err.message
-        });
+
+        bed.status = target;
+        bed.currentAdmissionId = admission?._id || null;
+        await bed.save();
       }
     }
-    
-    // Also check for beds that are Available but have active admissions
-    const availableBeds = await Bed.find({ status: 'Available', isActive: true });
-    
-    for (const bed of availableBeds) {
-      try {
-        const activeAdmission = await IPDAdmission.findOne({
-          bedId: bed._id,
-          status: { 
-            $in: ['Admitted', 'Under Treatment', 'Discharge Initiated', 
-                  'Discharge Summary Pending', 'Billing Pending', 
-                  'Payment Pending', 'Ready for Discharge'] 
-          }
-        });
-        
-        if (activeAdmission) {
-          bed.status = 'Occupied';
-          bed.currentAdmissionId = activeAdmission._id;
-          await bed.save();
-          updates.push({
-            bedId: bed._id,
-            bedNumber: bed.bedNumber,
-            oldStatus: 'Available',
-            newStatus: 'Occupied',
-            reason: 'Active admission found',
-            admissionId: activeAdmission._id,
-            admissionNumber: activeAdmission.admissionNumber
-          });
-        }
-      } catch (err) {
-        errors.push({
-          bedId: bed._id,
-          bedNumber: bed.bedNumber,
-          error: err.message
-        });
-      }
-    }
-    
-    res.json({
-      success: true,
-      message: 'Bed status synchronized successfully',
-      summary: {
-        totalUpdated: updates.length,
-        totalErrors: errors.length
-      },
-      updates,
-      errors
-    });
-  } catch (error) {
-    console.error('Error syncing bed status:', error);
-    res.status(500).json({ error: error.message });
+
+    res.json({ success: true, updates });
+  } catch (e) {
+    fail(res, e);
   }
 };

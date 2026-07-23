@@ -3,14 +3,12 @@ const mongoose = require('mongoose');
 const ipdAdmissionSchema = new mongoose.Schema({
   admissionNumber: {
     type: String,
-    unique: true,
+    trim: true
   },
   // NEW: SHIP number for pharmacy billing and tracking
   shipNumber: {
     type: String,
-    unique: true,
-    sparse: true,
-    index: true
+    trim: true
   },
   patientId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -20,7 +18,17 @@ const ipdAdmissionSchema = new mongoose.Schema({
   },
   hospitalId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Hospital'
+    ref: 'Hospital',
+    required: true,
+    index: true
+  },
+  coverageId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'AdmissionCoverage',
+    index: true
+  },
+  currentLocationEffectiveAt: {
+    type: Date
   },
   admissionDate: {
     type: Date,
@@ -157,6 +165,12 @@ const ipdAdmissionSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  patientReceivable: { type: Number, default: 0, min: 0 },
+  sponsorReceivable: { type: Number, default: 0, min: 0 },
+  approvedSponsorAmount: { type: Number, default: 0, min: 0 },
+  claimSubmittedAmount: { type: Number, default: 0, min: 0 },
+  sponsorPaidAmount: { type: Number, default: 0, min: 0 },
+  nonAdmissibleAmount: { type: Number, default: 0, min: 0 },
   discountAmount: {
     type: Number,
     default: 0
@@ -250,7 +264,7 @@ ipdAdmissionSchema.pre('validate', async function(next) {
     const dateStr = `${year}${month}${day}`;
     
     if (!this.admissionNumber) {
-      const count = await IPDAdmission.countDocuments();
+      const count = await IPDAdmission.countDocuments({ hospitalId: this.hospitalId, admissionDate: { $gte: new Date(year, now.getMonth(), now.getDate()), $lt: new Date(year, now.getMonth(), now.getDate() + 1) } });
       const sequence = String(count + 1).padStart(4, '0');
       this.admissionNumber = `IPD-${dateStr}-${sequence}`;
     }
@@ -258,7 +272,8 @@ ipdAdmissionSchema.pre('validate', async function(next) {
     if (!this.shipNumber) {
       // Generate SHIP number: SHIP-{date}-{patientId last 6 chars}
       const patientIdStr = this.patientId.toString().slice(-6);
-      this.shipNumber = `SHIP-${dateStr}-${patientIdStr}`;
+      const sameDayPatientCount = await IPDAdmission.countDocuments({ hospitalId: this.hospitalId, patientId: this.patientId, admissionDate: { $gte: new Date(year, now.getMonth(), now.getDate()), $lt: new Date(year, now.getMonth(), now.getDate() + 1) } });
+      this.shipNumber = `SHIP-${dateStr}-${patientIdStr}-${String(sameDayPatientCount + 1).padStart(2, '0')}`;
     }
     next();
   } catch (error) {
@@ -314,12 +329,13 @@ ipdAdmissionSchema.index({ patientId: 1, status: 1 });
 ipdAdmissionSchema.index({ primaryDoctorId: 1, status: 1 });
 ipdAdmissionSchema.index({ admissionDate: -1 });
 ipdAdmissionSchema.index({ bedId: 1, status: 1 });
-ipdAdmissionSchema.index({ admissionNumber: 1 });
-ipdAdmissionSchema.index({ shipNumber: 1 });
+ipdAdmissionSchema.index({ hospitalId: 1, admissionNumber: 1 }, { unique: true });
+ipdAdmissionSchema.index({ hospitalId: 1, shipNumber: 1 }, { unique: true, sparse: true });
 ipdAdmissionSchema.index({ clinicalAssessmentCompleted: 1 });
 ipdAdmissionSchema.index({ pharmacyClearanceStatus: 1 });
 ipdAdmissionSchema.index({ status: 1, pharmacyClearanceStatus: 1 });
 ipdAdmissionSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 ipdAdmissionSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
 
+ipdAdmissionSchema.index({ hospitalId: 1, status: 1, wardId: 1 });
 module.exports = mongoose.model('IPDAdmission', ipdAdmissionSchema);

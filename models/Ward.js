@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const wardSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   name: {
     type: String,
     required: true,
@@ -8,7 +9,6 @@ const wardSchema = new mongoose.Schema({
   },
   code: {
     type: String,
-    unique: true,
     uppercase: true,
     trim: true
   },
@@ -58,4 +58,6 @@ wardSchema.pre('validate', async function(next) {
   }
 });
 
+wardSchema.index({ hospitalId: 1, code: 1 }, { unique: true });
+wardSchema.index({ hospitalId: 1, name: 1 }, { unique: true });
 module.exports = mongoose.model('Ward', wardSchema);

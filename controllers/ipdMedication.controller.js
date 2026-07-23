@@ -462,6 +462,201 @@ exports.getMedicationById = async (req, res) => {
   }
 };
 
+// Doctor: continue, modify, or stop an existing medication order during a round.
+// Already administered timing rows are retained. Only future pending timings are
+// rebuilt when the dose, route, frequency, or duration changes.
+exports.changeMedicationOrder = async (req, res) => {
+  try {
+    const medication = await IPDMedicationChart.findById(req.params.id);
+    if (!medication) return res.status(404).json({ error: 'Medication not found' });
+
+    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId patientId');
+    if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
+    assertAdmissionHospitalAccess(req, admission);
+
+    const action = String(req.body.action || 'modify').toLowerCase();
+    if (!['continue', 'modify', 'stop'].includes(action)) {
+      return res.status(400).json({ error: 'Action must be continue, modify, or stop' });
+    }
+
+    const previous = {
+      status: medication.status,
+      route: medication.route,
+      dosage: medication.dosage,
+      doseQtyBaseUnits: medication.doseQtyBaseUnits,
+      frequency: medication.frequency,
+      duration: medication.duration,
+      durationUnit: medication.durationUnit,
+      specialInstructions: medication.specialInstructions,
+      requiresPharmacyDispense: medication.requiresPharmacyDispense,
+      requiredQtyBaseUnits: medication.requiredQtyBaseUnits
+    };
+    const changedAt = new Date();
+    const roundId = req.body.roundId || null;
+    const reason = String(req.body.reason || req.body.stoppedReason || '').trim();
+
+    if (action === 'stop') {
+      if (!reason) return res.status(400).json({ error: 'Reason is required when stopping a medication' });
+      if (['Stopped', 'Completed'].includes(medication.status)) {
+        return res.status(409).json({ error: `Medication is already ${medication.status.toLowerCase()}` });
+      }
+
+      medication.status = 'Stopped';
+      medication.stoppedReason = reason;
+      medication.stoppedAt = changedAt;
+      medication.stoppedBy = req.user?._id;
+      medication.endDate = changedAt;
+      medication.timing.forEach((timing) => {
+        if (timing.status === 'Pending') {
+          timing.status = 'Held';
+          timing.remarks = `Medication stopped: ${reason}`;
+        }
+      });
+    } else if (action === 'modify') {
+      if (['Stopped', 'Completed'].includes(medication.status)) {
+        return res.status(409).json({ error: `A ${medication.status.toLowerCase()} medication cannot be modified` });
+      }
+
+      const editableFields = [
+        'route',
+        'dosage',
+        'frequency',
+        'duration',
+        'durationUnit',
+        'specialInstructions'
+      ];
+      editableFields.forEach((field) => {
+        if (req.body[field] !== undefined) medication[field] = req.body[field];
+      });
+
+      if (req.body.requiresPharmacyDispense !== undefined) {
+        medication.requiresPharmacyDispense = normaliseBoolean(
+          req.body.requiresPharmacyDispense,
+          medication.requiresPharmacyDispense
+        );
+      }
+      if (req.body.doseQtyBaseUnits !== undefined || req.body.dose_quantity !== undefined) {
+        medication.doseQtyBaseUnits = resolveDoseQtyBaseUnits({
+          doseQtyBaseUnits: req.body.doseQtyBaseUnits,
+          dose_quantity: req.body.dose_quantity,
+          dosage: medication.dosage
+        });
+      }
+
+      medication.duration = Math.max(1, Number(medication.duration || 1));
+      medication.requiredQtyBaseUnits = calculateMedicationRequiredBaseUnits({
+        dosage: medication.dosage,
+        doseQtyBaseUnits: medication.doseQtyBaseUnits,
+        frequency: medication.frequency,
+        duration: medication.duration,
+        durationUnit: medication.durationUnit
+      });
+
+      const effectiveFrom = req.body.effectiveFrom ? new Date(req.body.effectiveFrom) : changedAt;
+      if (Number.isNaN(effectiveFrom.getTime())) {
+        return res.status(400).json({ error: 'Invalid effective date for medication change' });
+      }
+
+      const effectiveDay = new Date(effectiveFrom);
+      effectiveDay.setHours(0, 0, 0, 0);
+      const retainedTimings = medication.timing.filter((timing) => {
+        if (timing.status !== 'Pending') return true;
+        const timingDate = new Date(timing.date);
+        return !Number.isNaN(timingDate.getTime()) && timingDate < effectiveDay;
+      });
+      const replacementTimings = generateMedicationTimingSlots(
+        medication.frequency,
+        medication.duration,
+        effectiveDay
+      );
+      const timingKeys = new Set(retainedTimings.map((timing) => {
+        const date = new Date(timing.date);
+        return `${date.toISOString().slice(0, 10)}|${timing.time}`;
+      }));
+
+      replacementTimings.forEach((timing) => {
+        const date = new Date(timing.date);
+        const key = `${date.toISOString().slice(0, 10)}|${timing.time}`;
+        if (!timingKeys.has(key)) {
+          retainedTimings.push(timing);
+          timingKeys.add(key);
+        }
+      });
+      medication.timing = retainedTimings.sort((left, right) => {
+        const leftDate = new Date(left.date).getTime();
+        const rightDate = new Date(right.date).getTime();
+        if (leftDate !== rightDate) return leftDate - rightDate;
+        return String(left.time).localeCompare(String(right.time));
+      });
+
+      if (medication.status === 'Pending') medication.status = 'Active';
+      if (medication.requiresPharmacyDispense && !medication.pharmacyRequest?.dispensedFromPharmacy) {
+        await createPharmacyRequest(
+          medication,
+          medication.requiredQtyBaseUnits,
+          req.user?._id,
+          medication.pharmacyRequest?.pharmacyId
+        );
+      }
+    }
+
+    const next = {
+      status: medication.status,
+      route: medication.route,
+      dosage: medication.dosage,
+      doseQtyBaseUnits: medication.doseQtyBaseUnits,
+      frequency: medication.frequency,
+      duration: medication.duration,
+      durationUnit: medication.durationUnit,
+      specialInstructions: medication.specialInstructions,
+      requiresPharmacyDispense: medication.requiresPharmacyDispense,
+      requiredQtyBaseUnits: medication.requiredQtyBaseUnits
+    };
+
+    medication.changeHistory.push({
+      action: action === 'stop' ? 'Stopped' : action === 'continue' ? 'Continued' : 'Modified',
+      changedAt,
+      changedBy: req.user?._id,
+      roundId,
+      reason,
+      previous,
+      next
+    });
+    medication.lastChangedAt = changedAt;
+    medication.lastChangedBy = req.user?._id;
+    medication.lastChangedRoundId = roundId;
+    await medication.save();
+
+    const description = action === 'stop'
+      ? `Medication stopped: ${medication.medicineName}. Reason: ${reason}`
+      : action === 'continue'
+        ? `Medication continued without change: ${medication.medicineName}.`
+        : `Medication order changed: ${medication.medicineName} from ${previous.dosage} ${previous.frequency} to ${medication.dosage} ${medication.frequency}.${reason ? ` Reason: ${reason}` : ''}`;
+
+    await NursingNote.create({
+      admissionId: medication.admissionId,
+      patientId: medication.patientId,
+      noteType: 'Medication',
+      note: description,
+      priority: action === 'stop' ? 'Important' : 'Normal',
+      createdBy: req.user?._id
+    });
+
+    return res.json({
+      success: true,
+      message: action === 'continue'
+        ? 'Medication continued'
+        : action === 'stop'
+          ? 'Medication stopped successfully'
+          : 'Medication order updated successfully',
+      medication
+    });
+  } catch (error) {
+    console.error('Error changing medication order:', error);
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
 // ========== PHARMACY INTEGRATION ==========
 
 // Pharmacy: Get pending medication requests

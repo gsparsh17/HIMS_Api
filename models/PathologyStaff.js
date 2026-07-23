@@ -2,11 +2,12 @@
 const mongoose = require('mongoose');
 
 const pathologyStaffSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  staffId: { type: String, unique: true },
+  staffId: { type: String, trim: true },
   first_name: { type: String, required: true },
   last_name: { type: String },
-  email: { type: String, required: true, unique: true },
+  email: { type: String, required: true, lowercase: true, trim: true },
   phone: { type: String, required: true },
   qualification: { type: String }, // e.g., MD Pathology, DMLT, etc.
   specialization: { type: String }, // e.g., Hematology, Microbiology, etc.
@@ -62,21 +63,16 @@ function generateRandomCode(length = 4) {
   return result;
 }
 
-pathologyStaffSchema.pre('save', async function (next) {
+pathologyStaffSchema.pre('save', async function generateStaffId(next) {
   try {
+    if (!this.hospitalId) throw new Error('hospitalId is required');
     if (!this.staffId) {
-      const hospital = await Hospital.findOne();
-      if (!hospital || !hospital.hospitalID) {
-        throw new Error('Hospital ID not found');
-      }
-
-      this.hospitalId = hospital.hospitalID;
-      this.staffId = `${hospital.hospitalID}-LAB-${generateRandomCode(4)}`;
+      const hospital = await Hospital.findById(this.hospitalId).select('hospitalID');
+      const prefix = hospital?.hospitalID || String(this.hospitalId).slice(-6).toUpperCase();
+      this.staffId = `${prefix}-LAB-${generateRandomCode(4)}`;
     }
     next();
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
 pathologyStaffSchema.virtual('full_name').get(function() {
@@ -92,10 +88,11 @@ pathologyStaffSchema.virtual('active_assigned_tests_count').get(function() {
 });
 
 // Indexes for better query performance
-pathologyStaffSchema.index({ staffId: 1 });
-pathologyStaffSchema.index({ email: 1 });
-pathologyStaffSchema.index({ role: 1 });
-pathologyStaffSchema.index({ status: 1 });
+pathologyStaffSchema.index({ hospitalId: 1, staffId: 1 }, { unique: true });
+pathologyStaffSchema.index({ hospitalId: 1, email: 1 }, { unique: true });
+pathologyStaffSchema.index({ hospitalId: 1, user_id: 1 }, { unique: true, sparse: true });
+pathologyStaffSchema.index({ hospitalId: 1, role: 1 });
+pathologyStaffSchema.index({ hospitalId: 1, status: 1 });
 pathologyStaffSchema.index({ department: 1 });
 pathologyStaffSchema.index({ 'assigned_lab_tests.lab_test_id': 1 });
 

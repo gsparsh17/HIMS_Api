@@ -17,6 +17,8 @@ const OTRequest = require('../models/OTRequest');
 const Prescription = require('../models/Prescription');
 const Sale = require('../models/Sale');
 const financial = require('../services/ipdFinancial.service');
+const { requireHospitalId } = require('../services/tenantScope.service');
+const { buildAccommodationPrintData } = require('../services/ipdAccommodationPrint.service');
 
 // ========== DISCHARGE SUMMARY ==========
 
@@ -40,15 +42,16 @@ exports.saveDischargeSummary = async (req, res) => {
       followUpDate,
       emergencyInstructions,
       dietAdvice,
-      activityAdvice
+      activityAdvice,
+      templateId
     } = req.body;
 
-    const admission = await IPDAdmission.findById(admissionId);
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requireHospitalId(req) });
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found' });
     }
 
-    let dischargeSummary = await DischargeSummary.findOne({ admissionId });
+    let dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
     
     // Determine preparedBy doctor ID (use admission's primary doctor if available)
     let doctorId = admission.primaryDoctorId;
@@ -72,11 +75,13 @@ exports.saveDischargeSummary = async (req, res) => {
         emergencyInstructions,
         dietAdvice,
         activityAdvice,
+        templateId: templateId || dischargeSummary.templateId,
         updatedBy: req.user?._id
       });
     } else {
       // Create new
       dischargeSummary = new DischargeSummary({
+        hospitalId: requireHospitalId(req),
         admissionId,
         patientId: admission.patientId,
         preparedBy: doctorId,
@@ -98,6 +103,7 @@ exports.saveDischargeSummary = async (req, res) => {
         emergencyInstructions,
         dietAdvice,
         activityAdvice,
+        templateId: templateId || null,
         status: 'Draft',
         createdBy: req.user?._id
       });
@@ -121,7 +127,7 @@ exports.getDischargeSummary = async (req, res) => {
   try {
     const { admissionId } = req.params;
 
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId })
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) })
       .populate('preparedBy', 'firstName lastName')
       .populate('reviewedBy', 'firstName lastName');
 
@@ -141,7 +147,7 @@ exports.getDischargeRecords = async (req, res) => {
   try {
     const { admissionId } = req.params;
 
-    const admission = await IPDAdmission.findById(admissionId)
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requireHospitalId(req) })
       .populate('patientId', 'first_name last_name patientId phone dob gender blood_group age address')
       .populate('primaryDoctorId', 'firstName lastName specialization')
       .populate('departmentId', 'name')
@@ -240,7 +246,7 @@ exports.finalizeDischargeSummary = async (req, res) => {
     const { admissionId } = req.params;
     const { reviewedBy } = req.body;
 
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId });
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
     if (!dischargeSummary) {
       return res.status(404).json({ error: 'Discharge summary not found' });
     }
@@ -264,7 +270,7 @@ exports.finalizeDischargeSummary = async (req, res) => {
     dischargeSummary.finalizedAt = new Date();
     await dischargeSummary.save();
 
-    await IPDAdmission.findByIdAndUpdate(admissionId, {
+    await IPDAdmission.findOneAndUpdate({ _id: admissionId, hospitalId: requireHospitalId(req) }, {
       status: 'Discharge Summary Pending',
       finalDiagnosis: dischargeSummary.finalDiagnosis
     });
@@ -283,7 +289,7 @@ exports.staffCompleteDischargeSummary = async (req, res) => {
     const { admissionId } = req.params;
     const { dischargeMedications, followUpAdvice, followUpDate, emergencyInstructions, dietAdvice, activityAdvice } = req.body;
 
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId });
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
     if (!dischargeSummary) {
       return res.status(404).json({ error: 'Discharge summary not found' });
     }
@@ -303,7 +309,7 @@ exports.staffCompleteDischargeSummary = async (req, res) => {
     dischargeSummary.status = 'StaffCompleted';
     await dischargeSummary.save();
 
-    await IPDAdmission.findByIdAndUpdate(admissionId, { status: 'Billing Pending' });
+    await IPDAdmission.findOneAndUpdate({ _id: admissionId, hospitalId: requireHospitalId(req) }, { status: 'Billing Pending' });
 
     res.json({ success: true, message: 'Discharge summary completed by staff. Ready for billing.', dischargeSummary });
   } catch (err) {
@@ -318,7 +324,7 @@ exports.updateDischargeMedications = async (req, res) => {
     const { admissionId } = req.params;
     const { dischargeMedications } = req.body;
 
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId });
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
     if (!dischargeSummary) {
       return res.status(404).json({ error: 'Discharge summary not found' });
     }
@@ -340,7 +346,7 @@ exports.updateDischargeMedications = async (req, res) => {
 exports.initiateDischarge = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const admission = await IPDAdmission.findById(admissionId);
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requireHospitalId(req) });
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
     if (!admission.canProceedToDischarge) return res.status(400).json({ error: 'Cannot initiate discharge from current status' });
 
@@ -358,10 +364,10 @@ exports.initiateDischarge = async (req, res) => {
 exports.getDischargeChecklist = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const admission = await IPDAdmission.findById(admissionId);
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requireHospitalId(req) });
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId });
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
     const pendingLabReports = await LabReport.countDocuments({ patientId: admission.patientId, status: { $ne: 'Completed' } });
     const pendingMedications = await IPDMedicationChart.countDocuments({ admissionId, status: 'Active', 'timing.status': 'Pending' });
     const financeClearance = await financial.getFinancialClearance(admissionId);
@@ -405,10 +411,10 @@ exports.completeDischarge = async (req, res) => {
   try {
     const { admissionId } = req.params;
     const { dischargeReason, isLAMA } = req.body;
-    const admission = await IPDAdmission.findById(admissionId);
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requireHospitalId(req) });
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId });
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
     if (!dischargeSummary || (dischargeSummary.status !== 'Finalized' && dischargeSummary.status !== 'StaffCompleted')) {
       return res.status(400).json({ error: 'Discharge summary not finalized' });
     }
@@ -444,10 +450,10 @@ exports.completeDischarge = async (req, res) => {
 exports.getDischargeDocuments = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const admission = await IPDAdmission.findById(admissionId).populate('patientId', 'first_name last_name patientId').populate('primaryDoctorId', 'firstName lastName');
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requireHospitalId(req) }).populate('patientId', 'first_name last_name patientId').populate('primaryDoctorId', 'firstName lastName');
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId }).populate('preparedBy', 'firstName lastName').populate('reviewedBy', 'firstName lastName');
+    const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) }).populate('preparedBy', 'firstName lastName').populate('reviewedBy', 'firstName lastName');
     const invoices = await Invoice.find({ admission_id: admissionId });
     
     // Get clearance status including deferred payments
@@ -458,6 +464,8 @@ exports.getDischargeDocuments = async (req, res) => {
     });
     const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
     const isCleared = totalDeferredAmount === 0 && admission.dueAmount === 0;
+
+    const accommodationPrint = await buildAccommodationPrintData({ hospitalId: requireHospitalId(req), admissionId, financial: false });
 
     res.json({
       success: true,

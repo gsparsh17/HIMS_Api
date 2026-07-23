@@ -51,6 +51,10 @@ const nursingNoteSchema = new mongoose.Schema({
   attachments: [{
     type: String
   }],
+  copiedFromNoteId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'NursingNote'
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'

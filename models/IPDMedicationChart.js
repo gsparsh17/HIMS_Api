@@ -32,10 +32,8 @@ const medicationTimingSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Nurse'
   },
-  administeredByInitials: { type: String, trim: true },
   witnessedByInitials: { type: String, trim: true },
-  signOffName: { type: String, trim: true },
-  witnessedByInitials: { type: String, trim: true }
+  signOffName: { type: String, trim: true }
 });
 
 const pharmacyRequestSchema = new mongoose.Schema({
@@ -253,6 +251,40 @@ const ipdMedicationChartSchema = new mongoose.Schema({
   stoppedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Doctor'
+  },
+  changeHistory: [{
+    action: {
+      type: String,
+      enum: ['Modified', 'Stopped', 'Continued'],
+      required: true
+    },
+    changedAt: {
+      type: Date,
+      default: Date.now
+    },
+    changedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    roundId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'IPDRound'
+    },
+    reason: {
+      type: String,
+      trim: true
+    },
+    previous: mongoose.Schema.Types.Mixed,
+    next: mongoose.Schema.Types.Mixed
+  }],
+  lastChangedAt: Date,
+  lastChangedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  lastChangedRoundId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'IPDRound'
   },
   
   // Pharmacy Integration

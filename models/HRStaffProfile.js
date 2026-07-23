@@ -45,6 +45,9 @@ const hrStaffProfileSchema = new mongoose.Schema({
       'receptionist',
       'registrar',
       'accountant',
+      'insurance_desk',
+      'bed_manager',
+      'housekeeping',
       'other'
     ],
     default: 'staff'

@@ -44,9 +44,9 @@ const manualLabReportSchema = new mongoose.Schema({
 
 
 const labRequestSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   requestNumber: {
     type: String,
-    unique: true
   },
   
   // Source context (OPD or IPD)
@@ -168,7 +168,7 @@ const labRequestSchema = new mongoose.Schema({
   // Status tracking
   status: {
     type: String,
-    enum: ['Pending', 'Approved', 'Sample Collected', 'Processing', 'Completed', 'Reported', 'Cancelled', 'Referred Out'],
+    enum: ['Pending', 'Approved', 'Sample Collected', 'Received', 'Rejected', 'Processing', 'Result Entered', 'Verified', 'Completed', 'Reported', 'Amended', 'Cancelled', 'Referred Out'],
     default: 'Pending'
   },
   
@@ -267,6 +267,61 @@ const labRequestSchema = new mongoose.Schema({
     type: Date
   },
   
+  accessionNumber: { type: String, trim: true, index: true },
+  specimen: {
+    type: { type: String, trim: true },
+    container: String,
+    barcode: String,
+    fastingStatus: String,
+    collectedAt: Date,
+    collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    receivedAt: Date,
+    receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    condition: String
+  },
+  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  assignedBench: String,
+  collectedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  receivedAt: Date,
+  receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  resultEnteredAt: Date,
+  verifierUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  releasedAt: Date,
+  releasedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  rejection: {
+    reasonCode: String,
+    reason: String,
+    rejectedAt: Date,
+    rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+  critical: {
+    isCritical: { type: Boolean, default: false },
+    flagReason: String,
+    notifiedAt: Date,
+    notifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    acknowledgements: [{
+      recipientName: String,
+      recipientRole: String,
+      channel: String,
+      acknowledgedAt: Date,
+      acknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      escalationLevel: Number,
+      note: String
+    }]
+  },
+  workflowHistory: [{
+    from: String,
+    to: String,
+    at: { type: Date, default: Date.now },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    note: String
+  }],
+  turnaroundDueAt: Date,
+  payerContext: {
+    coverageId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+    payerName: String,
+    preAuthStatus: String
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -281,7 +336,7 @@ labRequestSchema.pre('save', async function(next) {
     const date = new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
-    const count = await mongoose.model('LabRequest').countDocuments();
+    const count = await mongoose.model('LabRequest').countDocuments({ hospitalId: this.hospitalId, requestedDate: { $gte: new Date(year, date.getMonth(), 1), $lt: new Date(year, date.getMonth() + 1, 1) } });
     const sequence = String(count + 1).padStart(4, '0');
     this.requestNumber = `LAB-${year}${month}-${sequence}`;
   }
@@ -307,10 +362,10 @@ labRequestSchema.methods.checkAbnormal = function(value) {
 };
 
 // Indexes
-labRequestSchema.index({ patientId: 1, requestedDate: -1 });
+labRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
 labRequestSchema.index({ doctorId: 1, status: 1 });
 labRequestSchema.index({ status: 1, scheduledDate: 1 });
-labRequestSchema.index({ requestNumber: 1 });
+labRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });
 labRequestSchema.index({ admissionId: 1, sourceType: 1 });
 labRequestSchema.index({ appointmentId: 1, sourceType: 1 });
 

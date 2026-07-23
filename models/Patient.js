@@ -1,13 +1,14 @@
 const mongoose = require('mongoose');
 
 const patientSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   patientId: {
     type: String,
-    unique: true
+    trim: true
   },
   uhid: {
     type: String,
-    unique: true
+    trim: true
   },
   salutation: {
     type: String,
@@ -290,9 +291,9 @@ patientSchema.index({
 });
 
 // Compound indexes for common pharmacy queries
-patientSchema.index({ phone: 1 });
-patientSchema.index({ uhid: 1 });
-patientSchema.index({ patientId: 1 });
+patientSchema.index({ hospitalId: 1, phone: 1 });
+patientSchema.index({ hospitalId: 1, uhid: 1 }, { unique: true, sparse: true });
+patientSchema.index({ hospitalId: 1, patientId: 1 }, { unique: true, sparse: true });
 patientSchema.index({ 'abha.number': 1 });
 patientSchema.index({ 'abha.address': 1 });
 patientSchema.index({ 'abha.status': 1 });
@@ -318,12 +319,15 @@ patientSchema.pre('save', async function (next) {
     this.updated_at = now;
 
     if (!this.uhid || !this.patientId) {
-      const hospital = await Hospital.findOne();
+      const hospital = this.hospitalId ? await Hospital.findById(this.hospitalId) : await Hospital.findOne();
       if (!hospital || !hospital.hospitalID) {
         throw new Error('Hospital ID not found');
       }
 
+      if (!this.hospitalId) this.hospitalId = hospital._id;
+
       const existingPatient = await mongoose.model('Patient').findOne({
+        hospitalId: hospital._id,
         first_name: this.first_name,
         last_name: this.last_name,
         phone: this.phone
@@ -332,7 +336,7 @@ patientSchema.pre('save', async function (next) {
       if (existingPatient) {
         this.uhid = existingPatient.uhid || existingPatient.patientId;
         this.patientId = existingPatient.patientId;
-        this.hospitalId = existingPatient.hospitalId;
+        this.hospitalId = existingPatient.hospitalId || hospital._id;
       } else {
         let finalGeneratedId = '';
 
@@ -366,6 +370,7 @@ patientSchema.pre('save', async function (next) {
         while (!isUnique) {
           checkId = suffixCounter === 0 ? finalGeneratedId : `${finalGeneratedId}-${suffixCounter}`;
           const exists = await mongoose.model('Patient').findOne({
+            hospitalId: hospital._id,
             $or: [{ uhid: checkId }, { patientId: checkId }]
           });
 
@@ -378,7 +383,7 @@ patientSchema.pre('save', async function (next) {
 
         this.uhid = checkId;
         this.patientId = checkId;
-        this.hospitalId = hospital.hospitalID;
+        this.hospitalId = hospital._id;
       }
     }
 
