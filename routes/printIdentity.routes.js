@@ -13,17 +13,32 @@ const upload = multer({
     destination: (_req, _file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => cb(null, `${req.user?._id || 'user'}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${path.extname(file.originalname).toLowerCase()}`)
   }),
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const allowed = ['image/png', 'image/jpeg'];
+    const allowed = ['image/png', 'image/jpeg', 'image/jpg'];
     cb(allowed.includes(file.mimetype) ? null : new Error('Only PNG or JPEG images are allowed'), allowed.includes(file.mimetype));
   }
 });
 
+const handleUpload = (req, res, next) => {
+  upload.single('asset')(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ success: false, error: 'File size exceeds maximum limit of 10MB. Please choose a smaller image.' });
+      }
+      return res.status(400).json({ success: false, error: err.message });
+    }
+    if (err) {
+      return res.status(400).json({ success: false, error: err.message || 'File upload failed' });
+    }
+    next();
+  });
+};
+
 router.use(protect);
 router.get('/me', controller.getMyIdentity);
 router.put('/me', controller.updateMyIdentity);
-router.post('/me/assets', upload.single('asset'), controller.uploadAsset);
+router.post('/me/assets', handleUpload, controller.uploadAsset);
 router.put('/me/defaults', controller.setDefaults);
 router.delete('/me/assets/:assetId', controller.retireAsset);
 router.get('/assets/:assetId/content', controller.streamAsset);

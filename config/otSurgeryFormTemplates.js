@@ -434,7 +434,7 @@ const templates = [
       section('Implants and devices used', [
         field('items', 'Implants / devices', 'table', { required: true, columns: [
           field('itemName', 'Item / implant'), field('manufacturer', 'Manufacturer'), field('catalogueNumber', 'Catalogue no.'), field('lotBatchNumber', 'Lot / batch'), field('serialNumber', 'Serial no.'),
-          field('expiryDate', 'Expiry', 'date'), field('quantity', 'Qty', 'number'), field('site', 'Implant site'), field('patientCharge', 'Patient charge'), field('remarks', 'Remarks')
+          field('expiryDate', 'Expiry', 'date'), field('quantity', 'Qty', 'number'), field('site', 'Implant site'), field('stickerPhoto', 'Sticker photo', 'file'), field('patientCharge', 'Patient charge'), field('remarks', 'Remarks')
         ] }),
       ]),
       section('Traceability confirmation', [

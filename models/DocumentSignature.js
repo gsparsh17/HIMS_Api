@@ -18,6 +18,7 @@ const assetSnapshotSchema = new mongoose.Schema({
   version: Number,
   sha256: String,
   storagePath: String,
+  cloudinaryUrl: String,
   mimeType: String,
   originalName: String
 }, { _id: false });

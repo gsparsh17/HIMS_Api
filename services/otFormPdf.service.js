@@ -148,7 +148,27 @@ function table(doc, x, y, widths, headers, rows, rowHeight = 18, opts = {}) {
   const total = widths.reduce((a, b) => a + b, 0); rect(doc, x, y, total, rowHeight, { fill: opts.headerFill || COLORS.light });
   let cx = x; headers.forEach((h, i) => { if (i) line(doc, cx, y, cx, y + rowHeight); text(doc, h, cx + 2, y + 4, widths[i] - 4, { size: opts.size || 6.3, bold: true, align: opts.align || 'left' }); cx += widths[i]; });
   let cy = y + rowHeight;
-  rows.forEach((row) => { rect(doc, x, cy, total, rowHeight); cx = x; row.forEach((cell, i) => { if (i) line(doc, cx, cy, cx, cy + rowHeight); text(doc, cell, cx + 2, cy + 3, widths[i] - 4, { size: opts.size || 6.1, align: opts.align || 'left', height: rowHeight - 5, ellipsis: true }); cx += widths[i]; }); cy += rowHeight; });
+  rows.forEach((row) => {
+    const hasImage = row.some((cell) => typeof cell === 'string' && cell.startsWith('data:image/'));
+    const actualHeight = hasImage ? Math.max(rowHeight, 36) : rowHeight;
+    rect(doc, x, cy, total, actualHeight); cx = x;
+    row.forEach((cell, i) => {
+      if (i) line(doc, cx, cy, cx, cy + actualHeight);
+      if (typeof cell === 'string' && cell.startsWith('data:image/')) {
+        try {
+          const base64Data = cell.replace(/^data:image\/\w+;base64,/, '');
+          const imgBuffer = Buffer.from(base64Data, 'base64');
+          doc.image(imgBuffer, cx + 2, cy + 2, { fit: [widths[i] - 4, actualHeight - 4], align: 'center', valign: 'center' });
+        } catch {
+          text(doc, '[Sticker image]', cx + 2, cy + 3, widths[i] - 4, { size: opts.size || 6.1, align: 'left' });
+        }
+      } else {
+        text(doc, cell, cx + 2, cy + 3, widths[i] - 4, { size: opts.size || 6.1, align: opts.align || 'left', height: actualHeight - 5, ellipsis: true });
+      }
+      cx += widths[i];
+    });
+    cy += actualHeight;
+  });
   return cy;
 }
 
@@ -280,7 +300,55 @@ function renderPostAnaesthesia(doc,ctx,template,data,signatures){
 }
 function renderGeneric(doc,ctx,template,data,signatures){
   addPage(doc);let y=header(doc,ctx,template.title,template.sourceReference);const x=28,w=doc.page.width-56;
-  (template.sections||[]).forEach((section)=>{if(y>720){footer(doc,template,signatures,doc.bufferedPageRange().count,template.pageCount||1);addPage(doc);y=header(doc,ctx,template.title);};y=sectionTitle(doc,section.title,x,y,w);(section.fields||[]).forEach((f)=>{const v=data[f.key];if(f.type==='table'){const rows=(Array.isArray(v)?v:[]).slice(0,12);const widths=(f.columns||[]).map(()=>w/Math.max(1,(f.columns||[]).length));y=table(doc,x,y,widths,(f.columns||[]).map(c=>c.label),rows.map(r=>(f.columns||[]).map(c=>value(r[c.key]))),20);y+=4;}else{kv(doc,f.label,Array.isArray(v)?v.join(', '):value(v),x,y,w,f.type==='textarea'?48:22);y+=f.type==='textarea'?48:22;}});y+=8;});footer(doc,template,signatures,1,1);
+  (template.sections||[]).forEach((section)=>{if(y>720){footer(doc,template,signatures,doc.bufferedPageRange().count,template.pageCount||1);addPage(doc);y=header(doc,ctx,template.title);};y=sectionTitle(doc,section.title,x,y,w);(section.fields||[]).forEach((f)=>{const v=data[f.key];if(f.type==='table'){const rows=(Array.isArray(v)?v:[]).slice(0,12);const widths=(f.columns||[]).map(()=>w/Math.max(1,(f.columns||[]).length));y=table(doc,x,y,widths,(f.columns||[]).map(c=>c.label),rows.map(r=>(f.columns||[]).map(c=>value(r[c.key]))),20);y+=4;}else{kv(doc,f.label,Array.isArray(v)?v.join(', '):value(v),x,y,w,f.type==='textarea'?48:22);y+=f.type==='textarea'?48:22;}});y+=8;});
+
+  const pdfStickers = [];
+  Object.values(data || {}).forEach((val) => {
+    if (Array.isArray(val)) {
+      val.forEach((row, idx) => {
+        if (row && typeof row === 'object') {
+          Object.entries(row).forEach(([colKey, colVal]) => {
+            if (typeof colVal === 'string' && colVal.startsWith('data:image/')) {
+              pdfStickers.push({
+                title: row.itemName || row.item || row.name || `Implant Sticker #${idx + 1}`,
+                lot: row.lotBatchNumber || row.lotNumber || '—',
+                ref: row.catalogueNumber || '—',
+                mfr: row.manufacturer || '—',
+                image: colVal
+              });
+            }
+          });
+        }
+      });
+    }
+  });
+
+  if (pdfStickers.length > 0) {
+    if (y > 550) {
+      footer(doc, template, signatures, doc.bufferedPageRange().count, template.pageCount || 1);
+      addPage(doc);
+      y = header(doc, ctx, template.title, 'Attached Implant Traceability Stickers');
+    }
+    y = sectionTitle(doc, 'Attached Implant & Device Traceability Stickers', x, y, w);
+    pdfStickers.forEach((st) => {
+      if (y > 620) {
+        footer(doc, template, signatures, doc.bufferedPageRange().count, template.pageCount || 1);
+        addPage(doc);
+        y = header(doc, ctx, template.title, 'Attached Implant Traceability Stickers');
+      }
+      rect(doc, x, y, w, 150);
+      text(doc, `${st.title} (LOT: ${st.lot} | REF: ${st.ref} | Mfr: ${st.mfr})`, x + 6, y + 6, w - 12, { size: 7.5, bold: true });
+      line(doc, x, y + 20, x + w, y + 20);
+      try {
+        const base64Data = st.image.replace(/^data:image\/\w+;base64,/, '');
+        const imgBuf = Buffer.from(base64Data, 'base64');
+        doc.image(imgBuf, x + 10, y + 26, { fit: [w - 20, 115], align: 'center', valign: 'center' });
+      } catch {}
+      y += 158;
+    });
+  }
+
+  footer(doc,template,signatures,1,1);
 }
 
 async function contextHospital(hospitalId){return Hospital.findById(hospitalId).lean();}

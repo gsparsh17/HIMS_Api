@@ -8,6 +8,7 @@ const printIdentityAssetSchema = new mongoose.Schema({
   label: { type: String, trim: true },
   version: { type: Number, required: true, min: 1 },
   storagePath: { type: String, required: true },
+  cloudinaryUrl: { type: String, trim: true },
   originalName: { type: String, trim: true },
   mimeType: { type: String, required: true },
   sizeBytes: { type: Number, default: 0 },

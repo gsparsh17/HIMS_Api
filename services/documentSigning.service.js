@@ -112,6 +112,7 @@ async function signDocument({ req, hospitalId, patientId, admissionId, encounter
       version: asset.version,
       sha256: asset.sha256,
       storagePath: asset.storagePath,
+      cloudinaryUrl: asset.cloudinaryUrl,
       mimeType: asset.mimeType,
       originalName: asset.originalName
     })),
