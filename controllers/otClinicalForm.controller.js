@@ -199,7 +199,7 @@ exports.listCaseForms = async (req, res, next) => {
       data: {
         case: {
           id: String(otCase._id), requestNumber: otCase.requestNumber, procedureName: otCase.procedureName,
-          status: otCase.status, patient: otCase.patientId, admission: otCase.admissionId,
+          status: otCase.status, patient: otCase.patientId, patientId: otCase.patientId, doctorId: otCase.doctorId, primarySurgeonId: otCase.primarySurgeonId, admission: otCase.admissionId,
         },
         counts,
         forms,
