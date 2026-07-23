@@ -1465,6 +1465,7 @@ module.exports = {
   receiveExternalPharmacyStock: exports.receiveExternalPharmacyStock,
   acknowledgeStockReceipt: exports.acknowledgeStockReceipt,
   getPendingStockReceipts: exports.getPendingStockReceipts,
+  changeMedicationOrder: exports.changeMedicationOrder,
   addToPatientMedicineStock,
   deductFromPatientMedicineStock
 };
