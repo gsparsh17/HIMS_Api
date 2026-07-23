@@ -1,5 +1,6 @@
 const IPDCharge = require('../models/IPDCharge');
 const finance = require('../services/ipdFinancial.service');
+const { requireHospitalId } = require('../services/tenantScope.service');
 
 function handleError(res, error) {
   console.error('IPD billing error:', error);
@@ -19,7 +20,7 @@ exports.addManualCharge = async (req, res) => {
 exports.getChargesByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const filter = { admissionId };
+    const filter = { hospitalId: requireHospitalId(req), admissionId };
     if (req.query.chargeType) filter.chargeType = req.query.chargeType;
     if (req.query.isBilled !== undefined) filter.isBilled = req.query.isBilled === 'true';
     if (req.query.includeVoided !== 'true') filter.status = { $ne: 'VOIDED' };
@@ -35,7 +36,7 @@ exports.getChargesByAdmission = async (req, res) => {
 };
 
 exports.getRunningBill = async (req, res) => {
-  try { res.json(await finance.getRunningBill(req.params.admissionId)); }
+  try { res.json(await finance.getRunningBill(req.params.admissionId, req.user)); }
   catch (error) { handleError(res, error); }
 };
 
@@ -58,7 +59,7 @@ exports.markChargesAsBilled = async (req, res) => {
 
 exports.getUnbilledChargesByType = async (req, res) => {
   try {
-    const filter = { admissionId: req.params.admissionId, isBilled: false, status: { $in: ['ACTIVE', null] } };
+    const filter = { hospitalId: requireHospitalId(req), admissionId: req.params.admissionId, isBilled: false, status: { $in: ['ACTIVE', null] } };
     if (req.query.chargeType) filter.chargeType = req.query.chargeType;
     const charges = await IPDCharge.find(filter).sort({ chargeDate: 1 });
     const total = charges.reduce((sum, charge) => sum + (Number(charge.netAmount) || 0), 0);
@@ -112,12 +113,12 @@ exports.refundAdvance = async (req, res) => {
 };
 
 exports.getLedger = async (req, res) => {
-  try { res.json(await finance.getFinancialLedger(req.params.admissionId)); }
+  try { res.json(await finance.getFinancialLedger(req.params.admissionId, req.user)); }
   catch (error) { handleError(res, error); }
 };
 
 exports.getFinancialClearance = async (req, res) => {
-  try { res.json(await finance.getFinancialClearance(req.params.admissionId)); }
+  try { res.json(await finance.getFinancialClearance(req.params.admissionId, req.user)); }
   catch (error) { handleError(res, error); }
 };
 

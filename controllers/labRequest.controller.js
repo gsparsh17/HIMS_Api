@@ -16,6 +16,7 @@ const {
 const { generateLabReportPdf } = require('../services/clinicalPdf.service');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
+const { requireHospitalId } = require('../services/tenantScope.service');
 
 // Configure Cloudinary
 cloudinary.config({
@@ -122,6 +123,7 @@ const hasValidFileSignature = (file) => {
 async function upsertLabReportRecord(request, userId) {
   const manual = request.manual_report ? request.manual_report.toObject?.() || request.manual_report : undefined;
   const setValues = {
+    hospitalId: request.hospitalId,
     lab_request_id: request._id,
     patient_id: request.patientId,
     doctor_id: request.doctorId,
@@ -152,7 +154,7 @@ async function upsertLabReportRecord(request, userId) {
   }
 
   await LabReport.findOneAndUpdate(
-    { lab_request_id: request._id },
+    { hospitalId: request.hospitalId, lab_request_id: request._id },
     { $set: setValues, ...(Object.keys(unsetValues).length ? { $unset: unsetValues } : {}) },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
@@ -175,12 +177,14 @@ exports.createLabTest = async (req, res) => {
       return res.status(400).json({ error: 'Code, name, and category are required' });
     }
 
-    const existing = await LabTest.findOne({ code: code.toUpperCase() });
+    const hospitalId = requireHospitalId(req);
+    const existing = await LabTest.findOne({ hospitalId, code: code.toUpperCase() });
     if (existing) {
       return res.status(400).json({ error: 'Lab test with this code already exists' });
     }
 
     const labTest = new LabTest({
+      hospitalId,
       code: code.toUpperCase(),
       name: name.trim(),
       category,
@@ -215,7 +219,7 @@ exports.createLabTest = async (req, res) => {
 exports.getLabTests = async (req, res) => {
   try {
     const { active_only = 'true', category, search } = req.query;
-    const filter = {};
+    const filter = { hospitalId: requireHospitalId(req) };
     
     if (active_only === 'true') filter.is_active = true;
     if (category) filter.category = category;
@@ -238,7 +242,7 @@ exports.getLabTests = async (req, res) => {
 exports.getLabTestById = async (req, res) => {
   try {
     const { id } = req.params;
-    const test = await LabTest.findById(id);
+    const test = await LabTest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
     if (!test) return res.status(404).json({ error: 'Lab test not found' });
     res.json({ success: true, data: test });
   } catch (error) {
@@ -252,7 +256,8 @@ exports.updateLabTest = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-    const test = await LabTest.findByIdAndUpdate(id, updates, { new: true });
+    delete updates.hospitalId;
+    const test = await LabTest.findOneAndUpdate({ _id: id, hospitalId: requireHospitalId(req) }, { $set: updates }, { new: true, runValidators: true });
     if (!test) return res.status(404).json({ error: 'Lab test not found' });
     res.json({ success: true, data: test });
   } catch (error) {
@@ -265,7 +270,8 @@ exports.updateLabTest = async (req, res) => {
 exports.deleteLabTest = async (req, res) => {
   try {
     const { id } = req.params;
-    await LabTest.findByIdAndDelete(id);
+    const deleted = await LabTest.findOneAndDelete({ _id: id, hospitalId: requireHospitalId(req) });
+    if (!deleted) return res.status(404).json({ error: 'Lab test not found' });
     res.json({ success: true, message: 'Lab test deleted successfully' });
   } catch (error) {
     console.error('Error deleting lab test:', error);
@@ -323,7 +329,7 @@ exports.matchReportTemplate = async (req, res) => {
 
 exports.saveManualReport = async (req, res) => {
   try {
-    const request = await LabRequest.findById(req.params.id);
+    const request = await LabRequest.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) });
     if (!request) return res.status(404).json({ error: 'Lab request not found' });
 
     const template = getTemplate(req.body.templateId || request.reportTemplateId)
@@ -387,7 +393,7 @@ exports.saveManualReport = async (req, res) => {
     request.is_abnormal = observations.some((item) => /^(h|l|high|low|abnormal|positive|reactive|critical|very high|very low)$/i.test(item.printedFlag || item.derivedFlag));
     request.technician_notes = cleanText(req.body.technicianNotes || req.body.notes, request.technician_notes || '');
     request.pathologist_notes = cleanText(req.body.pathologistNotes, request.pathologist_notes || '');
-    request.status = 'Completed';
+    request.status = 'Result Entered';
     request.processing_completed_at = completedAt;
     await request.save();
     await upsertLabReportRecord(request, req.user?._id);
@@ -401,7 +407,7 @@ exports.saveManualReport = async (req, res) => {
 
 exports.downloadGeneratedReport = async (req, res) => {
   try {
-    const request = await LabRequest.findById(req.params.id)
+    const request = await LabRequest.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) })
       .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
       .populate('doctorId', 'firstName lastName specialization department')
       .populate('admissionId', 'admissionNumber')
@@ -437,7 +443,8 @@ exports.createLabRequest = async (req, res) => {
     }
 
     // Get lab test details
-    const labTest = await LabTest.findById(labTestId);
+    const hospitalId = requireHospitalId(req);
+    const labTest = await LabTest.findOne({ _id: labTestId, hospitalId, is_active: true });
     if (!labTest) {
       return res.status(404).json({ error: 'Lab test not found' });
     }
@@ -458,6 +465,7 @@ exports.createLabRequest = async (req, res) => {
     await labTest.incrementUsage();
 
     const request = new LabRequest({
+      hospitalId,
       sourceType: sourceType || 'IPD',
       admissionId: admissionId || null,
       appointmentId: appointmentId || null,
@@ -482,7 +490,7 @@ exports.createLabRequest = async (req, res) => {
     await request.save();
 
     // Populate response
-    const populated = await LabRequest.findById(request._id)
+    const populated = await LabRequest.findOne({ _id: request._id, hospitalId })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
       .populate('labTestId', 'code name category report_template_id report_template_name report_template_version');
@@ -502,7 +510,7 @@ exports.getLabRequests = async (req, res) => {
       startDate, endDate, page = 1, limit = 20
     } = req.query;
 
-    const filter = {};
+    const filter = { hospitalId: requireHospitalId(req) };
     if (status) filter.status = status;
     if (patientId) filter.patientId = patientId;
     if (doctorId) filter.doctorId = doctorId;
@@ -548,7 +556,7 @@ exports.getLabRequests = async (req, res) => {
 exports.getLabRequestById = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await LabRequest.findById(id)
+    const request = await LabRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) })
       .populate('patientId', 'first_name last_name patientId phone dob gender')
       .populate('doctorId', 'firstName lastName specialization')
       .populate('labTestId', 'code name category base_price report_template_id report_template_name report_template_version')
@@ -574,7 +582,7 @@ exports.updateRequestStatus = async (req, res) => {
     const { status, notes } = req.body;
     const staffId = req.user?.labStaffId;
 
-    const request = await LabRequest.findById(id);
+    const request = await LabRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
     if (!request) {
       return res.status(404).json({ error: 'Lab request not found' });
     }
@@ -620,7 +628,7 @@ exports.addTestResults = async (req, res) => {
     const { id } = req.params;
     const { result_value, result_interpretation, technician_notes, pathologist_notes } = req.body;
 
-    const request = await LabRequest.findById(id);
+    const request = await LabRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
     if (!request) {
       return res.status(404).json({ error: 'Lab request not found' });
     }
@@ -654,7 +662,7 @@ exports.uploadReport = async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const request = await LabRequest.findById(id);
+    const request = await LabRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
     if (!request) {
       safeUnlink(req.file.path);
       return res.status(404).json({ error: 'Lab request not found' });
@@ -689,7 +697,7 @@ exports.uploadReport = async (req, res) => {
     if (req.body.notes) request.technician_notes = cleanText(req.body.notes);
     
     if (request.status !== 'Reported') {
-      request.status = 'Completed';
+      request.status = 'Result Entered';
     }
 
     await request.save();
@@ -707,7 +715,7 @@ exports.uploadReport = async (req, res) => {
 exports.downloadReport = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await LabRequest.findById(id)
+    const request = await LabRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) })
       .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
       .populate('doctorId', 'firstName lastName specialization department');
     
@@ -729,6 +737,7 @@ exports.getRequestsByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
     const requests = await LabRequest.find({ 
+      hospitalId: requireHospitalId(req),
       admissionId, 
       sourceType: 'IPD' 
     })
@@ -747,7 +756,7 @@ exports.getRequestsByAdmission = async (req, res) => {
 exports.getRequestsByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
-    const requests = await LabRequest.find({ patientId })
+    const requests = await LabRequest.find({ hospitalId: requireHospitalId(req), patientId })
       .populate('labTestId', 'code name category')
       .populate('doctorId', 'firstName lastName')
       .populate('admissionId', 'admissionNumber admissionDate')
@@ -765,6 +774,7 @@ exports.getPendingIPDRequests = async (req, res) => {
   try {
     const { admissionId } = req.params;
     const requests = await LabRequest.find({
+      hospitalId: requireHospitalId(req),
       admissionId,
       sourceType: 'IPD',
       status: { $in: ['Pending', 'Approved', 'Sample Collected', 'Processing'] }
@@ -785,8 +795,8 @@ exports.markAsBilled = async (req, res) => {
     const { id } = req.params;
     const { invoiceId } = req.body;
     
-    const request = await LabRequest.findByIdAndUpdate(
-      id,
+    const request = await LabRequest.findOneAndUpdate(
+      { _id: id, hospitalId: requireHospitalId(req) },
       { is_billed: true, invoiceId },
       { new: true }
     );
@@ -805,23 +815,27 @@ exports.markAsBilled = async (req, res) => {
 // Get dashboard stats for lab
 exports.getDashboardStats = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
 
     const [pending, todayReceived, totalRequests, completedToday, reportedToday] = await Promise.all([
-      LabRequest.countDocuments({ status: 'Pending' }),
+      LabRequest.countDocuments({ hospitalId, status: 'Pending' }),
       LabRequest.countDocuments({ 
+        hospitalId,
         requestedDate: { $gte: today, $lt: tomorrow },
         status: { $in: ['Pending', 'Approved'] }
       }),
-      LabRequest.countDocuments(),
+      LabRequest.countDocuments({ hospitalId }),
       LabRequest.countDocuments({ 
+        hospitalId,
         status: 'Completed',
         processing_completed_at: { $gte: today, $lt: tomorrow }
       }),
       LabRequest.countDocuments({ 
+        hospitalId,
         status: 'Reported',
         verifiedAt: { $gte: today, $lt: tomorrow }
       })
@@ -829,6 +843,7 @@ exports.getDashboardStats = async (req, res) => {
 
     // Category-wise breakdown
     const categoryBreakdown = await LabRequest.aggregate([
+      { $match: { hospitalId } },
       { $group: { _id: '$category', count: { $sum: 1 } } },
       { $sort: { count: -1 } }
     ]);

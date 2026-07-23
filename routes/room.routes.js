@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/room.controller');
-
-router.post('/', controller.createRoom);
+const { protect, requireModuleAccess } = require('../middlewares/auth');
+router.use(protect, requireModuleAccess('ipd', 'view'));
+router.post('/', requireModuleAccess('masters_settings', 'manage'), controller.createRoom);
 router.get('/', controller.getAllRooms);
-router.put('/:id', controller.updateRoom);
-router.delete('/:id', controller.deleteRoom);
 router.get('/:id', controller.getRoomById);
-
+router.put('/:id', requireModuleAccess('masters_settings', 'manage'), controller.updateRoom);
+router.delete('/:id', requireModuleAccess('masters_settings', 'manage'), controller.deleteRoom);
 module.exports = router;

@@ -3,6 +3,7 @@ const cloudinary = require('cloudinary').v2;
 const RadiologyRequest = require('../models/RadiologyRequest');
 const Hospital = require('../models/Hospital');
 const { catalogVersion, listTemplates, getTemplate, matchTemplateDetailed } = require('../services/radiologyReportTemplate.service');
+const { requireHospitalId } = require('../services/tenantScope.service');
 const { generateRadiologyReportPdf } = require('../services/radiologyPdf.service');
 
 cloudinary.config({
@@ -54,7 +55,7 @@ exports.matchTemplate = async (req, res) => {
 exports.saveManualReport = async (req, res) => {
   const files = req.files || [];
   try {
-    const request = await RadiologyRequest.findById(req.params.id);
+    const request = await RadiologyRequest.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) });
     if (!request) return res.status(404).json({ error: 'Radiology request not found' });
     const payload = JSON.parse(req.body.report || '{}');
     const template = getTemplate(payload.templateId || request.reportTemplateId);
@@ -117,8 +118,8 @@ exports.saveManualReport = async (req, res) => {
     };
     request.findings = clean(sections.find((item) => /findings/i.test(item.key))?.text || sections.find((item) => /findings/i.test(item.label))?.text);
     request.impression = clean(sections.find((item) => /impression/i.test(item.key))?.text || sections.find((item) => /impression/i.test(item.label))?.text);
-    request.status = 'Reported';
-    request.reportedAt = new Date();
+    request.status = 'Result Entered';
+    request.resultEnteredAt = new Date();
     await request.save();
     res.json({ success: true, message: 'Structured radiology report saved', data: request });
   } catch (error) {
@@ -131,7 +132,7 @@ exports.saveManualReport = async (req, res) => {
 
 exports.downloadGeneratedReport = async (req, res) => {
   try {
-    const request = await RadiologyRequest.findById(req.params.id)
+    const request = await RadiologyRequest.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) })
       .populate('patientId')
       .populate('doctorId')
       .populate('admissionId', 'admissionNumber hospitalId')
@@ -140,7 +141,7 @@ exports.downloadGeneratedReport = async (req, res) => {
     if (!request || request.report_mode !== 'manual' || !request.manual_report) return res.status(404).json({ error: 'Structured radiology report not found' });
     const hospitalId = request.admissionId?.hospitalId || req.user?.hospital_id;
     let hospital = hospitalId ? await Hospital.findById(hospitalId) : null;
-    if (!hospital) hospital = await Hospital.findOne();
+    if (!hospital) return res.status(404).json({ error: 'Hospital not found' });
     await generateRadiologyReportPdf({ request, hospital, res });
   } catch (error) {
     console.error('Error generating radiology PDF:', error);

@@ -18,11 +18,16 @@ const meds = require('../controllers/ipdMedication.controller');
 const billing = require('../controllers/ipdBilling.controller');
 const discharge = require('../controllers/ipdDischarge.controller');
 const clinical = require('../controllers/ipdClinicalDocuments.controller');
+const clinicalTemplates = require('../controllers/clinicalTemplate.controller');
 
 const clinicalRoles = ['admin', 'doctor', 'nurse', 'staff', 'registrar', 'pharmacy', 'accountant'];
 const read = [protect, authorize(...clinicalRoles)];
 const doctors = [protect, authorize('admin', 'doctor')];
 const nurses = [protect, authorize('admin', 'nurse', 'staff')];
+
+// Enforce authentication and hospital feature access across the complete IPD route tree.
+router.use(protect, requireModuleAccess('ipd', 'view'));
+router.use((req, res, next) => req.method === 'GET' ? next() : requireModuleAccess('ipd', 'manage')(req, res, next));
 
 // ============== CLINICAL DOCUMENTS ==============
 router.get(
@@ -309,6 +314,13 @@ router.post(
   beds.syncBedStatus
 );
 
+// ============== CLINICAL TEMPLATES ==============
+router.get('/clinical-templates', clinicalTemplates.listTemplates);
+router.post('/clinical-templates', clinicalTemplates.createTemplate);
+router.put('/clinical-templates/:id', clinicalTemplates.updateTemplate);
+router.delete('/clinical-templates/:id', clinicalTemplates.deactivateTemplate);
+router.post('/clinical-templates/:id/use', clinicalTemplates.recordTemplateUse);
+
 // ============== ROUNDS ==============
 router.post(
   '/rounds',
@@ -430,6 +442,11 @@ router.get(
   // ...read,
   // requireModuleAccess('ipd.medication_chart', 'view'),
   meds.getMedicationById
+);
+
+router.patch(
+  '/medications/:id/doctor-change',
+  meds.changeMedicationOrder
 );
 
 router.patch(

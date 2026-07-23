@@ -46,6 +46,20 @@ const hospitalSchema = new mongoose.Schema(
       default: 'nurse'
     },
 
+    tariffProfile: {
+      cityTier: { type: String, enum: ['I', 'II', 'III'], default: 'I' },
+      accreditation: { type: String, enum: ['non_nabh_non_nabl', 'nabh_nabl', 'super_speciality'], default: 'nabh_nabl' },
+      superSpecialities: [String]
+    },
+    featureFlags: {
+      radiologyDashboard: { type: Boolean, default: false },
+      pathologyUnifiedWorklist: { type: Boolean, default: false },
+      sponsorPricing: { type: Boolean, default: false },
+      bedTransferWorkflow: { type: Boolean, default: false },
+      workforceSelfService: { type: Boolean, default: false },
+      biometricAttendance: { type: Boolean, default: false }
+    },
+
     deployment: {
       frontendUrl: String,
       backendUrl: String,

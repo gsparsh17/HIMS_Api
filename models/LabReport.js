@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const labReportSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   lab_request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'LabRequest', index: true },
   patient_id: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -74,8 +75,8 @@ const labReportSchema = new mongoose.Schema({
 });
 
 // Indexes
-labReportSchema.index({ lab_request_id: 1 }, { unique: true, sparse: true });
-labReportSchema.index({ patient_id: 1, report_date: -1 });
+labReportSchema.index({ hospitalId: 1, lab_request_id: 1 }, { unique: true, sparse: true });
+labReportSchema.index({ hospitalId: 1, patient_id: 1, report_date: -1 });
 labReportSchema.index({ prescription_id: 1 });
 labReportSchema.index({ lab_test_id: 1 });
 labReportSchema.index({ is_external: 1 });

@@ -4,6 +4,7 @@ const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const https = require('https');
 const url = require('url');
+const { requireHospitalId } = require('../services/tenantScope.service');
 
 // Configure Cloudinary
 cloudinary.config({
@@ -55,7 +56,7 @@ const fetchFile = (fileUrl) => {
 
 exports.createLabReport = async (req, res) => {
   try {
-    const report = new LabReport(req.body);
+    const report = new LabReport({ ...req.body, hospitalId: requireHospitalId(req), created_by: req.user?._id });
     await report.save();
     res.status(201).json(report);
   } catch (err) {
@@ -65,7 +66,7 @@ exports.createLabReport = async (req, res) => {
 
 exports.getAllLabReports = async (req, res) => {
   try {
-    const reports = await LabReport.find()
+    const reports = await LabReport.find({ hospitalId: requireHospitalId(req) })
       .populate('patient_id', 'first_name last_name patientId')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('prescription_id', 'prescription_number')
@@ -79,7 +80,7 @@ exports.getAllLabReports = async (req, res) => {
 
 exports.getReportById = async (req, res) => {
   try {
-    const report = await LabReport.findById(req.params.id)
+    const report = await LabReport.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) })
       .populate('patient_id', 'first_name last_name patientId')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('prescription_id', 'prescription_number')
@@ -93,7 +94,8 @@ exports.getReportById = async (req, res) => {
 
 exports.deleteReport = async (req, res) => {
   try {
-    await LabReport.findByIdAndDelete(req.params.id);
+    const deleted = await LabReport.findOneAndDelete({ _id: req.params.id, hospitalId: requireHospitalId(req) });
+    if (!deleted) return res.status(404).json({ error: 'Lab report not found' });
     res.json({ message: 'Lab report deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -104,7 +106,7 @@ exports.deleteReport = async (req, res) => {
 exports.getReportsByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
-    const reports = await LabReport.find({ patient_id: patientId })
+    const reports = await LabReport.find({ hospitalId: requireHospitalId(req), patient_id: patientId })
       .populate('doctor_id', 'firstName lastName')
       .populate('lab_test_id', 'code name category')
       .sort({ createdAt: -1 });
@@ -118,7 +120,7 @@ exports.getReportsByPatient = async (req, res) => {
 exports.getReportsByPrescription = async (req, res) => {
   try {
     const { prescriptionId } = req.params;
-    const reports = await LabReport.find({ prescription_id: prescriptionId })
+    const reports = await LabReport.find({ hospitalId: requireHospitalId(req), prescription_id: prescriptionId })
       .populate('lab_test_id', 'code name category')
       .sort({ createdAt: -1 });
     res.json(reports);
@@ -171,6 +173,7 @@ exports.uploadReport = async (req, res) => {
 
     // Create lab report record
     const report = new LabReport({
+      hospitalId: requireHospitalId(req),
       patient_id: prescription.patient_id,
       doctor_id: prescription.doctor_id,
       prescription_id: prescription._id,
@@ -217,7 +220,7 @@ exports.downloadReport = async (req, res) => {
     const { report_id } = req.params;
 
     // First try to find the report in LabReport collection
-    let report = await LabReport.findById(report_id);
+    let report = await LabReport.findOne({ _id: report_id, hospitalId: requireHospitalId(req) });
     let reportUrl;
     let isPDF = false;
 
@@ -275,7 +278,7 @@ exports.downloadReportStream = async (req, res) => {
     const { report_id } = req.params;
 
     // Find the report URL
-    let report = await LabReport.findById(report_id);
+    let report = await LabReport.findOne({ _id: report_id, hospitalId: requireHospitalId(req) });
     let reportUrl;
 
     if (report) {

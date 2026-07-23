@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const patientController = require('../controllers/patient.controller');
+const patientController = require('../controllers/patientTenant.controller');
 const { protect, authorize } = require('../middlewares/auth');
 const multer = require('multer');
 const path = require('path');

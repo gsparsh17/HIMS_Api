@@ -8,6 +8,7 @@ const Department = require('../models/Department');
 const Hospital = require('../models/Hospital');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
+const { requireHospitalId } = require('../services/tenantScope.service');
 // Add this function to handle episode linking during appointment creation
 exports.linkAppointmentToEpisodeSuggestion = async (req, res) => {
   try {
@@ -50,6 +51,30 @@ function hasTimeConflict(appointments, startTime, endTime, breaks = []) {
     }
   }
   return false;
+}
+
+async function removeAppointmentFromCalendar(appointment) {
+  const calendar = await Calendar.findOne({ hospitalId: appointment.hospital_id });
+  if (!calendar) return;
+
+  const dateStr = new Date(appointment.appointment_date).toISOString().split('T')[0];
+  const day = calendar.days.find((row) => new Date(row.date).toISOString().split('T')[0] === dateStr);
+  if (!day) return;
+
+  const doctor = day.doctors.find((row) => String(row.doctorId) === String(appointment.doctor_id));
+  if (!doctor) return;
+
+  if (appointment.type === 'time-based') {
+    doctor.bookedAppointments = doctor.bookedAppointments.filter(
+      (row) => String(row.appointmentId) !== String(appointment._id)
+    );
+  } else {
+    doctor.bookedPatients = doctor.bookedPatients.filter(
+      (row) => String(row.appointmentId) !== String(appointment._id)
+    );
+  }
+
+  await calendar.save();
 }
 
 function convertUTCTimeToLocalForDate(utcTimeString, targetDateString) {
@@ -811,12 +836,62 @@ exports.updateAppointment = async (req, res) => {
     if (notes !== undefined) appointment.notes = notes;
     if (priority !== undefined) appointment.priority = priority;
     if (appointment_type !== undefined) appointment.appointment_type = appointment_type;
+    if (status === 'Cancelled') {
+      return res.status(400).json({ error: 'Use the cancellation action and provide a cancellation reason' });
+    }
     if (status !== undefined) appointment.status = status;
 
     await Promise.all([appointment.save(), calendar.save()]);
     res.json(appointment);
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+};
+
+// Cancel appointment while retaining the appointment and cancellation history.
+exports.cancelAppointment = async (req, res) => {
+  try {
+    const reason = String(req.body.reason || req.body.cancellationReason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'Cancellation reason is required' });
+
+    const appointment = await Appointment.findById(req.params.id);
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
+    if (appointment.status === 'Completed') {
+      return res.status(409).json({ error: 'A completed appointment cannot be cancelled' });
+    }
+    if (appointment.status === 'Cancelled') {
+      return res.status(409).json({ error: 'Appointment is already cancelled' });
+    }
+
+    const cancelledAt = new Date();
+    appointment.status = 'Cancelled';
+    appointment.cancellationReason = reason;
+    appointment.cancelledAt = cancelledAt;
+    appointment.cancelledBy = req.user?._id;
+    appointment.cancellationHistory.push({
+      reason,
+      cancelledAt,
+      cancelledBy: req.user?._id
+    });
+
+    await Promise.all([
+      appointment.save(),
+      removeAppointmentFromCalendar(appointment)
+    ]);
+
+    const populated = await Appointment.findById(appointment._id)
+      .populate('patient_id')
+      .populate('doctor_id')
+      .populate('department_id')
+      .populate('cancelledBy', 'name email role');
+
+    return res.json({
+      success: true,
+      message: 'Appointment cancelled successfully',
+      appointment: populated
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 };
 
@@ -967,6 +1042,9 @@ exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
 exports.updateAppointmentStatus = async (req, res) => {
   try {
     const { status } = req.body;
+    if (status === 'Cancelled') {
+      return res.status(400).json({ error: 'Use the cancellation action and provide a cancellation reason' });
+    }
 
     const appointment = await Appointment.findByIdAndUpdate(
       req.params.id,

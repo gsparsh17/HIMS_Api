@@ -3,91 +3,58 @@ const User = require('../models/User');
 const Department = require('../models/Department');
 const Hospital = require('../models/Hospital');
 const Calendar = require('../models/Calendar');
-const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
+const {
+  normalizeFeaturePermissions,
+  defaultFeaturePermissions,
+  dashboardAccessFromFeatures,
+  effectiveMainFeaturePermissions
+} = require('../utils/mainFeatureAccess');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
+const { requireHospitalId: requireDoctorHospitalId } = require('../services/tenantScope.service');
 
 // ✅ Create a new doctor
 exports.createDoctor = async (req, res) => {
   try {
-    const {
-      firstName, lastName, email,
-      isFullTime, contractStartDate, contractEndDate, aadharNumber, panNumber,
-      timeSlots, workingDaysPerWeek, visitsPerWeek, hospitalId,
-      revenuePercentage // NEW FIELD
-    } = req.body;
+    const hospitalId = requireDoctorHospitalId(req);
 
-    // ✅ Create Doctor
-    const newDoctor = await Doctor.create({
-      firstName,
-      lastName,
-      email,
-      phone: req.body.phone,
-      dateOfBirth: req.body.dateOfBirth ? new Date(req.body.dateOfBirth) : null,
-      gender: req.body.gender,
-      address: req.body.address,
-      city: req.body.city,
-      state: req.body.state,
-      zipCode: req.body.zipCode,
-      department: req.body.department,
-      specialization: req.body.specialization,
-      licenseNumber: req.body.licenseNumber,
-      experience: req.body.experience ? Number(req.body.experience) : null,
-      education: req.body.education,
-      shift: req.body.shift,
-      emergencyContact: req.body.emergencyContact,
-      emergencyPhone: req.body.emergencyPhone,
-      startDate: req.body.startDate ? new Date(req.body.startDate) : null,
-      isFullTime: isFullTime === true || isFullTime === 'true',
-      notes: req.body.notes,
-      paymentType: req.body.paymentType,
-      amount: req.body.amount ? Number(req.body.amount) : null,
-      revenuePercentage: revenuePercentage ? Number(revenuePercentage) : undefined, // NEW FIELD
-      contractStartDate: contractStartDate ? new Date(contractStartDate) : null,
-      contractEndDate: contractEndDate ? new Date(contractEndDate) : null,
-      visitsPerWeek: req.body.visitsPerWeek ? Number(req.body.visitsPerWeek) : null,
-      workingDaysPerWeek: req.body.workingDaysPerWeek ? req.body.workingDaysPerWeek : null,
-      timeSlots: timeSlots || [],
-      aadharNumber,
-      panNumber,
-      hospitalId: hospitalId || null
-    });
+    if (req.body.department) {
+      const exists = await Department.exists({
+        _id: req.body.department,
+        hospitalId
+      });
 
-
-    // Explicitly await HR synchronization so the employee record is available
-    // immediately to payroll/attendance APIs without waiting for background hooks.
-    await syncHRProfileFromSource('Doctor', newDoctor, {
-      hospital_id: req.user?.hospital_id || req.body?.hospitalId || undefined
-    });
-
-    // Add doctor to calendars
-    try {
-      console.log(`🗓️ Adding new doctor ${firstName} ${lastName} to calendars...`);
-      
-      const hospitals = hospitalId 
-        ? [await Hospital.findById(hospitalId)]
-        : await Hospital.find();
-
-      if (!hospitals || hospitals.length === 0) {
-        console.warn('⚠️ No hospitals found for calendar update');
-      } else {
-        for (const hospital of hospitals) {
-          if (!hospital) continue;
-          await addDoctorToCalendar(hospital._id, newDoctor);
-        }
+      if (!exists) {
+        return res.status(400).json({
+          error: 'Department not found in this hospital'
+        });
       }
-      
-      console.log(`✅ Finished calendar update for Doctor ${newDoctor.firstName} ${newDoctor.lastName}`);
-    } catch (calendarError) {
-      console.error('❌ Failed to update calendar with new doctor:', calendarError);
     }
 
-    res.status(201).json({
+    const data = {
+      ...req.body,
+      hospitalId,
+      dateOfBirth: req.body.dateOfBirth ? new Date(req.body.dateOfBirth) : undefined,
+      startDate: req.body.startDate ? new Date(req.body.startDate) : undefined,
+      contractStartDate: req.body.contractStartDate ? new Date(req.body.contractStartDate) : null,
+      contractEndDate: req.body.contractEndDate ? new Date(req.body.contractEndDate) : null
+    };
+
+    const doctor = await Doctor.create(data);
+    await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+
+    try {
+      await addDoctorToCalendar(hospitalId, doctor);
+    } catch (error) {
+      console.error('Calendar sync failed:', error.message);
+    }
+
+    return res.status(201).json({
       message: 'Doctor created successfully (Please set login credentials in Staff Login)',
-      doctor: newDoctor
+      doctor
     });
-  } catch (err) {
-    console.error('Doctor creation error:', err.message);
-    res.status(400).json({ error: err.message });
+  } catch (error) {
+    const statusCode = error.code === 11000 ? 409 : 400;
+    return res.status(statusCode).json({ error: error.message });
   }
 };
 
@@ -114,11 +81,11 @@ async function addDoctorToCalendar(hospitalId, doctor) {
   for (const targetDate of datesToUpdate) {
     const dateStr = targetDate.toISOString().split('T')[0];
     const dayName = targetDate.toLocaleDateString('en-US', { weekday: 'long' });
-    
+
     if (!doctor.isFullTime) {
       const contractStart = doctor.contractStartDate ? new Date(doctor.contractStartDate) : null;
       const contractEnd = doctor.contractEndDate ? new Date(doctor.contractEndDate) : null;
-      
+
       if (contractStart && targetDate < contractStart) continue;
       if (contractEnd && targetDate > contractEnd) continue;
     }
@@ -136,7 +103,7 @@ async function addDoctorToCalendar(hospitalId, doctor) {
       if (!isDoctorAlreadyAdded) {
         console.log(`➕ Adding doctor ${doctor.firstName} ${doctor.lastName} to ${dateStr}`);
         needsUpdate = true;
-        
+
         existingDay.doctors.push({
           doctorId: doctor._id,
           bookedAppointments: [],
@@ -148,7 +115,7 @@ async function addDoctorToCalendar(hospitalId, doctor) {
     } else {
       console.log(`➕ Creating new day ${dateStr} with doctor ${doctor.firstName} ${doctor.lastName}`);
       needsUpdate = true;
-      
+
       calendar.days.push({
         date: targetDate,
         dayName,
@@ -165,6 +132,7 @@ async function addDoctorToCalendar(hospitalId, doctor) {
 
   if (needsUpdate) {
     const todayStr = today.toISOString().split('T')[0];
+
     calendar.days = calendar.days.filter(day => {
       const dayDate = new Date(day.date);
       const diffDays = Math.floor((dayDate - today) / (1000 * 60 * 60 * 24));
@@ -183,25 +151,39 @@ async function addDoctorToCalendar(hospitalId, doctor) {
 // Get all doctors
 exports.getAllDoctors = async (req, res) => {
   try {
-    const doctors = await Doctor.find().populate('department').populate('user_id', 'name email role');
-    res.json(doctors);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    const hospitalId = requireDoctorHospitalId(req);
+
+    const doctors = await Doctor
+      .find({ hospitalId })
+      .populate('department')
+      .populate('user_id', 'name email role')
+      .sort({ firstName: 1 });
+
+    return res.json(doctors);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 };
 
 // Get a doctor by ID
 exports.getDoctorById = async (req, res) => {
   try {
-    const doctor = await Doctor.findById(req.params.id).populate('department').populate('user_id', 'name email role');
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
-    res.json(doctor);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    const hospitalId = requireDoctorHospitalId(req);
+
+    const doctor = await Doctor
+      .findOne({ _id: req.params.id, hospitalId })
+      .populate('department')
+      .populate('user_id', 'name email role');
+
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    return res.json(doctor);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 };
-
-
 
 function applyDoctorFeaturePermissions(user, permissions, grantedBy) {
   const rows = Array.isArray(permissions)
@@ -209,19 +191,42 @@ function applyDoctorFeaturePermissions(user, permissions, grantedBy) {
     : (Array.isArray(user.modulePermissions) && user.modulePermissions.length
       ? normalizeFeaturePermissions(user.modulePermissions, 'doctor', { grantedBy })
       : defaultFeaturePermissions('doctor', { grantedBy }));
+
   user.modulePermissions = rows;
   user.dashboard_access = dashboardAccessFromFeatures(rows);
 }
 
 exports.getDoctorLoginAccess = async (req, res) => {
   try {
-    const doctor = await Doctor.findById(req.params.id).populate('user_id', 'name email role modulePermissions dashboard_access is_active');
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
-    const user = doctor.user_id || await User.findOne({ email: doctor.email }).select('name email role modulePermissions dashboard_access is_active');
+    const hospitalId = requireDoctorHospitalId(req);
+
+    const doctor = await Doctor
+      .findOne({ _id: req.params.id, hospitalId })
+      .populate('user_id', 'name email role modulePermissions dashboard_access is_active');
+
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    const user = doctor.user_id || await User.findOne({
+      email: doctor.email,
+      hospital_id: hospitalId
+    });
+
     return res.json({
       success: true,
-      doctor: { _id: doctor._id, name: `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim(), email: doctor.email },
-      user: user ? { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user), is_active: user.is_active } : null
+      doctor: {
+        _id: doctor._id,
+        name: `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim(),
+        email: doctor.email
+      },
+      user: user ? {
+        _id: user._id,
+        email: user.email,
+        role: user.role,
+        modulePermissions: effectiveMainFeaturePermissions(user),
+        is_active: user.is_active
+      } : null
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });
@@ -230,147 +235,161 @@ exports.getDoctorLoginAccess = async (req, res) => {
 
 exports.updateDoctorLoginAccess = async (req, res) => {
   try {
-    const doctor = await Doctor.findById(req.params.id);
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
-    if (!doctor.email) return res.status(400).json({ error: 'Doctor email is required to create login credentials' });
+    const hospitalId = requireDoctorHospitalId(req);
 
-    let user = doctor.user_id ? await User.findById(doctor.user_id) : null;
-    if (!user) user = await User.findOne({ email: doctor.email });
+    const doctor = await Doctor.findOne({
+      _id: req.params.id,
+      hospitalId
+    });
+
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    let user = doctor.user_id
+      ? await User.findOne({ _id: doctor.user_id, hospital_id: hospitalId })
+      : await User.findOne({ email: doctor.email, hospital_id: hospitalId });
+
     if (!user) {
-      if (!req.body?.password) return res.status(400).json({ error: 'Password is required when creating a new login' });
+      if (!req.body.password) {
+        return res.status(400).json({
+          error: 'Password is required when creating a new login'
+        });
+      }
+
       user = new User({
         name: `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim(),
         email: doctor.email,
         phone: doctor.phone,
         role: 'doctor',
         password: req.body.password,
-        hospital_id: req.user?.hospital_id || undefined
+        hospital_id: hospitalId
       });
     } else {
       user.name = `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim();
-      user.email = doctor.email;
       user.phone = doctor.phone;
       user.role = 'doctor';
-      if (req.body?.password) user.password = req.body.password;
-      if (req.user?.hospital_id && !user.hospital_id) user.hospital_id = req.user.hospital_id;
+
+      if (req.body.password) {
+        user.password = req.body.password;
+      }
     }
 
-    applyDoctorFeaturePermissions(user, req.body?.modulePermissions || req.body?.mainFeaturePermissions, req.user?._id);
+    applyDoctorFeaturePermissions(
+      user,
+      req.body.modulePermissions || req.body.mainFeaturePermissions,
+      req.user?._id
+    );
+
+    user.is_active = req.body.is_active !== undefined
+      ? Boolean(req.body.is_active)
+      : user.is_active;
+
     await user.save();
-    if (!doctor.user_id || String(doctor.user_id) !== String(user._id)) {
-      doctor.user_id = user._id;
-      await doctor.save();
-    }
+    doctor.user_id = user._id;
+    await doctor.save();
+
+    await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
 
     return res.json({
       success: true,
-      message: 'Login credentials and main feature access saved successfully',
-      user: { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user) }
+      user: {
+        _id: user._id,
+        email: user.email,
+        role: user.role,
+        modulePermissions: effectiveMainFeaturePermissions(user),
+        is_active: user.is_active
+      }
     });
   } catch (error) {
-    return res.status(400).json({ error: error.message });
+    const statusCode = error.code === 11000 ? 409 : 400;
+    return res.status(statusCode).json({ error: error.message });
   }
 };
 
 // Update a doctor by ID
 exports.updateDoctor = async (req, res) => {
   try {
-    // Handle revenuePercentage update
-    if (req.body.revenuePercentage !== undefined) {
-      req.body.revenuePercentage = Number(req.body.revenuePercentage);
-      
-      // Validate percentage for part-time doctors
-      if (req.body.revenuePercentage < 0 || req.body.revenuePercentage > 100) {
-        return res.status(400).json({ error: 'Revenue percentage must be between 0 and 100' });
+    const hospitalId = requireDoctorHospitalId(req);
+
+    if (req.body.department) {
+      const exists = await Department.exists({
+        _id: req.body.department,
+        hospitalId
+      });
+
+      if (!exists) {
+        return res.status(400).json({
+          error: 'Department not found in this hospital'
+        });
       }
     }
 
-    const doctor = await Doctor.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
-    
-    // Check if password update is requested
-    if (req.body.password) {
-      const { password } = req.body;
-      let user = await User.findById(doctor.user_id);
-      
-      if (user) {
-        user.password = password;
-        user.name = `${doctor.firstName} ${doctor.lastName}`;
-        user.email = doctor.email; 
-        await user.save();
-        console.log(`✅ Password updated for user associated with Doctor ${doctor._id}`);
-      } else {
-        user = await User.findOne({ email: doctor.email });
-        if (user) {
-           user.password = password;
-           user.role = 'doctor';
-           await user.save();
-        } else {
-           user = await User.create({
-            name: `${doctor.firstName} ${doctor.lastName}`,
-            email: doctor.email,
-            password: password,
-            role: 'doctor'
-          });
-          doctor.user_id = user._id;
-          await doctor.save();
-        }
-        console.log(`✅ Created/Linked User for Doctor ${doctor._id}`);
-      }
+    delete req.body.hospitalId;
+
+    const doctor = await Doctor.findOneAndUpdate(
+      { _id: req.params.id, hospitalId },
+      req.body,
+      { new: true, runValidators: true }
+    );
+
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
     }
 
-    // Update calendar if doctor's availability changed
-    if (req.body.timeSlots || req.body.isFullTime || req.body.contractStartDate || req.body.contractEndDate) {
-      try {
-        await updateDoctorInCalendar(doctor._id, doctor);
-      } catch (calendarError) {
-        console.error('Error updating doctor in calendar:', calendarError);
-      }
-    }
-    
-    res.json(doctor);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+    await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+
+    return res.json(doctor);
+  } catch (error) {
+    const statusCode = error.code === 11000 ? 409 : 400;
+    return res.status(statusCode).json({ error: error.message });
   }
 };
 
 // Helper function to update doctor in calendar
 async function updateDoctorInCalendar(doctorId, updatedDoctor) {
   console.log(`🔄 Updating doctor ${doctorId} in calendars...`);
-  
+
   const hospitals = await Hospital.find();
-  
+
   for (const hospital of hospitals) {
     const calendar = await Calendar.findOne({ hospitalId: hospital._id });
     if (!calendar) continue;
-    
+
     let updated = false;
-    
+
     for (const day of calendar.days) {
-      const doctorIndex = day.doctors.findIndex(d => d.doctorId.toString() === doctorId.toString());
-      
+      const doctorIndex = day.doctors.findIndex(
+        d => d.doctorId.toString() === doctorId.toString()
+      );
+
       if (doctorIndex !== -1) {
         const targetDate = new Date(day.date);
-        
+
         if (!updatedDoctor.isFullTime) {
-          const contractStart = updatedDoctor.contractStartDate ? new Date(updatedDoctor.contractStartDate) : null;
-          const contractEnd = updatedDoctor.contractEndDate ? new Date(updatedDoctor.contractEndDate) : null;
-          
-          if ((contractStart && targetDate < contractStart) || (contractEnd && targetDate > contractEnd)) {
+          const contractStart = updatedDoctor.contractStartDate
+            ? new Date(updatedDoctor.contractStartDate)
+            : null;
+          const contractEnd = updatedDoctor.contractEndDate
+            ? new Date(updatedDoctor.contractEndDate)
+            : null;
+
+          if ((contractStart && targetDate < contractStart) ||
+              (contractEnd && targetDate > contractEnd)) {
             day.doctors.splice(doctorIndex, 1);
             updated = true;
             continue;
           }
         }
-        
+
         if (!updatedDoctor.isFullTime) {
           day.doctors[doctorIndex].workingHours = updatedDoctor.timeSlots || [];
         }
-        
+
         updated = true;
       }
     }
-    
+
     if (updated) {
       await calendar.save();
       console.log(`✅ Updated doctor ${doctorId} in calendar for hospital ${hospital._id}`);
@@ -381,63 +400,74 @@ async function updateDoctorInCalendar(doctorId, updatedDoctor) {
 // Get doctors by department ID
 exports.getDoctorsByDepartmentId = async (req, res) => {
   try {
-    const { departmentId } = req.params;
+    const hospitalId = requireDoctorHospitalId(req);
 
-    const doctors = await Doctor.find({ department: departmentId })
+    const doctors = await Doctor
+      .find({
+        hospitalId,
+        department: req.params.departmentId
+      })
       .populate('department')
-      .populate('user_id', 'name email role');
+      .sort({ firstName: 1 });
 
-    res.json(doctors);
-  } catch (err) {
-    console.error('Error fetching doctors by department:', err.message);
-    res.status(500).json({ error: err.message });
+    return res.json(doctors);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 };
 
 // Delete a doctor by ID
 exports.deleteDoctor = async (req, res) => {
   try {
-    const doctor = await Doctor.findById(req.params.id);
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
-    
-    // Remove doctor from all calendars before deleting
-    try {
-      await removeDoctorFromCalendar(doctor._id);
-    } catch (calendarError) {
-      console.error('Error removing doctor from calendar:', calendarError);
+    const hospitalId = requireDoctorHospitalId(req);
+
+    const doctor = await Doctor.findOne({
+      _id: req.params.id,
+      hospitalId
+    });
+
+    if (!doctor) {
+      return res.status(404).json({ error: 'Doctor not found' });
     }
-    
-    // Delete the doctor and associated user
-    await Doctor.findByIdAndDelete(req.params.id);
-    await User.findByIdAndDelete(doctor.user_id);
-    
-    res.json({ message: 'Doctor deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+
+    if (doctor.user_id) {
+      await User.updateOne(
+        { _id: doctor.user_id, hospital_id: hospitalId },
+        { is_active: false }
+      );
+    }
+
+    await Doctor.deleteOne({ _id: doctor._id, hospitalId });
+
+    return res.json({ message: 'Doctor deleted successfully' });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 };
 
 // Helper function to remove doctor from calendar
 async function removeDoctorFromCalendar(doctorId) {
   console.log(`🗑️ Removing doctor ${doctorId} from calendars...`);
-  
+
   const hospitals = await Hospital.find();
-  
+
   for (const hospital of hospitals) {
     const calendar = await Calendar.findOne({ hospitalId: hospital._id });
     if (!calendar) continue;
-    
+
     let updated = false;
-    
+
     for (const day of calendar.days) {
       const initialLength = day.doctors.length;
-      day.doctors = day.doctors.filter(d => d.doctorId.toString() !== doctorId.toString());
-      
+      day.doctors = day.doctors.filter(
+        d => d.doctorId.toString() !== doctorId.toString()
+      );
+
       if (day.doctors.length !== initialLength) {
         updated = true;
       }
     }
-    
+
     if (updated) {
       await calendar.save();
       console.log(`✅ Removed doctor ${doctorId} from calendar for hospital ${hospital._id}`);
@@ -446,100 +476,59 @@ async function removeDoctorFromCalendar(doctorId) {
 }
 
 exports.bulkCreateDoctors = async (req, res) => {
-  const doctorsData = req.body;
-  console.log('Bulk import data:', doctorsData);
+  try {
+    const hospitalId = requireDoctorHospitalId(req);
 
-  if (!doctorsData || !Array.isArray(doctorsData)) {
-    return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
-  }
+    const rows = Array.isArray(req.body) ? req.body : req.body.doctors;
 
-  const successfulImports = [];
-  const failedImports = [];
-
-  for (const doctor of doctorsData) {
-    try {
-      // Check if user already exists
-      const userExists = await User.findOne({ email: doctor.email });
-      if (userExists) throw new Error('User with this email already exists.');
-
-      // Resolve department name
-      let departmentId = null;
-      if (doctor.department) {
-        const dept = await Department.findOne({ name: new RegExp(`^${doctor.department}$`, 'i') });
-        if (!dept) throw new Error(`Department "${doctor.department}" not found.`);
-        departmentId = dept._id;
-      }
-
-      // Create User
-      const newUser = await User.create({
-        name: `${doctor.firstName} ${doctor.lastName}`,
-        email: doctor.email,
-        password: doctor.password,
-        role: 'doctor'
+    if (!Array.isArray(rows)) {
+      return res.status(400).json({
+        error: 'Expected an array of doctors'
       });
-
-      // Create Doctor - INCLUDING revenuePercentage
-      const newDoctor = await Doctor.create({
-        user_id: newUser._id,
-        firstName: doctor.firstName,
-        lastName: doctor.lastName,
-        email: doctor.email,
-        phone: doctor.phone,
-        dateOfBirth: doctor.dateOfBirth ? new Date(doctor.dateOfBirth.replace(/-/g, '/')) : null,
-        gender: doctor.gender?.toLowerCase(),
-        address: doctor.address || '',
-        city: doctor.city || '',
-        state: doctor.state || '',
-        zipCode: doctor.zipCode || '',
-        department: departmentId,
-        specialization: doctor.specialization || '',
-        licenseNumber: doctor.licenseNumber || '',
-        experience: doctor.experience ? Number(doctor.experience) : null,
-        paymentType: doctor.paymentType || null,
-        amount: doctor.amount ? Number(doctor.amount) : null,
-        revenuePercentage: doctor.revenuePercentage ? Number(doctor.revenuePercentage) : undefined, // NEW FIELD
-        isFullTime: doctor.isFullTime === 'true' || doctor.isFullTime === true,
-        contractStartDate: doctor.contractStartDate ? new Date(doctor.contractStartDate) : null,
-        contractEndDate: doctor.contractEndDate ? new Date(doctor.contractEndDate) : null,
-        visitsPerWeek: doctor.visitsPerWeek ? Number(doctor.visitsPerWeek) : null,
-        workingDaysPerWeek: doctor.workingDaysPerWeek ? Number(doctor.workingDaysPerWeek) : null,
-        aadharNumber: doctor.aadharNumber || null,
-        panNumber: doctor.panNumber || null,
-        notes: doctor.notes || ''
-      });
-
-  
-    // Explicitly await HR synchronization so the employee record is available
-    // immediately to payroll/attendance APIs without waiting for background hooks.
-    await syncHRProfileFromSource('Doctor', newDoctor, {
-      hospital_id: req.user?.hospital_id || req.body?.hospitalId || undefined
-    });
-
-    // Add doctor to calendars
-      try {
-        await addDoctorToCalendarForBulkImport(newDoctor);
-      } catch (calendarError) {
-        console.error('Error adding doctor to calendar during bulk import:', calendarError);
-      }
-
-      successfulImports.push(newDoctor);
-    } catch (err) {
-      failedImports.push({ email: doctor.email, reason: err.message });
     }
-  }
 
-  res.status(201).json({
-    message: 'Bulk import process completed.',
-    successfulCount: successfulImports.length,
-    failedCount: failedImports.length,
-    failedImports
-  });
+    const created = [];
+    const failed = [];
+
+    for (const row of rows) {
+      try {
+        if (row.department) {
+          const exists = await Department.exists({
+            _id: row.department,
+            hospitalId
+          });
+
+          if (!exists) {
+            throw new Error('Department not found in this hospital');
+          }
+        }
+
+        const doctor = await Doctor.create({ ...row, hospitalId });
+        await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+        created.push(doctor);
+      } catch (error) {
+        failed.push({
+          email: row.email,
+          error: error.message
+        });
+      }
+    }
+
+    return res.status(201).json({
+      successfulCount: created.length,
+      failedCount: failed.length,
+      doctors: created,
+      failed
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
 };
 
 // Helper function for bulk import
 async function addDoctorToCalendarForBulkImport(doctor) {
   const hospitals = await Hospital.find();
-  
+
   for (const hospital of hospitals) {
     await addDoctorToCalendar(hospital._id, doctor);
   }

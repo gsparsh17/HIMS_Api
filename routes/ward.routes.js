@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const wardController = require('../controllers/ward.controller');
-
-router.post('/', wardController.createWard);
-router.get('/', wardController.getAllWards);
-router.get('/:id', wardController.getWardById);
-router.put('/:id', wardController.updateWard);
-router.delete('/:id', wardController.deleteWard);
-
+const controller = require('../controllers/ward.controller');
+const { protect, requireModuleAccess } = require('../middlewares/auth');
+router.use(protect, requireModuleAccess('ipd', 'view'));
+router.post('/', requireModuleAccess('masters_settings', 'manage'), controller.createWard);
+router.get('/', controller.getAllWards);
+router.get('/:id', controller.getWardById);
+router.put('/:id', requireModuleAccess('masters_settings', 'manage'), controller.updateWard);
+router.delete('/:id', requireModuleAccess('masters_settings', 'manage'), controller.deleteWard);
 module.exports = router;

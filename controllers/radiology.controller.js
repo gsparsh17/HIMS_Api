@@ -6,6 +6,7 @@ const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
+const { requireHospitalId } = require('../services/tenantScope.service');
 
 
 const safeUnlink = (filePath) => {
@@ -50,12 +51,14 @@ exports.createImagingTest = async (req, res) => {
       return res.status(400).json({ error: 'Code, name, and category are required' });
     }
 
-    const existing = await ImagingTest.findOne({ code: code.toUpperCase() });
+    const hospitalId = requireHospitalId(req);
+    const existing = await ImagingTest.findOne({ hospitalId, code: code.toUpperCase() });
     if (existing) {
       return res.status(400).json({ error: 'Imaging test with this code already exists' });
     }
 
     const imagingTest = new ImagingTest({
+      hospitalId,
       code: code.toUpperCase(),
       name: name.trim(),
       category,
@@ -83,7 +86,7 @@ exports.createImagingTest = async (req, res) => {
 exports.getImagingTests = async (req, res) => {
   try {
     const { active_only = 'true', category, search } = req.query;
-    const filter = {};
+    const filter = { hospitalId: requireHospitalId(req) };
     
     if (active_only === 'true') filter.is_active = true;
     if (category) filter.category = category;
@@ -107,7 +110,8 @@ exports.updateImagingTest = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-    const test = await ImagingTest.findByIdAndUpdate(id, updates, { new: true });
+    delete updates.hospitalId;
+    const test = await ImagingTest.findOneAndUpdate({ _id: id, hospitalId: requireHospitalId(req) }, { $set: updates }, { new: true, runValidators: true });
     if (!test) return res.status(404).json({ error: 'Imaging test not found' });
     res.json({ success: true, data: test });
   } catch (error) {
@@ -120,7 +124,8 @@ exports.updateImagingTest = async (req, res) => {
 exports.deleteImagingTest = async (req, res) => {
   try {
     const { id } = req.params;
-    await ImagingTest.findByIdAndDelete(id);
+    const deleted = await ImagingTest.findOneAndDelete({ _id: id, hospitalId: requireHospitalId(req) });
+    if (!deleted) return res.status(404).json({ error: 'Imaging test not found' });
     res.json({ success: true, message: 'Imaging test deleted successfully' });
   } catch (error) {
     console.error('Error deleting imaging test:', error);
@@ -145,7 +150,8 @@ exports.createRadiologyRequest = async (req, res) => {
     }
 
     // Get imaging test details
-    const imagingTest = await ImagingTest.findById(imagingTestId);
+    const hospitalId = requireHospitalId(req);
+    const imagingTest = await ImagingTest.findOne({ _id: imagingTestId, hospitalId, is_active: true });
     if (!imagingTest) {
       return res.status(404).json({ error: 'Imaging test not found' });
     }
@@ -159,6 +165,7 @@ exports.createRadiologyRequest = async (req, res) => {
     await imagingTest.incrementUsage();
 
     const request = new RadiologyRequest({
+      hospitalId,
       sourceType: sourceType || 'IPD',
       admissionId: admissionId || null,
       appointmentId: appointmentId || null,
@@ -183,7 +190,7 @@ exports.createRadiologyRequest = async (req, res) => {
     await request.save();
 
     // Populate response
-    const populated = await RadiologyRequest.findById(request._id)
+    const populated = await RadiologyRequest.findOne({ _id: request._id, hospitalId })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
       .populate('imagingTestId', 'code name category report_template_id report_template_name');
@@ -203,7 +210,7 @@ exports.getRadiologyRequests = async (req, res) => {
       startDate, endDate, page = 1, limit = 20
     } = req.query;
 
-    const filter = {};
+    const filter = { hospitalId: requireHospitalId(req) };
     if (status) filter.status = status;
     if (patientId) filter.patientId = patientId;
     if (doctorId) filter.doctorId = doctorId;
@@ -248,7 +255,7 @@ exports.getRadiologyRequests = async (req, res) => {
 exports.getRadiologyRequestById = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await RadiologyRequest.findById(id)
+    const request = await RadiologyRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) })
       .populate('patientId', 'first_name last_name patientId phone dob gender')
       .populate('doctorId', 'firstName lastName specialization')
       .populate('imagingTestId', 'code name category base_price preparation_instructions report_template_id report_template_name')
@@ -274,7 +281,7 @@ exports.updateRequestStatus = async (req, res) => {
     const { status, notes } = req.body;
     const staffId = req.user?.radiologyStaffId;
 
-    const request = await RadiologyRequest.findById(id);
+    const request = await RadiologyRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
     if (!request) {
       return res.status(404).json({ error: 'Radiology request not found' });
     }
@@ -321,7 +328,7 @@ exports.uploadReport = async (req, res) => {
       return res.status(400).json({ error: 'The uploaded report content does not match a valid PDF, JPG, or PNG file.' });
     }
 
-    const request = await RadiologyRequest.findById(id);
+    const request = await RadiologyRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
     if (!request) {
       safeUnlink(req.file.path);
       return res.status(404).json({ error: 'Radiology request not found' });
@@ -369,7 +376,7 @@ exports.uploadReport = async (req, res) => {
 exports.downloadReport = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await RadiologyRequest.findById(id);
+    const request = await RadiologyRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
     
     if (!request || !request.report_url) {
       return res.status(404).json({ error: 'Report not found' });
@@ -394,6 +401,7 @@ exports.getRequestsByAdmission = async (req, res) => {
     }
     
     const requests = await RadiologyRequest.find({ 
+      hospitalId: requireHospitalId(req),
       admissionId, 
       sourceType: 'IPD' 
     })
@@ -422,6 +430,7 @@ exports.getPendingIPDRequests = async (req, res) => {
     }
     
     const requests = await RadiologyRequest.find({
+      hospitalId: requireHospitalId(req),
       admissionId,
       sourceType: 'IPD',
       status: { $in: ['Pending', 'Approved', 'Scheduled'] }
@@ -446,7 +455,7 @@ exports.getRequestsByPatient = async (req, res) => {
       return res.status(400).json({ error: 'Patient ID is required' });
     }
     
-    const requests = await RadiologyRequest.find({ patientId })
+    const requests = await RadiologyRequest.find({ hospitalId: requireHospitalId(req), patientId })
       .populate('imagingTestId', 'code name category')
       .populate('doctorId', 'firstName lastName')
       .populate('admissionId', 'admissionNumber admissionDate')
@@ -465,8 +474,8 @@ exports.markAsBilled = async (req, res) => {
     const { id } = req.params;
     const { invoiceId } = req.body;
     
-    const request = await RadiologyRequest.findByIdAndUpdate(
-      id,
+    const request = await RadiologyRequest.findOneAndUpdate(
+      { _id: id, hospitalId: requireHospitalId(req) },
       { is_billed: true, invoiceId },
       { new: true }
     );
@@ -485,23 +494,27 @@ exports.markAsBilled = async (req, res) => {
 // Get dashboard stats for radiology
 exports.getDashboardStats = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
 
     const [pending, todayScheduled, totalRequests, completedToday, reportedToday] = await Promise.all([
-      RadiologyRequest.countDocuments({ status: 'Pending' }),
+      RadiologyRequest.countDocuments({ hospitalId, status: 'Pending' }),
       RadiologyRequest.countDocuments({ 
+        hospitalId,
         scheduledDate: { $gte: today, $lt: tomorrow },
         status: { $in: ['Scheduled', 'Approved'] }
       }),
-      RadiologyRequest.countDocuments(),
+      RadiologyRequest.countDocuments({ hospitalId }),
       RadiologyRequest.countDocuments({ 
+        hospitalId,
         status: 'Completed',
         performedAt: { $gte: today, $lt: tomorrow }
       }),
       RadiologyRequest.countDocuments({ 
+        hospitalId,
         status: 'Reported',
         reportedAt: { $gte: today, $lt: tomorrow }
       })

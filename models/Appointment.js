@@ -30,6 +30,30 @@ const appointmentSchema = new mongoose.Schema({
     enum: ['Scheduled', 'In Progress', 'Completed', 'Cancelled'],
     default: 'Scheduled'
   },
+  cancellationReason: {
+    type: String,
+    trim: true
+  },
+  cancelledAt: Date,
+  cancelledBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  cancellationHistory: [{
+    reason: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    cancelledAt: {
+      type: Date,
+      default: Date.now
+    },
+    cancelledBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    }
+  }],
   created_at: { type: Date, default: Date.now },
   episodeId: {
     type: mongoose.Schema.Types.ObjectId,

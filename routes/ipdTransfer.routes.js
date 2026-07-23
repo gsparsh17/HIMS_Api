@@ -1,0 +1,17 @@
+const express = require('express');
+const router = express.Router();
+const controller = require('../controllers/ipdTransfer.controller');
+const { protect, authorize, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
+router.use(protect, requireModuleAccess('ipd', 'view'));
+router.get('/admissions/:id/transfers', controller.listAdmissionTransfers);
+router.get('/admissions/:id/accommodation-print-data', controller.printData);
+router.post('/admissions/:id/transfers', requireModuleAccess('ipd', 'manage'), controller.create);
+router.post('/transfers/:id/reserve', requireModuleAccess('ipd', 'manage'), requireActionPermission('transfer_reserve'), controller.reserve);
+router.post('/transfers/:id/approve', requireModuleAccess('ipd', 'manage'), requireActionPermission('transfer_approve'), controller.approve);
+router.post('/transfers/:id/start', requireModuleAccess('ipd', 'manage'), controller.start);
+router.post('/transfers/:id/complete', requireModuleAccess('ipd', 'manage'), requireActionPermission('transfer_complete'), controller.complete);
+router.post('/transfers/:id/cancel', requireModuleAccess('ipd', 'manage'), controller.cancel);
+router.get('/transfer-board', controller.board);
+router.get('/beds/available', controller.availableBeds);
+router.post('/beds/:id/cleaning-complete', authorize('admin', 'bed_manager', 'housekeeping', 'staff', 'nurse'), controller.releaseCleaning);
+module.exports = router;

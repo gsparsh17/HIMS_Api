@@ -13,7 +13,11 @@
     "radiology:audit-templates": "node scripts/syncRadiologyTestsFromReportTemplates.js",
     "radiology:sync-templates": "node scripts/syncRadiologyTestsFromReportTemplates.js --apply",
     "test": "node --test tests/*.test.js",
-    "hims:upgrade": "node scripts/migrate-ot-store-document-platform.js"
+    "hims:upgrade": "node scripts/migrate-ot-store-document-platform.js",
+    "cghs:extract": "python3 scripts/extract-cghs-2025-rate-card.py cghs-rates-notification-2025.pdf --output-dir data",
+    "cghs:import": "node scripts/import-cghs-2025-rate-card.js",
+    "hims:migrate:2026": "node scripts/migrate-hims-2026.js",
+    "hims:rollback:2026": "node scripts/rollback-hims-2026.js"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",

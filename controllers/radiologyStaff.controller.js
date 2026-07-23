@@ -1,268 +1,371 @@
+const crypto = require('crypto');
 const RadiologyStaff = require('../models/RadiologyStaff');
 const User = require('../models/User');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
+const { requireHospitalId } = require('../services/tenantScope.service');
+const { defaultFeaturePermissions, dashboardAccessFromFeatures } = require('../utils/mainFeatureAccess');
 
-// Get all radiology staff
+function filter(req, extra = {}) {
+  return { hospitalId: requireHospitalId(req), ...extra };
+}
+
+function populate(query) {
+  return query.populate('userId', 'name email phone role is_active staff_profile_id');
+}
+
+function errorResponse(res, error) {
+  const statusCode = error.statusCode || (error.code === 11000 ? 409 : 500);
+  return res.status(statusCode).json({ success: false, error: error.message });
+}
+
 exports.getAllStaff = async (req, res) => {
   try {
-    const { is_active, designation } = req.query;
-    const filter = {};
-    
-    if (is_active !== undefined) filter.is_active = is_active === 'true';
-    if (designation) filter.designation = designation;
-    
-    const staff = await RadiologyStaff.find(filter)
-      .populate('userId', 'name email phone address')
+    const query = filter(req);
+
+    if (req.query.is_active !== undefined) {
+      query.is_active = req.query.is_active === 'true';
+    }
+
+    if (req.query.designation) {
+      query.designation = req.query.designation;
+    }
+
+    if (req.query.modality) {
+      query.specializations = req.query.modality;
+    }
+
+    const staff = await populate(RadiologyStaff.find(query))
       .sort({ createdAt: -1 });
-    
-    res.json({
+
+    return res.json({
       success: true,
       data: staff,
       count: staff.length
     });
   } catch (error) {
-    console.error('Error fetching radiology staff:', error);
-    res.status(500).json({ error: error.message });
+    return errorResponse(res, error);
   }
 };
 
-// Get single staff member by ID
 exports.getStaffById = async (req, res) => {
   try {
-    const { id } = req.params;
-    const staff = await RadiologyStaff.findById(id)
-      .populate('userId', 'name email phone address');
-    
+    const staff = await populate(
+      RadiologyStaff.findOne(filter(req, { _id: req.params.id }))
+    );
+
     if (!staff) {
-      return res.status(404).json({ error: 'Radiology staff not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Radiology staff not found'
+      });
     }
-    
-    res.json({ success: true, data: staff });
+
+    return res.json({ success: true, data: staff });
   } catch (error) {
-    console.error('Error fetching radiology staff:', error);
-    res.status(500).json({ error: error.message });
+    return errorResponse(res, error);
   }
 };
 
-// Create new radiology staff
 exports.createStaff = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
+
     const {
-      name, email, phone, address,
-      employeeId, designation, specializations,
-      qualification, experience_years, license_number,
-      joined_date, is_active
+      name,
+      email,
+      phone,
+      employeeId,
+      designation,
+      specializations = [],
+      qualification = '',
+      experience_years = 0,
+      license_number = '',
+      joined_date,
+      is_active = true,
+      password
     } = req.body;
 
-    // Validate required fields
     if (!name || !email || !phone || !employeeId || !designation) {
-      return res.status(400).json({ 
-        error: 'Name, email, phone, employee ID, and designation are required' 
+      return res.status(400).json({
+        success: false,
+        error: 'Name, email, phone, employee ID and designation are required'
       });
     }
 
-    // Check if user already exists
-    let user = await User.findOne({ email });
-    
-    if (!user) {
-      // Create new user
-      user = new User({
-        name,
-        email,
-        phone,
-        address: address || '',
-        role: 'staff',
-        isActive: true
+    if (await RadiologyStaff.exists({
+      hospitalId,
+      employeeId: String(employeeId).toUpperCase()
+    })) {
+      return res.status(409).json({
+        success: false,
+        error: 'Employee ID already exists in this hospital'
       });
+    }
+
+    let user = await User.findOne({
+      hospital_id: hospitalId,
+      email: String(email).toLowerCase()
+    });
+
+    if (!user) {
+      const generatedPassword = password || crypto.randomBytes(12).toString('base64url');
+      const modulePermissions = defaultFeaturePermissions('radiology_staff', {
+        grantedBy: req.user._id
+      });
+
+      user = await User.create({
+        name,
+        email: String(email).toLowerCase(),
+        phone,
+        password: generatedPassword,
+        role: 'radiology_staff',
+        hospital_id: hospitalId,
+        is_active,
+        modulePermissions,
+        dashboard_access: dashboardAccessFromFeatures(modulePermissions)
+      });
+    } else {
+      user.role = 'radiology_staff';
+      user.phone = phone;
+      user.hospital_id = hospitalId;
+      user.is_active = is_active;
+
+      if (password) {
+        user.password = password;
+      }
+
       await user.save();
     }
 
-    // Check if staff already exists with this employeeId
-    const existingStaff = await RadiologyStaff.findOne({ employeeId });
-    if (existingStaff) {
-      return res.status(400).json({ error: 'Staff with this employee ID already exists' });
+    if (await RadiologyStaff.exists({
+      hospitalId,
+      userId: user._id
+    })) {
+      return res.status(409).json({
+        success: false,
+        error: 'This user is already registered as radiology staff'
+      });
     }
 
-    // Check if user is already linked to staff
-    const existingUserStaff = await RadiologyStaff.findOne({ userId: user._id });
-    if (existingUserStaff) {
-      return res.status(400).json({ error: 'This user is already registered as staff' });
-    }
-
-    // Create radiology staff
-    const staff = new RadiologyStaff({
+    const staff = await RadiologyStaff.create({
+      hospitalId,
       userId: user._id,
-      employeeId: employeeId.toUpperCase(),
+      employeeId: String(employeeId).toUpperCase(),
       designation,
-      specializations: specializations || [],
-      qualification: qualification || '',
-      experience_years: experience_years || 0,
-      license_number: license_number || '',
-      is_active: is_active !== undefined ? is_active : true,
-      joined_date: joined_date || new Date()
+      specializations,
+      qualification,
+      experience_years,
+      license_number,
+      joined_date: joined_date || new Date(),
+      is_active
     });
 
-    await staff.save();
-    await syncHRProfileFromSource('RadiologyStaff', staff, { hospital_id: req.user?.hospital_id || undefined });
+    await syncHRProfileFromSource('RadiologyStaff', staff, { hospital_id: hospitalId });
 
-    const populatedStaff = await RadiologyStaff.findById(staff._id)
-      .populate('userId', 'name email phone address');
+    const data = await populate(
+      RadiologyStaff.findOne({ _id: staff._id, hospitalId })
+    );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Radiology staff created successfully',
-      data: populatedStaff
+      data
     });
   } catch (error) {
-    console.error('Error creating radiology staff:', error);
-    if (error.code === 11000) {
-      return res.status(400).json({ error: 'Employee ID already exists' });
-    }
-    res.status(500).json({ error: error.message });
+    return errorResponse(res, error);
   }
 };
 
-// Update radiology staff
 exports.updateStaff = async (req, res) => {
   try {
-    const { id } = req.params;
-    const {
-      name, email, phone, address,
-      employeeId, designation, specializations,
-      qualification, experience_years, license_number,
-      joined_date, is_active
-    } = req.body;
+    const hospitalId = requireHospitalId(req);
 
-    const staff = await RadiologyStaff.findById(id).populate('userId');
+    const staff = await populate(
+      RadiologyStaff.findOne({ _id: req.params.id, hospitalId })
+    );
+
     if (!staff) {
-      return res.status(404).json({ error: 'Radiology staff not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Radiology staff not found'
+      });
     }
 
-    // Update user information if provided
-    if (name || email || phone || address) {
-      const userUpdates = {};
-      if (name) userUpdates.name = name;
-      if (email) userUpdates.email = email;
-      if (phone) userUpdates.phone = phone;
-      if (address !== undefined) userUpdates.address = address;
-      
-      await User.findByIdAndUpdate(staff.userId._id, userUpdates);
+    const { name, email, phone, password } = req.body;
+    const userUpdates = {};
+
+    if (name) userUpdates.name = name;
+    if (email) userUpdates.email = String(email).toLowerCase();
+    if (phone) userUpdates.phone = phone;
+
+    if (req.body.is_active !== undefined) {
+      userUpdates.is_active = Boolean(req.body.is_active);
     }
 
-    // Update staff information
-    const staffUpdates = {};
-    if (employeeId) staffUpdates.employeeId = employeeId.toUpperCase();
-    if (designation) staffUpdates.designation = designation;
-    if (specializations !== undefined) staffUpdates.specializations = specializations;
-    if (qualification !== undefined) staffUpdates.qualification = qualification;
-    if (experience_years !== undefined) staffUpdates.experience_years = experience_years;
-    if (license_number !== undefined) staffUpdates.license_number = license_number;
-    if (joined_date) staffUpdates.joined_date = joined_date;
-    if (is_active !== undefined) staffUpdates.is_active = is_active;
+    if (Object.keys(userUpdates).length) {
+      await User.updateOne(
+        { _id: staff.userId._id, hospital_id: hospitalId },
+        { $set: userUpdates }
+      );
+    }
 
-    const updatedStaff = await RadiologyStaff.findByIdAndUpdate(
-      id,
-      staffUpdates,
-      { new: true, runValidators: true }
-    ).populate('userId', 'name email phone address');
+    if (password) {
+      const user = await User.findOne({
+        _id: staff.userId._id,
+        hospital_id: hospitalId
+      });
+      user.password = password;
+      await user.save();
+    }
 
-    res.json({
+    const allowed = [
+      'employeeId',
+      'designation',
+      'specializations',
+      'qualification',
+      'experience_years',
+      'license_number',
+      'joined_date',
+      'is_active',
+      'modalityAssignments',
+      'availabilityStatus'
+    ];
+
+    const updates = Object.fromEntries(
+      allowed
+        .filter((key) => req.body[key] !== undefined)
+        .map((key) => [
+          key,
+          key === 'employeeId' ? String(req.body[key]).toUpperCase() : req.body[key]
+        ])
+    );
+
+    const updated = await populate(
+      RadiologyStaff.findOneAndUpdate(
+        { _id: req.params.id, hospitalId },
+        { $set: updates },
+        { new: true, runValidators: true }
+      )
+    );
+
+    await syncHRProfileFromSource('RadiologyStaff', updated, { hospital_id: hospitalId });
+
+    return res.json({
       success: true,
       message: 'Radiology staff updated successfully',
-      data: updatedStaff
+      data: updated
     });
   } catch (error) {
-    console.error('Error updating radiology staff:', error);
-    if (error.code === 11000) {
-      return res.status(400).json({ error: 'Employee ID already exists' });
-    }
-    res.status(500).json({ error: error.message });
+    return errorResponse(res, error);
   }
 };
 
-// Toggle staff status (activate/deactivate)
 exports.toggleStaffStatus = async (req, res) => {
   try {
-    const { id } = req.params;
-    const staff = await RadiologyStaff.findById(id);
-    
+    const hospitalId = requireHospitalId(req);
+
+    const staff = await RadiologyStaff.findOne({
+      _id: req.params.id,
+      hospitalId
+    });
+
     if (!staff) {
-      return res.status(404).json({ error: 'Radiology staff not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Radiology staff not found'
+      });
     }
 
     staff.is_active = !staff.is_active;
     await staff.save();
 
-    res.json({
+    await User.updateOne(
+      { _id: staff.userId, hospital_id: hospitalId },
+      { $set: { is_active: staff.is_active } }
+    );
+
+    return res.json({
       success: true,
       message: `Staff ${staff.is_active ? 'activated' : 'deactivated'} successfully`,
       data: { is_active: staff.is_active }
     });
   } catch (error) {
-    console.error('Error toggling staff status:', error);
-    res.status(500).json({ error: error.message });
+    return errorResponse(res, error);
   }
 };
 
-// Delete radiology staff
 exports.deleteStaff = async (req, res) => {
   try {
-    const { id } = req.params;
-    const staff = await RadiologyStaff.findById(id);
-    
+    const hospitalId = requireHospitalId(req);
+
+    const staff = await RadiologyStaff.findOne({
+      _id: req.params.id,
+      hospitalId
+    });
+
     if (!staff) {
-      return res.status(404).json({ error: 'Radiology staff not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Radiology staff not found'
+      });
     }
 
-    // Optionally delete the associated user or just mark as inactive
-    // await User.findByIdAndDelete(staff.userId);
-    
-    await RadiologyStaff.findByIdAndDelete(id);
-    
-    res.json({
+    staff.is_active = false;
+    await staff.save();
+
+    await User.updateOne(
+      { _id: staff.userId, hospital_id: hospitalId },
+      { $set: { is_active: false } }
+    );
+
+    return res.json({
       success: true,
-      message: 'Radiology staff deleted successfully'
+      message: 'Radiology staff deactivated successfully'
     });
   } catch (error) {
-    console.error('Error deleting radiology staff:', error);
-    res.status(500).json({ error: error.message });
+    return errorResponse(res, error);
   }
 };
 
-// Get staff by designation
 exports.getStaffByDesignation = async (req, res) => {
   try {
-    const { designation } = req.params;
-    const staff = await RadiologyStaff.find({ 
-      designation, 
-      is_active: true 
-    }).populate('userId', 'name email phone');
-    
-    res.json({
+    const staff = await populate(
+      RadiologyStaff.find(filter(req, {
+        designation: req.params.designation,
+        is_active: true
+      }))
+    ).sort({ employeeId: 1 });
+
+    return res.json({
       success: true,
       data: staff,
       count: staff.length
     });
   } catch (error) {
-    console.error('Error fetching staff by designation:', error);
-    res.status(500).json({ error: error.message });
+    return errorResponse(res, error);
   }
 };
 
-// Get available staff (active)
 exports.getAvailableStaff = async (req, res) => {
   try {
-    const staff = await RadiologyStaff.find({ is_active: true })
-      .populate('userId', 'name email phone')
-      .sort({ designation: 1 });
-    
-    res.json({
+    const query = filter(req, {
+      is_active: true,
+      availabilityStatus: { $ne: 'Unavailable' }
+    });
+
+    if (req.query.modality) {
+      query.specializations = req.query.modality;
+    }
+
+    const staff = await populate(RadiologyStaff.find(query))
+      .sort({ designation: 1, employeeId: 1 });
+
+    return res.json({
       success: true,
       data: staff,
       count: staff.length
     });
   } catch (error) {
-    console.error('Error fetching available staff:', error);
-    res.status(500).json({ error: error.message });
+    return errorResponse(res, error);
   }
 };

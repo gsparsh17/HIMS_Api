@@ -56,7 +56,33 @@ const ipdChargeSchema = new mongoose.Schema({
   voidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   voidReason: String,
   addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  notes: { type: String, trim: true }
+  notes: { type: String, trim: true },
+  pricingSnapshot: {
+    rateCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'RateCard' },
+    rateCardVersion: String,
+    rateCardItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'RateCardItem' },
+    serviceCode: String,
+    packageCode: String,
+    inputs: mongoose.Schema.Types.Mixed,
+    amounts: {
+      hospitalStandard: { type: Number, default: 0 },
+      contracted: { type: Number, default: 0 },
+      sponsorLiability: { type: Number, default: 0 },
+      patientLiability: { type: Number, default: 0 },
+      nonAdmissible: { type: Number, default: 0 },
+      hospitalAdjustment: { type: Number, default: 0 }
+    },
+    explanation: [String],
+    ruleTrace: [mongoose.Schema.Types.Mixed],
+    pricedAt: Date
+  },
+  patientLiability: { type: Number, default: 0, min: 0 },
+  sponsorLiability: { type: Number, default: 0, min: 0 },
+  nonAdmissibleAmount: { type: Number, default: 0, min: 0 },
+  rateCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'RateCard' },
+  rateCardVersion: String,
+  packageCode: String,
+  accommodationSegmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAccommodationSegment' },
 }, { timestamps: true });
 
 ipdChargeSchema.pre('validate', function calculateCharge(next) {
@@ -65,6 +91,29 @@ ipdChargeSchema.pre('validate', function calculateCharge(next) {
   if (!this.chargeDateKey && this.chargeDate) {
     this.chargeDateKey = new Date(this.chargeDate).toISOString().slice(0, 10);
   }
+  if (!this.pricingSnapshot || !this.pricingSnapshot.amounts) {
+    this.pricingSnapshot = {
+      serviceCode: this.sourceReference?.lineKey,
+      inputs: { payer: 'SELF_OR_UNPRICED', serviceDate: this.chargeDate },
+      amounts: {
+        hospitalStandard: Number(this.amount || 0),
+        contracted: Number(this.netAmount || 0),
+        sponsorLiability: 0,
+        patientLiability: Number(this.netAmount || 0),
+        nonAdmissible: 0,
+        hospitalAdjustment: 0
+      },
+      explanation: ['Standard hospital pricing snapshot'],
+      pricedAt: new Date()
+    };
+  }
+  this.patientLiability = Number(this.pricingSnapshot?.amounts?.patientLiability ?? this.netAmount ?? 0);
+  this.sponsorLiability = Number(this.pricingSnapshot?.amounts?.sponsorLiability ?? 0);
+  this.nonAdmissibleAmount = Number(this.pricingSnapshot?.amounts?.nonAdmissible ?? 0);
+  this.rateCardId = this.pricingSnapshot?.rateCardId || this.rateCardId;
+  this.rateCardVersion = this.pricingSnapshot?.rateCardVersion || this.rateCardVersion;
+  this.packageCode = this.pricingSnapshot?.packageCode || this.packageCode;
+
   if (this.adjustmentType === 'DISCOUNT' || this.chargeType === 'Discount') {
     this.rate = 0;
     this.amount = 0;

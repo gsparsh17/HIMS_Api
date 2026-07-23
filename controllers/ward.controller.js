@@ -1,129 +1,123 @@
 const Ward = require('../models/Ward');
+const { requireHospitalId } = require('../services/tenantScope.service');
 
-// Create new ward
+function fail(res, e) {
+  res.status(e.statusCode || 400).json({ success: false, error: e.message });
+}
+
 exports.createWard = async (req, res) => {
   try {
-    const { name, departmentId, floor, type, description } = req.body;
-    
-    // Validate required fields
-    if (!name) {
-      return res.status(400).json({ error: 'Ward name is required' });
-    }
-    
-    // Generate code manually if needed
-    const count = await Ward.countDocuments();
-    const code = `WRD${String(count + 1).padStart(3, '0')}`;
-    
-    const ward = new Ward({
-      name,
-      code,
-      departmentId: departmentId || null,
-      floor: floor || '',
-      type: type || 'General',
-      description: description || '',
-      createdBy: req.user?._id
+    const hospitalId = requireHospitalId(req);
+
+    const count = await Ward.countDocuments({ hospitalId });
+
+    const ward = await Ward.create({
+      ...req.body,
+      hospitalId,
+      code: req.body.code || `WRD${String(count + 1).padStart(3, '0')}`,
+      createdBy: req.user._id
     });
-    
-    await ward.save();
-    
+
     res.status(201).json({
       success: true,
       message: 'Ward created successfully',
       ward
     });
-  } catch (err) {
-    console.error('Error creating ward:', err);
-    // Check for duplicate key error
-    if (err.code === 11000) {
-      return res.status(400).json({ error: 'Ward code already exists' });
-    }
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Get all wards
 exports.getAllWards = async (req, res) => {
   try {
-    const wards = await Ward.find({ isActive: true })
+    const hospitalId = requireHospitalId(req);
+    const filter = { hospitalId, isActive: true };
+
+    if (req.query.type) {
+      filter.type = req.query.type;
+    }
+
+    const wards = await Ward
+      .find(filter)
       .populate('departmentId', 'name')
       .sort({ name: 1 });
-    
+
     res.json({ success: true, wards });
-  } catch (err) {
-    console.error('Error fetching wards:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Get ward by ID
 exports.getWardById = async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    const ward = await Ward.findById(id)
+    const hospitalId = requireHospitalId(req);
+
+    const ward = await Ward
+      .findOne({ _id: req.params.id, hospitalId })
       .populate('departmentId', 'name');
-    
+
     if (!ward) {
-      return res.status(404).json({ error: 'Ward not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Ward not found'
+      });
     }
-    
+
     res.json({ success: true, ward });
-  } catch (err) {
-    console.error('Error fetching ward:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Update ward
 exports.updateWard = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name, departmentId, floor, type, description } = req.body;
-    
-    const ward = await Ward.findById(id);
+    const hospitalId = requireHospitalId(req);
+
+    const ward = await Ward.findOneAndUpdate(
+      { _id: req.params.id, hospitalId },
+      { ...req.body },
+      { new: true, runValidators: true }
+    );
+
     if (!ward) {
-      return res.status(404).json({ error: 'Ward not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Ward not found'
+      });
     }
-    
-    // Update fields
-    if (name) ward.name = name;
-    if (departmentId !== undefined) ward.departmentId = departmentId;
-    if (floor !== undefined) ward.floor = floor;
-    if (type) ward.type = type;
-    if (description !== undefined) ward.description = description;
-    
-    await ward.save();
-    
+
     res.json({
       success: true,
       message: 'Ward updated successfully',
       ward
     });
-  } catch (err) {
-    console.error('Error updating ward:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
-// Delete ward (soft delete)
 exports.deleteWard = async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    const ward = await Ward.findById(id);
+    const hospitalId = requireHospitalId(req);
+
+    const ward = await Ward.findOneAndUpdate(
+      { _id: req.params.id, hospitalId },
+      { $set: { isActive: false } },
+      { new: true }
+    );
+
     if (!ward) {
-      return res.status(404).json({ error: 'Ward not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Ward not found'
+      });
     }
-    
-    ward.isActive = false;
-    await ward.save();
-    
+
     res.json({
       success: true,
       message: 'Ward deactivated successfully'
     });
-  } catch (err) {
-    console.error('Error deleting ward:', err);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    fail(res, e);
   }
 };

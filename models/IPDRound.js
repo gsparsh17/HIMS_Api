@@ -52,6 +52,14 @@ const ipdRoundSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Prescription",
     },
+    templateId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ClinicalTemplate",
+    },
+    copiedFromRoundId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "IPDRound",
+    },
 
     safetyChecklist: {
       vteProphylaxis: {

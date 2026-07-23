@@ -1,73 +1,177 @@
 const Room = require('../models/Room');
+const Bed = require('../models/Bed');
+const { requireHospitalId } = require('../services/tenantScope.service');
+
+function fail(res, e) {
+  res.status(e.statusCode || 400).json({ success: false, error: e.message });
+}
+
+async function withOccupancy(rooms) {
+  const ids = rooms.map((room) => room._id);
+
+  const rows = await Bed.aggregate([
+    {
+      $match: {
+        roomId: { $in: ids },
+        isActive: true
+      }
+    },
+    {
+      $group: {
+        _id: '$roomId',
+        total: { $sum: 1 },
+        occupied: {
+          $sum: { $cond: [{ $eq: ['$status', 'Occupied'] }, 1, 0] }
+        },
+        reserved: {
+          $sum: { $cond: [{ $eq: ['$status', 'Reserved'] }, 1, 0] }
+        },
+        available: {
+          $sum: { $cond: [{ $eq: ['$status', 'Available'] }, 1, 0] }
+        }
+      }
+    }
+  ]);
+
+  const map = new Map(rows.map((r) => [String(r._id), r]));
+
+  return rooms.map((room) => {
+    const data = room.toObject ? room.toObject() : room;
+    const occupancy = map.get(String(room._id)) || {
+      total: 0,
+      occupied: 0,
+      reserved: 0,
+      available: 0
+    };
+
+    const computedStatus = data.operationalStatus !== 'open'
+      ? (data.operationalStatus === 'closed' ? 'Closed' : 'Maintenance')
+      : occupancy.total === 0 || occupancy.occupied + occupancy.reserved === 0
+        ? 'Available'
+        : occupancy.occupied + occupancy.reserved >= occupancy.total
+          ? 'Full'
+          : 'Partially Occupied';
+
+    return { ...data, occupancy, computedStatus };
+  });
+}
 
 exports.createRoom = async (req, res) => {
   try {
-    const { room_number, wardId, type, Department, status, assigned_patient_id, floor, description } = req.body;
-    
-    const room = new Room({
-      room_number,
-      wardId: wardId || null,
-      type: type || 'General',
-      Department: Department || null,
-      status: status || 'Available',
-      assigned_patient_id: assigned_patient_id || null,
-      floor: floor || '',
-      description: description || ''
-    });
-    
-    await room.save();
-    res.status(201).json(room);
-  } catch (err) {
-    console.error('Error creating room:', err);
-    res.status(400).json({ error: err.message });
+    const hospitalId = requireHospitalId(req);
+    const room = await Room.create({ ...req.body, hospitalId });
+
+    res.status(201).json({ success: true, data: room });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
 exports.getAllRooms = async (req, res) => {
   try {
-    const rooms = await Room.find()
-      .populate('assigned_patient_id', 'first_name last_name patientId')
+    const hospitalId = requireHospitalId(req);
+    const filter = { hospitalId };
+
+    if (req.query.wardId) {
+      filter.wardId = req.query.wardId;
+    }
+
+    const rooms = await Room
+      .find(filter)
       .populate('Department', 'name')
       .populate('wardId', 'name code');
-    res.json(rooms);
-  } catch (err) {
-    console.error('Error fetching rooms:', err);
-    res.status(500).json({ error: err.message });
+
+    res.json({
+      success: true,
+      data: await withOccupancy(rooms)
+    });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
 exports.updateRoom = async (req, res) => {
   try {
-    const room = await Room.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
-    if (!room) return res.status(404).json({ error: 'Room not found' });
-    res.json(room);
-  } catch (err) {
-    console.error('Error updating room:', err);
-    res.status(400).json({ error: err.message });
+    const hospitalId = requireHospitalId(req);
+
+    const room = await Room.findOneAndUpdate(
+      { _id: req.params.id, hospitalId },
+      req.body,
+      { new: true, runValidators: true }
+    );
+
+    if (!room) {
+      return res.status(404).json({
+        success: false,
+        error: 'Room not found'
+      });
+    }
+
+    res.json({ success: true, data: room });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
 exports.deleteRoom = async (req, res) => {
   try {
-    const room = await Room.findByIdAndDelete(req.params.id);
-    if (!room) return res.status(404).json({ error: 'Room not found' });
-    res.json({ message: 'Room deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting room:', err);
-    res.status(500).json({ error: err.message });
+    const hospitalId = requireHospitalId(req);
+
+    const occupied = await Bed.exists({
+      hospitalId,
+      roomId: req.params.id,
+      status: { $in: ['Occupied', 'Reserved'] }
+    });
+
+    if (occupied) {
+      return res.status(409).json({
+        success: false,
+        error: 'Room has occupied or reserved beds'
+      });
+    }
+
+    const room = await Room.findOneAndDelete({
+      _id: req.params.id,
+      hospitalId
+    });
+
+    if (!room) {
+      return res.status(404).json({
+        success: false,
+        error: 'Room not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Room deleted successfully'
+    });
+  } catch (e) {
+    fail(res, e);
   }
 };
 
 exports.getRoomById = async (req, res) => {
   try {
-    const room = await Room.findById(req.params.id)
-      .populate('assigned_patient_id', 'first_name last_name patientId')
+    const hospitalId = requireHospitalId(req);
+
+    const room = await Room
+      .findOne({ _id: req.params.id, hospitalId })
       .populate('Department', 'name')
       .populate('wardId', 'name code');
-    if (!room) return res.status(404).json({ error: 'Room not found' });
-    res.json(room);
-  } catch (err) {
-    console.error('Error fetching room:', err);
-    res.status(500).json({ error: err.message });
+
+    if (!room) {
+      return res.status(404).json({
+        success: false,
+        error: 'Room not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: (await withOccupancy([room]))[0]
+    });
+  } catch (e) {
+    fail(res, e);
   }
 };

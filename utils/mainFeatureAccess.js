@@ -6,18 +6,66 @@
  * None, View, or Manage for each main feature.
  */
 const MAIN_FEATURES = Object.freeze([
-  { key: 'dashboard', label: 'Dashboard', description: 'Role dashboard and assigned work queue' },
-  { key: 'registration_opd', label: 'Registration & OPD', description: 'Patients, appointments, registration and OPD work' },
-  { key: 'ipd', label: 'IPD & Nursing', description: 'Admissions, patient files, vitals, nursing and discharge work' },
-  { key: 'pharmacy', label: 'Pharmacy', description: 'Medicines, prescriptions, POS, purchase orders and stock' },
-  { key: 'billing_finance', label: 'Billing & Finance', description: 'Billing, invoices, payments, expenses and finance views' },
-  { key: 'laboratory', label: 'Laboratory & Pathology', description: 'Lab tests, sample workflow and pathology reports' },
-  { key: 'radiology', label: 'Radiology', description: 'Imaging tests, imaging requests and reports' },
-  { key: 'operation_theatre', label: 'Operation Theatre', description: 'OT requests, scheduling and OT records' },
-  { key: 'store_inventory', label: 'Store & Inventory', description: 'Store items, requisitions, issues and inventory' },
-  { key: 'hr_staff', label: 'HR & Staff', description: 'Staff, attendance, leave, payroll and HR records' },
-  { key: 'reports', label: 'Reports', description: 'Operational, clinical and financial reports/exports' },
-  { key: 'masters_settings', label: 'Masters & Settings', description: 'Departments, service masters, settings and user setup' }
+  {
+    key: 'dashboard',
+    label: 'Dashboard',
+    description: 'Role dashboard and assigned work queue'
+  },
+  {
+    key: 'registration_opd',
+    label: 'Registration & OPD',
+    description: 'Patients, appointments, registration and OPD work'
+  },
+  {
+    key: 'ipd',
+    label: 'IPD & Nursing',
+    description: 'Admissions, patient files, vitals, nursing and discharge work'
+  },
+  {
+    key: 'pharmacy',
+    label: 'Pharmacy',
+    description: 'Medicines, prescriptions, POS, purchase orders and stock'
+  },
+  {
+    key: 'billing_finance',
+    label: 'Billing & Finance',
+    description: 'Billing, invoices, payments, expenses and finance views'
+  },
+  {
+    key: 'laboratory',
+    label: 'Laboratory & Pathology',
+    description: 'Lab tests, sample workflow and pathology reports'
+  },
+  {
+    key: 'radiology',
+    label: 'Radiology',
+    description: 'Imaging tests, imaging requests and reports'
+  },
+  {
+    key: 'operation_theatre',
+    label: 'Operation Theatre',
+    description: 'OT requests, scheduling and OT records'
+  },
+  {
+    key: 'store_inventory',
+    label: 'Store & Inventory',
+    description: 'Store items, requisitions, issues and inventory'
+  },
+  {
+    key: 'hr_staff',
+    label: 'HR & Staff',
+    description: 'Staff, attendance, leave, payroll and HR records'
+  },
+  {
+    key: 'reports',
+    label: 'Reports',
+    description: 'Operational, clinical and financial reports/exports'
+  },
+  {
+    key: 'masters_settings',
+    label: 'Masters & Settings',
+    description: 'Departments, service masters, settings and user setup'
+  }
 ]);
 
 const MAIN_FEATURE_KEYS = new Set(MAIN_FEATURES.map((feature) => feature.key));
@@ -27,42 +75,174 @@ const ROLE_PRESET = Object.freeze({
   mediqliq_super_admin: { '*': 'manage' },
   admin: { '*': 'manage' },
   doctor: {
-    dashboard: 'manage', registration_opd: 'view', ipd: 'manage', pharmacy: 'view', laboratory: 'view', radiology: 'view', operation_theatre: 'view', reports: 'view'
+    dashboard: 'manage',
+    registration_opd: 'view',
+    ipd: 'manage',
+    pharmacy: 'view',
+    laboratory: 'view',
+    radiology: 'view',
+    operation_theatre: 'view',
+    reports: 'view'
   },
   nurse: {
-    dashboard: 'manage', registration_opd: 'view', ipd: 'manage', pharmacy: 'view', laboratory: 'view', radiology: 'view', reports: 'view'
+    dashboard: 'manage',
+    registration_opd: 'view',
+    ipd: 'manage',
+    pharmacy: 'view',
+    laboratory: 'view',
+    radiology: 'view',
+    reports: 'view'
   },
   staff: {
-    dashboard: 'manage', registration_opd: 'manage', ipd: 'manage', billing_finance: 'manage', laboratory: 'view', radiology: 'view', operation_theatre: 'view', reports: 'view'
+    dashboard: 'manage',
+    registration_opd: 'manage',
+    ipd: 'manage',
+    billing_finance: 'manage',
+    laboratory: 'view',
+    radiology: 'view',
+    operation_theatre: 'view',
+    reports: 'view'
   },
   registrar: {
-    dashboard: 'manage', registration_opd: 'manage', ipd: 'view', billing_finance: 'manage', reports: 'view'
+    dashboard: 'manage',
+    registration_opd: 'manage',
+    ipd: 'view',
+    billing_finance: 'manage',
+    reports: 'view'
   },
   receptionist: {
-    dashboard: 'manage', registration_opd: 'manage', ipd: 'view', billing_finance: 'view', reports: 'view'
+    dashboard: 'manage',
+    registration_opd: 'manage',
+    ipd: 'view',
+    billing_finance: 'view',
+    reports: 'view'
   },
   pharmacy: {
-    dashboard: 'manage', pharmacy: 'manage', ipd: 'view', billing_finance: 'view', reports: 'view'
+    dashboard: 'manage',
+    pharmacy: 'manage',
+    ipd: 'view',
+    billing_finance: 'view',
+    reports: 'view'
   },
   pathology_staff: {
-    dashboard: 'manage', laboratory: 'manage', registration_opd: 'view', ipd: 'view', reports: 'view'
+    dashboard: 'manage',
+    laboratory: 'manage',
+    registration_opd: 'view',
+    ipd: 'view',
+    reports: 'view'
   },
   radiology_staff: {
-    dashboard: 'manage', radiology: 'manage', registration_opd: 'view', ipd: 'view', reports: 'view'
+    dashboard: 'manage',
+    radiology: 'manage',
+    registration_opd: 'view',
+    ipd: 'view',
+    reports: 'view'
   },
   ot_staff: {
-    dashboard: 'manage', operation_theatre: 'manage', ipd: 'view', pharmacy: 'view', reports: 'view'
+    dashboard: 'manage',
+    operation_theatre: 'manage',
+    ipd: 'view',
+    pharmacy: 'view',
+    reports: 'view'
   },
-  store: { dashboard: 'manage', store_inventory: 'manage', pharmacy: 'view', reports: 'view' },
-  store_manager: { dashboard: 'manage', store_inventory: 'manage', pharmacy: 'view', reports: 'view' },
-  inventory_manager: { dashboard: 'manage', store_inventory: 'manage', pharmacy: 'view', reports: 'view' },
-  hr: { dashboard: 'manage', hr_staff: 'manage', reports: 'view' },
-  hr_manager: { dashboard: 'manage', hr_staff: 'manage', reports: 'view' },
-  accountant: { dashboard: 'manage', billing_finance: 'manage', reports: 'manage' },
-  equipment_manager: { dashboard: 'manage', store_inventory: 'manage', reports: 'view' },
-  patient: { dashboard: 'view' },
-  demo: { dashboard: 'view' }
+  store: {
+    dashboard: 'manage',
+    store_inventory: 'manage',
+    pharmacy: 'view',
+    reports: 'view'
+  },
+  store_manager: {
+    dashboard: 'manage',
+    store_inventory: 'manage',
+    pharmacy: 'view',
+    reports: 'view'
+  },
+  inventory_manager: {
+    dashboard: 'manage',
+    store_inventory: 'manage',
+    pharmacy: 'view',
+    reports: 'view'
+  },
+  hr: {
+    dashboard: 'manage',
+    hr_staff: 'manage',
+    reports: 'view'
+  },
+  hr_manager: {
+    dashboard: 'manage',
+    hr_staff: 'manage',
+    reports: 'view'
+  },
+  accountant: {
+    dashboard: 'manage',
+    billing_finance: 'manage',
+    reports: 'manage'
+  },
+  insurance_desk: {
+    dashboard: 'manage',
+    registration_opd: 'view',
+    ipd: 'view',
+    billing_finance: 'manage',
+    reports: 'view'
+  },
+  bed_manager: {
+    dashboard: 'manage',
+    ipd: 'manage',
+    reports: 'view'
+  },
+  housekeeping: {
+    dashboard: 'manage',
+    ipd: 'view'
+  },
+  equipment_manager: {
+    dashboard: 'manage',
+    store_inventory: 'manage',
+    reports: 'view'
+  },
+  patient: {
+    dashboard: 'view'
+  },
+  demo: {
+    dashboard: 'view'
+  }
 });
+
+const ROLE_ACTION_PRESET = Object.freeze({
+  nurse: { ipd: ['transfer_complete'] },
+  staff: { ipd: ['transfer_reserve'] },
+  registrar: { ipd: ['transfer_reserve'] },
+  receptionist: { ipd: ['transfer_reserve'] },
+  bed_manager: { ipd: ['transfer_reserve', 'transfer_approve'] },
+  doctor: { ipd: [] },
+  ot_staff: { ipd: ['transfer_complete'] },
+  hr: { hr_staff: ['payroll_publish', 'biometric_manage'] },
+  hr_manager: { hr_staff: ['payroll_publish', 'biometric_manage'] },
+  accountant: {
+    billing_finance: [
+      'claim_submit',
+      'preauth_decide',
+      'rate_card_approve',
+      'pricing_override',
+      'settlement',
+      'final_clearance'
+    ]
+  },
+  insurance_desk: {
+    billing_finance: [
+      'claim_submit',
+      'preauth_decide',
+      'rate_card_approve',
+      'pricing_override',
+      'settlement',
+      'final_clearance'
+    ]
+  }
+});
+
+function roleDefaultActions(role, moduleKey) {
+  const preset = ROLE_ACTION_PRESET[normalizeRole(role)] || {};
+  return Array.from(new Set(preset[moduleKey] || []));
+}
 
 const EXACT_MODULE_MAP = Object.freeze({
   dashboard: 'dashboard',
@@ -104,38 +284,56 @@ const EXACT_MODULE_MAP = Object.freeze({
 });
 
 function normalizeRole(value) {
-  return String(value || '').trim().toLowerCase().replace(/-/g, '_').replace(/\s+/g, '_');
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_')
+    .replace(/\s+/g, '_');
 }
 
 function normalizeAccess(value) {
   const normalized = String(value || 'none').trim().toLowerCase();
-  if (normalized === 'edit') return 'manage';
+
+  if (normalized === 'edit') {
+    return 'manage';
+  }
+
   return ['none', 'view', 'manage'].includes(normalized) ? normalized : 'none';
 }
 
 function toMainFeatureKey(moduleKey) {
   const raw = String(moduleKey || '').trim().toLowerCase();
+
   if (!raw) return 'dashboard';
+
   if (MAIN_FEATURE_KEYS.has(raw)) return raw;
+
   if (EXACT_MODULE_MAP[raw]) return EXACT_MODULE_MAP[raw];
+
   // Handle legacy master-data names before splitting at the dot.
   if (raw.startsWith('masters.medicine')) return 'pharmacy';
   if (raw.startsWith('masters.lab')) return 'laboratory';
   if (raw.startsWith('masters.radiology')) return 'radiology';
-  if (raw.startsWith('masters.charges') || raw.startsWith('masters.billing')) return 'masters_settings';
+  if (raw.startsWith('masters.charges') || raw.startsWith('masters.billing')) {
+    return 'masters_settings';
+  }
 
   const first = raw.split(/[.:/_-]/)[0];
+
   if (EXACT_MODULE_MAP[first]) return EXACT_MODULE_MAP[first];
 
   if (raw.startsWith('ipd.')) return 'ipd';
   if (raw.startsWith('pharmacy.') || raw.startsWith('masters.medicine')) return 'pharmacy';
   if (raw.startsWith('finance.') || raw.startsWith('billing.')) return 'billing_finance';
-  if (raw.startsWith('lab.') || raw.startsWith('pathology.') || raw.startsWith('masters.lab')) return 'laboratory';
+  if (raw.startsWith('lab.') || raw.startsWith('pathology.') || raw.startsWith('masters.lab')) {
+    return 'laboratory';
+  }
   if (raw.startsWith('radiology.') || raw.startsWith('masters.radiology')) return 'radiology';
   if (raw.startsWith('ot.') || raw.startsWith('procedure.')) return 'operation_theatre';
   if (raw.startsWith('store.')) return 'store_inventory';
   if (raw.startsWith('hr.') || raw.startsWith('staff.')) return 'hr_staff';
   if (raw.startsWith('report.') || raw.startsWith('export.')) return 'reports';
+
   return 'masters_settings';
 }
 
@@ -152,6 +350,7 @@ function defaultFeaturePermissions(role, meta = {}) {
   return MAIN_FEATURES.map(({ key }) => ({
     moduleKey: key,
     access: roleDefaultAccess(role, key),
+    actions: roleDefaultActions(role, key),
     ...(meta.grantedBy ? { grantedBy: meta.grantedBy } : {}),
     grantedAt: meta.grantedAt || new Date(),
     updatedAt: new Date()
@@ -159,23 +358,48 @@ function defaultFeaturePermissions(role, meta = {}) {
 }
 
 function normalizeFeaturePermissions(input, role, meta = {}) {
-  if (!Array.isArray(input)) return defaultFeaturePermissions(role, meta);
+  if (!Array.isArray(input) || input.length === 0) {
+    return defaultFeaturePermissions(role, meta);
+  }
 
   const combined = new Map();
+  const actions = new Map();
+  const grants = new Map();
+
   for (const row of input) {
     const moduleKey = toMainFeatureKey(row?.moduleKey || row?.featureKey || row?.key);
     const access = normalizeAccess(row?.access);
     const previous = combined.get(moduleKey) || 'none';
-    if (ACCESS_ORDER[access] > ACCESS_ORDER[previous]) combined.set(moduleKey, access);
+
+    if (ACCESS_ORDER[access] > ACCESS_ORDER[previous]) {
+      combined.set(moduleKey, access);
+    }
+
+    const set = actions.get(moduleKey) || new Set(roleDefaultActions(role, moduleKey));
+
+    for (const action of Array.isArray(row?.actions) ? row.actions : []) {
+      set.add(action);
+    }
+
+    actions.set(moduleKey, set);
+
+    if (row?.grantedBy || row?.grantedAt) {
+      grants.set(moduleKey, row);
+    }
   }
 
-  return MAIN_FEATURES.map(({ key }) => ({
-    moduleKey: key,
-    access: combined.get(key) || 'none',
-    ...(meta.grantedBy ? { grantedBy: meta.grantedBy } : {}),
-    grantedAt: meta.grantedAt || new Date(),
-    updatedAt: new Date()
-  }));
+  return MAIN_FEATURES.map(({ key }) => {
+    const grant = grants.get(key) || {};
+
+    return {
+      moduleKey: key,
+      access: combined.has(key) ? combined.get(key) : roleDefaultAccess(role, key),
+      actions: Array.from(actions.get(key) || new Set(roleDefaultActions(role, key))),
+      grantedBy: grant.grantedBy || meta.grantedBy,
+      grantedAt: grant.grantedAt || meta.grantedAt || new Date(),
+      updatedAt: new Date()
+    };
+  });
 }
 
 function hasExplicitFeaturePermissions(user) {
@@ -185,6 +409,7 @@ function hasExplicitFeaturePermissions(user) {
 function mainFeaturePermission(user, moduleKey) {
   const mainModuleKey = toMainFeatureKey(moduleKey);
   const role = normalizeRole(user?.role);
+
   if (role === 'admin' || role === 'mediqliq_super_admin') {
     return { moduleKey: mainModuleKey, access: 'manage' };
   }
@@ -194,6 +419,7 @@ function mainFeaturePermission(user, moduleKey) {
       .filter((row) => toMainFeatureKey(row?.moduleKey) === mainModuleKey)
       .map((row) => normalizeAccess(row?.access))
       .sort((a, b) => ACCESS_ORDER[b] - ACCESS_ORDER[a])[0] || 'none';
+
     return { moduleKey: mainModuleKey, access };
   }
 
@@ -215,7 +441,9 @@ function hasFeatureAccess(user, moduleKey, minimumAccess = 'view') {
 }
 
 function dashboardAccessFromFeatures(permissions) {
-  return (permissions || []).filter((row) => normalizeAccess(row.access) !== 'none').map((row) => row.moduleKey);
+  return (permissions || [])
+    .filter((row) => normalizeAccess(row.access) !== 'none')
+    .map((row) => row.moduleKey);
 }
 
 module.exports = {
@@ -223,6 +451,8 @@ module.exports = {
   MAIN_FEATURE_KEYS,
   ACCESS_ORDER,
   ROLE_PRESET,
+  ROLE_ACTION_PRESET,
+  roleDefaultActions,
   normalizeAccess,
   toMainFeatureKey,
   roleDefaultAccess,

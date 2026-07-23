@@ -303,7 +303,16 @@ exports.getUserActions = (user) => {
       'stock_adjustment',
       'document_sign',
       'print_identity_verify',
-      'mis_export'
+      'mis_export',
+      'claim_submit',
+      'preauth_decide',
+      'transfer_reserve',
+      'transfer_approve',
+      'transfer_complete',
+      'payroll_publish',
+      'biometric_manage',
+      'rate_card_approve',
+      'pricing_override'
     ];
   }
 

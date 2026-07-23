@@ -1,17 +1,131 @@
-// controllers/pathologyStaff.controller.js
 const PathologyStaff = require('../models/PathologyStaff');
 const User = require('../models/User');
 const LabTest = require('../models/LabTest');
-const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
+const {
+  normalizeFeaturePermissions,
+  defaultFeaturePermissions,
+  dashboardAccessFromFeatures,
+  effectiveMainFeaturePermissions
+} = require('../utils/mainFeatureAccess');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
+const { requireHospitalId } = require('../services/tenantScope.service');
+
+function sendError(res, error, fallback = 'Pathology staff operation failed') {
+  const status = error.statusCode || (error.code === 11000 ? 409 : 500);
+  return res.status(status).json({
+    success: false,
+    message: status === 500 ? fallback : error.message,
+    error: error.message
+  });
+}
+
+function staffFilter(req, extra = {}) {
+  return { hospitalId: requireHospitalId(req), ...extra };
+}
+
+function publicStaffPopulate(query) {
+  return query
+    .populate('user_id', 'name email role is_active modulePermissions dashboard_access staff_profile_id')
+    .populate('department', 'name code head')
+    .populate('accessible_test_ids', 'code name category base_price specimen_type fasting_required')
+    .populate('assigned_lab_tests.lab_test_id', 'code name category base_price specimen_type fasting_required');
+}
+
+function permittedProfileUpdates(body) {
+  const allowed = ['phone', 'qualification', 'specialization', 'address', 'profile_image'];
+  return Object.fromEntries(
+    allowed
+      .filter((key) => body[key] !== undefined)
+      .map((key) => [key, body[key]])
+  );
+}
+
+function applyPathologyFeaturePermissions(user, permissions, grantedBy) {
+  const rows = Array.isArray(permissions)
+    ? normalizeFeaturePermissions(permissions, 'pathology_staff', { grantedBy })
+    : (Array.isArray(user.modulePermissions) && user.modulePermissions.length
+      ? normalizeFeaturePermissions(user.modulePermissions, 'pathology_staff', { grantedBy })
+      : defaultFeaturePermissions('pathology_staff', { grantedBy }));
+
+  user.modulePermissions = rows;
+  user.dashboard_access = dashboardAccessFromFeatures(rows);
+}
 
 exports.createPathologyStaff = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
+
     const {
       user_id,
       first_name,
       last_name,
       email,
+      phone,
+      qualification,
+      specialization,
+      role,
+      department,
+      gender,
+      date_of_birth,
+      address,
+      aadharNumber,
+      panNumber,
+      profile_image,
+      accessible_test_ids = [],
+      assigned_lab_tests = []
+    } = req.body;
+
+    if (!first_name || !email || !phone || !role) {
+      return res.status(400).json({
+        success: false,
+        message: 'First name, email, phone and role are required'
+      });
+    }
+
+    if (await PathologyStaff.exists({ hospitalId, email: String(email).toLowerCase() })) {
+      return res.status(409).json({
+        success: false,
+        message: 'Staff member with this email already exists in this hospital'
+      });
+    }
+
+    if (accessible_test_ids.length) {
+      const validCount = await LabTest.countDocuments({
+        hospitalId,
+        _id: { $in: accessible_test_ids },
+        is_active: true
+      });
+
+      if (validCount !== accessible_test_ids.length) {
+        return res.status(400).json({
+          success: false,
+          message: 'One or more lab tests are invalid or inactive'
+        });
+      }
+    }
+
+    if (assigned_lab_tests.length) {
+      const ids = assigned_lab_tests.map((row) => row.lab_test_id).filter(Boolean);
+      const validCount = await LabTest.countDocuments({
+        hospitalId,
+        _id: { $in: ids },
+        is_active: true
+      });
+
+      if (validCount !== ids.length) {
+        return res.status(400).json({
+          success: false,
+          message: 'One or more assigned lab tests are invalid or inactive'
+        });
+      }
+    }
+
+    const staff = await PathologyStaff.create({
+      hospitalId,
+      user_id,
+      first_name,
+      last_name,
+      email: String(email).toLowerCase(),
       phone,
       qualification,
       specialization,
@@ -24,83 +138,29 @@ exports.createPathologyStaff = async (req, res) => {
       panNumber,
       profile_image,
       accessible_test_ids,
-      assigned_lab_tests
-    } = req.body;
-
-    // Check if staff already exists with this email
-    const existingStaff = await PathologyStaff.findOne({ email });
-    if (existingStaff) {
-      return res.status(400).json({
-        success: false,
-        message: 'Staff member with this email already exists'
-      });
-    }
-
-    // Validate lab tests if provided
-    if (accessible_test_ids && accessible_test_ids.length > 0) {
-      const validTests = await LabTest.find({
-        _id: { $in: accessible_test_ids },
-        is_active: true
-      });
-
-      if (validTests.length !== accessible_test_ids.length) {
-        return res.status(400).json({
-          success: false,
-          message: 'One or more lab tests are invalid or inactive'
-        });
-      }
-    }
-
-    // Create staff record
-    const staff = new PathologyStaff({
-      user_id,
-      first_name,
-      last_name,
-      email,
-      phone,
-      qualification,
-      specialization,
-      role,
-      department,
-      gender,
-      date_of_birth,
-      address,
-      aadharNumber,
-      panNumber,
-      profile_image,
-      accessible_test_ids: accessible_test_ids || [],
-      assigned_lab_tests: assigned_lab_tests || [],
-      created_by: req.user?._id
+      assigned_lab_tests,
+      created_by: req.user._id
     });
 
-    await staff.save();
-    await syncHRProfileFromSource('PathologyStaff', staff, { hospital_id: req.user?.hospital_id || undefined });
+    await syncHRProfileFromSource('PathologyStaff', staff, { hospital_id: hospitalId });
 
-    // Populate references
-    await staff.populate([
-      { path: 'user_id', select: 'name email role' },
-      { path: 'department', select: 'name code' },
-      { path: 'accessible_test_ids', select: 'code name category base_price' },
-      { path: 'assigned_lab_tests.lab_test_id', select: 'code name category base_price' }
-    ]);
+    const populated = await publicStaffPopulate(
+      PathologyStaff.findOne({ _id: staff._id, hospitalId })
+    );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Pathology staff created successfully',
-      data: staff
+      data: populated
     });
   } catch (error) {
-    console.error('Error creating pathology staff:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create pathology staff',
-      error: error.message
-    });
+    return sendError(res, error, 'Failed to create pathology staff');
   }
 };
 
 exports.getAllPathologyStaff = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const {
       page = 1,
       limit = 20,
@@ -112,70 +172,61 @@ exports.getAllPathologyStaff = async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    const filter = {};
+    const filter = { hospitalId };
 
-    // Apply filters
     if (role) filter.role = role;
     if (status) filter.status = status;
     if (department) filter.department = department;
 
-    // Search functionality
     if (search) {
-      filter.$or = [
-        { first_name: { $regex: search, $options: 'i' } },
-        { last_name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { staffId: { $regex: search, $options: 'i' } },
-        { qualification: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } }
-      ];
+      filter.$or = ['first_name', 'last_name', 'email', 'staffId', 'qualification', 'phone']
+        .map((field) => ({ [field]: { $regex: search, $options: 'i' } }));
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const pageNumber = Math.max(1, Number(page));
+    const limitNumber = Math.min(100, Math.max(1, Number(limit)));
 
-    const staff = await PathologyStaff.find(filter)
-      .populate('user_id', 'name email role')
-      .populate('department', 'name code')
-      .populate('accessible_test_ids', 'code name category base_price')
-      .populate('assigned_lab_tests.lab_test_id', 'code name category base_price')
-      .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await PathologyStaff.countDocuments(filter);
-
-    // Get statistics
-    const stats = await PathologyStaff.aggregate([
-      {
-        $group: {
-          _id: null,
-          totalStaff: { $sum: 1 },
-          activeStaff: { $sum: { $cond: [{ $eq: ['$status', 'Active'] }, 1, 0] } },
-          totalTestsAssigned: { $sum: { $size: '$assigned_lab_tests' } },
-          avgTestsPerStaff: { $avg: { $size: '$assigned_lab_tests' } }
+    const [staff, total, stats, roleBreakdown] = await Promise.all([
+      publicStaffPopulate(
+        PathologyStaff.find(filter)
+          .sort({ [sortBy]: sortOrder === 'asc' ? 1 : -1 })
+          .skip((pageNumber - 1) * limitNumber)
+          .limit(limitNumber)
+      ),
+      PathologyStaff.countDocuments(filter),
+      PathologyStaff.aggregate([
+        { $match: { hospitalId } },
+        {
+          $group: {
+            _id: null,
+            totalStaff: { $sum: 1 },
+            activeStaff: {
+              $sum: { $cond: [{ $eq: ['$status', 'Active'] }, 1, 0] }
+            },
+            totalTestsAssigned: {
+              $sum: { $size: { $ifNull: ['$assigned_lab_tests', []] } }
+            },
+            avgTestsPerStaff: {
+              $avg: { $size: { $ifNull: ['$assigned_lab_tests', []] } }
+            }
+          }
         }
-      }
+      ]),
+      PathologyStaff.aggregate([
+        { $match: { hospitalId } },
+        { $group: { _id: '$role', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ])
     ]);
 
-    // Role-wise breakdown
-    const roleBreakdown = await PathologyStaff.aggregate([
-      {
-        $group: {
-          _id: '$role',
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { count: -1 } }
-    ]);
-
-    res.json({
+    return res.json({
       success: true,
       data: staff,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNumber,
+        limit: limitNumber,
         total,
-        pages: Math.ceil(total / parseInt(limit))
+        pages: Math.ceil(total / limitNumber)
       },
       statistics: {
         ...(stats[0] || {
@@ -188,23 +239,15 @@ exports.getAllPathologyStaff = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching pathology staff:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch pathology staff',
-      error: error.message
-    });
+    return sendError(res, error, 'Failed to fetch pathology staff');
   }
 };
 
 exports.getPathologyStaffById = async (req, res) => {
   try {
-    const { id } = req.params;
-    const staff = await PathologyStaff.findById(id)
-      .populate('user_id', 'name email role')
-      .populate('department', 'name code head')
-      .populate('accessible_test_ids', 'code name category base_price specimen_type fasting_required')
-      .populate('assigned_lab_tests.lab_test_id', 'code name category base_price specimen_type fasting_required');
+    const staff = await publicStaffPopulate(
+      PathologyStaff.findOne(staffFilter(req, { _id: req.params.id }))
+    );
 
     if (!staff) {
       return res.status(404).json({
@@ -213,110 +256,147 @@ exports.getPathologyStaffById = async (req, res) => {
       });
     }
 
-    res.json({
-      success: true,
-      data: staff
-    });
+    return res.json({ success: true, data: staff });
   } catch (error) {
-    console.error('Error fetching pathology staff:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch pathology staff',
-      error: error.message
-    });
+    return sendError(res, error, 'Failed to fetch pathology staff');
   }
 };
 
-
-
-function applyPathologyFeaturePermissions(user, permissions, grantedBy) {
-  const rows = Array.isArray(permissions)
-    ? normalizeFeaturePermissions(permissions, 'pathology_staff', { grantedBy })
-    : (Array.isArray(user.modulePermissions) && user.modulePermissions.length
-      ? normalizeFeaturePermissions(user.modulePermissions, role, { grantedBy })
-      : defaultFeaturePermissions(role, { grantedBy }));
-  user.modulePermissions = rows;
-  user.dashboard_access = dashboardAccessFromFeatures(rows);
-}
-
 exports.getPathologyStaffLoginAccess = async (req, res) => {
   try {
-    const staff = await PathologyStaff.findById(req.params.id).populate('user_id', 'name email role modulePermissions dashboard_access is_active');
-    if (!staff) return res.status(404).json({ success: false, message: 'Pathology staff not found' });
-    const user = staff.user_id || await User.findOne({ email: staff.email }).select('name email role modulePermissions dashboard_access is_active');
+    const hospitalId = requireHospitalId(req);
+
+    const staff = await PathologyStaff
+      .findOne({ _id: req.params.id, hospitalId })
+      .populate('user_id', 'name email role modulePermissions dashboard_access is_active');
+
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pathology staff not found'
+      });
+    }
+
+    const user = staff.user_id || await User.findOne({
+      hospital_id: hospitalId,
+      email: staff.email
+    }).select('name email role modulePermissions dashboard_access is_active');
+
     return res.json({
       success: true,
-      staff: { _id: staff._id, name: `${staff.first_name || ''} ${staff.last_name || ''}`.trim(), email: staff.email, role: staff.role },
-      user: user ? { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user), is_active: user.is_active } : null
+      staff: {
+        _id: staff._id,
+        name: `${staff.first_name || ''} ${staff.last_name || ''}`.trim(),
+        email: staff.email,
+        role: staff.role
+      },
+      user: user ? {
+        _id: user._id,
+        email: user.email,
+        role: user.role,
+        modulePermissions: effectiveMainFeaturePermissions(user),
+        is_active: user.is_active
+      } : null
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return sendError(res, error, 'Failed to read login access');
   }
 };
 
 exports.updatePathologyStaffLoginAccess = async (req, res) => {
   try {
-    const staff = await PathologyStaff.findById(req.params.id);
-    if (!staff) return res.status(404).json({ success: false, message: 'Pathology staff not found' });
-    if (!staff.email) return res.status(400).json({ success: false, message: 'Pathology staff email is required to create login credentials' });
+    const hospitalId = requireHospitalId(req);
 
-    let user = staff.user_id ? await User.findById(staff.user_id) : null;
-    if (!user) user = await User.findOne({ email: staff.email });
-    if (!user) {
-      if (!req.body?.password) return res.status(400).json({ success: false, message: 'Password is required when creating a new login' });
-      user = new User({
-        name: `${staff.first_name || ''} ${staff.last_name || ''}`.trim(),
-        email: staff.email,
-        phone: staff.phone,
-        role: 'pathology_staff',
-        password: req.body.password,
-        hospital_id: req.user?.hospital_id || undefined
+    const staff = await PathologyStaff.findOne({
+      _id: req.params.id,
+      hospitalId
+    });
+
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pathology staff not found'
       });
-    } else {
-      user.name = `${staff.first_name || ''} ${staff.last_name || ''}`.trim();
-      user.email = staff.email;
-      user.phone = staff.phone;
-      user.role = 'pathology_staff';
-      if (req.body?.password) user.password = req.body.password;
-      if (req.user?.hospital_id && !user.hospital_id) user.hospital_id = req.user.hospital_id;
     }
 
-    applyPathologyFeaturePermissions(user, req.body?.modulePermissions || req.body?.mainFeaturePermissions, req.user?._id);
-    await user.save();
-    if (!staff.user_id || String(staff.user_id) !== String(user._id)) {
-      staff.user_id = user._id;
-      await staff.save();
+    let user = staff.user_id
+      ? await User.findOne({ _id: staff.user_id, hospital_id: hospitalId })
+      : await User.findOne({ hospital_id: hospitalId, email: staff.email });
+
+    if (!user) {
+      if (!req.body.password) {
+        return res.status(400).json({
+          success: false,
+          message: 'Password is required when enabling login for the first time'
+        });
+      }
+
+      user = new User({
+        name: `${staff.first_name} ${staff.last_name || ''}`.trim(),
+        email: staff.email,
+        password: req.body.password,
+        role: 'pathology_staff',
+        hospital_id: hospitalId,
+        is_active: req.body.is_active !== false
+      });
     }
+
+    user.role = 'pathology_staff';
+    user.hospital_id = hospitalId;
+
+    if (req.body.is_active !== undefined) {
+      user.is_active = Boolean(req.body.is_active);
+    }
+
+    if (req.body.password) {
+      user.password = req.body.password;
+    }
+
+    applyPathologyFeaturePermissions(user, req.body.modulePermissions, req.user._id);
+
+    await user.save();
+    staff.user_id = user._id;
+    await staff.save();
+
+    await syncHRProfileFromSource('PathologyStaff', staff, { hospital_id: hospitalId });
+
     return res.json({
       success: true,
-      message: 'Login credentials and main feature access saved successfully',
-      user: { _id: user._id, email: user.email, role: user.role, modulePermissions: effectiveMainFeaturePermissions(user) }
+      message: 'Pathology login access updated',
+      user: {
+        _id: user._id,
+        email: user.email,
+        role: user.role,
+        modulePermissions: effectiveMainFeaturePermissions(user),
+        is_active: user.is_active
+      }
     });
   } catch (error) {
-    return res.status(400).json({ success: false, message: error.message });
+    return sendError(res, error, 'Failed to update login access');
   }
 };
 
 exports.updatePathologyStaff = async (req, res) => {
   try {
-    const { id } = req.params;
-    const updates = req.body;
-    const { password, email, fullName, phone } = req.body;
+    const hospitalId = requireHospitalId(req);
 
-    // Remove fields that shouldn't be updated directly
-    delete updates._id;
-    delete updates.staffId;
-    delete updates.user_id;
-    delete updates.created_by;
+    const blocked = new Set(['hospitalId', 'staffId', 'created_by', 'user_id']);
+    const updates = Object.fromEntries(
+      Object.entries(req.body).filter(([key]) => !blocked.has(key))
+    );
 
-    // Validate lab tests if being updated
-    if (updates.accessible_test_ids) {
-      const validTests = await LabTest.find({
+    if (updates.email) {
+      updates.email = String(updates.email).toLowerCase();
+    }
+
+    if (updates.accessible_test_ids?.length) {
+      const count = await LabTest.countDocuments({
+        hospitalId,
         _id: { $in: updates.accessible_test_ids },
         is_active: true
       });
 
-      if (validTests.length !== updates.accessible_test_ids.length) {
+      if (count !== updates.accessible_test_ids.length) {
         return res.status(400).json({
           success: false,
           message: 'One or more lab tests are invalid or inactive'
@@ -324,33 +404,154 @@ exports.updatePathologyStaff = async (req, res) => {
       }
     }
 
-    // If assigned_lab_tests is being updated, format it properly
-    if (updates.assigned_lab_tests) {
-      const testIds = updates.assigned_lab_tests.map(t => t.lab_test_id);
-      const validTests = await LabTest.find({
-        _id: { $in: testIds },
-        is_active: true
+    updates.updated_by = req.user._id;
+
+    const staff = await publicStaffPopulate(
+      PathologyStaff.findOneAndUpdate(
+        { _id: req.params.id, hospitalId },
+        { $set: updates },
+        { new: true, runValidators: true }
+      )
+    );
+
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pathology staff not found'
       });
-
-      if (validTests.length !== testIds.length) {
-        return res.status(400).json({
-          success: false,
-          message: 'One or more assigned lab tests are invalid or inactive'
-        });
-      }
-
-      // Add metadata to each assignment
-      updates.assigned_lab_tests = updates.assigned_lab_tests.map(test => ({
-        ...test,
-        assigned_at: test.assigned_at || new Date()
-      }));
     }
 
-    updates.updated_by = req.user?._id;
+    await syncHRProfileFromSource('PathologyStaff', staff, { hospital_id: hospitalId });
 
-    // First update the pathology staff record
-    const staff = await PathologyStaff.findByIdAndUpdate(
-      id,
+    return res.json({
+      success: true,
+      message: 'Pathology staff updated successfully',
+      data: staff
+    });
+  } catch (error) {
+    return sendError(res, error, 'Failed to update pathology staff');
+  }
+};
+
+exports.deletePathologyStaff = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+
+    const staff = await PathologyStaff.findOne({
+      _id: req.params.id,
+      hospitalId
+    });
+
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pathology staff not found'
+      });
+    }
+
+    staff.status = 'Inactive';
+    staff.updated_by = req.user._id;
+    await staff.save();
+
+    if (staff.user_id) {
+      await User.updateOne(
+        { _id: staff.user_id, hospital_id: hospitalId },
+        { $set: { is_active: false } }
+      );
+    }
+
+    return res.json({
+      success: true,
+      message: 'Pathology staff deactivated successfully'
+    });
+  } catch (error) {
+    return sendError(res, error, 'Failed to deactivate pathology staff');
+  }
+};
+
+exports.getStaffByRole = async (req, res) => {
+  try {
+    const data = await publicStaffPopulate(
+      PathologyStaff.find(staffFilter(req, { role: req.params.role, status: 'Active' }))
+    ).sort({ first_name: 1 });
+
+    return res.json({ success: true, data, count: data.length });
+  } catch (error) {
+    return sendError(res, error, 'Failed to fetch staff by role');
+  }
+};
+
+exports.assignLabTests = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+
+    const { accessible_test_ids = [], assigned_lab_tests = [] } = req.body;
+
+    const allIds = Array.from(
+      new Set([
+        ...accessible_test_ids,
+        ...assigned_lab_tests.map((row) => row.lab_test_id)
+      ].filter(Boolean).map(String))
+    );
+
+    const count = await LabTest.countDocuments({
+      hospitalId,
+      _id: { $in: allIds },
+      is_active: true
+    });
+
+    if (count !== allIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'One or more lab tests are invalid or inactive'
+      });
+    }
+
+    const staff = await publicStaffPopulate(
+      PathologyStaff.findOneAndUpdate(
+        { _id: req.params.id, hospitalId },
+        {
+          $set: {
+            accessible_test_ids,
+            assigned_lab_tests,
+            updated_by: req.user._id
+          }
+        },
+        { new: true, runValidators: true }
+      )
+    );
+
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pathology staff not found'
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Lab-test assignments updated',
+      data: staff
+    });
+  } catch (error) {
+    return sendError(res, error, 'Failed to assign lab tests');
+  }
+};
+
+exports.updatePerformanceMetrics = async (req, res) => {
+  try {
+    const allowed = ['tests_processed', 'avg_turnaround_time', 'accuracy_rate'];
+
+    const updates = Object.fromEntries(
+      allowed
+        .filter((key) => req.body[key] !== undefined)
+        .map((key) => [key, req.body[key]])
+    );
+
+    updates.updated_by = req.user._id;
+
+    const staff = await PathologyStaff.findOneAndUpdate(
+      staffFilter(req, { _id: req.params.id }),
       { $set: updates },
       { new: true, runValidators: true }
     );
@@ -362,301 +563,67 @@ exports.updatePathologyStaff = async (req, res) => {
       });
     }
 
-    // Handle password/User account creation/update if password is provided
-    if (password) {
-      const staffEmail = email || staff.email;
-      const staffName = fullName || `${staff.first_name} ${staff.last_name || ''}`.trim();
-      const staffPhone = phone || staff.phone;
-
-      // Check if user already exists
-      let user = await User.findOne({ email: staffEmail });
-
-      if (user) {
-        // Update existing user
-        user.password = password; // Will be hashed by pre-save hook
-        user.name = staffName;
-        if (staffPhone) user.phone = staffPhone;
-        user.role = 'pathology_staff'; // Ensure role is set correctly
-        await user.save();
-        
-        // Update staff with user_id if not already set
-        if (!staff.user_id) {
-          staff.user_id = user._id;
-          await staff.save();
-        }
-      } else {
-        // Create new user
-        user = new User({
-          name: staffName,
-          email: staffEmail,
-          password: password,
-          phone: staffPhone,
-          role: 'pathology_staff'
-        });
-        await user.save();
-
-        // Update staff with user_id
-        staff.user_id = user._id;
-        await staff.save();
-      }
-    }
-
-    // Populate the response
-    const populatedStaff = await PathologyStaff.findById(staff._id)
-      .populate('user_id', 'name email role')
-      .populate('department', 'name code')
-      .populate('accessible_test_ids', 'code name category base_price')
-      .populate('assigned_lab_tests.lab_test_id', 'code name category base_price');
-
-    res.json({
+    return res.json({
       success: true,
-      message: password ? 'Pathology staff updated and credentials saved successfully' : 'Pathology staff updated successfully',
-      data: populatedStaff
-    });
-  } catch (error) {
-    console.error('Error updating pathology staff:', error);
-    
-    // Handle duplicate key errors
-    if (error.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email already exists',
-        error: error.message
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update pathology staff',
-      error: error.message
-    });
-  }
-};
-
-
-exports.deletePathologyStaff = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Soft delete - set status to Inactive instead of actually deleting
-    const staff = await PathologyStaff.findByIdAndUpdate(
-      id,
-      {
-        $set: {
-          status: 'Inactive',
-          updated_by: req.user?._id
-        }
-      },
-      { new: true }
-    );
-
-    if (!staff) {
-      return res.status(404).json({
-        success: false,
-        message: 'Pathology staff not found'
-      });
-    }
-
-    // Also deactivate the associated user account
-    if (staff.user_id) {
-      await User.findByIdAndUpdate(staff.user_id, {
-        $set: { is_active: false }
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Pathology staff deactivated successfully',
+      message: 'Performance metrics updated',
       data: staff
     });
   } catch (error) {
-    console.error('Error deleting pathology staff:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete pathology staff',
-      error: error.message
-    });
-  }
-};
-
-exports.getStaffByRole = async (req, res) => {
-  try {
-    const { role } = req.params;
-    const { status = 'Active' } = req.query;
-
-    const staff = await PathologyStaff.find({
-      role,
-      status
-    })
-      .populate('user_id', 'name email')
-      .populate('department', 'name')
-      .select('first_name last_name email phone staffId qualification specialization');
-
-    res.json({
-      success: true,
-      count: staff.length,
-      data: staff
-    });
-  } catch (error) {
-    console.error('Error fetching staff by role:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch staff by role',
-      error: error.message
-    });
-  }
-};
-
-exports.assignLabTests = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { test_ids } = req.body;
-
-    if (!test_ids || !Array.isArray(test_ids)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide an array of test IDs'
-      });
-    }
-
-    // Get valid lab tests
-    const validTests = await LabTest.find({
-      _id: { $in: test_ids },
-      is_active: true
-    });
-
-    if (validTests.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No valid lab tests found'
-      });
-    }
-
-    // Create assignment objects
-    const assignments = validTests.map(test => ({
-      lab_test_id: test._id,
-      lab_test_code: test.code,
-      lab_test_name: test.name,
-      category: test.category,
-      can_perform: true,
-      assigned_at: new Date()
-    }));
-
-    const staff = await PathologyStaff.findByIdAndUpdate(
-      id,
-      {
-        $set: {
-          assigned_lab_tests: assignments,
-          accessible_test_ids: validTests.map(t => t._id)
-        },
-        updated_by: req.user?._id
-      },
-      { new: true }
-    )
-      .populate('accessible_test_ids', 'code name category base_price')
-      .populate('assigned_lab_tests.lab_test_id', 'code name category base_price');
-
-    if (!staff) {
-      return res.status(404).json({
-        success: false,
-        message: 'Pathology staff not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: `${validTests.length} lab tests assigned successfully`,
-      data: staff
-    });
-  } catch (error) {
-    console.error('Error assigning lab tests:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to assign lab tests',
-      error: error.message
-    });
-  }
-};
-
-exports.updatePerformanceMetrics = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { tests_processed, avg_turnaround_time, accuracy_rate } = req.body;
-
-    const staff = await PathologyStaff.findByIdAndUpdate(
-      id,
-      {
-        $set: {
-          tests_processed,
-          avg_turnaround_time,
-          accuracy_rate
-        }
-      },
-      { new: true }
-    );
-
-    if (!staff) {
-      return res.status(404).json({
-        success: false,
-        message: 'Pathology staff not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Performance metrics updated successfully',
-      data: staff
-    });
-  } catch (error) {
-    console.error('Error updating performance metrics:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update performance metrics',
-      error: error.message
-    });
+    return sendError(res, error, 'Failed to update performance metrics');
   }
 };
 
 exports.getStaffStatistics = async (req, res) => {
   try {
-    const stats = await PathologyStaff.aggregate([
+    const hospitalId = requireHospitalId(req);
+
+    const rows = await PathologyStaff.aggregate([
+      { $match: { hospitalId } },
       {
         $facet: {
-          // Overall stats
           overall: [
             {
               $group: {
                 _id: null,
                 total: { $sum: 1 },
-                active: { $sum: { $cond: [{ $eq: ['$status', 'Active'] }, 1, 0] } },
-                onLeave: { $sum: { $cond: [{ $eq: ['$status', 'On Leave'] }, 1, 0] } },
-                inactive: { $sum: { $cond: [{ $eq: ['$status', 'Inactive'] }, 1, 0] } },
-                totalTestsAssigned: { $sum: { $size: '$assigned_lab_tests' } },
-                avgTestsPerStaff: { $avg: { $size: '$assigned_lab_tests' } }
+                active: {
+                  $sum: { $cond: [{ $eq: ['$status', 'Active'] }, 1, 0] }
+                },
+                onLeave: {
+                  $sum: { $cond: [{ $eq: ['$status', 'On Leave'] }, 1, 0] }
+                },
+                inactive: {
+                  $sum: { $cond: [{ $eq: ['$status', 'Inactive'] }, 1, 0] }
+                },
+                totalTestsAssigned: {
+                  $sum: { $size: { $ifNull: ['$assigned_lab_tests', []] } }
+                },
+                avgTestsPerStaff: {
+                  $avg: { $size: { $ifNull: ['$assigned_lab_tests', []] } }
+                }
               }
             }
           ],
-          // Role breakdown
           byRole: [
             {
               $group: {
                 _id: '$role',
                 count: { $sum: 1 },
-                active: { $sum: { $cond: [{ $eq: ['$status', 'Active'] }, 1, 0] } }
+                active: {
+                  $sum: { $cond: [{ $eq: ['$status', 'Active'] }, 1, 0] }
+                }
               }
             },
             { $sort: { count: -1 } }
           ],
-          // Recent joiners (last 30 days)
           recentJoiners: [
             {
               $match: {
-                joined_at: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+                joined_at: { $gte: new Date(Date.now() - 30 * 86400000) }
               }
             },
             { $count: 'count' }
           ],
-          // Performance summary
           performance: [
             {
               $group: {
@@ -671,10 +638,12 @@ exports.getStaffStatistics = async (req, res) => {
       }
     ]);
 
-    res.json({
+    const data = rows[0] || {};
+
+    return res.json({
       success: true,
       data: {
-        overall: stats[0].overall[0] || {
+        overall: data.overall?.[0] || {
           total: 0,
           active: 0,
           onLeave: 0,
@@ -682,9 +651,9 @@ exports.getStaffStatistics = async (req, res) => {
           totalTestsAssigned: 0,
           avgTestsPerStaff: 0
         },
-        byRole: stats[0].byRole,
-        recentJoiners: stats[0].recentJoiners[0]?.count || 0,
-        performance: stats[0].performance[0] || {
+        byRole: data.byRole || [],
+        recentJoiners: data.recentJoiners?.[0]?.count || 0,
+        performance: data.performance?.[0] || {
           avgTestsProcessed: 0,
           avgTurnaround: 0,
           avgAccuracy: 0
@@ -692,30 +661,27 @@ exports.getStaffStatistics = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching staff statistics:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch staff statistics',
-      error: error.message
-    });
+    return sendError(res, error, 'Failed to fetch staff statistics');
   }
 };
 
-// Add to controllers/pathologyStaff.controller.js
 exports.updateStaffPassword = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { password, email } = req.body;
+    const hospitalId = requireHospitalId(req);
+    const { password } = req.body;
 
-    if (!password) {
+    if (!password || password.length < 8) {
       return res.status(400).json({
         success: false,
-        message: 'Password is required'
+        message: 'A password of at least 8 characters is required'
       });
     }
 
-    // Find the staff member
-    const staff = await PathologyStaff.findById(id);
+    const staff = await PathologyStaff.findOne({
+      _id: req.params.id,
+      hospitalId
+    });
+
     if (!staff) {
       return res.status(404).json({
         success: false,
@@ -723,28 +689,35 @@ exports.updateStaffPassword = async (req, res) => {
       });
     }
 
-    // Check if user exists
-    let user = await User.findOne({ email: staff.email });
+    let user = staff.user_id
+      ? await User.findOne({ _id: staff.user_id, hospital_id: hospitalId })
+      : await User.findOne({ hospital_id: hospitalId, email: staff.email });
 
-    if (user) {
-      // Update existing user's password
-      user.password = password;
-      await user.save();
-    } else {
-      // Create new user for this staff member
-      user = await User.create({
+    if (!user) {
+      user = new User({
         name: `${staff.first_name} ${staff.last_name || ''}`.trim(),
         email: staff.email,
-        password: password,
-        role: 'pathology_staff'
+        password,
+        role: 'pathology_staff',
+        hospital_id: hospitalId,
+        is_active: true
       });
-
-      // Update staff with user_id
-      staff.user_id = user._id;
-      await staff.save();
+    } else {
+      user.password = password;
     }
 
-    res.json({
+    user.role = 'pathology_staff';
+    user.hospital_id = hospitalId;
+
+    if (!user.modulePermissions?.length) {
+      applyPathologyFeaturePermissions(user, null, req.user._id);
+    }
+
+    await user.save();
+    staff.user_id = user._id;
+    await staff.save();
+
+    return res.json({
       success: true,
       message: 'Password updated successfully',
       data: {
@@ -753,27 +726,15 @@ exports.updateStaffPassword = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error updating staff password:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update password',
-      error: error.message
-    });
+    return sendError(res, error, 'Failed to update password');
   }
 };
 
-// Add to controllers/pathologyStaff.controller.js
-
-// @desc    Get current pathology staff profile
-// @route   GET /api/pathology-staff/profile/me
-// @access  Private (Pathology Staff only)
 exports.getMyProfile = async (req, res) => {
   try {
-    const staff = await PathologyStaff.findOne({ user_id: req.user._id })
-      .populate('user_id', 'name email')
-      .populate('department', 'name code')
-      .populate('accessible_test_ids', 'code name category')
-      .populate('assigned_lab_tests.lab_test_id', 'code name category base_price');
+    const staff = await publicStaffPopulate(
+      PathologyStaff.findOne(staffFilter(req, { user_id: req.user._id }))
+    );
 
     if (!staff) {
       return res.status(404).json({
@@ -782,88 +743,64 @@ exports.getMyProfile = async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({ success: true, data: staff });
+  } catch (error) {
+    return sendError(res, error, 'Failed to fetch profile');
+  }
+};
+
+exports.updateMyProfile = async (req, res) => {
+  try {
+    const staff = await publicStaffPopulate(
+      PathologyStaff.findOneAndUpdate(
+        staffFilter(req, { user_id: req.user._id }),
+        {
+          $set: {
+            ...permittedProfileUpdates(req.body),
+            updated_by: req.user._id
+          }
+        },
+        { new: true, runValidators: true }
+      )
+    );
+
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pathology staff profile not found'
+      });
+    }
+
+    await syncHRProfileFromSource('PathologyStaff', staff, {
+      hospital_id: requireHospitalId(req)
+    });
+
+    return res.json({
       success: true,
+      message: 'Profile updated successfully',
       data: staff
     });
   } catch (error) {
-    console.error('Error fetching profile:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch profile',
-      error: error.message
-    });
+    return sendError(res, error, 'Failed to update profile');
   }
 };
 
-// @desc    Update my profile
-// @route   PUT /api/pathology-staff/profile/me
-// @access  Private (Pathology Staff only)
-exports.updateMyProfile = async (req, res) => {
-  try {
-    const staff = await PathologyStaff.findOne({ user_id: req.user._id });
-    
-    if (!staff) {
-      return res.status(404).json({
-        success: false,
-        message: 'Pathology staff profile not found'
-      });
-    }
-
-    // Fields that staff can update
-    const allowedUpdates = ['phone', 'qualification', 'specialization', 'address'];
-    const updates = {};
-
-    allowedUpdates.forEach(field => {
-      if (req.body[field] !== undefined) {
-        updates[field] = req.body[field];
-      }
-    });
-
-    const updatedStaff = await PathologyStaff.findByIdAndUpdate(
-      staff._id,
-      { $set: updates },
-      { new: true, runValidators: true }
-    ).populate('user_id', 'name email');
-
-    res.json({
-      success: true,
-      message: 'Profile updated successfully',
-      data: updatedStaff
-    });
-  } catch (error) {
-    console.error('Error updating profile:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update profile',
-      error: error.message
-    });
-  }
-};
-
-// @desc    Change password
-// @route   PUT /api/pathology-staff/change-password
-// @access  Private (Pathology Staff only)
 exports.changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    if (!currentPassword || !newPassword) {
+    if (!currentPassword || !newPassword || newPassword.length < 8) {
       return res.status(400).json({
         success: false,
-        message: 'Current password and new password are required'
+        message: 'Current password and a new password of at least 8 characters are required'
       });
     }
 
-    if (newPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: 'New password must be at least 6 characters long'
-      });
-    }
+    const user = await User.findOne({
+      _id: req.user._id,
+      hospital_id: requireHospitalId(req)
+    });
 
-    // Get the user
-    const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -871,29 +808,21 @@ exports.changePassword = async (req, res) => {
       });
     }
 
-    // Verify current password
-    const isMatch = await user.matchPassword(currentPassword);
-    if (!isMatch) {
+    if (!(await user.matchPassword(currentPassword))) {
       return res.status(401).json({
         success: false,
         message: 'Current password is incorrect'
       });
     }
 
-    // Update password
     user.password = newPassword;
     await user.save();
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Password changed successfully'
     });
   } catch (error) {
-    console.error('Error changing password:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to change password',
-      error: error.message
-    });
+    return sendError(res, error, 'Failed to change password');
   }
 };

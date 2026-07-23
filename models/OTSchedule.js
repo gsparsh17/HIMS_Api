@@ -10,8 +10,7 @@ const otScheduleSchema = new mongoose.Schema({
   requestId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'OTRequest',
-    required: true,
-    unique: true
+    required: true
   },
   scheduledDate: { type: Date, required: true },
   startTime: String,
@@ -34,7 +33,7 @@ const otScheduleSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 otScheduleSchema.index({ hospitalId: 1, otRoomId: 1, scheduledStart: 1, scheduledEnd: 1 });
-otScheduleSchema.index({ requestId: 1 });
+otScheduleSchema.index({ requestId: 1 }, { unique: true, name: 'requestId_1' });
 otScheduleSchema.index({ hospitalId: 1, scheduledDate: 1, status: 1 });
 
 module.exports = mongoose.model('OTSchedule', otScheduleSchema);

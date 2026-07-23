@@ -25,6 +25,7 @@ const EncounterDocument = require('../models/EncounterDocument');
 const DocumentSignature = require('../models/DocumentSignature');
 const { requireHospitalId, idString } = require('./tenantScope.service');
 const { listTemplates: listSurgeryFormTemplates } = require('../config/otSurgeryFormTemplates');
+const { buildAccommodationPrintData } = require('./ipdAccommodationPrint.service');
 
 const CATEGORY_ORDER = [
   'admission', 'consent', 'assessment', 'progress', 'nursing', 'vitals', 'medication',
@@ -141,7 +142,22 @@ async function buildManifest(req, admissionId, options = {}) {
     DocumentSignature.find({ hospitalId, admissionId, status: 'signed' }).sort({ signedAt: -1 }).lean()
   ]);
 
+  const accommodationPrint = await buildAccommodationPrintData({ hospitalId, admissionId: admission._id, financial: ['admin', 'mediqliq_super_admin', 'accountant', 'insurance_desk'].includes(req.user.role) });
+
   const documents = [];
+  documents.push(manifestItem({
+    record: { _id: `accommodation-${admission._id}`, ...accommodationPrint },
+    category: 'admission',
+    documentType: 'accommodation_transfer_history',
+    title: 'Accommodation & Transfer History',
+    sourceModel: 'IPDBedTransfer',
+    rendererKey: 'accommodation-transfer-history',
+    status: 'Completed/Unsigned',
+    date: admission.admissionDate,
+    required: true,
+    visibility: 'clinical',
+    metadata: { transferCount: accommodationPrint.transferTimeline.length, segmentCount: accommodationPrint.lengthOfStaySegments.length }
+  }));
   documents.push(manifestItem({
     record: admission,
     category: 'admission',

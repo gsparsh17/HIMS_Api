@@ -1,32 +1,24 @@
 const express = require('express');
 const router = express.Router();
-const pathologyStaffController = require('../controllers/pathologystaff.controller');
-const { protect, authorize } = require('../middlewares/auth');
+const controller = require('../controllers/pathologystaff.controller');
+const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
-// Existing personal profile routes retain their role protection.
-router.get('/profile/me', protect, authorize('pathology_staff'), pathologyStaffController.getMyProfile);
-router.put('/profile/me', protect, authorize('pathology_staff'), pathologyStaffController.updateMyProfile);
-router.put('/change-password', protect, authorize('pathology_staff'), pathologyStaffController.changePassword);
-
-router.get('/stats/overview', pathologyStaffController.getStaffStatistics);
-router.get('/role/:role', pathologyStaffController.getStaffByRole);
-
-// Admin-only credential and main-feature access endpoints. These must appear
-// before the generic /:id route.
-router.get('/:id/login-access', protect, authorize('admin', 'mediqliq_super_admin'), pathologyStaffController.getPathologyStaffLoginAccess);
-router.put('/:id/login-access', protect, authorize('admin', 'mediqliq_super_admin'), pathologyStaffController.updatePathologyStaffLoginAccess);
-router.put('/:id/password', protect, authorize('admin', 'mediqliq_super_admin'), pathologyStaffController.updateStaffPassword);
-
+router.use(protect, requireModuleAccess('laboratory', 'view'));
+router.get('/profile/me', authorize('pathology_staff'), controller.getMyProfile);
+router.put('/profile/me', authorize('pathology_staff'), controller.updateMyProfile);
+router.put('/change-password', authorize('pathology_staff'), controller.changePassword);
+router.get('/stats/overview', controller.getStaffStatistics);
+router.get('/role/:role', controller.getStaffByRole);
+router.get('/:id/login-access', authorize('admin', 'mediqliq_super_admin'), requireModuleAccess('laboratory', 'manage'), controller.getPathologyStaffLoginAccess);
+router.put('/:id/login-access', authorize('admin', 'mediqliq_super_admin'), requireModuleAccess('laboratory', 'manage'), controller.updatePathologyStaffLoginAccess);
+router.put('/:id/password', authorize('admin', 'mediqliq_super_admin'), requireModuleAccess('laboratory', 'manage'), controller.updateStaffPassword);
 router.route('/')
-  .get(pathologyStaffController.getAllPathologyStaff)
-  .post(pathologyStaffController.createPathologyStaff);
-
+  .get(controller.getAllPathologyStaff)
+  .post(authorize('admin', 'mediqliq_super_admin'), requireModuleAccess('laboratory', 'manage'), controller.createPathologyStaff);
 router.route('/:id')
-  .get(pathologyStaffController.getPathologyStaffById)
-  .put(pathologyStaffController.updatePathologyStaff)
-  .delete(pathologyStaffController.deletePathologyStaff);
-
-router.post('/:id/assign-tests', pathologyStaffController.assignLabTests);
-router.put('/:id/performance', pathologyStaffController.updatePerformanceMetrics);
-
+  .get(controller.getPathologyStaffById)
+  .put(authorize('admin', 'mediqliq_super_admin'), requireModuleAccess('laboratory', 'manage'), controller.updatePathologyStaff)
+  .delete(authorize('admin', 'mediqliq_super_admin'), requireModuleAccess('laboratory', 'manage'), controller.deletePathologyStaff);
+router.post('/:id/assign-tests', authorize('admin', 'mediqliq_super_admin'), requireModuleAccess('laboratory', 'manage'), controller.assignLabTests);
+router.put('/:id/performance', authorize('admin', 'mediqliq_super_admin', 'pathology_staff'), requireModuleAccess('laboratory', 'manage'), controller.updatePerformanceMetrics);
 module.exports = router;

@@ -15,6 +15,32 @@ const Invoice = require('../models/Invoice');
 const Appointment = require('../models/Appointment');
 const { syncAllExistingHRProfiles } = require('../services/hrProfileSync.service');
 const { resolveHospitalId } = require('../utils/hospitalScope');
+const {
+  normalizeFeaturePermissions,
+  defaultFeaturePermissions,
+  dashboardAccessFromFeatures,
+  effectiveMainFeaturePermissions
+} = require('../utils/mainFeatureAccess');
+
+// Login roles are limited to roles that resolve to an existing dashboard route.
+const EMPLOYEE_LOGIN_ROLES = new Set([
+  'doctor',
+  'nurse',
+  'staff',
+  'pharmacy',
+  'registrar',
+  'receptionist',
+  'pathology_staff',
+  'radiology_staff',
+  'ot_staff',
+  'hr',
+  'hr_manager',
+  'store',
+  'store_manager',
+  'inventory_manager',
+  'accountant',
+  'insurance_desk'
+]);
 
 const HR_ROLES = ['hr', 'hr_manager', 'admin', 'mediqliq_super_admin'];
 
@@ -36,22 +62,155 @@ function startOfDay(value) {
 }
 
 function roleFromStaffType(staffType, designation = '') {
-  const normalizedType = String(staffType || '').toLowerCase();
-  const normalizedDesignation = String(designation || '').toLowerCase();
+  const normalizedType = String(staffType || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  const normalizedDesignation = String(designation || '').trim().toLowerCase();
 
-  if (normalizedType === 'doctor' || normalizedDesignation.includes('doctor')) return 'doctor';
-  if (normalizedType === 'nurse' || normalizedDesignation.includes('nurse')) return 'nurse';
-  if (normalizedType === 'hr' || normalizedDesignation.includes('hr')) return 'hr';
-  if (normalizedType === 'store' || normalizedDesignation.includes('store') || normalizedDesignation.includes('inventory')) return 'store';
-  if (normalizedType === 'pharmacy' || normalizedDesignation.includes('pharmac')) return 'pharmacy';
-  if (normalizedType === 'pathology_staff' || normalizedDesignation.includes('pathology') || normalizedDesignation.includes('lab')) return 'pathology_staff';
-  if (normalizedType === 'radiology_staff' || normalizedDesignation.includes('radio')) return 'radiology_staff';
-  if (normalizedType === 'ot_staff' || normalizedDesignation.includes('ot ')) return 'ot_staff';
-  if (normalizedType === 'receptionist' || normalizedDesignation.includes('reception')) return 'receptionist';
-  if (normalizedType === 'registrar' || normalizedDesignation.includes('registrar')) return 'registrar';
-  if (normalizedType === 'admin') return 'admin';
+  if (
+    normalizedType === 'hr_manager' ||
+    normalizedDesignation.includes('hr manager') ||
+    normalizedDesignation.includes('human resource manager')
+  ) {
+    return 'hr_manager';
+  }
+
+  if (
+    normalizedType === 'inventory_manager' ||
+    normalizedDesignation.includes('inventory manager')
+  ) {
+    return 'inventory_manager';
+  }
+
+  if (
+    normalizedType === 'store_manager' ||
+    normalizedDesignation.includes('store manager')
+  ) {
+    return 'store_manager';
+  }
+
+  if (
+    normalizedType === 'equipment_manager' ||
+    normalizedDesignation.includes('equipment manager') ||
+    normalizedDesignation.includes('asset manager')
+  ) {
+    return 'equipment_manager';
+  }
+
+  if (
+    normalizedType === 'insurance_desk' ||
+    normalizedDesignation.includes('insurance') ||
+    normalizedDesignation.includes('tpa desk')
+  ) {
+    return 'insurance_desk';
+  }
+
+  if (
+    normalizedType === 'bed_manager' ||
+    normalizedDesignation.includes('bed manager') ||
+    normalizedDesignation.includes('bed coordinator')
+  ) {
+    return 'bed_manager';
+  }
+
+  if (
+    normalizedType === 'housekeeping' ||
+    normalizedDesignation.includes('housekeeping') ||
+    normalizedDesignation.includes('cleaner')
+  ) {
+    return 'housekeeping';
+  }
+
+  if (
+    normalizedType === 'accountant' ||
+    normalizedDesignation.includes('accountant')
+  ) {
+    return 'accountant';
+  }
+
+  if (
+    normalizedType === 'doctor' ||
+    normalizedDesignation.includes('doctor') ||
+    normalizedDesignation.includes('surgeon') ||
+    normalizedDesignation.includes('anesthes')
+  ) {
+    return 'doctor';
+  }
+
+  if (
+    normalizedType === 'nurse' ||
+    normalizedDesignation.includes('nurse')
+  ) {
+    return 'nurse';
+  }
+
+  if (
+    normalizedType === 'hr' ||
+    normalizedDesignation === 'hr' ||
+    normalizedDesignation.includes('human resource')
+  ) {
+    return 'hr';
+  }
+
+  if (
+    normalizedType === 'store' ||
+    normalizedDesignation === 'store' ||
+    normalizedDesignation.includes('store staff')
+  ) {
+    return 'store';
+  }
+
+  if (
+    normalizedType === 'pharmacy' ||
+    normalizedDesignation.includes('pharmac')
+  ) {
+    return 'pharmacy';
+  }
+
+  if (
+    normalizedType === 'pathology_staff' ||
+    normalizedDesignation.includes('pathology') ||
+    normalizedDesignation.includes('lab technician')
+  ) {
+    return 'pathology_staff';
+  }
+
+  if (
+    normalizedType === 'radiology_staff' ||
+    normalizedDesignation.includes('radiology') ||
+    normalizedDesignation.includes('radiologist')
+  ) {
+    return 'radiology_staff';
+  }
+
+  if (
+    normalizedType === 'ot_staff' ||
+    normalizedDesignation.includes('ot staff') ||
+    normalizedDesignation.includes('ot technician') ||
+    normalizedDesignation.includes('ot manager')
+  ) {
+    return 'ot_staff';
+  }
+
+  if (
+    normalizedType === 'receptionist' ||
+    normalizedDesignation.includes('reception')
+  ) {
+    return 'receptionist';
+  }
+
+  if (
+    normalizedType === 'registrar' ||
+    normalizedDesignation.includes('registrar')
+  ) {
+    return 'registrar';
+  }
+
   return 'staff';
 }
+
+
 
 async function ensureDepartment(body) {
   if (body.department) return body.department;
@@ -495,7 +654,7 @@ exports.getEmployees = async (req, res) => {
 
     const [employees, total] = await Promise.all([
       HRStaffProfile.find(filter)
-        .populate('user_id', 'name email role is_active')
+        .populate('user_id', 'name email role is_active modulePermissions dashboard_access')
         .populate('department', 'name')
         .populate('shift', 'name startTime endTime')
         .sort({ createdAt: -1 })
@@ -513,7 +672,7 @@ exports.getEmployees = async (req, res) => {
 exports.getEmployeeById = async (req, res) => {
   try {
     const employee = await HRStaffProfile.findById(req.params.id)
-      .populate('user_id', 'name email role is_active')
+      .populate('user_id', 'name email role is_active modulePermissions dashboard_access')
       .populate('department', 'name')
       .populate('shift')
       .populate('staff_id')
@@ -564,7 +723,7 @@ exports.updateEmployee = async (req, res) => {
 
     await syncRoleCollections({ body: { ...body, full_name: employee.full_name, email: employee.email, staff_type: employee.staff_type, designation: employee.designation, phone: employee.phone }, user: employee.user_id, departmentId, profile: employee });
 
-    await employee.populate('user_id', 'name email role is_active');
+    await employee.populate('user_id', 'name email role is_active modulePermissions dashboard_access');
     await employee.populate('department', 'name');
     res.json({ message: 'Employee updated successfully', employee });
   } catch (error) {
@@ -578,36 +737,80 @@ exports.setEmployeeLogin = async (req, res) => {
     const employee = await HRStaffProfile.findById(req.params.id);
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
-    let user = employee.user_id ? await User.findById(employee.user_id) : await User.findOne({ email: employee.email });
-    const role = req.body.role || roleFromStaffType(employee.staff_type, employee.designation);
+    let user = employee.user_id
+      ? await User.findById(employee.user_id)
+      : await User.findOne({ email: employee.email });
+
+    const role = String(
+      req.body.role || roleFromStaffType(employee.staff_type, employee.designation)
+    )
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_');
+
+    if (!EMPLOYEE_LOGIN_ROLES.has(role)) {
+      return res.status(400).json({ error: 'Unsupported employee login role' });
+    }
+
+    const modulePermissions = Array.isArray(req.body.modulePermissions)
+      ? normalizeFeaturePermissions(req.body.modulePermissions, role, {
+          grantedBy: getUserId(req)
+        })
+      : user?.modulePermissions?.length
+        ? normalizeFeaturePermissions(user.modulePermissions, role, {
+            grantedBy: getUserId(req)
+          })
+        : defaultFeaturePermissions(role, { grantedBy: getUserId(req) });
 
     if (user) {
       user.name = employee.full_name;
       user.email = employee.email;
       user.role = role;
-      user.is_active = req.body.is_active !== undefined ? Boolean(req.body.is_active) : true;
+      user.is_active = req.body.is_active !== undefined
+        ? Boolean(req.body.is_active)
+        : true;
+      user.modulePermissions = modulePermissions;
+      user.dashboard_access = dashboardAccessFromFeatures(modulePermissions);
       if (req.body.password) user.password = req.body.password;
       await user.save();
     } else {
-      if (!req.body.password) return res.status(400).json({ error: 'Password is required to create a login' });
+      if (!req.body.password) {
+        return res.status(400).json({
+          error: 'Password is required to create a login'
+        });
+      }
+
       user = await User.create({
         name: employee.full_name,
         email: employee.email,
         role,
         password: req.body.password,
-        is_active: true,
-        hospital_id: employee.hospital_id
+        is_active: req.body.is_active !== undefined
+          ? Boolean(req.body.is_active)
+          : true,
+        hospital_id: employee.hospital_id,
+        modulePermissions,
+        dashboard_access: dashboardAccessFromFeatures(modulePermissions)
       });
     }
 
     employee.user_id = user._id;
     employee.login_enabled = user.is_active;
+    employee.updated_by = getUserId(req);
     await employee.save();
 
     res.json({
-      message: 'Employee login updated',
+      message: 'Employee login and main feature access updated',
       employee,
-      user: { _id: user._id, name: user.name, email: user.email, role: user.role, is_active: user.is_active }
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        is_active: user.is_active,
+        modulePermissions: effectiveMainFeaturePermissions(user),
+        dashboard_access: user.dashboard_access
+      }
     });
   } catch (error) {
     console.error('Set employee login error:', error);
@@ -1963,4 +2166,186 @@ exports.getPendingCommissions = async (req, res) => {
     console.error('Get pending commissions error:', error);
     res.status(500).json({ error: error.message });
   }
+};
+// ================= SECURE EMPLOYEE SELF-SERVICE =================
+async function resolveSelfEmployee(req) {
+  const hospitalId = await resolveHospitalId(req);
+  const directId = req.user?.staff_profile_id;
+  const filter = directId
+    ? { _id: directId, ...(hospitalId ? { hospital_id: hospitalId } : {}) }
+    : { user_id: req.user?._id, ...(hospitalId ? { hospital_id: hospitalId } : {}) };
+  const employee = await HRStaffProfile.findOne(filter).populate('department', 'name').populate('shift');
+  if (!employee) {
+    const error = new Error('Employee profile is not linked to this login');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (!req.user.staff_profile_id || String(req.user.staff_profile_id) !== String(employee._id)) {
+    await User.updateOne({ _id: req.user._id }, { $set: { staff_profile_id: employee._id } });
+  }
+  return employee;
+}
+
+function selfError(res, error) {
+  return res.status(error.statusCode || 400).json({ success: false, error: error.message });
+}
+
+exports.getMe = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    res.json({ success: true, data: employee });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.getMyAttendance = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const filter = { employee_id: employee._id, hospital_id: employee.hospital_id };
+    if (req.query.startDate || req.query.endDate || req.query.date) {
+      filter.attendance_date = {};
+      if (req.query.date) {
+        const day = startOfDay(req.query.date); const next = new Date(day); next.setDate(next.getDate() + 1);
+        filter.attendance_date.$gte = day; filter.attendance_date.$lt = next;
+      } else {
+        if (req.query.startDate) filter.attendance_date.$gte = startOfDay(req.query.startDate);
+        if (req.query.endDate) { const end = startOfDay(req.query.endDate); end.setHours(23, 59, 59, 999); filter.attendance_date.$lte = end; }
+      }
+    }
+    const data = await StaffAttendance.find(filter).sort({ attendance_date: -1 }).limit(Math.min(366, Number(req.query.limit || 90)));
+    res.json({ success: true, data });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.myCheckIn = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const date = startOfDay(req.body.date);
+    const now = req.body.check_in ? new Date(req.body.check_in) : new Date();
+    const existing = await StaffAttendance.findOne({ employee_id: employee._id, hospital_id: employee.hospital_id, attendance_date: date });
+    if (existing?.check_in && !req.body.allowRetry) return res.status(409).json({ success: false, error: 'Already checked in for this attendance day', data: existing });
+    const attendance = await StaffAttendance.findOneAndUpdate(
+      { employee_id: employee._id, hospital_id: employee.hospital_id, attendance_date: date },
+      {
+        $setOnInsert: { employee_id: employee._id, user_id: req.user._id, hospital_id: employee.hospital_id, attendance_date: date, created_by: req.user._id },
+        $set: { check_in: now, status: 'present', attendance_source: 'self', location: req.body.location, updated_by: req.user._id, reconciliation_status: 'not_required' }
+      },
+      { upsert: true, new: true, runValidators: true }
+    );
+    res.json({ success: true, message: 'Checked in', data: attendance });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.myCheckOut = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const date = startOfDay(req.body.date);
+    const attendance = await StaffAttendance.findOne({ employee_id: employee._id, hospital_id: employee.hospital_id, attendance_date: date });
+    if (!attendance?.check_in) return res.status(404).json({ success: false, error: 'Check-in record not found' });
+    if (attendance.check_out && !req.body.allowRetry) return res.status(409).json({ success: false, error: 'Already checked out', data: attendance });
+    attendance.check_out = req.body.check_out ? new Date(req.body.check_out) : new Date();
+    attendance.break_minutes = toNumber(req.body.break_minutes, attendance.break_minutes);
+    attendance.remarks = req.body.remarks || attendance.remarks;
+    attendance.updated_by = req.user._id;
+    await attendance.save();
+    res.json({ success: true, message: 'Checked out', data: attendance });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.getMyLeaves = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const filter = { employee_id: employee._id, hospital_id: employee.hospital_id };
+    if (req.query.status) filter.status = req.query.status;
+    const data = await StaffLeaveRequest.find(filter).populate('approved_by', 'name role').sort({ createdAt: -1 });
+    res.json({ success: true, data });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.createMyLeave = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const data = await StaffLeaveRequest.create({
+      employee_id: employee._id,
+      user_id: req.user._id,
+      leave_type: req.body.leave_type,
+      start_date: req.body.start_date,
+      end_date: req.body.end_date,
+      reason: req.body.reason,
+      status: 'pending',
+      hospital_id: employee.hospital_id,
+      created_by: req.user._id
+    });
+    res.status(201).json({ success: true, data });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.cancelMyLeave = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const data = await StaffLeaveRequest.findOne({ _id: req.params.id, employee_id: employee._id, hospital_id: employee.hospital_id });
+    if (!data) return res.status(404).json({ success: false, error: 'Leave request not found' });
+    if (data.status !== 'pending') return res.status(409).json({ success: false, error: 'Only a pending leave request can be cancelled' });
+    data.status = 'cancelled';
+    await data.save();
+    res.json({ success: true, data });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.getMyLeaveBalances = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const year = Number(req.query.year || new Date().getFullYear());
+    const data = await HRLeaveBalance.find({ employee_id: employee._id, hospital_id: employee.hospital_id, year }).sort({ leave_type: 1 });
+    res.json({ success: true, data });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.getMyPayrolls = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const data = await EmployeePayroll.find({
+      $or: [{ employee_id: employee._id }, { hr_staff_profile_id: employee._id }],
+      hospital_id: employee.hospital_id,
+      status: { $in: ['approved', 'paid'] }
+    }).select('-bank_account_number -pan_number -aadhar_number').sort({ year: -1, month: -1, period_start: -1 });
+    res.json({ success: true, data });
+  } catch (error) { selfError(res, error); }
+};
+
+exports.downloadMyPayslip = async (req, res) => {
+  try {
+    const PDFDocument = require('pdfkit');
+    const employee = await resolveSelfEmployee(req);
+    const payroll = await EmployeePayroll.findOne({
+      _id: req.params.id,
+      $or: [{ employee_id: employee._id }, { hr_staff_profile_id: employee._id }],
+      hospital_id: employee.hospital_id,
+      status: { $in: ['approved', 'paid'] }
+    });
+    if (!payroll) return res.status(404).json({ success: false, error: 'Published payslip not found' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="payslip-${payroll.payroll_code || payroll._id}.pdf"`);
+    const doc = new PDFDocument({ margin: 48 });
+    doc.pipe(res);
+    doc.fontSize(18).text('Employee Payslip', { align: 'center' }).moveDown();
+    doc.fontSize(10).text(`Employee: ${employee.full_name}`).text(`Employee code: ${employee.employee_code}`).text(`Designation: ${employee.designation}`).text(`Period: ${payroll.period_start ? new Date(payroll.period_start).toLocaleDateString('en-IN') : `${payroll.month}/${payroll.year}`} - ${payroll.period_end ? new Date(payroll.period_end).toLocaleDateString('en-IN') : ''}`).moveDown();
+    doc.fontSize(12).text(`Gross earnings: INR ${Number(payroll.gross_salary || payroll.gross_amount || 0).toFixed(2)}`);
+    doc.text(`Deductions: INR ${Number(payroll.total_deductions || payroll.deduction_amount || 0).toFixed(2)}`);
+    doc.fontSize(14).text(`Net pay: INR ${Number(payroll.net_salary || payroll.net_amount || payroll.amount || 0).toFixed(2)}`, { underline: true }).moveDown();
+    doc.fontSize(9).text(`Status: ${payroll.status}`).text(`Payment status: ${payroll.paid_date ? `Paid on ${new Date(payroll.paid_date).toLocaleDateString('en-IN')}` : 'Pending payment'}`).moveDown(2);
+    doc.text('This is a system-generated payslip.');
+    doc.end();
+  } catch (error) { selfError(res, error); }
+};
+
+exports.updateMyAvailability = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const allowed = ['available', 'busy', 'off_duty', 'in_ot', 'in_ward', 'in_opd', 'emergency', 'unavailable'];
+    if (!allowed.includes(req.body.status)) return res.status(400).json({ success: false, error: 'Invalid self-service availability status' });
+    employee.availability_status = req.body.status;
+    employee.availability_note = req.body.note;
+    await employee.save();
+    res.json({ success: true, data: employee });
+  } catch (error) { selfError(res, error); }
 };

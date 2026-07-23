@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const dischargeSummarySchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   admissionId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'IPDAdmission',
@@ -11,6 +12,10 @@ const dischargeSummarySchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Patient',
     required: true
+  },
+  templateId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ClinicalTemplate'
   },
   preparedBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -130,7 +135,7 @@ const dischargeSummarySchema = new mongoose.Schema({
 });
 
 // Indexes
-dischargeSummarySchema.index({ admissionId: 1 });
+dischargeSummarySchema.index({ hospitalId: 1, admissionId: 1 }, { unique: true });
 dischargeSummarySchema.index({ patientId: 1, dischargeDate: -1 });
 dischargeSummarySchema.index({ status: 1, preparedBy: 1 });
 dischargeSummarySchema.index({ 'abdmRecordLink.abhaNumber': 1 });

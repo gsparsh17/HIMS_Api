@@ -721,72 +721,27 @@ exports.downloadSurgeryReport = async (req, res) => {
 // Transfer Patient Post-Operative
 exports.transferPatientPostOp = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { post_op_wardId, post_op_roomId, post_op_bedId } = req.body;
-
-    const request = await OTRequest.findById(id);
-    if (!request) {
-      return res.status(404).json({ error: 'OT request not found' });
-    }
-
-    if (request.status !== 'Completed') {
-      return res.status(400).json({ error: 'Only completed surgeries can transfer patient' });
-    }
-
-    const admission = await IPDAdmission.findById(request.admissionId);
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-
-    if (post_op_bedId) {
-      const newBed = await require('../models/Bed').findById(post_op_bedId);
-      if (newBed && newBed.status !== 'Available') {
-        return res.status(400).json({ error: 'Selected bed is not available' });
-      }
-
-      if (admission.bedId) {
-        await require('../models/Bed').findByIdAndUpdate(admission.bedId, {
-          status: 'Available',
-          currentAdmissionId: null
-        });
-      }
-
-      await require('../models/Bed').findByIdAndUpdate(post_op_bedId, {
-        status: 'Occupied',
-        currentAdmissionId: admission._id
-      });
-
-      admission.bedId = post_op_bedId;
-    }
-
-    if (post_op_roomId) admission.roomId = post_op_roomId;
-    if (post_op_wardId) admission.wardId = post_op_wardId;
-
-    await admission.save();
-
-    request.post_op_wardId = post_op_wardId || null;
-    request.post_op_roomId = post_op_roomId || null;
-    request.post_op_bedId = post_op_bedId || null;
-    request.transferred_to_ward = true;
-    request.transferred_at = new Date();
-
-    await request.save();
-
-    res.json({
-      success: true,
-      message: 'Patient transferred successfully',
-      data: {
-        request,
-        admission: {
-          wardId: admission.wardId,
-          roomId: admission.roomId,
-          bedId: admission.bedId
-        }
-      }
+    const hospitalId = requireHospitalId(req);
+    const request = await OTRequest.findOne({ _id: req.params.id, hospitalId });
+    if (!request) return res.status(404).json({ error: 'OT request not found' });
+    if (request.status !== 'Completed') return res.status(409).json({ error: 'Only completed surgeries can transfer a patient' });
+    const toBedId = req.body.post_op_bedId || req.body.toBedId;
+    if (!toBedId) return res.status(400).json({ error: 'Destination bed is required' });
+    const transferService = require('../services/ipdTransfer.service');
+    const transfer = await transferService.transaction(async (session) => {
+      let row = await transferService.createTransfer({ req, hospitalId, admissionId: request.admissionId, payload: { toBedId, source: 'ot', reason: req.body.reason || `Post-operative transfer after ${request.procedureName || 'surgery'}`, priority: req.body.priority || 'urgent', patientCondition: req.body.patientCondition, oxygenRequired: req.body.oxygenRequired, isolationRequired: req.body.isolationRequired, equipmentNeeds: req.body.equipmentNeeds || [], handover: req.body.handover || {}, idempotencyKey: req.body.idempotencyKey || `ot:${request._id}:transfer` }, session });
+      row = await transferService.reserveTransfer({ req, hospitalId, transferId: row._id, expiresInMinutes: req.body.expiresInMinutes || 60, session });
+      row = await transferService.approveTransfer({ req, hospitalId, transferId: row._id, note: req.body.approvalNote || 'Auto-approved from completed OT workflow', session });
+      row = await transferService.startTransfer({ req, hospitalId, transferId: row._id, handover: req.body.handover || { note: 'Post-operative handover' }, session });
+      row = await transferService.completeTransfer({ req, hospitalId, transferId: row._id, payload: { conditionOnArrival: req.body.conditionOnArrival, note: req.body.note, actualEffectiveAt: req.body.actualEffectiveAt }, session });
+      await OTRequest.updateOne({ _id: request._id, hospitalId }, { $set: { post_op_wardId: row.to.wardId, post_op_roomId: row.to.roomId, post_op_bedId: row.to.bedId, transferred_to_ward: true, transferred_at: row.actualEffectiveAt, transferId: row._id } }, { session });
+      return row;
     });
+    const admission = await IPDAdmission.findOne({ _id: request.admissionId, hospitalId }).select('wardId roomId bedId currentLocationEffectiveAt');
+    return res.json({ success: true, message: 'Patient transferred successfully through the shared transfer workflow', data: { transfer, admission } });
   } catch (error) {
-    console.error('Error transferring patient:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Post-operative transfer failed:', error);
+    return res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
@@ -1320,76 +1275,16 @@ exports.exportOTReports = async (req, res) => {
 };
 
 // Get requests by admission
-exports.getRequestsByAdmission = async (req, res) => {
-  try {
-    const { admissionId } = req.params;
-    const requests = await OTRequest.find({ hospitalId: requireHospitalId(req), admissionId })
-      .populate('doctorId', 'firstName lastName')
-      .populate('primarySurgeonId', 'firstName lastName')
-      .populate('otRoomId', 'room_number')
-      .sort({ requestedDate: -1 });
 
-    res.json({ success: true, data: requests });
-  } catch (error) {
-    console.error('Error fetching requests by admission:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
 
 // Get requests by doctor
-exports.getRequestsByDoctor = async (req, res) => {
-  try {
-    const { doctorId } = req.params;
-    const requests = await OTRequest.find({ hospitalId: requireHospitalId(req), doctorId })
-      .populate('patientId', 'first_name last_name patientId')
-      .populate('otRoomId', 'room_number')
-      .sort({ requestedDate: -1 });
 
-    res.json({ success: true, data: requests });
-  } catch (error) {
-    console.error('Error fetching requests by doctor:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
 
 // Get OT Rooms
-exports.getOTRooms = async (req, res) => {
-  try {
-    const rooms = await Room.find({
-      $or: [
-        { type: 'Operation Theater' },
-        { type: { $regex: 'Operation', $options: 'i' } }
-      ]
-    }).populate('wardId', 'name').populate('Department', 'name');
 
-    res.json({
-      success: true,
-      data: rooms,
-      count: rooms.length
-    });
-  } catch (error) {
-    console.error('Error fetching OT rooms:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
 
 // Get Available OT Rooms
-exports.getAvailableOTRooms = async (req, res) => {
-  try {
-    const rooms = await Room.find({
-      $or: [
-        { type: 'Operation Theater' },
-        { type: { $regex: 'Operation', $options: 'i' } }
-      ],
-      status: 'Available'
-    }).populate('wardId', 'name');
 
-    res.json({
-      success: true,
-      data: rooms
-    });
-  } catch (error) {
-    console.error('Error fetching available OT rooms:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
+
+// Shared, audited and transactional post-operative transfer implementation.
+
