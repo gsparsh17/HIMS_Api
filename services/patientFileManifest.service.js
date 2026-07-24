@@ -1,4 +1,5 @@
 const IPDAdmission = require('../models/IPDAdmission');
+const Hospital = require('../models/Hospital');
 const IPDInitialAssessment = require('../models/IPDInitialAssessment');
 const IPDNursingAdmissionAssessment = require('../models/IPDNursingAdmissionAssessment');
 const IPDVitals = require('../models/IPDVitals');
@@ -19,6 +20,8 @@ const OTOperativeNote = require('../models/OTOperativeNote');
 const OTRecoveryRecord = require('../models/OTRecoveryRecord');
 const OTCaseInventoryUsage = require('../models/OTCaseInventoryUsage');
 const OTClinicalForm = require('../models/OTClinicalForm');
+const OTSchedule = require('../models/OTSchedule');
+const OTSpecimen = require('../models/OTSpecimen');
 const DischargeSummary = require('../models/DischargeSummary');
 const ClinicalDocument = require('../models/ClinicalDocument');
 const EncounterDocument = require('../models/EncounterDocument');
@@ -132,17 +135,20 @@ async function buildManifest(req, admissionId, options = {}) {
     NursingNote.find({ admissionId }).sort({ noteDateTime: 1 }).lean(),
     IPDConsent.find({ admissionId, $or: [{ hospitalId }, { hospitalId: null }] }).sort({ createdAt: 1 }).lean(),
     LabRequest.find({ admissionId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
-    LabReport.find({ patient_id: patientId }).sort({ report_date: 1 }).lean(),
+    LabReport.find({ patient_id: patientId, $or: [{ hospitalId }, { hospitalId: null }] }).sort({ report_date: 1 }).lean(),
     RadiologyRequest.find({ admissionId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
     ProcedureRequest.find({ admissionId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
     OTRequest.find(caseFilter).sort({ requestedDate: 1 }).lean(),
     DischargeSummary.findOne({ admissionId }).lean(),
     ClinicalDocument.find({ patientId, status: 'current' }).sort({ documentDate: 1 }).lean(),
-    EncounterDocument.find({ hospitalId, admissionId }).sort({ documentDate: 1 }).lean(),
+    EncounterDocument.find({ hospitalId, admissionId, sourceModel: { $ne: 'PatientFileBundle' }, rendererKey: { $ne: 'rendered-patient-file' }, documentType: { $not: /_patient_file$/ } }).sort({ documentDate: 1 }).lean(),
     DocumentSignature.find({ hospitalId, admissionId, status: 'signed' }).sort({ signedAt: -1 }).lean()
   ]);
 
-  const accommodationPrint = await buildAccommodationPrintData({ hospitalId, admissionId: admission._id, financial: ['admin', 'mediqliq_super_admin', 'accountant', 'insurance_desk'].includes(req.user.role) });
+  const [accommodationPrint, hospital] = await Promise.all([
+    buildAccommodationPrintData({ hospitalId, admissionId: admission._id, financial: ['admin', 'mediqliq_super_admin', 'accountant', 'insurance_desk'].includes(req.user.role) }),
+    Hospital.findById(hospitalId).select('hospitalName name address city state pinCode contact email logo').lean()
+  ]);
 
   const documents = [];
   documents.push(manifestItem({
@@ -177,12 +183,15 @@ async function buildManifest(req, admissionId, options = {}) {
   if (nursingAssessment) documents.push(manifestItem({ record: nursingAssessment, category: 'assessment', documentType: 'nursing_admission_assessment', title: 'Nursing Admission Assessment', sourceModel: 'IPDNursingAdmissionAssessment', rendererKey: 'nursing-admission-assessment', status: clinicalStatus(nursingAssessment), date: nursingAssessment.assessmentAt, required: true }));
   else documents.push({ key: 'required:nursing_admission_assessment', category: 'assessment', documentType: 'nursing_admission_assessment', title: 'Nursing Admission Assessment', sourceModel: 'IPDNursingAdmissionAssessment', rendererKey: 'nursing-admission-assessment', status: 'Not Started', required: true });
 
+  const surgeryFormTemplates = listSurgeryFormTemplates();
+  const surgeryTemplateById = new Map(surgeryFormTemplates.map((template) => [template.id, template]));
+
   consents.forEach((record) => documents.push(manifestItem({
     record, category: 'consent', documentType: record.templateId, title: record.templateName,
     sourceModel: 'IPDConsent', rendererKey: 'ipd-consent', status: statusOf(record.status, { complete: ['Completed'], final: ['Signed'] }),
     date: record.completedAt || record.updatedAt, required: Boolean(record.relatedOTCaseId), relatedCaseId: record.relatedOTCaseId || record.relatedProcedureId,
     relatedCaseType: record.relatedOTCaseId ? 'OTRequest' : record.relatedProcedureId ? 'ProcedureRequest' : undefined,
-    templateId: record.templateId, templateVersion: record.templateVersion
+    templateId: record.templateId, templateVersion: record.templateVersion, formTemplate: surgeryTemplateById.get(record.templateId)
   })));
 
   const vitalsByDate = new Map();
@@ -192,18 +201,39 @@ async function buildManifest(req, admissionId, options = {}) {
     vitalsByDate.get(key).push(record);
   });
   vitalsByDate.forEach((rows, chartDate) => documents.push(manifestItem({
-    record: rows[0], category: 'vitals', documentType: 'vitals_ews', title: `Vitals & EWS - ${chartDate}`,
+    record: { ...rows[0], chartRows: rows }, category: 'vitals', documentType: 'vitals_ews', title: `Vitals & EWS - ${chartDate}`,
     sourceModel: 'IPDVitals', rendererKey: 'vitals-ews', status: 'Completed/Unsigned', date: rows[0].recordedAt,
     metadata: { chartDate, recordIds: rows.map((row) => String(row._id)), count: rows.length }
   })));
 
-  medications.forEach((record) => documents.push(manifestItem({ record, category: 'medication', documentType: 'medication_chart', title: `Medication Chart${record.medicineName ? ` - ${record.medicineName}` : ''}`, sourceModel: 'IPDMedicationChart', rendererKey: 'medication-chart', status: clinicalStatus(record), date: record.startDate || record.createdAt, metadata: { medicineName: record.medicineName, frequency: record.frequency } })));
-  rounds.forEach((record) => documents.push(manifestItem({ record, category: 'progress', documentType: record.roundType === 'Doctor Note' ? 'doctors_note' : 'consultant_round', title: record.roundType === 'Doctor Note' ? "Doctor's Note" : 'Consultant Daily Assessment', sourceModel: 'IPDRound', rendererKey: record.roundType === 'Doctor Note' ? 'doctors-note' : 'consultant-round', status: clinicalStatus(record), date: record.roundDateTime, authorName: record.doctorName }))); 
-  nursingNotes.forEach((record) => documents.push(manifestItem({ record, category: 'nursing', documentType: 'nursing_note', title: 'Nursing Progress Note', sourceModel: 'NursingNote', rendererKey: 'nursing-note', status: 'Completed/Unsigned', date: record.noteDateTime, authorName: record.nurseName || record.createdByName })));
+  if (medications.length) documents.push(manifestItem({
+    record: { _id: `medications-${admission._id}`, records: medications }, category: 'medication', documentType: 'medication_chart', title: 'Nursing Medication Chart',
+    sourceModel: 'IPDMedicationChart', rendererKey: 'medication-chart-group', status: medications.every((record) => clinicalStatus(record) === 'Final/Signed') ? 'Final/Signed' : 'Completed/Unsigned',
+    date: medications[0].startDate || medications[0].createdAt, metadata: { count: medications.length, recordIds: medications.map((record) => String(record._id)) }
+  }));
+  const consultantRounds = rounds.filter((record) => record.roundType !== 'Doctor Note');
+  const doctorNotes = rounds.filter((record) => record.roundType === 'Doctor Note');
+  if (consultantRounds.length) documents.push(manifestItem({
+    record: { _id: `consultant-rounds-${admission._id}`, records: consultantRounds }, category: 'progress', documentType: 'consultant_round', title: 'Consultant Daily Assessment',
+    sourceModel: 'IPDRound', rendererKey: 'consultant-round-group', status: consultantRounds.every((record) => clinicalStatus(record) === 'Final/Signed') ? 'Final/Signed' : 'Completed/Unsigned',
+    date: consultantRounds[0].roundDateTime, metadata: { count: consultantRounds.length, recordIds: consultantRounds.map((record) => String(record._id)) }
+  }));
+  if (doctorNotes.length) documents.push(manifestItem({
+    record: { _id: `doctor-notes-${admission._id}`, records: doctorNotes }, category: 'progress', documentType: 'doctors_note', title: "Doctor's Note",
+    sourceModel: 'IPDRound', rendererKey: 'doctors-note-group', status: doctorNotes.every((record) => clinicalStatus(record) === 'Final/Signed') ? 'Final/Signed' : 'Completed/Unsigned',
+    date: doctorNotes[0].roundDateTime, metadata: { count: doctorNotes.length, recordIds: doctorNotes.map((record) => String(record._id)) }
+  }));
+  if (nursingNotes.length) documents.push(manifestItem({
+    record: { _id: `nursing-notes-${admission._id}`, records: nursingNotes }, category: 'nursing', documentType: 'nursing_note', title: 'Nursing Progress Notes',
+    sourceModel: 'NursingNote', rendererKey: 'nursing-note-group', status: 'Completed/Unsigned', date: nursingNotes[0].noteDateTime,
+    metadata: { count: nursingNotes.length, recordIds: nursingNotes.map((record) => String(record._id)) }
+  }));
 
   labRequests.forEach((record) => {
-    const reportUrl = record.report_url || record.external_report_url;
-    documents.push(manifestItem({ record, category: 'investigation', documentType: 'lab_report', title: record.testName || 'Laboratory Report', sourceModel: 'LabRequest', rendererKey: record.manual_report ? 'lab-report-structured' : 'file-document', status: statusOf(record.status, { complete: ['Completed'], final: ['Reported'] }), date: record.reportedAt || record.processing_completed_at || record.requestedDate, fileUrl: reportUrl, mimeType: record.report_mime_type, metadata: { testCode: record.testCode, category: record.category, abnormal: record.is_abnormal, reportMode: record.report_mode } }));
+    const reportUrl = record.report_mode === 'manual' && record.manual_report
+      ? `/api/lab/requests/${record._id}/report.pdf`
+      : (record.report_url || record.external_report_url);
+    documents.push(manifestItem({ record, category: 'investigation', documentType: 'lab_report', title: record.testName || 'Laboratory Report', sourceModel: 'LabRequest', rendererKey: record.manual_report ? 'lab-report-structured' : 'file-document', status: statusOf(record.status, { complete: ['Result Entered', 'Completed'], final: ['Verified', 'Reported', 'Amended'] }), date: record.reportedAt || record.processing_completed_at || record.requestedDate, fileUrl: reportUrl, mimeType: record.report_mime_type, metadata: { testCode: record.testCode, category: record.category, abnormal: record.is_abnormal, reportMode: record.report_mode } }));
   });
   const knownLabRequestIds = new Set(labRequests.map((record) => idString(record._id)));
   const encounterStart = admission.admissionDate ? new Date(admission.admissionDate) : new Date(0);
@@ -219,22 +249,32 @@ async function buildManifest(req, admissionId, options = {}) {
     return !Number.isNaN(reportDate.getTime()) && reportDate >= encounterStart && reportDate <= encounterEnd;
   }).forEach((record) => documents.push(manifestItem({ record, category: 'investigation', documentType: 'lab_report', title: record.report_type || 'Laboratory Report', sourceModel: 'LabReport', rendererKey: record.manual_report ? 'lab-report-structured' : 'file-document', status: 'Completed/Unsigned', date: record.report_date, fileUrl: record.file_url, mimeType: record.mime_type, metadata: { external: record.is_external, labName: record.external_lab_name } })));
 
-  radiology.forEach((record) => documents.push(manifestItem({ record, category: 'investigation', documentType: 'radiology_report', title: record.testName || 'Radiology Report', sourceModel: 'RadiologyRequest', rendererKey: record.manual_report ? 'radiology-report-structured' : 'file-document', status: statusOf(record.status, { complete: ['Completed'], final: ['Reported'] }), date: record.reportedAt || record.performedAt || record.requestedDate, fileUrl: record.report_url || record.external_report_url, mimeType: record.report_mime_type, metadata: { testCode: record.testCode, category: record.category, impression: record.impression, reportMode: record.report_mode } })));
+  radiology.forEach((record) => documents.push(manifestItem({ record, category: 'investigation', documentType: 'radiology_report', title: record.testName || 'Radiology Report', sourceModel: 'RadiologyRequest', rendererKey: record.manual_report ? 'radiology-report-structured' : 'file-document', status: statusOf(record.status, { complete: ['Result Entered', 'Completed'], final: ['Verified', 'Reported', 'Amended'] }), date: record.reportedAt || record.performedAt || record.requestedDate, fileUrl: record.report_mode === 'manual' && record.manual_report ? `/api/radiology/requests/${record._id}/report.pdf` : (record.report_url || record.external_report_url), mimeType: record.report_mime_type, metadata: { testCode: record.testCode, category: record.category, impression: record.impression, reportMode: record.report_mode } })));
   procedures.forEach((record) => documents.push(manifestItem({ record, category: 'procedure', documentType: 'procedure_record', title: record.procedureName || 'Procedure', sourceModel: 'ProcedureRequest', rendererKey: 'procedure-record', status: statusOf(record.status, { complete: ['Completed'] }), date: record.completedAt || record.scheduledDate || record.requestedDate, relatedCaseId: record._id, relatedCaseType: 'ProcedureRequest', metadata: { procedureCode: record.procedureCode, findings: record.findings, complications: record.complications } })));
 
   const otChildResults = await Promise.all(otCases.map(async (otCase) => {
     const filter = { hospitalId, caseId: otCase._id };
-    const [readiness, safety, pac, anaesthesia, operative, recovery, inventory, structuredForms] = await Promise.all([
+    const [readiness, safety, pac, anaesthesia, operative, recovery, inventory, structuredForms, schedule, specimens] = await Promise.all([
       OTReadinessChecklist.findOne(filter).lean(), OTSurgicalSafetyChecklist.findOne(filter).lean(),
       OTPreAnaesthesiaAssessment.findOne(filter).lean(), OTAnesthesiaRecord.findOne(filter).lean(),
       OTOperativeNote.findOne(filter).lean(), OTRecoveryRecord.findOne(filter).lean(), OTCaseInventoryUsage.findOne(filter).lean(),
-      OTClinicalForm.find(filter).sort({ updatedAt: 1 }).lean()
+      OTClinicalForm.find(filter).sort({ updatedAt: 1 }).lean(),
+      OTSchedule.findOne({ hospitalId, requestId: otCase._id }).populate('otRoomId', 'name roomNumber room_number').lean(),
+      OTSpecimen.find({ hospitalId, caseId: otCase._id }).sort({ collectedAt: 1, createdAt: 1 }).lean()
     ]);
-    return { otCase, readiness, safety, pac, anaesthesia, operative, recovery, inventory, structuredForms };
+    return { otCase, readiness, safety, pac, anaesthesia, operative, recovery, inventory, structuredForms, schedule, specimens };
   }));
-  otChildResults.forEach(({ otCase, readiness, safety, pac, anaesthesia, operative, recovery, inventory, structuredForms }) => {
+  otChildResults.forEach(({ otCase, readiness, safety, pac, anaesthesia, operative, recovery, inventory, structuredForms, schedule, specimens }) => {
     const caseMetadata = { requestNumber: otCase.requestNumber, procedureName: otCase.procedureName, urgency: otCase.urgency, caseStatus: otCase.status };
     documents.push(manifestItem({ record: otCase, category: 'ot', documentType: 'ot_case_summary', title: `OT/Surgery Case - ${otCase.procedureName}`, sourceModel: 'OTRequest', rendererKey: 'ot-case-summary', status: statusOf(otCase.status, { complete: ['Completed', 'Transferred', 'Closed'], final: ['Closed'] }), date: otCase.scheduledStart || otCase.requestedDate, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', required: true, metadata: caseMetadata }));
+    if (schedule) documents.push(manifestItem({ record: schedule, category: 'ot', documentType: 'ot_schedule', title: 'OT Schedule & Surgical Team', sourceModel: 'OTSchedule', rendererKey: 'ot-schedule', status: statusOf(schedule.status, { complete: ['Completed'] }), date: schedule.scheduledStart, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', metadata: { ...caseMetadata, teamCount: schedule.teamSnapshot?.length || 0 } }));
+    (specimens || []).forEach((record) => documents.push(manifestItem({ record, category: 'ot', documentType: 'ot_specimen', title: `OT Specimen - ${record.label || record.specimenNumber}`, sourceModel: 'OTSpecimen', rendererKey: 'ot-specimen', status: statusOf(record.status, { complete: ['Collected', 'Handed Over', 'Received', 'Reported'] }), date: record.collectedAt || record.createdAt, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', metadata: { ...caseMetadata, specimenNumber: record.specimenNumber, site: record.site } })));
+    const otAttachments = [
+      otCase.consent_form_url ? { name: 'Uploaded OT Consent Form', url: otCase.consent_form_url } : null,
+      otCase.surgery_report_url ? { name: 'Uploaded Surgery Report', url: otCase.surgery_report_url } : null,
+      ...(otCase.attachments || []).map((attachment) => ({ name: attachment.name || 'OT Attachment', url: attachment.url, uploadedAt: attachment.uploaded_at }))
+    ].filter((attachment) => attachment?.url);
+    otAttachments.forEach((attachment, index) => documents.push(manifestItem({ record: { _id: `${otCase._id}-attachment-${index}`, ...attachment }, category: 'attachment', documentType: 'ot_attachment', title: attachment.name, sourceModel: 'OTRequestAttachment', rendererKey: 'file-document', status: 'Completed/Unsigned', date: attachment.uploadedAt || otCase.updatedAt, fileUrl: attachment.url, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', metadata: caseMetadata })));
     const children = [
       [readiness, 'ot', 'ot_readiness', 'Pre-Operative Readiness Checklist', 'OTReadinessChecklist', 'ot-readiness', ['Ready', 'Ready With Bypass']],
       [safety, 'ot', 'surgical_safety_checklist', 'Surgical Safety Checklist', 'OTSurgicalSafetyChecklist', 'ot-safety-checklist', ['Completed']],
@@ -244,14 +284,28 @@ async function buildManifest(req, admissionId, options = {}) {
       [recovery, 'recovery', 'recovery_record', 'Post Anaesthesia Recovery Record', 'OTRecoveryRecord', 'ot-recovery', ['Ready For Transfer', 'Transferred', 'Signed']],
       [inventory, 'ot', 'ot_inventory_usage', 'OT Consumables & Implants Record', 'OTCaseInventoryUsage', 'ot-inventory-usage', ['Reconciled']]
     ];
+    const structuredReplacementBySourceModel = {
+      OTReadinessChecklist: 'ot_readiness',
+      OTSurgicalSafetyChecklist: 'surgical_safety_checklist',
+      OTPreAnaesthesiaAssessment: 'pre_anaesthesia_assessment',
+      OTAnesthesiaRecord: 'intra_post_anaesthesia_record',
+      OTOperativeNote: 'operation_notes',
+      OTRecoveryRecord: 'post_anaesthesia_recovery_record',
+      OTCaseInventoryUsage: 'ot_consumables_implants'
+    };
+    const structuredIds = new Set((structuredForms || []).map((form) => form.templateId));
     children.forEach(([record, category, documentType, title, sourceModel, rendererKey, completed]) => {
+      const replacementTemplateId = structuredReplacementBySourceModel[sourceModel];
+      if (replacementTemplateId && structuredIds.has(replacementTemplateId)) return;
       if (record) documents.push(manifestItem({ record, category, documentType, title, sourceModel, rendererKey, status: statusOf(record.status || record.overallStatus, { complete: completed.filter((value) => value !== 'Signed'), final: completed.includes('Signed') ? ['Signed'] : [] }), date: record.updatedAt, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', required: true, metadata: caseMetadata }));
       else documents.push({ key: `required:${sourceModel}:${otCase._id}`, category, documentType, title, sourceModel, rendererKey, status: 'Not Started', required: true, relatedCaseId: String(otCase._id), relatedCaseType: 'OTRequest', metadata: caseMetadata });
     });
 
-    const structuredTemplateList = listSurgeryFormTemplates().filter((template) => template.implementation === 'structured');
+    const structuredTemplateList = surgeryFormTemplates.filter((template) => template.implementation === 'structured');
     const structuredMap = new Map((structuredForms || []).map((record) => [record.templateId, record]));
     structuredTemplateList.forEach((template) => {
+      const matchingConsent = template.category === 'consent' && consents.some((consent) => consent.templateId === template.id && (!consent.relatedOTCaseId || String(consent.relatedOTCaseId) === String(otCase._id)));
+      if (matchingConsent) return;
       const record = structuredMap.get(template.id);
       if (record) {
         documents.push(manifestItem({
@@ -314,6 +368,7 @@ async function buildManifest(req, admissionId, options = {}) {
   });
 
   registeredDocuments.forEach((record) => {
+    if (record.sourceModel === 'PatientFileBundle' || record.rendererKey === 'rendered-patient-file' || String(record.documentType || '').endsWith('_patient_file')) return;
     const key = `${record.sourceModel}:${record.sourceId}`;
     const existing = documents.find((document) => `${document.sourceModel}:${document.sourceId}` === key);
     if (existing) {
@@ -378,7 +433,8 @@ async function buildManifest(req, admissionId, options = {}) {
       department: admission.departmentId,
       ward: admission.wardId,
       room: admission.roomId,
-      bed: admission.bedId
+      bed: admission.bedId,
+      hospital
     },
     counts,
     categories: CATEGORY_ORDER,

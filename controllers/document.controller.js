@@ -5,7 +5,6 @@ const { signDocument } = require('../services/documentSigning.service');
 const patientFileManifest = require('../services/patientFileManifest.service');
 const RenderedDocument = require('../models/RenderedDocument');
 const fs = require('fs');
-const { renderPatientFilePdf, writePatientBundle, sha256 } = require('../services/patientFilePdf.service');
 
 exports.sign = async (req, res, next) => {
   try {
@@ -125,68 +124,18 @@ function selectedBundleDocuments(manifest, body = {}, query = {}) {
   return { packetType, documents };
 }
 
-exports.previewPatientFileBundle = async (req, res, next) => {
-  try {
-    const hospitalId = requireHospitalId(req);
-    const manifest = await patientFileManifest.buildManifest(req, req.params.admissionId, { includeContent: true });
-    const { packetType, documents } = selectedBundleDocuments(manifest, req.body, req.query);
-    if (!documents.length) return res.status(400).json({ error: 'No documents selected for the patient file bundle' });
-    const packetSignatures = await DocumentSignature.find({ hospitalId, admissionId: req.params.admissionId, documentType: `${packetType}_patient_file`, status: 'signed' }).sort({ signedAt: 1 }).lean();
-    const pdf = await renderPatientFilePdf({ manifest, documents, packetType, hospitalId, signatures: packetSignatures });
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${packetType}-patient-file-${req.params.admissionId}.pdf"`);
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.send(pdf);
-  } catch (error) { next(error); }
+exports.previewPatientFileBundle = async (req, res) => {
+  res.status(410).json({
+    success: false,
+    error: 'Server-side patient-file PDF generation has been retired. Open the patient-file builder and print the exact browser preview.'
+  });
 };
 
-exports.finalizePatientFileBundle = async (req, res, next) => {
-  try {
-    const hospitalId = requireHospitalId(req);
-    const manifest = await patientFileManifest.buildManifest(req, req.params.admissionId, { includeContent: true });
-    const { packetType, documents } = selectedBundleDocuments(manifest, req.body, req.query);
-    if (!documents.length) return res.status(400).json({ error: 'No documents selected for the patient file bundle' });
-    const sourceModel = 'PatientFileBundle';
-    const sourceId = manifest.admission.id;
-    const previous = await RenderedDocument.find({ hospitalId, sourceModel, sourceId, documentType: `${packetType}_patient_file` }).sort({ sourceRevision: -1 }).limit(1).lean();
-    const revision = Number(previous[0]?.sourceRevision || 0) + 1;
-    await RenderedDocument.updateMany({ hospitalId, sourceModel, sourceId, documentType: `${packetType}_patient_file`, status: { $in: ['final', 'preview'] } }, { $set: { status: 'superseded' } });
-    const packetSignatures = await DocumentSignature.find({ hospitalId, admissionId: req.params.admissionId, documentType: `${packetType}_patient_file`, status: 'signed' }).sort({ signedAt: 1 }).lean();
-    const pdf = await renderPatientFilePdf({ manifest, documents, packetType, hospitalId, signatures: packetSignatures });
-    const checksum = sha256(pdf);
-    const storagePath = writePatientBundle(pdf, { hospitalId, admissionId: req.params.admissionId, packetType, revision });
-    const rendered = await RenderedDocument.create({
-      hospitalId,
-      patientId: manifest.admission.patient?._id || manifest.admission.patient,
-      admissionId: req.params.admissionId,
-      documentType: `${packetType}_patient_file`,
-      title: `${packetType.replace(/\b\w/g, (char) => char.toUpperCase())} Patient File`,
-      sourceModel,
-      sourceId,
-      sourceRevision: revision,
-      templateId: `${packetType}-patient-file`,
-      templateVersion: 1,
-      storagePath,
-      sizeBytes: pdf.length,
-      sha256: checksum,
-      pageCount: documents.reduce((sum, item) => sum + Number(item.formTemplate?.pageCount || 1), 1),
-      signatureIds: packetSignatures.map((signature) => signature._id),
-      verificationCodes: packetSignatures.map((signature) => signature.verificationCode).filter(Boolean),
-      status: packetSignatures.length ? 'final' : 'preview',
-      generatedBy: req.user._id,
-      metadata: { packetType, documentKeys: documents.map((item) => item.key), sourceRevisions: documents.map((item) => ({ key: item.key, revision: item.sourceRevision || 1 })), generatedAt: new Date() }
-    });
-    await EncounterDocument.findOneAndUpdate(
-      { hospitalId, sourceModel, sourceId, sourceRevision: revision },
-      { $set: { patientId: rendered.patientId, admissionId: req.params.admissionId, encounterType: 'IPD', category: packetType === 'financial' ? 'financial' : 'attachment', documentType: rendered.documentType, title: rendered.title, rendererKey: 'rendered-patient-file', status: rendered.status === 'final' ? 'Final/Signed' : 'Completed/Unsigned', documentDate: rendered.generatedAt, authorUserId: req.user._id, authorName: req.user.name || req.user.email, fileUrl: `/api/documents/patient-file/${req.params.admissionId}/bundles/${rendered._id}`, mimeType: 'application/pdf', templateId: rendered.templateId, templateVersion: '1', metadata: { renderedDocumentId: String(rendered._id), checksum, packetType, documentCount: documents.length }, visibility: packetType === 'financial' ? 'financial' : 'clinical' } },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-    res.setHeader('X-Rendered-Document-Id', String(rendered._id));
-    res.setHeader('X-Content-SHA256', checksum);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${packetType}-patient-file-r${revision}.pdf"`);
-    res.send(pdf);
-  } catch (error) { next(error); }
+exports.finalizePatientFileBundle = async (req, res) => {
+  res.status(410).json({
+    success: false,
+    error: 'Patient-file bundles are no longer persisted on the backend. Open the patient-file builder and print the exact browser preview.'
+  });
 };
 
 exports.streamPatientFileBundle = async (req, res, next) => {

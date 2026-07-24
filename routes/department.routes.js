@@ -3,7 +3,7 @@ const router = express.Router();
 const controller = require('../controllers/department.controller');
 const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
-router.use(protect, requireModuleAccess('hr_staff'));
+router.use(protect);
 router.get('/', controller.getAllDepartments);
 router.get('/hods/all', controller.getAllHods);
 router.get('/id/:name', controller.getDepartmentIdByName);

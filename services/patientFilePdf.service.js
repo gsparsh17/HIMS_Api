@@ -1,17 +1,43 @@
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
+const { Writable } = require('stream');
 const OTRequest = require('../models/OTRequest');
+const LabRequest = require('../models/LabRequest');
+const RadiologyRequest = require('../models/RadiologyRequest');
+const Hospital = require('../models/Hospital');
 const DocumentSignature = require('../models/DocumentSignature');
 const { renderOtFormPdf } = require('./otFormPdf.service');
+const { generateLabReportPdf } = require('./clinicalPdf.service');
+const { generateRadiologyReportPdf } = require('./radiologyPdf.service');
+const { renderClinicalPatientFileDocument } = require('./clinicalPatientFilePdf.service');
 const { PDFDocument: PDFLibDocument, degrees } = require('pdf-lib');
 
-const execFileAsync = promisify(execFile);
 const hidden = new Set(['_id', '__v', 'hospitalId', 'hospital_id', 'patientId', 'admissionId', 'createdBy', 'updatedBy']);
+
+class PdfBufferResponse extends Writable {
+  constructor(resolve, reject) {
+    super();
+    this.chunks = [];
+    this.headers = {};
+    this.on('finish', () => resolve(Buffer.concat(this.chunks)));
+    this.on('error', reject);
+  }
+  _write(chunk, encoding, callback) {
+    this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+    callback();
+  }
+  setHeader(name, value) { this.headers[String(name).toLowerCase()] = value; }
+  getHeader(name) { return this.headers[String(name).toLowerCase()]; }
+}
+
+function collectPipedPdf(render) {
+  return new Promise((resolve, reject) => {
+    const res = new PdfBufferResponse(resolve, reject);
+    Promise.resolve(render(res)).catch(reject);
+  });
+}
 
 function collectPdf(build) {
   return new Promise((resolve, reject) => {
@@ -35,9 +61,34 @@ function display(value) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (value instanceof Date) return value.toLocaleString('en-IN');
-  if (Array.isArray(value)) return value.map((item) => typeof item === 'object' ? JSON.stringify(item) : String(item)).join('\n');
-  if (typeof value === 'object') return Object.entries(value).filter(([key, item]) => !hidden.has(key) && item !== null && item !== undefined && item !== '').map(([key, item]) => `${key.replace(/[_-]/g, ' ')}: ${typeof item === 'object' ? JSON.stringify(item) : item}`).join('\n');
+  if (Array.isArray(value)) return value.map((item) => display(item)).filter((item) => item !== '—').join('; ');
+  if (typeof value === 'object') return Object.entries(value)
+    .filter(([key, item]) => !hidden.has(key) && item !== null && item !== undefined && item !== '')
+    .map(([key, item]) => `${key.replace(/[_-]/g, ' ')}: ${display(item)}`).join('; ');
   return String(value);
+}
+
+function flattenContent(value, prefix = '', depth = 0, output = []) {
+  if (value === null || value === undefined || value === '' || depth > 5) return output;
+  if (Array.isArray(value)) {
+    if (!value.length) return output;
+    if (value.every((item) => item === null || ['string', 'number', 'boolean'].includes(typeof item))) {
+      output.push([prefix || 'Details', value.map(display).join(', ')]);
+    } else {
+      value.forEach((item, index) => flattenContent(item, `${prefix || 'Entry'} ${index + 1}`, depth + 1, output));
+    }
+    return output;
+  }
+  if (typeof value === 'object' && !(value instanceof Date)) {
+    Object.entries(value).forEach(([key, item]) => {
+      if (hidden.has(key) || item === null || item === undefined || item === '') return;
+      const label = key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+      flattenContent(item, prefix ? `${prefix} / ${label}` : label, depth + 1, output);
+    });
+    return output;
+  }
+  output.push([prefix || 'Details', display(value)]);
+  return output;
 }
 
 function patientName(patient = {}) { return patient.name || [patient.first_name, patient.last_name].filter(Boolean).join(' ') || '—'; }
@@ -84,27 +135,33 @@ async function renderCoverAndIndex(manifest, documents, packetType, signatures =
 
 async function renderGenericDocument(manifest, item) {
   return collectPdf(async (doc) => {
-    header(doc, manifest, item.title || 'Clinical Document');
-    doc.font('Helvetica').fontSize(7.5).fillColor('#475569').text(`${item.category || ''} · ${item.status || ''} · Source ${item.sourceModel || '—'} revision ${item.sourceRevision || 1}`);
-    doc.moveDown(0.6);
+    const renderHeader = (continued = false) => {
+      header(doc, manifest, `${item.title || 'Clinical Document'}${continued ? ' (continued)' : ''}`);
+      doc.font('Helvetica').fontSize(7.2).fillColor('#475569')
+        .text(`${item.category || ''} · ${item.status || ''} · Source ${item.sourceModel || '—'} revision ${item.sourceRevision || 1}`);
+      doc.moveDown(0.45);
+    };
+    renderHeader();
     const content = item.content || item.metadata || {};
-    const entries = Object.entries(content).filter(([key, value]) => !hidden.has(key) && value !== null && value !== undefined && value !== '');
+    const entries = flattenContent(content).filter(([, value]) => value !== '—');
     if (!entries.length) {
-      doc.fontSize(9).fillColor('#64748b').text('No structured source content is available in this record. Refer to the secured linked report or attachment in the HIMS.');
+      doc.fontSize(8.5).fillColor('#64748b').text('No structured source content is available in this record. Refer to the secured linked report or attachment in the HIMS.');
     } else {
-      entries.forEach(([key, value]) => {
-        const rendered = display(value);
-        if (doc.y > 735) { doc.addPage(); header(doc, manifest, `${item.title} (continued)`); }
-        doc.save().strokeColor('#cbd5e1').rect(38, doc.y, 519, Math.max(32, Math.min(145, doc.heightOfString(rendered, { width: 497 }) + 25))).stroke();
-        const y = doc.y + 5;
-        doc.font('Helvetica-Bold').fontSize(8).fillColor('#0f172a').text(key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()), 44, y, { width: 507 });
-        doc.font('Helvetica').fontSize(7.3).fillColor('#111827').text(rendered, 44, y + 13, { width: 507, height: 120, ellipsis: true });
-        doc.y = y + Math.max(32, Math.min(145, doc.heightOfString(rendered, { width: 497 }) + 25)) + 5;
-      });
+      for (const [key, value] of entries) {
+        const valueHeight = doc.font('Helvetica').fontSize(7.2).heightOfString(String(value), { width: 501, lineGap: 1 });
+        const rowHeight = Math.max(24, valueHeight + 19);
+        if (doc.y + rowHeight > 785) { doc.addPage(); renderHeader(true); }
+        const top = doc.y;
+        doc.save().strokeColor('#cbd5e1').lineWidth(0.5).rect(38, top, 519, rowHeight).stroke();
+        doc.font('Helvetica-Bold').fontSize(7.4).fillColor('#0f172a').text(key, 44, top + 4, { width: 507 });
+        doc.font('Helvetica').fontSize(7.2).fillColor('#111827').text(String(value), 44, top + 15, { width: 501, lineGap: 1 });
+        doc.y = top + rowHeight + 3;
+      }
     }
     if (item.signature) {
-      if (doc.y > 730) doc.addPage();
-      doc.moveDown().font('Helvetica-Bold').fontSize(8).fillColor('#166534').text(`Digitally signed by ${item.signature.signerName || 'Authorized user'} on ${new Date(item.signature.signedAt).toLocaleString('en-IN')} · Verification ${item.signature.verificationCode || '—'}`);
+      if (doc.y > 750) { doc.addPage(); renderHeader(true); }
+      doc.moveDown(0.4).font('Helvetica-Bold').fontSize(7.5).fillColor('#166534')
+        .text(`Digitally signed by ${item.signature.signerName || 'Authorized user'} on ${new Date(item.signature.signedAt).toLocaleString('en-IN')} · Verification ${item.signature.verificationCode || '—'}`);
     }
   });
 }
@@ -116,6 +173,27 @@ function localPdfFromUrl(fileUrl) {
   return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) || null;
 }
 
+async function remoteFileFromUrl(fileUrl, expected = 'pdf') {
+  if (!fileUrl || !/^https?:\/\//i.test(String(fileUrl))) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(String(fileUrl), { signal: controller.signal, redirect: 'follow' });
+    if (!response.ok) return null;
+    const type = String(response.headers.get('content-type') || '').toLowerCase();
+    const length = Number(response.headers.get('content-length') || 0);
+    if (length > 25 * 1024 * 1024) return null;
+    if (expected === 'pdf' && !type.includes('pdf') && !/\.pdf(?:\?|$)/i.test(String(fileUrl))) return null;
+    if (expected === 'image' && !type.startsWith('image/') && !/\.(png|jpe?g|webp)(?:\?|$)/i.test(String(fileUrl))) return null;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    return bytes.length <= 25 * 1024 * 1024 ? bytes : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function otExactDocument(item, hospitalId) {
   if (!item.formTemplate || !item.relatedCaseId || !item.sourceId) return null;
   const otCase = await OTRequest.findOne({ _id: item.relatedCaseId, hospitalId }).populate('patientId').populate('admissionId').lean();
@@ -123,6 +201,51 @@ async function otExactDocument(item, hospitalId) {
   const sourceModel = item.sourceModel === 'OTClinicalForm' ? 'OTClinicalForm' : item.sourceModel;
   const signatures = await DocumentSignature.find({ hospitalId, sourceModel, sourceId: item.sourceId, status: 'signed' }).sort({ signedAt: 1 }).lean();
   return renderOtFormPdf({ template: item.formTemplate, record: item.content, otCase, signatures });
+}
+
+async function generatedLabReport(item, hospitalId) {
+  if (item.sourceModel !== 'LabRequest' || !item.sourceId) return null;
+  const request = await LabRequest.findOne({ _id: item.sourceId, hospitalId })
+    .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
+    .populate('doctorId', 'firstName lastName first_name last_name specialization department')
+    .populate('admissionId', 'admissionNumber hospitalId')
+    .populate('appointmentId', 'token')
+    .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
+  if (!request || request.report_mode !== 'manual' || !request.manual_report) return null;
+  const hospital = await Hospital.findById(hospitalId).lean();
+  return collectPipedPdf((res) => generateLabReportPdf({ res, request, hospital }));
+}
+
+async function generatedRadiologyReport(item, hospitalId) {
+  if (item.sourceModel !== 'RadiologyRequest' || !item.sourceId) return null;
+  const request = await RadiologyRequest.findOne({ _id: item.sourceId, hospitalId })
+    .populate('patientId')
+    .populate('doctorId')
+    .populate('admissionId', 'admissionNumber hospitalId')
+    .populate('appointmentId', 'token')
+    .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
+  if (!request || request.report_mode !== 'manual' || !request.manual_report) return null;
+  const hospital = await Hospital.findById(hospitalId).lean();
+  if (!hospital) return null;
+  return collectPipedPdf((res) => generateRadiologyReportPdf({ request, hospital, res }));
+}
+
+function localImageFromUrl(fileUrl) {
+  if (!fileUrl || !/\.(png|jpe?g|webp)(?:\?|$)/i.test(String(fileUrl))) return null;
+  const clean = String(fileUrl).split('?')[0];
+  const candidates = [clean, clean.replace(/^\/?api\//, ''), clean.replace(/^\/?uploads\//, 'uploads/')].map((value) => path.resolve(value));
+  return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) || null;
+}
+
+async function renderImageAttachment(manifest, item, imageSource) {
+  return collectPdf(async (doc) => {
+    header(doc, manifest, item.title || 'Clinical Attachment');
+    try {
+      doc.image(imageSource, 38, 128, { fit: [519, 640], align: 'center', valign: 'center' });
+    } catch {
+      doc.fontSize(9).text('The attached image could not be rendered.');
+    }
+  });
 }
 
 async function applyPdfSignaturePlacements(buffer, signatures = []) {
@@ -165,23 +288,41 @@ async function applyPdfSignaturePlacements(buffer, signatures = []) {
 }
 
 async function mergePdfBuffers(buffers) {
-  if (buffers.length === 1) return buffers[0];
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hims-patient-file-'));
-  try {
-    const inputs = buffers.map((buffer, index) => { const file = path.join(tempDir, `${String(index).padStart(4, '0')}.pdf`); fs.writeFileSync(file, buffer); return file; });
-    const output = path.join(tempDir, 'bundle.pdf');
-    await execFileAsync('gs', ['-dBATCH', '-dNOPAUSE', '-dSAFER', '-q', '-sDEVICE=pdfwrite', `-sOutputFile=${output}`, ...inputs], { maxBuffer: 10 * 1024 * 1024 });
-    return fs.readFileSync(output);
-  } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
+  const merged = await PDFLibDocument.create();
+  for (const buffer of buffers) {
+    if (!buffer?.length) continue;
+    try {
+      const source = await PDFLibDocument.load(buffer, { ignoreEncryption: true });
+      const pages = await merged.copyPages(source, source.getPageIndices());
+      pages.forEach((page) => merged.addPage(page));
+    } catch (error) {
+      // A corrupt external attachment must not prevent the remaining patient file from rendering.
+      console.warn('Skipping unreadable PDF while building patient file:', error.message);
+    }
+  }
+  return Buffer.from(await merged.save({ useObjectStreams: false }));
 }
 
 async function renderPatientFilePdf({ manifest, documents, packetType, hospitalId, signatures = [] }) {
   const buffers = [await renderCoverAndIndex(manifest, documents, packetType, signatures)];
+  const hospital = await Hospital.findById(hospitalId).lean().catch(() => null);
   for (const item of documents) {
     let buffer = await otExactDocument(item, hospitalId).catch(() => null);
+    if (!buffer) buffer = await generatedLabReport(item, hospitalId).catch(() => null);
+    if (!buffer) buffer = await generatedRadiologyReport(item, hospitalId).catch(() => null);
+    if (!buffer) buffer = await renderClinicalPatientFileDocument({ manifest, item, hospital }).catch(() => null);
     if (!buffer) {
       const local = localPdfFromUrl(item.fileUrl);
       if (local) buffer = fs.readFileSync(local);
+    }
+    if (!buffer && item.fileUrl) buffer = await remoteFileFromUrl(item.fileUrl, 'pdf');
+    if (!buffer) {
+      const image = localImageFromUrl(item.fileUrl);
+      if (image) buffer = await renderImageAttachment(manifest, item, image);
+    }
+    if (!buffer && item.fileUrl) {
+      const remoteImage = await remoteFileFromUrl(item.fileUrl, 'image');
+      if (remoteImage) buffer = await renderImageAttachment(manifest, item, remoteImage);
     }
     if (!buffer) buffer = await renderGenericDocument(manifest, item);
     buffers.push(buffer);
@@ -191,11 +332,5 @@ async function renderPatientFilePdf({ manifest, documents, packetType, hospitalI
 }
 
 function sha256(buffer) { return crypto.createHash('sha256').update(buffer).digest('hex'); }
-function writePatientBundle(buffer, { hospitalId, admissionId, packetType, revision }) {
-  const dir = path.resolve('uploads/rendered-documents', String(hospitalId), 'patient-files', String(admissionId));
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${packetType}-patient-file-r${revision}-${Date.now()}.pdf`);
-  fs.writeFileSync(file, buffer); return file;
-}
 
-module.exports = { renderPatientFilePdf, writePatientBundle, sha256 };
+module.exports = { renderPatientFilePdf, sha256 };

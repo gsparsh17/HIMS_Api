@@ -25,7 +25,7 @@ const upload = multer({
   }
 });
 
-router.use(protect, authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'ot_staff', 'store_manager', 'inventory_manager', 'accountant'));
+router.use(protect, authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'ot_staff', 'store_manager', 'inventory_manager', 'accountant', 'registrar'));
 
 async function ensureCaseTenant(req, res, next) {
   try {

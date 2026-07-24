@@ -47,27 +47,65 @@ exports.getMyIdentity = async (req, res, next) => {
       { identityId: identity._id, status: 'pending' },
       { $set: { status: 'verified', verifiedAt: new Date() } }
     );
-    const assets = await PrintIdentityAsset.find({ identityId: identity._id, status: { $ne: 'retired' } })
-      .sort({ assetType: 1, version: -1 });
 
-    const latestSig = assets.find((a) => a.assetType === 'signature' && a.status === 'verified');
-    const latestSeal = assets.find((a) => a.assetType === 'seal' && a.status === 'verified');
+    const allAssets = await PrintIdentityAsset.find({
+      identityId: identity._id,
+      status: { $ne: 'retired' }
+    }).sort({ assetType: 1, version: -1 });
+
+    // Do not send legacy assets whose local file no longer exists and that
+    // do not have a Cloudinary copy. Those assets cause repeated 404 requests
+    // in every print dialog.
+    const assets = allAssets.filter((asset) =>
+      Boolean(asset.cloudinaryUrl) ||
+      Boolean(asset.storagePath && fs.existsSync(asset.storagePath))
+    );
+
+    const usableIds = new Set(assets.map((asset) => String(asset._id)));
+    const latestSig = assets.find((asset) =>
+      asset.assetType === 'signature' && asset.status === 'verified'
+    );
+    const latestSeal = assets.find((asset) =>
+      asset.assetType === 'seal' && asset.status === 'verified'
+    );
+
     let dirty = false;
-    if (latestSig && !identity.defaultSignatureAssetId) {
-      identity.defaultSignatureAssetId = latestSig._id;
+    const currentSignatureId = identity.defaultSignatureAssetId
+      ? String(identity.defaultSignatureAssetId)
+      : '';
+    const currentSealId = identity.defaultSealAssetId
+      ? String(identity.defaultSealAssetId)
+      : '';
+
+    if (!currentSignatureId || !usableIds.has(currentSignatureId)) {
+      identity.defaultSignatureAssetId = latestSig?._id || undefined;
       dirty = true;
     }
-    if (latestSeal && !identity.defaultSealAssetId) {
-      identity.defaultSealAssetId = latestSeal._id;
+    if (!currentSealId || !usableIds.has(currentSealId)) {
+      identity.defaultSealAssetId = latestSeal?._id || undefined;
       dirty = true;
     }
-    if (assets.length > 0 && identity.verificationStatus !== 'verified') {
-      identity.verificationStatus = 'verified';
+
+    const nextVerificationStatus = assets.some((asset) => asset.status === 'verified')
+      ? 'verified'
+      : 'unverified';
+    if (identity.verificationStatus !== nextVerificationStatus) {
+      identity.verificationStatus = nextVerificationStatus;
       dirty = true;
     }
+
     if (dirty) await identity.save();
 
-    res.json({ success: true, data: { identity, assets } });
+    res.json({
+      success: true,
+      data: {
+        identity,
+        assets: assets.map((asset) => ({
+          ...asset.toObject(),
+          contentAvailable: true
+        }))
+      }
+    });
   } catch (error) { next(error); }
 };
 
