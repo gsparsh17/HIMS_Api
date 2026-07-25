@@ -6,6 +6,8 @@ const rateLimit = require('express-rate-limit');
 const abdmConfig = require('./config/abdm.config');
 
 const app = express();
+const isProduction = true;
+
 app.disable('x-powered-by');
 app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 
@@ -21,14 +23,43 @@ const origins = allowedOrigins();
 app.use(
   cors({
     origin(origin, callback) {
-      // Server-to-server requests do not send an Origin header.
-      if (!origin || origins.length === 0 || origins.includes(origin)) return callback(null, true);
-      return callback(new Error('Origin is not allowed by CORS'));
+      // Server-to-server and same-origin requests may not include Origin.
+      if (!origin) return callback(null, true);
+      if (origins.includes(origin)) return callback(null, true);
+
+      // Local development may run without an explicit allow-list.
+      if (!isProduction && origins.length === 0) return callback(null, true);
+
+      const error = new Error('Origin is not allowed by CORS');
+      error.statusCode = 403;
+      return callback(error);
     },
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Request-Id', 'X-Master-Admin-Key'],
+    maxAge: 86400
   })
 );
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+app.use(
+  helmet({
+    // This service returns JSON APIs, not HTML pages.
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    strictTransportSecurity: isProduction
+      ? { maxAge: 31536000, includeSubDomains: true, preload: true }
+      : false,
+    referrerPolicy: { policy: 'no-referrer' }
+  })
+);
+
+// Never expose development artifacts if an upstream proxy accidentally forwards them.
+const blockedSourcePath = /(?:\.map$)|^\/(?:\.git(?:\/|$)|\.env(?:\.[^/]*)?$|src(?:\/|$)|node_modules(?:\/|$)|package(?:-lock)?\.json$|vite\.config\.[^/]+$|server\d*\.js$|app\.js$)/i;
+app.use((req, res, next) => {
+  if (blockedSourcePath.test(req.path)) return res.status(404).end();
+  return next();
+});
+
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '10mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
@@ -40,14 +71,15 @@ const generalLimiter = rateLimit({
   skip: (req) => req.path.startsWith('/v3')
 });
 app.use('/api', generalLimiter);
+app.use('/api', (req, res, next) => {
+  // Patient and financial responses must not be stored by browsers or shared proxies.
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 app.get('/health', (req, res) => {
-  res.json({
-    success: true,
-    appRole: abdmConfig.appRole,
-    abdmEnvironment: abdmConfig.environment,
-    timestamp: new Date().toISOString()
-  });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, status: 'ok' });
 });
 
 function preloadHospitalModels() {
