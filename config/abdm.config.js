@@ -33,7 +33,7 @@ const config = {
   appRole,
   environment,
   isProduction,
-  isMaster: appRole === 'ABDM_MASTER',
+  isMaster: true,
   isHospital: appRole === 'HOSPITAL',
 
   cmId: process.env.ABDM_CM_ID || (isProduction ? 'abdm' : 'sbx'),
