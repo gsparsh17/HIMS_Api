@@ -44,7 +44,7 @@ const manualLabReportSchema = new mongoose.Schema({
 
 
 const labRequestSchema = new mongoose.Schema({
-  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   requestNumber: {
     type: String,
   },

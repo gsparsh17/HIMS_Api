@@ -31,7 +31,7 @@ const manualRadiologyReportSchema = new mongoose.Schema({
 }, { _id: false });
 
 const radiologyRequestSchema = new mongoose.Schema({
-  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   requestNumber: {
     type: String,
   },
