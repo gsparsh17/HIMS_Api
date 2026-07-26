@@ -2,12 +2,14 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
+const { tempDir } = require('../config/upload.config');
 const controller = require('../controllers/procedureRequest.controller');
+const { protect, authorize } = require('../middlewares/auth');
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/');
+    cb(null, tempDir);
   },
   filename: (req, file, cb) => {
     cb(null, Date.now() + path.extname(file.originalname));
@@ -26,6 +28,11 @@ const upload = multer({
     }
   }
 });
+
+router.use(
+  protect,
+  authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'ot_staff', 'radiology_staff')
+);
 
 // ============== PROCEDURE REQUEST ROUTES ==============
 router.post('/requests', controller.createProcedureRequest);

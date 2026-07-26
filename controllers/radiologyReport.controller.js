@@ -1,16 +1,12 @@
 const fs = require('fs');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const Hospital = require('../models/Hospital');
 const { catalogVersion, listTemplates, getTemplate, matchTemplateDetailed } = require('../services/radiologyReportTemplate.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { generateRadiologyReportPdf } = require('../services/radiologyPdf.service');
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+
 
 const clean = (value, fallback = '') => {
   if (value === null || value === undefined) return fallback;
@@ -77,7 +73,7 @@ exports.saveManualReport = async (req, res) => {
     const uploadedImages = [];
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
-      const result = await cloudinary.uploader.upload(file.path, {
+      const result = await fileStorage.upload(file, req, {
         folder: 'radiology_report_images',
         resource_type: 'image',
         public_id: `rad_img_${request.requestNumber}_${Date.now()}_${index}`,

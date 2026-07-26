@@ -6,6 +6,7 @@ const Hospital = require('../models/Hospital');
 
 const A4 = { width: 595.28, height: 841.89, margin: 28 };
 const COLORS = { ink: '#111827', light: '#F3F4F6', muted: '#6B7280', line: '#111827', accent: '#0F766E' };
+const fileStorage = require('./fileStorage.service');
 
 function value(v, fallback = '') {
   if (v === undefined || v === null || v === '') return fallback;
@@ -381,5 +382,5 @@ async function renderOtPacketPdf({ forms, otCase, hospital }) {
   });
 }
 function sha256(buffer){return crypto.createHash('sha256').update(buffer).digest('hex');}
-function writeRenderedPdf(buffer,{hospitalId,caseId,templateId,revision}){const dir=path.resolve('uploads/rendered-documents',String(hospitalId),String(caseId));fs.mkdirSync(dir,{recursive:true});const file=path.join(dir,`${templateId}-r${revision}-${Date.now()}.pdf`);fs.writeFileSync(file,buffer);return file;}
+function writeRenderedPdf(buffer,{hospitalId,caseId,templateId,revision}){const dir=path.join(fileStorage.uploadRoot,'hospitals',String(hospitalId),'rendered-documents',String(caseId));fs.mkdirSync(dir,{recursive:true});const file=path.join(dir,`${templateId}-r${revision}-${Date.now()}.pdf`);fs.writeFileSync(file,buffer);return path.relative(fileStorage.uploadRoot,file).split(path.sep).join('/');}
 module.exports={renderOtFormPdf,renderOtPacketPdf,sha256,writeRenderedPdf};

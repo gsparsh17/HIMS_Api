@@ -1,14 +1,10 @@
 const Prescription = require('../models/Prescription');
 const LabReport = require('../models/LabReport');
 const Patient = require('../models/Patient');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});
+
 
 // ========== MARK LAB TEST AS REFERRED TO EXTERNAL LAB ==========
 exports.markAsReferredOut = async (req, res) => {
@@ -189,7 +185,7 @@ exports.uploadExternalReport = async (req, res) => {
         const resourceType = isPDF ? 'raw' : 'image';
 
         // Upload to Cloudinary (no manual URL modification)
-        const result = await cloudinary.uploader.upload(req.file.path, {
+        const result = await fileStorage.upload(req.file, req, {
             folder: isPDF ? 'external_lab_reports_pdf' : 'external_lab_reports',
             resource_type: resourceType,
             public_id: `external_${prescription.prescription_number}_${lab_test_id}_${Date.now()}`,

@@ -3,12 +3,12 @@ dotenv.config();
 
 const connectDB = require('./config/db');
 const abdmConfig = require('./config/abdm.config');
+const { assertRuntimeConfig } = require('./config/runtime.config');
+assertRuntimeConfig();
 const app = require('./app');
 
 function validateProductionConfiguration() {
   // if (process.env.NODE_ENV !== 'production') return;
-
-  const jwtSecret = String(process.env.JWT_SECRET || '');
   const corsOrigins = String(process.env.CORS_ORIGINS || process.env.FRONTEND_URL || '').trim();
 
   // if (jwtSecret.length < 32) {
@@ -26,7 +26,7 @@ const startServer = async () => {
     console.log('✅ MongoDB Connected');
 
     const PORT = process.env.PORT || (abdmConfig.isMaster && !abdmConfig.isHospital ? 5004 : 5000);
-    const HOST = process.env.HOST || '0.0.0.0';
+    const HOST = process.env.HOST || '127.0.0.1';
     const server = app.listen(PORT, HOST, () => {
       console.log(`🚀 ${abdmConfig.appRole} server listening on ${HOST}:${PORT}`);
     });

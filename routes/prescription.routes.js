@@ -3,19 +3,36 @@ const router = express.Router();
 const prescriptionController = require('../controllers/prescription.controller');
 const multer = require('multer');
 const path = require('path');
+const { tempDir } = require('../config/upload.config');
 const { validatePrescriptionMedicationFlow } = require('../middlewares/medicationFlowValidation');
 const { protect, authorize } = require('../middlewares/auth');
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/');
+    cb(null, tempDir);
   },
   filename: (req, file, cb) => {
     cb(null, Date.now() + path.extname(file.originalname));
   }
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'application/pdf']);
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error('Prescription upload must be a PNG, JPEG, WebP, or PDF file.'));
+    }
+    cb(null, true);
+  }
+});
+
+
+router.use(
+  protect,
+  authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff')
+);
 
 // ============== IMAGE UPLOAD ==============
 router.post('/upload', upload.single('image'), prescriptionController.uploadPrescriptionImage);

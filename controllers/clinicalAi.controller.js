@@ -309,3 +309,49 @@ exports.parseOrders = async (req, res) => {
     sendError(res, error);
   }
 };
+
+
+function boundedArray(value, limit) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, limit);
+}
+
+exports.summarizePrescriptionHistory = async (req, res) => {
+  try {
+    assertClinicalAccess(req);
+    const prescriptions = boundedArray(req.body?.prescriptions, 100);
+    const patientDetails = sanitizeContext({
+      patientAge: req.body?.patientDetails?.age,
+      patientGender: req.body?.patientDetails?.gender,
+    });
+    patientDetails.name = String(req.body?.patientDetails?.name || 'Patient').slice(0, 200);
+    const data = await geminiClinical.summarizePatientHistory({ prescriptions, patientDetails: {
+      name: patientDetails.name,
+      age: patientDetails.patientAge,
+      gender: patientDetails.patientGender,
+    } });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+exports.summarizeIpdHistory = async (req, res) => {
+  try {
+    assertClinicalAccess(req);
+    const data = await geminiClinical.summarizeIPDPatientHistory({
+      admission: req.body?.admission || {},
+      rounds: boundedArray(req.body?.rounds, 50),
+      nursingNotes: boundedArray(req.body?.nursingNotes, 50),
+      vitals: boundedArray(req.body?.vitals, 20),
+      patientDetails: {
+        name: String(req.body?.patientDetails?.name || 'Patient').slice(0, 200),
+        age: String(req.body?.patientDetails?.age || '').slice(0, 20),
+        gender: String(req.body?.patientDetails?.gender || '').slice(0, 50),
+      },
+    });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};

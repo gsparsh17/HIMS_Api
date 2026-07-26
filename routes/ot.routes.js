@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { tempDir } = require('../config/upload.config');
 const legacy = require('../controllers/ot.controller');
 const cases = require('../controllers/otCase.controller');
 const clinicalForms = require('../controllers/otClinicalForm.controller');
@@ -11,7 +12,7 @@ const { protect, authorize } = require('../middlewares/auth');
 const { requireHospitalId } = require('../services/tenantScope.service');
 
 const router = express.Router();
-const uploadDir = 'uploads/ot/';
+const uploadDir = path.join(tempDir, 'ot');
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({
   storage: multer.diskStorage({

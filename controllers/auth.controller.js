@@ -7,7 +7,7 @@ const Doctor = require('../models/Doctor');
 const Staff = require('../models/Staff');
 const Pharmacy = require('../models/Pharmacy');
 const Department = require('../models/Department');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const PathologyStaff = require('../models/PathologyStaff');
 const OTStaff = require('../models/OTStaff'); // Add OT Staff model
@@ -15,11 +15,28 @@ const HRStaffProfile = require('../models/HRStaffProfile');
 const jwt = require('jsonwebtoken');
 const { effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || 'hims_access_token';
+
+function setAuthCookie(res, token) {
+  res.cookie(AUTH_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+    path: '/'
+  });
+}
+
+function clearAuthCookie(res) {
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/'
+  });
+}
+
+
 
 exports.forgotPassword = async (req, res) => {
   const { email } = req.body;
@@ -54,6 +71,9 @@ exports.forgotPassword = async (req, res) => {
 
 exports.demoLogin = async (req, res) => {
   try {
+    if (String(process.env.ENABLE_DEMO_LOGIN || 'false').toLowerCase() !== 'true') {
+      return res.status(404).json({ error: 'Route not found' });
+    }
     const { email } = req.body;
 
     if (!email) {
@@ -91,6 +111,9 @@ exports.demoLogin = async (req, res) => {
     const demoUser = await User.findById(decoded.id);
     if (!demoUser) {
       return res.status(403).json({ error: 'User not found' });
+    }
+    if (demoUser.role !== 'demo') {
+      return res.status(403).json({ error: 'Demo impersonation is restricted to the demo account' });
     }
 
     const targetUser = await User.findOne({ email });
@@ -152,6 +175,7 @@ exports.demoLogin = async (req, res) => {
       console.error('Error fetching role-specific data:', roleError);
     }
 
+    setAuthCookie(res, newToken);
     res.json(response);
 
   } catch (err) {
@@ -202,10 +226,7 @@ exports.registerUser = async (req, res) => {
     let logoUrl = null;
     if (req.file) {
       try {
-        const result = await cloudinary.uploader.upload(req.file.path, {
-          folder: 'hospital_logos',
-          resource_type: 'image'
-        });
+        const result = await fileStorage.upload(req.file, req, { folder: 'hospital-logos', visibility: 'public' });
         logoUrl = result.secure_url;
         fs.unlinkSync(req.file.path);
       } catch (uploadErr) {
@@ -251,12 +272,14 @@ exports.registerUser = async (req, res) => {
       }
     }
 
+    const token = generateToken(user._id, user.role);
+    setAuthCookie(res, token);
     res.status(201).json({
       _id: user._id,
       name: user.name,
       email: user.email,
       role: user.role,
-      token: generateToken(user._id, user.role)
+      token
     });
   } catch (err) {
     console.error('🔴 Registration Error:', err);
@@ -333,6 +356,7 @@ exports.loginUser = async (req, res) => {
       response.otStaffDesignation = otStaff?.designation || 'OT Staff';
     }
 
+    setAuthCookie(res, response.token);
     return res.json(response);
   } catch (error) {
     console.error('Login error:', error);
@@ -340,3 +364,9 @@ exports.loginUser = async (req, res) => {
   }
 };
 
+
+
+exports.logoutUser = async (_req, res) => {
+  clearAuthCookie(res);
+  return res.json({ success: true, message: 'Logged out' });
+};

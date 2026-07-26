@@ -1,24 +1,8 @@
 const Patient = require('../models/Patient');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
-const multer = require('multer');
-const path = require('path');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
 
 // ========== IMAGE UPLOAD ==========
 exports.uploadPatientImage = async (req, res) => {
@@ -26,7 +10,7 @@ exports.uploadPatientImage = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided' });
     }
-    const result = await cloudinary.uploader.upload(req.file.path, {
+    const result = await fileStorage.upload(req.file, req, {
       folder: 'patients',
       resource_type: 'image'
     });

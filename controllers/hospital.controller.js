@@ -1,12 +1,8 @@
 const Hospital = require('../models/Hospital');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+
 
 const HOSPITAL_PROFILE_FIELDS = new Set([
   'registryNo', 'hospitalName', 'logo', 'companyName', 'licenseNumber', 'name',
@@ -65,9 +61,9 @@ const updateHospitalDetails = async (req, res) => {
     }
 
     if (req.file) {
-      const result = await cloudinary.uploader.upload(req.file.path, {
-        folder: 'hospital_logos',
-        resource_type: 'image'
+      const result = await fileStorage.upload(req.file, req, {
+        folder: 'hospital-logos',
+        visibility: 'public'
       });
       updateData.logo = result.secure_url;
       fs.unlink(req.file.path, () => {});

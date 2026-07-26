@@ -2,12 +2,13 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
+const { tempDir } = require('../config/upload.config');
 const controller = require('../controllers/labRequest.controller');
 const workflow = require('../controllers/departmentWorkflow.controller');
 const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
+  destination: (req, file, cb) => cb(null, tempDir),
   filename: (req, file, cb) => cb(null, `${Date.now()}${path.extname(file.originalname)}`)
 });
 

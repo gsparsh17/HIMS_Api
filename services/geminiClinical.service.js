@@ -241,3 +241,65 @@ Return JSON only.
     procedures: Array.isArray(parsed?.procedures) ? parsed.procedures.slice(0, 20) : [],
   };
 };
+
+exports.summarizePatientHistory = async ({ prescriptions, patientDetails }) => {
+  if (!Array.isArray(prescriptions) || prescriptions.length === 0) {
+    return { summary: 'No prescription history available to summarize.' };
+  }
+  const historyText = prescriptions.slice(0, 100).map((rx, index) => {
+    const medicines = (rx.items || []).slice(0, 50).map((medicine) =>
+      `- ${medicine.medicine_name || medicine.name || 'Medicine'} (${medicine.dosage || ''}, ${medicine.frequency || ''}) - ${medicine.duration || ''}`
+    ).join('\n    ');
+    return `
+Record #${index + 1}:
+Date: ${rx.issue_date || rx.createdAt || 'N/A'} ${rx.appointment_id?.time ? `at ${rx.appointment_id.time}` : ''}
+Doctor: ${rx.doctor_id?.firstName ? `Dr. ${rx.doctor_id.firstName} ${rx.doctor_id.lastName || ''}` : 'N/A'}
+Diagnosis: ${rx.diagnosis || 'N/A'}
+Notes: ${rx.notes || 'None'}
+Investigation: ${rx.investigation || 'None'}
+Medicines:
+${medicines || 'None'}`;
+  }).join('\n');
+
+  const prompt = `
+You are a medical-record summarization assistant. Use only the supplied record data.
+Do not provide medical advice, new diagnoses, treatment suggestions, or facts not present in the source.
+Do not use markdown bolding.
+Patient: ${patientDetails?.name || 'Patient'} (${patientDetails?.gender || 'N/A'}, ${patientDetails?.age || 'N/A'} years)
+Data:
+${historyText}
+Instructions:
+1. Start with one line beginning "OVERVIEW:" containing a 60-120 word clinical summary of documented conditions, progression, treatments and current documented status.
+2. Then list each record chronologically as:
+[Date] -> [Doctor] -> [Diagnosis] -> [Notes] -> [Investigation] -> [Medicines] -> [Status: Follow-up | Independent | First Visit]
+3. Add no other introductory text.
+`.trim();
+
+  const summary = await requestGemini({ prompt, temperature: 0.1 });
+  return { summary: summary.replace(/\*/g, '').trim() };
+};
+
+exports.summarizeIPDPatientHistory = async ({ admission, rounds, nursingNotes, vitals, patientDetails }) => {
+  const prompt = `
+You are a clinical-documentation summarization assistant. Summarize only facts in the supplied IPD record.
+Do not provide medical advice, new diagnoses, prescriptions, or recommendations.
+Patient: ${patientDetails?.name || 'Patient'} (${patientDetails?.gender || 'N/A'}, ${patientDetails?.age || 'N/A'} years)
+Admission: ${JSON.stringify({
+    reasonForAdmission: admission?.reasonForAdmission,
+    primaryDoctor: admission?.primaryDoctorId,
+    department: admission?.departmentId
+  })}
+Recent vitals (maximum 20): ${JSON.stringify((vitals || []).slice(0, 20))}
+Doctor rounds (maximum 50): ${JSON.stringify((rounds || []).slice(0, 50))}
+Nursing notes (maximum 50): ${JSON.stringify((nursingNotes || []).slice(0, 50))}
+Return plain text with these headings:
+CLINICAL OVERVIEW
+KEY TRENDS
+TREATMENT PROGRESS
+NURSING SUMMARY
+Keep statements traceable to the supplied data and clearly state when information is unavailable.
+`.trim();
+
+  const summary = await requestGemini({ prompt, temperature: 0.1 });
+  return { summary: summary.replace(/\*/g, '').trim() };
+};

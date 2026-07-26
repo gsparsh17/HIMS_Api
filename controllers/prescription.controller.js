@@ -17,14 +17,10 @@ const Hospital = require('../models/Hospital');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const { generatePrescriptionPdf } = require('../services/clinicalPdf.service');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+
 
 // ============== HELPER FUNCTIONS ==============
 
@@ -1724,7 +1720,7 @@ exports.uploadPrescriptionImage = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided' });
     }
-    const result = await cloudinary.uploader.upload(req.file.path, {
+    const result = await fileStorage.upload(req.file, req, {
       folder: 'prescriptions',
       resource_type: 'image'
     });

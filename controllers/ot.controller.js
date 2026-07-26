@@ -5,18 +5,14 @@ const Room = require('../models/Room');
 const IPDAdmission = require('../models/IPDAdmission');
 const Doctor = require('../models/Doctor');
 const Procedure = require('../models/Procedure');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
 
 // Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+
 
 // Helper function to get billing controller dynamically
 async function getBillingController() {
@@ -668,7 +664,7 @@ exports.uploadSurgeryReport = async (req, res) => {
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
 
-    const result = await cloudinary.uploader.upload(req.file.path, {
+    const result = await fileStorage.upload(req.file, req, {
       folder: 'ot_reports',
       resource_type: resourceType,
       public_id: `OT_${request.requestNumber}_${Date.now()}`,

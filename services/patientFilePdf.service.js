@@ -13,6 +13,7 @@ const { generateLabReportPdf } = require('./clinicalPdf.service');
 const { generateRadiologyReportPdf } = require('./radiologyPdf.service');
 const { renderClinicalPatientFileDocument } = require('./clinicalPatientFilePdf.service');
 const { PDFDocument: PDFLibDocument, degrees } = require('pdf-lib');
+const fileStorage = require('./fileStorage.service');
 
 const hidden = new Set(['_id', '__v', 'hospitalId', 'hospital_id', 'patientId', 'admissionId', 'createdBy', 'updatedBy']);
 
@@ -166,6 +167,15 @@ async function renderGenericDocument(manifest, item) {
   });
 }
 
+
+async function localStoredFile(fileUrl, hospitalId) {
+  const record = await fileStorage.findByUrl(fileUrl);
+  if (!record || String(record.hospitalId || '') !== String(hospitalId || '')) return null;
+  const filePath = fileStorage.absolutePath(record.storageKey);
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null;
+  return { path: filePath, mimeType: String(record.mimeType || '').toLowerCase() };
+}
+
 function localPdfFromUrl(fileUrl) {
   if (!fileUrl || !String(fileUrl).toLowerCase().includes('.pdf')) return null;
   const clean = String(fileUrl).split('?')[0];
@@ -311,11 +321,20 @@ async function renderPatientFilePdf({ manifest, documents, packetType, hospitalI
     if (!buffer) buffer = await generatedLabReport(item, hospitalId).catch(() => null);
     if (!buffer) buffer = await generatedRadiologyReport(item, hospitalId).catch(() => null);
     if (!buffer) buffer = await renderClinicalPatientFileDocument({ manifest, item, hospital }).catch(() => null);
+    const storedFile = !buffer && item.fileUrl
+      ? await localStoredFile(item.fileUrl, hospitalId).catch(() => null)
+      : null;
+    if (!buffer && storedFile?.mimeType === 'application/pdf') {
+      buffer = fs.readFileSync(storedFile.path);
+    }
     if (!buffer) {
       const local = localPdfFromUrl(item.fileUrl);
       if (local) buffer = fs.readFileSync(local);
     }
     if (!buffer && item.fileUrl) buffer = await remoteFileFromUrl(item.fileUrl, 'pdf');
+    if (!buffer && storedFile?.mimeType.startsWith('image/')) {
+      buffer = await renderImageAttachment(manifest, item, storedFile.path);
+    }
     if (!buffer) {
       const image = localImageFromUrl(item.fileUrl);
       if (image) buffer = await renderImageAttachment(manifest, item, image);

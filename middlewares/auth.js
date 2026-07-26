@@ -35,48 +35,64 @@ function accessForRequestedModule(user, moduleKey) {
   };
 }
 
+function cookieValue(req, name) {
+  const cookieHeader = String(req.headers?.cookie || '');
+  for (const part of cookieHeader.split(';')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === name) return decodeURIComponent(rest.join('='));
+  }
+  return null;
+}
+
+function requestToken(req) {
+  const header = req.headers.authorization || "";
+  if (header.startsWith("Bearer ")) return header.slice(7);
+  return cookieValue(req, process.env.AUTH_COOKIE_NAME || 'hims_access_token');
+}
+
+async function authenticateRequest(req, { optional = false } = {}) {
+  const token = requestToken(req);
+  if (!token) {
+    if (optional) return null;
+    const error = new Error("No token, authorization denied");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  const user = await User.findById(decoded.id).select("-password");
+  if (!user) {
+    const error = new Error("User not found");
+    error.statusCode = 401;
+    throw error;
+  }
+  if (!user.is_active) {
+    const error = new Error("Account is deactivated. Please contact admin.");
+    error.statusCode = 403;
+    throw error;
+  }
+  return user;
+}
+
+function attachEffectivePermissions(req, user) {
+  req.user = user;
+  if (isPermissionCheckDisabled()) {
+    const { MAIN_FEATURES } = require("../utils/mainFeatureAccess");
+    req.effectiveModulePermissions = MAIN_FEATURES.map(({ key, label, description }) => ({
+      moduleKey: key,
+      label,
+      description,
+      access: "manage",
+    }));
+  } else {
+    req.effectiveModulePermissions = effectiveMainFeaturePermissions(user);
+  }
+}
+
 exports.verifyToken = async (req, res, next) => {
   try {
-    const header = req.headers.authorization || "";
-    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-
-    if (!token) {
-      return res
-        .status(401)
-        .json({ success: false, error: "No token, authorization denied" });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select("-password");
-
-    if (!user) {
-      return res
-        .status(401)
-        .json({ success: false, error: "User not found" });
-    }
-
-    if (!user.is_active) {
-      return res.status(403).json({
-        success: false,
-        error: "Account is deactivated. Please contact admin.",
-      });
-    }
-
-    req.user = user;
-
-    // If permission checks are disabled, set effective permissions to all 'manage'
-    if (isPermissionCheckDisabled()) {
-      const { MAIN_FEATURES } = require("../utils/mainFeatureAccess");
-      req.effectiveModulePermissions = MAIN_FEATURES.map(({ key, label, description }) => ({
-        moduleKey: key,
-        label,
-        description,
-        access: "manage",
-      }));
-    } else {
-      req.effectiveModulePermissions = effectiveMainFeaturePermissions(user);
-    }
-
+    const user = await authenticateRequest(req);
+    attachEffectivePermissions(req, user);
     return next();
   } catch (error) {
     const message =
@@ -84,9 +100,20 @@ exports.verifyToken = async (req, res, next) => {
         ? "Token expired"
         : error.name === "JsonWebTokenError"
         ? "Invalid token"
-        : "Token is not valid";
+        : error.message || "Token is not valid";
+    return res.status(error.statusCode || 401).json({ success: false, error: message });
+  }
+};
 
-    return res.status(401).json({ success: false, error: message });
+exports.optionalAuth = async (req, res, next) => {
+  try {
+    const user = await authenticateRequest(req, { optional: true });
+    if (user) attachEffectivePermissions(req, user);
+    return next();
+  } catch (_error) {
+    // Invalid credentials are treated as anonymous here. The controller still
+    // rejects private files, while public assets remain accessible.
+    return next();
   }
 };
 

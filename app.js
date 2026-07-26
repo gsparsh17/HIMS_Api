@@ -6,7 +6,7 @@ const rateLimit = require('express-rate-limit');
 const abdmConfig = require('./config/abdm.config');
 
 const app = express();
-const isProduction = true;
+const isProduction = process.env.NODE_ENV === 'production';
 
 app.disable('x-powered-by');
 app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
@@ -40,7 +40,6 @@ app.use(
     maxAge: 86400
   })
 );
-
 app.use(
   helmet({
     // This service returns JSON APIs, not HTML pages.
@@ -59,7 +58,6 @@ app.use((req, res, next) => {
   if (blockedSourcePath.test(req.path)) return res.status(404).end();
   return next();
 });
-
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '10mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
@@ -155,7 +153,8 @@ function preloadHospitalModels() {
     './models/IPDAccommodationSegment',
     './models/BiometricDevice',
     './models/BiometricEmployeeMap',
-    './models/AttendancePunch'
+    './models/AttendancePunch',
+    './models/StoredFile'
   ].forEach((modelPath) => require(modelPath));
 }
 
@@ -164,8 +163,14 @@ function mountHospitalRoutes() {
   const auditLogger = require('./middlewares/auditLogger');
   app.use(auditLogger({ apiPrefix: '/api' }));
 
-  app.use('/api/payments', require('./routes/paymentRoutes'));
+  // app.use('/api/files', require('./routes/file.routes'));
   app.use('/api/auth', require('./routes/auth.routes'));
+  // Public contact endpoint used by the marketing/demo-request form. It has its
+  // own validation and rate limiting; all remaining hospital APIs require login.
+  app.use('/api/email', require('./routes/emailRoutes.js'));
+  app.use('/api', require('./middlewares/auth').protect);
+
+  app.use('/api/payments', require('./routes/paymentRoutes'));
   app.use('/api/imports', require('./routes/bulkImport.routes.js'));
   app.use('/api/clinical-ai', require('./routes/clinicalAi.routes.js'));
   app.use('/api/audit-logs', require('./routes/auditLog.routes'));
@@ -217,7 +222,6 @@ function mountHospitalRoutes() {
   app.use('/api/lab', require('./routes/lab.routes.js'));
   app.use('/api/radiology', require('./routes/radiology.routes.js'));
   app.use('/api/pharmacy-bills', require('./routes/pharmacyBill.routes'));
-  app.use('/api/email', require('./routes/emailRoutes.js'));
   app.use('/api/support-tickets', require('./routes/supportTicket.routes.js'));
   app.use('/api/external-lab', require('./routes/externalLab.routes'));
   app.use('/api/license', require('./routes/license.routes.js'));

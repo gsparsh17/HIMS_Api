@@ -4,7 +4,7 @@ const RadiologyStaff = require('../models/RadiologyStaff');
 const IPDAdmission = require('../models/IPDAdmission');
 const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requireHospitalId } = require('../services/tenantScope.service');
 
@@ -30,11 +30,7 @@ const hasValidReportSignature = (file) => {
 };
 
 // Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+
 
 // ============== IMAGING TEST MASTER CRUD ==============
 
@@ -338,7 +334,7 @@ exports.uploadReport = async (req, res) => {
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
     
-    const result = await cloudinary.uploader.upload(req.file.path, {
+    const result = await fileStorage.upload(req.file, req, {
       folder: 'radiology_reports',
       resource_type: resourceType,
       public_id: `rad_${request.requestNumber}_${Date.now()}`,

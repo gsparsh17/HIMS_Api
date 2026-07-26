@@ -4,9 +4,10 @@ const path = require('path');
 const multer = require('multer');
 const controller = require('../controllers/printIdentity.controller');
 const { protect, authorize } = require('../middlewares/auth');
+const { tempDir } = require('../config/upload.config');
 
 const router = express.Router();
-const uploadDir = path.resolve('uploads/print-identities');
+const uploadDir = path.join(tempDir, 'print-identities');
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({
   storage: multer.diskStorage({

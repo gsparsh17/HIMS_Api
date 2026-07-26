@@ -1,56 +1,56 @@
 const LabReport = require('../models/LabReport');
 const Prescription = require('../models/Prescription');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const https = require('https');
 const url = require('url');
 const { requireHospitalId } = require('../services/tenantScope.service');
 
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+// Fetch a legacy remote URL or a new hospital-local StoredFile URL.
+const fetchFile = async (fileUrl, user) => {
+  const stored = await fileStorage.findByUrl(fileUrl);
+  if (stored) {
+    if (!fileStorage.canAccess(stored, user)) {
+      const error = new Error('File not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    return {
+      buffer: await fs.promises.readFile(fileStorage.absolutePath(stored.storageKey)),
+      contentType: stored.mimeType,
+      fileName: stored.originalName
+    };
+  }
 
-// Helper function to fetch file from URL using native https
-const fetchFile = (fileUrl) => {
   return new Promise((resolve, reject) => {
     const parsedUrl = url.parse(fileUrl);
+    if (!parsedUrl.hostname) return reject(new Error('Invalid report URL'));
     const options = {
       hostname: parsedUrl.hostname,
       path: parsedUrl.path,
       method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0'
-      }
+      headers: { 'User-Agent': 'MediQliq-HIMS/1.0' }
     };
 
     const protocol = parsedUrl.protocol === 'https:' ? https : require('http');
     const request = protocol.get(options, (response) => {
       if (response.statusCode === 301 || response.statusCode === 302) {
-        // Handle redirect
-        fetchFile(response.headers.location).then(resolve).catch(reject);
+        fetchFile(response.headers.location, user).then(resolve).catch(reject);
         return;
       }
-
       if (response.statusCode !== 200) {
         reject(new Error(`Failed to fetch: ${response.statusCode}`));
         return;
       }
-
       const chunks = [];
       response.on('data', (chunk) => chunks.push(chunk));
-      response.on('end', () => {
-        const buffer = Buffer.concat(chunks);
-        const contentType = response.headers['content-type'];
-        resolve({ buffer, contentType });
-      });
+      response.on('end', () => resolve({
+        buffer: Buffer.concat(chunks),
+        contentType: response.headers['content-type']
+      }));
       response.on('error', reject);
     });
-
     request.on('error', reject);
-    request.end();
   });
 };
 
@@ -139,7 +139,7 @@ exports.uploadReport = async (req, res) => {
     const { prescription_id, lab_test_id } = req.body;
 
     // Find prescription to get patient and doctor info
-    const prescription = await Prescription.findById(prescription_id);
+    const prescription = await Prescription.findOne({ _id: prescription_id, hospitalId: requireHospitalId(req) });
     if (!prescription) {
       fs.unlinkSync(req.file.path);
       return res.status(404).json({ error: 'Prescription not found' });
@@ -157,7 +157,7 @@ exports.uploadReport = async (req, res) => {
     const resourceType = isPDF ? 'raw' : 'image';
 
     // Upload to Cloudinary
-    const result = await cloudinary.uploader.upload(req.file.path, {
+    const result = await fileStorage.upload(req.file, req, {
       folder: isPDF ? 'lab_reports_pdf' : 'lab_reports',
       resource_type: resourceType,
       public_id: `report_${prescription.prescription_number}_${lab_test_id}_${Date.now()}`,
@@ -230,6 +230,7 @@ exports.downloadReport = async (req, res) => {
     } else {
       // If not found, try to find from prescription
       const prescriptions = await Prescription.find({
+        hospitalId: requireHospitalId(req),
         'recommendedLabTests.report_url': { $exists: true, $ne: null }
       });
 
@@ -249,11 +250,16 @@ exports.downloadReport = async (req, res) => {
       return res.status(404).json({ error: 'Report not found' });
     }
 
+    const storedFile = await fileStorage.findByUrl(reportUrl);
+    isPDF = storedFile?.mimeType === 'application/pdf' || reportUrl.toLowerCase().includes('.pdf');
+
     // For PDFs, redirect with Cloudinary flags for better handling
     if (isPDF) {
       // Add flags to force download instead of inline viewing
       // This avoids CORS and tracking prevention issues
-      let finalUrl = reportUrl;
+      let finalUrl = reportUrl.startsWith('/api/files/')
+        ? `${reportUrl}${reportUrl.includes('?') ? '&' : '?'}download=1`
+        : reportUrl;
       
       // Add fl_attachment flag to force download
       if (reportUrl.includes('cloudinary.com')) {
@@ -285,6 +291,7 @@ exports.downloadReportStream = async (req, res) => {
       reportUrl = report.file_url;
     } else {
       const prescriptions = await Prescription.find({
+        hospitalId: requireHospitalId(req),
         'recommendedLabTests.report_url': { $exists: true, $ne: null }
       });
 
@@ -303,10 +310,11 @@ exports.downloadReportStream = async (req, res) => {
       return res.status(404).json({ error: 'Report not found' });
     }
 
-    const isPDF = reportUrl.toLowerCase().includes('.pdf');
+    const stored = await fileStorage.findByUrl(reportUrl);
+    const isPDF = stored?.mimeType === 'application/pdf' || reportUrl.toLowerCase().includes('.pdf');
 
     // Fetch the file using native https
-    const { buffer, contentType } = await fetchFile(reportUrl);
+    const { buffer, contentType } = await fetchFile(reportUrl, req.user);
 
     // Set headers
     res.setHeader('Content-Type', isPDF ? 'application/pdf' : contentType || 'image/jpeg');
@@ -327,7 +335,7 @@ exports.downloadExternalReport = async (req, res) => {
   try {
     const { prescription_id, lab_test_id } = req.params;
 
-    const prescription = await Prescription.findById(prescription_id);
+    const prescription = await Prescription.findOne({ _id: prescription_id, hospitalId: requireHospitalId(req) });
     if (!prescription) {
       return res.status(404).json({ error: 'Prescription not found' });
     }
@@ -338,11 +346,14 @@ exports.downloadExternalReport = async (req, res) => {
     }
 
     const reportUrl = labTest.external_lab_details.external_report_url;
-    const isPDF = reportUrl.toLowerCase().includes('.pdf');
+    const stored = await fileStorage.findByUrl(reportUrl);
+    const isPDF = stored?.mimeType === 'application/pdf' || reportUrl.toLowerCase().includes('.pdf');
 
     // For PDFs, redirect with download flag
     if (isPDF) {
-      let finalUrl = reportUrl;
+      let finalUrl = reportUrl.startsWith('/api/files/')
+        ? `${reportUrl}${reportUrl.includes('?') ? '&' : '?'}download=1`
+        : reportUrl;
       
       // Add fl_attachment flag to force download
       if (reportUrl.includes('cloudinary.com')) {
@@ -365,7 +376,7 @@ exports.downloadExternalReportStream = async (req, res) => {
   try {
     const { prescription_id, lab_test_id } = req.params;
 
-    const prescription = await Prescription.findById(prescription_id);
+    const prescription = await Prescription.findOne({ _id: prescription_id, hospitalId: requireHospitalId(req) });
     if (!prescription) {
       return res.status(404).json({ error: 'Prescription not found' });
     }
@@ -376,10 +387,11 @@ exports.downloadExternalReportStream = async (req, res) => {
     }
 
     const reportUrl = labTest.external_lab_details.external_report_url;
-    const isPDF = reportUrl.toLowerCase().includes('.pdf');
+    const stored = await fileStorage.findByUrl(reportUrl);
+    const isPDF = stored?.mimeType === 'application/pdf' || reportUrl.toLowerCase().includes('.pdf');
 
     // Fetch the file using native https
-    const { buffer, contentType } = await fetchFile(reportUrl);
+    const { buffer, contentType } = await fetchFile(reportUrl, req.user);
 
     // Set headers
     res.setHeader('Content-Type', isPDF ? 'application/pdf' : contentType || 'image/jpeg');

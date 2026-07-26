@@ -17,5 +17,7 @@ router.use(protect, clinicalAiLimiter);
 router.post('/format-field', controller.formatField);
 router.post('/parse-section', controller.parseSection);
 router.post('/parse-orders', controller.parseOrders);
+router.post('/summarize-prescriptions', controller.summarizePrescriptionHistory);
+router.post('/summarize-ipd', controller.summarizeIpdHistory);
 
 module.exports = router;

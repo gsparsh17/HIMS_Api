@@ -14,16 +14,12 @@ const {
   matchTemplateDetailed
 } = require('../services/labReportTemplate.service');
 const { generateLabReportPdf } = require('../services/clinicalPdf.service');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requireHospitalId } = require('../services/tenantScope.service');
 
 // Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
+
 
 
 const cleanText = (value, fallback = '') => {
@@ -677,7 +673,7 @@ exports.uploadReport = async (req, res) => {
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
     
-    const result = await cloudinary.uploader.upload(req.file.path, {
+    const result = await fileStorage.upload(req.file, req, {
       folder: 'lab_reports',
       resource_type: resourceType,
       public_id: `lab_${request.requestNumber}_${Date.now()}`,

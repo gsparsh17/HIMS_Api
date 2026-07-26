@@ -1,18 +1,17 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
-const cloudinary = require('cloudinary').v2;
+const fileStorage = require('../services/fileStorage.service');
 const UserPrintIdentity = require('../models/UserPrintIdentity');
 const PrintIdentityAsset = require('../models/PrintIdentityAsset');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
 
-if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-  });
+
+
+function resolveAssetPath(storagePath) {
+  if (!storagePath) return null;
+  return path.isAbsolute(storagePath) ? storagePath : fileStorage.absolutePath(storagePath);
 }
 
 function checksum(filePath) {
@@ -58,7 +57,7 @@ exports.getMyIdentity = async (req, res, next) => {
     // in every print dialog.
     const assets = allAssets.filter((asset) =>
       Boolean(asset.cloudinaryUrl) ||
-      Boolean(asset.storagePath && fs.existsSync(asset.storagePath))
+      Boolean(asset.storagePath && fs.existsSync(resolveAssetPath(asset.storagePath)))
     );
 
     const usableIds = new Set(assets.map((asset) => String(asset._id)));
@@ -135,18 +134,11 @@ exports.uploadAsset = async (req, res, next) => {
     const version = (await PrintIdentityAsset.countDocuments({ identityId: identity._id, assetType })) + 1;
     const sha256 = await checksum(req.file.path);
 
-    let cloudinaryUrl = null;
-    if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
-      try {
-        const cloudResult = await cloudinary.uploader.upload(req.file.path, {
-          folder: 'print-identities',
-          resource_type: 'image'
-        });
-        cloudinaryUrl = cloudResult.secure_url;
-      } catch (cloudErr) {
-        console.error('Cloudinary upload warning for print identity asset:', cloudErr.message || cloudErr);
-      }
-    }
+    const stored = await fileStorage.upload(req.file, req, {
+      folder: 'print-identities',
+      hospitalId: identity.hospitalId
+    });
+    const cloudinaryUrl = stored.secure_url; // Legacy field retained for backward compatibility.
 
     const asset = await PrintIdentityAsset.create({
       hospitalId: identity.hospitalId,
@@ -155,7 +147,7 @@ exports.uploadAsset = async (req, res, next) => {
       assetType,
       label: req.body.label || `${assetType} v${version}`,
       version,
-      storagePath: path.resolve(req.file.path),
+      storagePath: stored.storage_key,
       cloudinaryUrl,
       originalName: req.file.originalname,
       mimeType: req.file.mimetype,
@@ -166,6 +158,7 @@ exports.uploadAsset = async (req, res, next) => {
       verifiedAt: new Date(),
       createdBy: req.user._id
     });
+    fs.unlink(req.file.path, () => {});
     if (assetType === 'signature') identity.defaultSignatureAssetId = asset._id;
     if (assetType === 'seal') identity.defaultSealAssetId = asset._id;
     identity.verificationStatus = 'verified';
@@ -215,11 +208,12 @@ exports.streamAsset = async (req, res, next) => {
     const asset = await PrintIdentityAsset.findOne(filter);
     if (!asset) return res.status(404).json({ error: 'Asset not found' });
     if (asset.cloudinaryUrl) return res.redirect(asset.cloudinaryUrl);
-    if (!fs.existsSync(asset.storagePath)) return res.status(404).json({ error: 'Asset file not found' });
+    const assetPath = resolveAssetPath(asset.storagePath);
+    if (!assetPath || !fs.existsSync(assetPath)) return res.status(404).json({ error: 'Asset file not found' });
     res.setHeader('Content-Type', asset.mimeType);
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    fs.createReadStream(asset.storagePath).pipe(res);
+    fs.createReadStream(assetPath).pipe(res);
   } catch (error) { next(error); }
 };
 

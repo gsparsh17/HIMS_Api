@@ -11,10 +11,18 @@ const DocumentSignature = require('../models/DocumentSignature');
 const EncounterDocument = require('../models/EncounterDocument');
 const RenderedDocument = require('../models/RenderedDocument');
 const fs = require('fs');
+const path = require('path');
 const { requireHospitalId } = require('../services/tenantScope.service');
+
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { getTemplate, listTemplates } = require('../config/otSurgeryFormTemplates');
 const { renderOtFormPdf, renderOtPacketPdf, sha256, writeRenderedPdf } = require('../services/otFormPdf.service');
+const fileStorage = require('../services/fileStorage.service');
+
+function resolveRenderedPath(storagePath) {
+  if (!storagePath) return null;
+  return path.isAbsolute(storagePath) ? storagePath : fileStorage.absolutePath(storagePath);
+}
 
 const nativeModels = {
   OTReadinessChecklist,
@@ -371,12 +379,13 @@ exports.streamRenderedCaseForm = async (req, res, next) => {
     const hospitalId = requireHospitalId(req);
     await findCase(req, req.params.id);
     const rendered = await RenderedDocument.findOne({ _id: req.params.renderedId, hospitalId, relatedCaseId: req.params.id });
-    if (!rendered || !fs.existsSync(rendered.storagePath)) return res.status(404).json({ error: 'Rendered document not found' });
+    const renderedPath = rendered ? resolveRenderedPath(rendered.storagePath) : null;
+    if (!renderedPath || !fs.existsSync(renderedPath)) return res.status(404).json({ error: 'Rendered document not found' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `${req.query.download === 'true' ? 'attachment' : 'inline'}; filename="${rendered.templateId}-r${rendered.sourceRevision}.pdf"`);
     res.setHeader('ETag', rendered.sha256);
     res.setHeader('Cache-Control', 'private, max-age=300');
-    fs.createReadStream(rendered.storagePath).pipe(res);
+    fs.createReadStream(renderedPath).pipe(res);
   } catch (error) { next(error); }
 };
 
