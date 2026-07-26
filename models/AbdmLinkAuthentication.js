@@ -2,9 +2,20 @@ const mongoose = require('mongoose');
 
 const abdmLinkAuthenticationSchema = new mongoose.Schema(
   {
-    linkRefNumber: { type: String, required: true, unique: true, index: true },
+    hospitalId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Hospital',
+      required: true,
+      index: true
+    },
+    linkRefNumber: { type: String, required: true, index: true },
     transactionId: { type: String, index: true },
-    patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
+    patientId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Patient',
+      required: true,
+      index: true
+    },
     patientReference: { type: String, index: true },
     careContextReferences: [{ type: String }],
     otpHash: { type: String, required: true, select: false },
@@ -24,6 +35,16 @@ const abdmLinkAuthenticationSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-abdmLinkAuthenticationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 24 * 60 * 60 });
+abdmLinkAuthenticationSchema.index(
+  { hospitalId: 1, linkRefNumber: 1 },
+  { unique: true }
+);
+abdmLinkAuthenticationSchema.index(
+  { expiresAt: 1 },
+  { expireAfterSeconds: 24 * 60 * 60 }
+);
 
-module.exports = mongoose.model('AbdmLinkAuthentication', abdmLinkAuthenticationSchema);
+module.exports = mongoose.model(
+  'AbdmLinkAuthentication',
+  abdmLinkAuthenticationSchema
+);

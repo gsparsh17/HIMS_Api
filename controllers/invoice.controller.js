@@ -1537,7 +1537,6 @@ exports.updateInvoicePayment = async (req, res) => {
   try {
     const { amount, method, reference, collected_by } = req.body;
     const invoiceId = req.params.id;
-    console.log(req.body);
     // Validate input
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Invalid payment amount' });

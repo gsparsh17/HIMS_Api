@@ -1,4 +1,5 @@
 const Patient = require('../models/Patient');
+const AbdmIdentityTransaction = require('../models/AbdmIdentityTransaction');
 const Appointment = require('../models/Appointment');
 const IPDAdmission = require('../models/IPDAdmission');
 const Prescription = require('../models/Prescription');
@@ -6,61 +7,173 @@ const LabReport = require('../models/LabReport');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const DischargeSummary = require('../models/DischargeSummary');
 const EHRBundle = require('../models/EHRBundle');
-const { encryptForAbdm, abdmPost, abdmGet } = require('../services/abdm.service');
 const { generateEhrBundle } = require('../services/ehr.service');
+const { encryptForAbdm, abdmPost, abdmGet } = require('../services/abdm.service');
+const {
+  storePatientSession,
+  getActiveAccessToken
+} = require('../services/abdmCredential.service');
+const {
+  consentEvidence,
+  createTransaction,
+  getOwnedTransaction,
+  assertResendAllowed,
+  recordAttempt,
+  markCompleted
+} = require('../services/abdmIdentityTransaction.service');
+const abdmConfig = require('../config/abdm.config');
+const { assertSameHospital } = require('../utils/hospitalScope');
 
-function getPatientName(patient) {
-  return [patient.salutation, patient.first_name, patient.middle_name, patient.last_name].filter(Boolean).join(' ');
-}
-
-function getAbhaAddress(profile = {}) {
-  if (Array.isArray(profile.phrAddress) && profile.phrAddress.length) return profile.phrAddress[0];
-  if (Array.isArray(profile.abhaAddress) && profile.abhaAddress.length) return profile.abhaAddress[0];
-  return profile.preferredAbhaAddress || profile.ABHAAddress || profile.abhaAddress || undefined;
-}
-
-function sanitizeAbdmTokens(tokens = {}) {
-  if (!tokens) return {};
-  const expiresIn = Number(tokens.expiresIn || 1800);
-  return {
-    xToken: tokens.token,
-    refreshToken: tokens.refreshToken,
-    expiresAt: new Date(Date.now() + Math.max(expiresIn - 60, 60) * 1000),
-    refreshExpiresAt: tokens.refreshExpiresIn ? new Date(Date.now() + Number(tokens.refreshExpiresIn) * 1000) : undefined
-  };
+function cleanDigits(value) {
+  return String(value || '').replace(/\D/g, '');
 }
 
 function isValidAadhaar(value) {
-  return /^\d{12}$/.test(String(value || '').replace(/\D/g, ''));
+  return /^\d{12}$/.test(cleanDigits(value));
 }
 
 function isValidMobile(value) {
-  return /^[6-9]\d{9}$/.test(String(value || '').replace(/\D/g, ''));
+  return /^[6-9]\d{9}$/.test(cleanDigits(value));
 }
 
-async function ensurePatient(patientId, includeSession = false) {
-  let query = Patient.findById(patientId);
-  if (includeSession) {
-    query = query.select('+abha.session.xToken +abha.session.refreshToken');
+function normalizedAbhaNumber(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function displayAbhaNumber(value) {
+  const digits = normalizedAbhaNumber(value);
+  if (digits.length !== 14) return value;
+  return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6, 10)}-${digits.slice(10)}`;
+}
+
+function getAbhaAddress(profile = {}) {
+  if (Array.isArray(profile.phrAddress) && profile.phrAddress.length) {
+    return profile.phrAddress[0];
   }
-  const patient = await query;
+  if (Array.isArray(profile.abhaAddress) && profile.abhaAddress.length) {
+    return profile.abhaAddress[0];
+  }
+  return (
+    profile.preferredAbhaAddress ||
+    profile.ABHAAddress ||
+    profile.abhaAddress ||
+    undefined
+  );
+}
+
+function extractProfile(data = {}) {
+  return data.ABHAProfile || data.abhaProfile || data.profile || data;
+}
+
+function extractTokens(data = {}) {
+  return data.tokens || data.token || {};
+}
+
+async function ensurePatient(patientId, user) {
+  const patient = await Patient.findById(patientId);
   if (!patient) {
     const error = new Error('Patient not found');
     error.statusCode = 404;
     throw error;
   }
+  assertSameHospital(patient.hospitalId, user);
   return patient;
+}
+
+async function assertAbhaIsAvailable(patient, profile) {
+  const number = profile.ABHANumber || profile.abhaNumber;
+  const address = getAbhaAddress(profile);
+  const options = [];
+  if (number) options.push({ 'abha.number': String(number) });
+  if (address) options.push({ 'abha.address': String(address).toLowerCase() });
+  if (!options.length) throw new Error('ABDM response did not contain ABHA identity');
+
+  const duplicate = await Patient.findOne({
+    _id: { $ne: patient._id },
+    hospitalId: patient.hospitalId,
+    $or: options
+  }).select('_id patientId uhid');
+  if (duplicate) {
+    const error = new Error(
+      `This ABHA is already associated with patient ${duplicate.patientId || duplicate.uhid}`
+    );
+    error.statusCode = 409;
+    throw error;
+  }
+}
+
+async function saveVerifiedProfile({ patient, profile, tokens, method, userId }) {
+  await assertAbhaIsAvailable(patient, profile);
+  const number = profile.ABHANumber || profile.abhaNumber;
+  const address = getAbhaAddress(profile);
+  const update = {
+    'abha.number': number ? displayAbhaNumber(number) : patient.abha?.number,
+    'abha.address': address ? String(address).toLowerCase() : patient.abha?.address,
+    'abha.status': 'VERIFIED',
+    'abha.type': profile.abhaType,
+    'abha.kycVerified': true,
+    'abha.verificationMethod': method,
+    'abha.verifiedAt': new Date(),
+    'abha.linkedAt': new Date(),
+    'abha.lastLinkedBy': userId,
+    'abha.profile.firstName': profile.firstName,
+    'abha.profile.middleName': profile.middleName,
+    'abha.profile.lastName': profile.lastName,
+    'abha.profile.dob': profile.dob,
+    'abha.profile.gender': profile.gender,
+    'abha.profile.mobileMasked': profile.mobile,
+    'abha.profile.districtName': profile.districtName,
+    'abha.profile.stateName': profile.stateName,
+    'abha.profile.pinCode': profile.pinCode
+  };
+  Object.keys(update).forEach((key) => update[key] === undefined && delete update[key]);
+  const saved = await Patient.findByIdAndUpdate(patient._id, { $set: update }, { new: true });
+  await storePatientSession({ patient: saved, tokens, updatedBy: userId });
+  return saved;
+}
+
+function safeAbha(patient) {
+  return {
+    number: patient.abha?.number,
+    address: patient.abha?.address,
+    status: patient.abha?.status,
+    kycVerified: patient.abha?.kycVerified,
+    registrationMode: patient.abha?.registrationMode,
+    verificationMethod: patient.abha?.verificationMethod,
+    verifiedAt: patient.abha?.verifiedAt,
+    profile: patient.abha?.profile
+  };
+}
+
+async function latestActiveTransaction(patientId, flow) {
+  return AbdmIdentityTransaction.findOne({
+    patientId,
+    flow,
+    status: { $in: ['OTP_REQUESTED', 'FAILED'] },
+    expiresAt: { $gt: new Date() }
+  }).sort({ createdAt: -1 });
 }
 
 exports.requestAadhaarOtp = async (req, res) => {
   try {
     const { patientId, aadhaarNumber } = req.body;
-    const cleanAadhaar = String(aadhaarNumber || '').replace(/\D/g, '');
-    if (!patientId || !isValidAadhaar(cleanAadhaar)) {
-      return res.status(400).json({ success: false, error: 'patientId and valid 12 digit Aadhaar are required' });
+    if (!patientId || !isValidAadhaar(aadhaarNumber)) {
+      return res.status(400).json({
+        success: false,
+        error: 'patientId and a valid 12-digit Aadhaar are required'
+      });
     }
+    const patient = await ensurePatient(patientId, req.user);
+    const previous = await latestActiveTransaction(patient._id, 'AADHAAR_ENROLMENT');
+    if (previous) await assertResendAllowed(previous);
 
-    await ensurePatient(patientId);
+    const consent = consentEvidence(req, {
+      patientId: patient._id,
+      code: 'abha-enrollment',
+      version: req.body.consentVersion || '1.4',
+      text: req.body.consentText
+    });
+    const cleanAadhaar = cleanDigits(aadhaarNumber);
     const encryptedAadhaar = await encryptForAbdm(cleanAadhaar);
     const data = await abdmPost('/v3/enrollment/request/otp', {
       txnId: '',
@@ -69,31 +182,57 @@ exports.requestAadhaarOtp = async (req, res) => {
       loginId: encryptedAadhaar,
       otpSystem: 'aadhaar'
     });
-
-    await Patient.findByIdAndUpdate(patientId, {
-      aadhaar_last4: cleanAadhaar.slice(-4),
-      'abha.status': 'OTP_SENT',
-      'abha.registrationMode': 'aadhaar_otp',
-      'abha.lastOtpTxnId': data.txnId,
-      'abha.lastOtpSentAt': new Date()
+    const transaction = await createTransaction({
+      txnId: data.txnId,
+      flow: 'AADHAAR_ENROLMENT',
+      patient,
+      userId: req.user._id,
+      consent,
+      req,
+      metadata: { aadhaarLast4: cleanAadhaar.slice(-4) }
     });
-
-    res.json({ success: true, txnId: data.txnId, message: data.message });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+    await Patient.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          aadhaar_last4: cleanAadhaar.slice(-4),
+          'abha.status': 'OTP_SENT',
+          'abha.registrationMode': 'aadhaar_otp',
+          'abha.lastOtpTxnId': transaction.txnId,
+          'abha.lastOtpSentAt': new Date()
+        }
+      }
+    );
+    return res.json({ success: true, txnId: transaction.txnId, message: data.message });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({
+      success: false,
+      error: error.message,
+      details: error.details
+    });
   }
 };
 
 exports.enrolByAadhaarOtp = async (req, res) => {
+  let transaction;
   try {
     const { patientId, txnId, otp, mobile } = req.body;
     if (!patientId || !txnId || !otp) {
-      return res.status(400).json({ success: false, error: 'patientId, txnId and OTP are required' });
+      return res.status(400).json({
+        success: false,
+        error: 'patientId, txnId and OTP are required'
+      });
     }
     if (mobile && !isValidMobile(mobile)) {
-      return res.status(400).json({ success: false, error: 'mobile must be a valid 10 digit Indian mobile number' });
+      return res.status(400).json({ success: false, error: 'Invalid mobile number' });
     }
-
+    const patient = await ensurePatient(patientId, req.user);
+    transaction = await getOwnedTransaction({
+      txnId,
+      patient,
+      userId: req.user._id,
+      flows: ['AADHAAR_ENROLMENT']
+    });
     const encryptedOtp = await encryptForAbdm(otp);
     const data = await abdmPost('/v3/enrollment/enrol/byAadhaar', {
       authData: {
@@ -101,128 +240,138 @@ exports.enrolByAadhaarOtp = async (req, res) => {
         otp: {
           txnId,
           otpValue: encryptedOtp,
-          mobile: mobile || ''
+          mobile: mobile ? cleanDigits(mobile) : ''
         }
       },
       consent: {
-        code: 'abha-enrollment',
-        version: '1.4'
+        code: transaction.consent?.code || 'abha-enrollment',
+        version: transaction.consent?.version || '1.4'
       }
     });
-
-    const profile = data.ABHAProfile || data.abhaProfile || {};
-    const tokenSession = sanitizeAbdmTokens(data.tokens || {});
-    const patient = await Patient.findByIdAndUpdate(
-      patientId,
-      {
-        abha: {
-          number: profile.ABHANumber || profile.abhaNumber,
-          address: getAbhaAddress(profile),
-          status: 'VERIFIED',
-          type: profile.abhaType,
-          kycVerified: true,
-          registrationMode: 'aadhaar_otp',
-          verificationMethod: 'ABDM_AADHAAR_OTP',
-          verifiedAt: new Date(),
-          linkedAt: new Date(),
-          lastLinkedBy: req.user?._id,
-          profile: {
-            firstName: profile.firstName,
-            middleName: profile.middleName,
-            lastName: profile.lastName,
-            dob: profile.dob,
-            gender: profile.gender,
-            mobileMasked: profile.mobile,
-            districtName: profile.districtName,
-            stateName: profile.stateName,
-            pinCode: profile.pinCode
-          },
-          session: tokenSession,
-          recordLinks: []
-        }
-      },
-      { new: true }
-    );
-
-    res.json({
+    const saved = await saveVerifiedProfile({
+      patient,
+      profile: extractProfile(data),
+      tokens: extractTokens(data),
+      method: 'ABDM_AADHAAR_OTP',
+      userId: req.user._id
+    });
+    await markCompleted(transaction, { isNew: data.isNew });
+    return res.json({
       success: true,
       message: data.message,
       isNew: data.isNew,
-      patientId: patient._id,
-      abha: patient.abha,
-      xTokenAvailable: Boolean(tokenSession.xToken),
-      xTokenExpiresAt: tokenSession.expiresAt
+      patientId: saved._id,
+      abha: safeAbha(saved)
     });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+  } catch (error) {
+    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    return res.status(error.statusCode || 502).json({
+      success: false,
+      error: error.message,
+      details: error.details
+    });
   }
 };
 
 exports.captureExistingAbha = async (req, res) => {
   try {
     const { patientId, abhaNumber, abhaAddress } = req.body;
-    if (!patientId || (!abhaNumber && !abhaAddress)) {
-      return res.status(400).json({ success: false, error: 'patientId and at least one of abhaNumber or abhaAddress are required' });
+    const canonicalNumber = abhaNumber ? displayAbhaNumber(abhaNumber) : undefined;
+    if (!patientId || (!canonicalNumber && !abhaAddress)) {
+      return res.status(400).json({
+        success: false,
+        error: 'patientId and ABHA number or address are required'
+      });
     }
-
-    // Manual capture is intentionally not considered verified. Use the mobile search/login
-    // flow below to move the patient to VERIFIED state.
-    const patient = await Patient.findByIdAndUpdate(
-      patientId,
+    const patient = await ensurePatient(patientId, req.user);
+    const duplicate = await Patient.findOne({
+      _id: { $ne: patient._id },
+      hospitalId: patient.hospitalId,
+      $or: [
+        ...(canonicalNumber ? [{ 'abha.number': canonicalNumber }] : []),
+        ...(abhaAddress
+          ? [{ 'abha.address': String(abhaAddress).toLowerCase() }]
+          : [])
+      ]
+    });
+    if (duplicate) {
+      return res.status(409).json({
+        success: false,
+        error: 'This ABHA is already associated with another patient'
+      });
+    }
+    const saved = await Patient.findByIdAndUpdate(
+      patient._id,
       {
-        'abha.number': abhaNumber || undefined,
-        'abha.address': abhaAddress ? String(abhaAddress).toLowerCase() : undefined,
-        'abha.status': 'VERIFICATION_PENDING',
-        'abha.registrationMode': 'manual_capture',
-        'abha.kycVerified': false,
-        'abha.verificationMethod': 'MANUAL_UNVERIFIED',
-        'abha.lastLinkedBy': req.user?._id
+        $set: {
+          ...(canonicalNumber ? { 'abha.number': canonicalNumber } : {}),
+          ...(abhaAddress
+            ? { 'abha.address': String(abhaAddress).toLowerCase() }
+            : {}),
+          'abha.status': 'VERIFICATION_PENDING',
+          'abha.registrationMode': 'manual_capture',
+          'abha.kycVerified': false,
+          'abha.verificationMethod': 'MANUAL_UNVERIFIED',
+          'abha.lastLinkedBy': req.user._id
+        }
       },
       { new: true }
     );
-    if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
-    res.json({
+    return res.json({
       success: true,
-      message: 'ABHA details saved as unverified. Complete ABDM verification before using them for care-context linking.',
-      abha: patient.abha
+      message: 'ABHA saved as unverified. Complete ABDM verification before linking records.',
+      abha: safeAbha(saved)
     });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 };
 
 function normalizeSearchResponse(data) {
   const first = Array.isArray(data) ? data[0] : data;
-  return {
-    txnId: first?.txnId,
-    accounts: first?.ABHA || first?.accounts || []
-  };
+  return { txnId: first?.txnId, accounts: first?.ABHA || first?.accounts || [] };
 }
 
 exports.searchExistingAbhaByMobile = async (req, res) => {
   try {
     const { patientId, mobile } = req.body;
     if (!patientId || !isValidMobile(mobile)) {
-      return res.status(400).json({ success: false, error: 'patientId and a valid 10 digit mobile number are required' });
+      return res.status(400).json({ success: false, error: 'Valid patientId and mobile are required' });
     }
-    await ensurePatient(patientId);
-    const encryptedMobile = await encryptForAbdm(String(mobile).replace(/\D/g, ''));
+    const patient = await ensurePatient(patientId, req.user);
+    const consent = consentEvidence(req, {
+      patientId: patient._id,
+      code: 'abha-search',
+      version: req.body.consentVersion || '1.0',
+      text: req.body.consentText
+    });
+    const encryptedMobile = await encryptForAbdm(cleanDigits(mobile));
     const data = await abdmPost('/v3/profile/account/abha/search', {
       scope: ['search-abha'],
       mobile: encryptedMobile
     });
     const normalized = normalizeSearchResponse(data);
-    if (!normalized.txnId) {
-      return res.status(502).json({ success: false, error: 'ABDM search response did not contain a transaction ID', details: data });
-    }
-    await Patient.findByIdAndUpdate(patientId, {
-      'abha.status': 'VERIFICATION_PENDING',
-      'abha.registrationMode': 'mobile_search',
-      'abha.existingSearchTxnId': normalized.txnId
+    const transaction = await createTransaction({
+      txnId: normalized.txnId,
+      flow: 'EXISTING_ABHA_SEARCH',
+      patient,
+      userId: req.user._id,
+      consent,
+      req
     });
-    res.json({ success: true, txnId: normalized.txnId, accounts: normalized.accounts });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+    await Patient.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          'abha.status': 'VERIFICATION_PENDING',
+          'abha.registrationMode': 'mobile_search',
+          'abha.existingSearchTxnId': transaction.txnId
+        }
+      }
+    );
+    return res.json({ success: true, txnId: transaction.txnId, accounts: normalized.accounts });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
   }
 };
 
@@ -232,7 +381,23 @@ exports.requestExistingAbhaOtp = async (req, res) => {
     if (!patientId || !txnId || index === undefined || index === null || index === '') {
       return res.status(400).json({ success: false, error: 'patientId, txnId and selected ABHA index are required' });
     }
-    await ensurePatient(patientId);
+    const patient = await ensurePatient(patientId, req.user);
+    const searchTransaction = await getOwnedTransaction({
+      txnId,
+      patient,
+      userId: req.user._id,
+      flows: ['EXISTING_ABHA_SEARCH']
+    });
+    const previousLogin = await AbdmIdentityTransaction.findOne({
+      hospitalId: patient.hospitalId,
+      patientId: patient._id,
+      userId: req.user._id,
+      flow: 'EXISTING_ABHA_LOGIN',
+      'metadata.searchTxnId': txnId,
+      status: { $in: ['OTP_REQUESTED', 'FAILED'] },
+      expiresAt: { $gt: new Date() }
+    }).sort({ createdAt: -1 });
+    if (previousLogin) await assertResendAllowed(previousLogin);
     const encryptedIndex = await encryptForAbdm(String(index));
     const data = await abdmPost('/v3/profile/login/request/otp', {
       scope: ['abha-login', 'search-abha', 'mobile-verify'],
@@ -241,24 +406,46 @@ exports.requestExistingAbhaOtp = async (req, res) => {
       otpSystem: 'abdm',
       txnId
     });
-    await Patient.findByIdAndUpdate(patientId, {
-      'abha.existingLoginTxnId': data.txnId,
-      'abha.existingSelectedIndex': String(index),
-      'abha.status': 'OTP_SENT'
+    const loginTransaction = await createTransaction({
+      txnId: data.txnId,
+      flow: 'EXISTING_ABHA_LOGIN',
+      patient,
+      userId: req.user._id,
+      consent: searchTransaction.consent,
+      selectedIndex: String(index),
+      req,
+      metadata: { searchTxnId: txnId }
     });
-    res.json({ success: true, txnId: data.txnId, message: data.message });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+    await Patient.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          'abha.existingLoginTxnId': loginTransaction.txnId,
+          'abha.existingSelectedIndex': String(index),
+          'abha.status': 'OTP_SENT'
+        }
+      }
+    );
+    return res.json({ success: true, txnId: loginTransaction.txnId, message: data.message });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
   }
 };
 
 exports.verifyExistingAbhaOtp = async (req, res) => {
+  let transaction;
   try {
     const { patientId, txnId, otp } = req.body;
     if (!patientId || !txnId || !otp) {
       return res.status(400).json({ success: false, error: 'patientId, txnId and OTP are required' });
     }
-    await ensurePatient(patientId);
+    const patient = await ensurePatient(patientId, req.user);
+    transaction = await getOwnedTransaction({
+      txnId,
+      patient,
+      userId: req.user._id,
+      flows: ['EXISTING_ABHA_LOGIN']
+    });
     const encryptedOtp = await encryptForAbdm(otp);
     const data = await abdmPost('/v3/profile/login/verify', {
       scope: ['abha-login', 'mobile-verify'],
@@ -267,43 +454,23 @@ exports.verifyExistingAbhaOtp = async (req, res) => {
         otp: { txnId, otpValue: encryptedOtp }
       }
     });
-    if (String(data.authResult || '').toLowerCase() !== 'success') {
-      return res.status(400).json({ success: false, error: data.message || 'ABHA verification failed', details: data });
+    if (data.authResult && String(data.authResult).toLowerCase() !== 'success') {
+      const error = new Error(data.message || 'ABHA OTP verification failed');
+      error.statusCode = 400;
+      throw error;
     }
-
-    const account = Array.isArray(data.accounts) ? data.accounts[0] : data.account || {};
-    const tokenSession = sanitizeAbdmTokens(data);
-    const patient = await Patient.findByIdAndUpdate(
-      patientId,
-      {
-        'abha.number': account.ABHANumber || account.abhaNumber,
-        'abha.address': account.preferredAbhaAddress || getAbhaAddress(account),
-        'abha.status': 'VERIFIED',
-        'abha.type': account.abhaType,
-        'abha.kycVerified': account.kycVerified !== false,
-        'abha.registrationMode': 'mobile_search',
-        'abha.verificationMethod': 'ABDM_MOBILE_OTP',
-        'abha.verifiedAt': new Date(),
-        'abha.linkedAt': new Date(),
-        'abha.lastLinkedBy': req.user?._id,
-        'abha.session': tokenSession,
-        'abha.profile.firstName': account.firstName,
-        'abha.profile.middleName': account.middleName,
-        'abha.profile.lastName': account.lastName,
-        'abha.profile.gender': account.gender,
-        'abha.profile.dob': account.dob
-      },
-      { new: true }
-    );
-    res.json({
-      success: true,
-      message: data.message || 'ABHA verified successfully',
-      abha: patient.abha,
-      xTokenAvailable: Boolean(tokenSession.xToken),
-      xTokenExpiresAt: tokenSession.expiresAt
+    const saved = await saveVerifiedProfile({
+      patient,
+      profile: extractProfile(data),
+      tokens: extractTokens(data),
+      method: 'ABDM_EXISTING_ABHA_OTP',
+      userId: req.user._id
     });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+    await markCompleted(transaction);
+    return res.json({ success: true, message: data.message, abha: safeAbha(saved) });
+  } catch (error) {
+    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
   }
 };
 
@@ -311,106 +478,259 @@ exports.requestMobileOtp = async (req, res) => {
   try {
     const { patientId, mobile, txnId } = req.body;
     if (!patientId || !isValidMobile(mobile)) {
-      return res.status(400).json({ success: false, error: 'patientId and valid mobile are required' });
+      return res.status(400).json({ success: false, error: 'Valid patientId and mobile are required' });
     }
-    const patient = await ensurePatient(patientId);
-    const encryptedMobile = await encryptForAbdm(String(mobile).replace(/\D/g, ''));
+    const patient = await ensurePatient(patientId, req.user);
+    if (txnId) {
+      await getOwnedTransaction({
+        txnId,
+        patient,
+        userId: req.user._id,
+        flows: ['AADHAAR_ENROLMENT', 'MOBILE_VERIFICATION']
+      });
+    }
+    const previous = await latestActiveTransaction(
+      patient._id,
+      'MOBILE_VERIFICATION'
+    );
+    if (previous) await assertResendAllowed(previous);
+    const consent = consentEvidence(req, {
+      patientId: patient._id,
+      code: 'mobile-verification',
+      version: req.body.consentVersion || '1.0',
+      text: req.body.consentText
+    });
     const data = await abdmPost('/v3/enrollment/request/otp', {
-      txnId: txnId || patient.abha?.lastOtpTxnId || '',
+      txnId: txnId || '',
       scope: ['abha-enrol', 'mobile-verify'],
       loginHint: 'mobile',
-      loginId: encryptedMobile,
+      loginId: await encryptForAbdm(cleanDigits(mobile)),
       otpSystem: 'abdm'
     });
-    await Patient.findByIdAndUpdate(patientId, {
-      'abha.mobileVerificationTxnId': data.txnId,
-      'abha.mobileVerificationStatus': 'otp_sent'
+    const transaction = await createTransaction({
+      txnId: data.txnId,
+      flow: 'MOBILE_VERIFICATION',
+      patient,
+      userId: req.user._id,
+      consent,
+      req
     });
-    res.json({ success: true, txnId: data.txnId, message: data.message });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+    await Patient.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          'abha.mobileVerificationTxnId': transaction.txnId,
+          'abha.mobileVerificationStatus': 'otp_sent'
+        }
+      }
+    );
+    return res.json({ success: true, txnId: transaction.txnId, message: data.message });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
   }
 };
 
 exports.verifyMobileOtp = async (req, res) => {
+  let transaction;
   try {
     const { patientId, txnId, otp } = req.body;
-    if (!patientId || !txnId || !otp) return res.status(400).json({ success: false, error: 'patientId, txnId and OTP are required' });
-    const encryptedOtp = await encryptForAbdm(otp);
+    if (!patientId || !txnId || !otp) {
+      return res.status(400).json({ success: false, error: 'patientId, txnId and OTP are required' });
+    }
+    const patient = await ensurePatient(patientId, req.user);
+    transaction = await getOwnedTransaction({
+      txnId,
+      patient,
+      userId: req.user._id,
+      flows: ['MOBILE_VERIFICATION']
+    });
     const data = await abdmPost('/v3/enrollment/auth/byAbdm', {
       scope: ['abha-enrol', 'mobile-verify'],
       authData: {
         authMethods: ['otp'],
-        otp: { timeStamp: new Date().toISOString(), txnId, otpValue: encryptedOtp }
+        otp: {
+          timeStamp: new Date().toISOString(),
+          txnId,
+          otpValue: await encryptForAbdm(otp)
+        }
       }
     });
-    const patient = await Patient.findByIdAndUpdate(patientId, {
-      'abha.mobileVerificationStatus': 'verified',
-      'abha.mobileVerifiedAt': new Date()
-    }, { new: true });
-    res.json({ success: true, message: data.message || 'Mobile verified', abha: patient?.abha });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+    await Patient.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          'abha.mobileVerificationStatus': 'verified',
+          'abha.mobileVerifiedAt': new Date()
+        }
+      }
+    );
+    await markCompleted(transaction);
+    return res.json({ success: true, message: data.message || 'Mobile verified' });
+  } catch (error) {
+    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
   }
 };
 
-function getRecentXToken(patient, req) {
-  const explicitToken = req.headers['x-token'];
-  if (explicitToken) return String(explicitToken).startsWith('Bearer ') ? String(explicitToken) : `Bearer ${explicitToken}`;
-  const token = patient?.abha?.session?.xToken;
-  const expiresAt = patient?.abha?.session?.expiresAt;
-  if (!token || !expiresAt || new Date(expiresAt).getTime() <= Date.now()) {
-    const error = new Error('ABHA user X-token missing or expired. Login/link ABHA again before downloading QR/card.');
-    error.statusCode = 400;
-    throw error;
-  }
-  return `Bearer ${token}`;
+async function xTokenForPatient(patientId, req) {
+  const supplied = req.headers['x-token'];
+  if (supplied) return String(supplied).replace(/^Bearer\s+/i, '');
+  return getActiveAccessToken(patientId);
 }
 
 exports.getQrCode = async (req, res) => {
   try {
-    const patient = await ensurePatient(req.params.patientId, true);
-    const xToken = getRecentXToken(patient, req);
-    const response = await abdmGet('/v3/profile/account/qrCode', { 'X-token': xToken }, 'buffer');
+    const patient = await ensurePatient(req.params.patientId, req.user);
+    const token = await xTokenForPatient(patient._id, req);
+    const response = await abdmGet(
+      '/v3/profile/account/qrCode',
+      { 'X-token': `Bearer ${token}` },
+      'buffer'
+    );
     res.setHeader('Content-Type', response.contentType);
-    res.send(response.buffer);
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+    return res.send(response.buffer);
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
   }
 };
 
 exports.getAbhaCard = async (req, res) => {
   try {
-    const patient = await ensurePatient(req.params.patientId, true);
-    const xToken = getRecentXToken(patient, req);
-    const response = await abdmGet('/v3/profile/account/abha-card', { 'X-token': xToken }, 'buffer');
+    const patient = await ensurePatient(req.params.patientId, req.user);
+    const token = await xTokenForPatient(patient._id, req);
+    const response = await abdmGet(
+      '/v3/profile/account/abha-card',
+      { 'X-token': `Bearer ${token}` },
+      'buffer'
+    );
     res.setHeader('Content-Type', response.contentType);
-    res.setHeader('Content-Disposition', `inline; filename="abha-card-${patient.patientId || patient._id}.pdf"`);
-    res.send(response.buffer);
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message, details: err.details });
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="abha-card-${patient.patientId || patient._id}.pdf"`
+    );
+    return res.send(response.buffer);
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
   }
 };
 
+exports.getAddressSuggestions = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    const token = await xTokenForPatient(patient._id, req);
+    const data = await abdmPost(
+      '/v3/profile/account/abha-address/suggestion',
+      req.body.payload || {},
+      { 'X-token': `Bearer ${token}` }
+    );
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+exports.validateAddress = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    const token = await xTokenForPatient(patient._id, req);
+    const data = await abdmPost(
+      '/v3/profile/account/abha-address/validate',
+      { abhaAddress: req.body.abhaAddress },
+      { 'X-token': `Bearer ${token}` }
+    );
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+exports.createAddress = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    const token = await xTokenForPatient(patient._id, req);
+    const data = await abdmPost(
+      '/v3/profile/account/abha-address',
+      req.body.payload || { abhaAddress: req.body.abhaAddress },
+      { 'X-token': `Bearer ${token}` }
+    );
+    const address =
+      getAbhaAddress(data) ||
+      req.body.abhaAddress ||
+      data.abhaAddress;
+    if (address) {
+      const duplicate = await Patient.findOne({
+        _id: { $ne: patient._id },
+        hospitalId: patient.hospitalId,
+        'abha.address': String(address).toLowerCase()
+      });
+      if (duplicate) throw new Error('ABHA address is already linked to another patient');
+      patient.abha.address = String(address).toLowerCase();
+      await patient.save();
+    }
+    return res.json({ success: true, data, abha: safeAbha(patient) });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+exports.getPatientAbha = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.params.patientId, req.user);
+    return res.json({ success: true, patientId: patient._id, abha: safeAbha(patient) });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+};
+
+function patientDisplayName(patient) {
+  return [
+    patient.salutation,
+    patient.first_name,
+    patient.middle_name,
+    patient.last_name
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 exports.searchPatientsByAbha = async (req, res) => {
   try {
+    const hospitalId = req.user.hospital;
     const { query, status, limit = 20 } = req.query;
-    const conditions = [];
+    const filter = { hospitalId };
     if (query) {
-      const escaped = String(query).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escaped = String(query)
+        .trim()
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const regex = new RegExp(escaped, 'i');
-      conditions.push({ 'abha.number': regex }, { 'abha.address': regex }, { first_name: regex }, { last_name: regex }, { phone: regex }, { patientId: regex }, { uhid: regex });
+      filter.$or = [
+        { 'abha.number': regex },
+        { 'abha.address': regex },
+        { first_name: regex },
+        { last_name: regex },
+        { phone: regex },
+        { patientId: regex },
+        { uhid: regex }
+      ];
     }
-    const filter = conditions.length ? { $or: conditions } : {};
-    if (status) filter['abha.status'] = status;
+    if (status) filter['abha.status'] = String(status).toUpperCase();
     const patients = await Patient.find(filter)
-      .select('patientId uhid first_name middle_name last_name phone gender dob patient_type abha registered_at')
+      .select(
+        'patientId uhid first_name middle_name last_name phone gender dob patient_type abha registered_at hospitalId'
+      )
       .sort({ registered_at: -1 })
       .limit(Math.min(Number(limit) || 20, 100))
       .lean();
-    res.json({ success: true, count: patients.length, patients: patients.map(p => ({ ...p, name: getPatientName(p) })) });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    return res.json({
+      success: true,
+      count: patients.length,
+      patients: patients.map((patient) => ({
+        ...patient,
+        name: patientDisplayName(patient)
+      }))
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -423,17 +743,38 @@ const RECORD_MODELS = {
   discharge_summary: { model: DischargeSummary, patientField: 'patientId' }
 };
 
-async function linkOneRecord({ patient, recordType, recordId, ehrBundleId, source = 'manual' }) {
-  const def = RECORD_MODELS[recordType];
-  if (!def) throw new Error(`Unsupported recordType: ${recordType}`);
-  const record = await def.model.findById(recordId);
-  if (!record) throw new Error(`${recordType} not found`);
-  if (String(record[def.patientField]) !== String(patient._id)) throw new Error(`${recordType} does not belong to this patient`);
+async function linkOneRecord({
+  patient,
+  recordType,
+  recordId,
+  ehrBundleId,
+  source = 'manual'
+}) {
+  const definition = RECORD_MODELS[recordType];
+  if (!definition) {
+    const error = new Error(`Unsupported recordType: ${recordType}`);
+    error.statusCode = 400;
+    throw error;
+  }
+  const record = await definition.model.findById(recordId);
+  if (!record) {
+    const error = new Error(`${recordType} not found`);
+    error.statusCode = 404;
+    throw error;
+  }
+  if (String(record[definition.patientField]) !== String(patient._id)) {
+    const error = new Error(`${recordType} does not belong to this patient`);
+    error.statusCode = 403;
+    throw error;
+  }
   record.abdmRecordLink = {
     patientId: patient._id,
     abhaNumber: patient.abha?.number,
     abhaAddress: patient.abha?.address,
-    status: patient.abha?.status === 'VERIFIED' ? 'LOCAL_RECORD_READY' : 'VERIFICATION_PENDING',
+    status:
+      patient.abha?.status === 'VERIFIED'
+        ? 'LOCAL_RECORD_READY'
+        : 'VERIFICATION_PENDING',
     linkedAt: new Date(),
     source,
     ehrBundleId
@@ -445,83 +786,169 @@ async function linkOneRecord({ patient, recordType, recordId, ehrBundleId, sourc
 exports.linkRecord = async (req, res) => {
   try {
     const { patientId, recordType, recordId, ehrBundleId } = req.body;
-    if (!patientId || !recordType || !recordId) return res.status(400).json({ success: false, error: 'patientId, recordType and recordId are required' });
-    const patient = await ensurePatient(patientId);
-    const record = await linkOneRecord({ patient, recordType, recordId, ehrBundleId, source: 'manual' });
-    await Patient.updateOne({ _id: patient._id }, { $addToSet: { 'abha.recordLinks': { recordType, recordId, ehrBundleId, linkedAt: new Date(), status: record.abdmRecordLink.status } } });
-    res.json({ success: true, recordType, recordId, link: record.abdmRecordLink });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message });
+    if (!patientId || !recordType || !recordId) {
+      return res.status(400).json({
+        success: false,
+        error: 'patientId, recordType and recordId are required'
+      });
+    }
+    const patient = await ensurePatient(patientId, req.user);
+    const record = await linkOneRecord({
+      patient,
+      recordType,
+      recordId,
+      ehrBundleId,
+      source: 'manual'
+    });
+    await Patient.updateOne(
+      { _id: patient._id, hospitalId: patient.hospitalId },
+      {
+        $addToSet: {
+          'abha.recordLinks': {
+            recordType,
+            recordId,
+            ehrBundleId,
+            linkedAt: new Date(),
+            status: record.abdmRecordLink.status
+          }
+        }
+      }
+    );
+    return res.json({
+      success: true,
+      recordType,
+      recordId,
+      link: record.abdmRecordLink
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message
+    });
   }
 };
 
 exports.linkAllPatientRecords = async (req, res) => {
   try {
-    const patient = await ensurePatient(req.params.patientId);
+    const patient = await ensurePatient(req.params.patientId, req.user);
     const results = [];
-    for (const [recordType, def] of Object.entries(RECORD_MODELS)) {
-      const records = await def.model.find({ [def.patientField]: patient._id }).select('_id');
+    for (const [recordType, definition] of Object.entries(RECORD_MODELS)) {
+      // eslint-disable-next-line no-await-in-loop
+      const records = await definition.model
+        .find({ [definition.patientField]: patient._id })
+        .select('_id');
       for (const record of records) {
         try {
-          await linkOneRecord({ patient, recordType, recordId: record._id, source: 'bulk_patient_link' });
-          results.push({ recordType, recordId: record._id, status: 'LOCAL_RECORD_READY' });
+          // eslint-disable-next-line no-await-in-loop
+          await linkOneRecord({
+            patient,
+            recordType,
+            recordId: record._id,
+            source: 'bulk_patient_link'
+          });
+          results.push({
+            recordType,
+            recordId: record._id,
+            status: 'LOCAL_RECORD_READY'
+          });
         } catch (error) {
-          results.push({ recordType, recordId: record._id, status: 'failed', error: error.message });
+          results.push({
+            recordType,
+            recordId: record._id,
+            status: 'FAILED',
+            error: error.message
+          });
         }
       }
     }
-    await Patient.updateOne({ _id: patient._id }, { 'abha.lastRecordLinkSyncAt': new Date() });
-    res.json({ success: true, count: results.length, results });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message });
+    await Patient.updateOne(
+      { _id: patient._id, hospitalId: patient.hospitalId },
+      { $set: { 'abha.lastRecordLinkSyncAt': new Date() } }
+    );
+    return res.json({ success: true, count: results.length, results });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message
+    });
   }
 };
 
 exports.generateEhr = async (req, res) => {
   try {
     const { patientId, bundleType = 'EMR_SUMMARY' } = req.body;
-    if (!patientId) return res.status(400).json({ success: false, error: 'patientId is required' });
-    const { ehrBundle, bundle } = await generateEhrBundle(patientId, { bundleType, createdBy: req.user?._id });
-    await Patient.updateOne({ _id: patientId }, { 'abha.lastEhrBundleId': ehrBundle._id, 'abha.lastEhrGeneratedAt': new Date() });
-    res.json({ success: true, ehrBundleId: ehrBundle._id, recordCounts: ehrBundle.recordCounts, bundle });
-  } catch (err) {
-    res.status(err.statusCode || 500).json({ success: false, error: err.message });
+    if (!patientId) {
+      return res.status(400).json({
+        success: false,
+        error: 'patientId is required'
+      });
+    }
+    const patient = await ensurePatient(patientId, req.user);
+    const { ehrBundle, bundle } = await generateEhrBundle(patient._id, {
+      bundleType,
+      createdBy: req.user?._id
+    });
+    await Patient.updateOne(
+      { _id: patient._id, hospitalId: patient.hospitalId },
+      {
+        $set: {
+          'abha.lastEhrBundleId': ehrBundle._id,
+          'abha.lastEhrGeneratedAt': new Date()
+        }
+      }
+    );
+    return res.json({
+      success: true,
+      ehrBundleId: ehrBundle._id,
+      recordCounts: ehrBundle.recordCounts,
+      bundle
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message
+    });
   }
 };
 
 exports.getPatientEhrBundles = async (req, res) => {
   try {
-    const bundles = await EHRBundle.find({ patientId: req.params.patientId })
+    const patient = await ensurePatient(req.params.patientId, req.user);
+    const bundles = await EHRBundle.find({
+      hospitalId: patient.hospitalId,
+      patientId: patient._id
+    })
       .select('-bundle.entry.resource.content')
       .sort({ createdAt: -1 })
       .limit(20)
       .lean();
-    res.json({ success: true, bundles });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    return res.json({ success: true, bundles });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message
+    });
   }
 };
 
 exports.getEhrBundle = async (req, res) => {
   try {
-    const bundle = await EHRBundle.findById(req.params.bundleId).lean();
-    if (!bundle) return res.status(404).json({ success: false, error: 'EHR bundle not found' });
-    res.json({ success: true, ehrBundle: bundle });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    const bundle = await EHRBundle.findOne({
+      _id: req.params.bundleId,
+      hospitalId: req.user.hospital
+    }).lean();
+    if (!bundle) {
+      return res.status(404).json({
+        success: false,
+        error: 'EHR bundle not found'
+      });
+    }
+    await ensurePatient(bundle.patientId, req.user);
+    return res.json({ success: true, ehrBundle: bundle });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message
+    });
   }
-};
-
-exports.requestPhrConsentStub = async (req, res) => {
-  res.status(501).json({
-    success: false,
-    error: 'PHR consent/HIU-HIP exchange is not enabled in this starter pack.',
-    nextSteps: [
-      'Register facility as HIP/HIU as applicable.',
-      'Implement ABDM Gateway consent request callbacks.',
-      'Map generated FHIR bundles to ABDM health information transfer APIs.',
-      'Use ABHA Address, purpose of use, date range, and consent artefact before sharing records.'
-    ],
-    receivedPayload: req.body
-  });
 };

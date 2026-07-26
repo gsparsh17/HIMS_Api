@@ -6,6 +6,14 @@ const fetchFn = (...args) => {
 };
 
 function createOtp() {
+  const testMode = String(process.env.ABDM_LINK_OTP_TEST_MODE || 'false').toLowerCase() === 'true';
+  if (testMode && process.env.NODE_ENV !== 'production') {
+    const configured = String(process.env.ABDM_LINK_OTP_TEST_VALUE || '123456');
+    if (!/^\d{6}$/.test(configured)) {
+      throw new Error('ABDM_LINK_OTP_TEST_VALUE must contain six digits');
+    }
+    return configured;
+  }
   return String(crypto.randomInt(100000, 1000000));
 }
 
@@ -25,9 +33,10 @@ function verifyOtp(otp, salt, expectedHash) {
 async function sendLinkOtp({ phone, otp, facilityId, patientReference, linkRefNumber }) {
   const testMode = String(process.env.ABDM_LINK_OTP_TEST_MODE || 'false').toLowerCase() === 'true';
   if (testMode) {
-    // Sandbox-only. Never enable in production; this intentionally avoids returning OTP to ABDM/PHR.
-    console.warn(`[ABDM SANDBOX OTP] ${linkRefNumber} -> ${phone}: ${otp}`);
-    return { provider: 'SANDBOX_LOG', accepted: true };
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('ABDM_LINK_OTP_TEST_MODE is forbidden in production');
+    }
+    return { provider: 'SANDBOX_FIXED_VALUE', accepted: true };
   }
 
   const providerUrl = process.env.ABDM_SMS_PROVIDER_URL;

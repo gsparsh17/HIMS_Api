@@ -208,6 +208,7 @@ async function generateEhrBundle(patientId, options = {}) {
   });
 
   const ehrBundle = await EHRBundle.create({
+    hospitalId: patient.hospitalId,
     patientId: patient._id,
     abhaNumber: patient.abha?.number,
     abhaAddress: patient.abha?.address,

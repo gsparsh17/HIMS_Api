@@ -149,7 +149,6 @@ exports.createBill = async (req, res) => {
       transaction_id
     } = req.body;
 
-    console.log('Creating bill with data:', req.body);
 
     if (!patient_id || !payment_method) {
       return res.status(400).json({ error: 'Patient ID and Payment Method are required' });

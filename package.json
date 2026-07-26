@@ -1,13 +1,12 @@
 {
-  "name": "hospital-backend",
-  "version": "1.0.0",
+  "name": "mediqliq-hospital-backend-abdm",
+  "version": "2.0.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
     "abdm:validate": "node scripts/validate-abdm-config.js",
-    "abdm:bridge": "node scripts/register-abdm-bridge.js",
-    "abdm:migrate": "node scripts/migrate-abdm-v2.js",
+    "abdm:migrate": "node scripts/migrate-abdm-hospital.js",
     "labtests:audit-templates": "node scripts/syncLabTestsFromReportTemplates.js",
     "labtests:sync-templates": "node scripts/syncLabTestsFromReportTemplates.js --apply",
     "radiology:audit-templates": "node scripts/syncRadiologyTestsFromReportTemplates.js",
@@ -17,7 +16,10 @@
     "cghs:extract": "python3 scripts/extract-cghs-2025-rate-card.py cghs-rates-notification-2025.pdf --output-dir data",
     "cghs:import": "node scripts/import-cghs-2025-rate-card.js",
     "hims:migrate:2026": "node scripts/migrate-hims-2026.js",
-    "hims:rollback:2026": "node scripts/rollback-hims-2026.js"
+    "hims:rollback:2026": "node scripts/rollback-hims-2026.js",
+    "check:syntax": "node scripts/check-syntax.js",
+    "abdm:test": "node --test tests/abdm-*.test.js",
+    "abdm:validate-fhir": "node scripts/validate-abdm-fhir.js"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",
@@ -25,7 +27,6 @@
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.7.0",
     "cors": "^2.8.6",
-    "crypto": "^1.0.1",
     "csv-parser": "^3.2.0",
     "dexie": "^4.4.2",
     "dotenv": "^16.6.1",
@@ -51,5 +52,9 @@
   },
   "devDependencies": {
     "nodemon": "^2.0.22"
+  },
+  "description": "Hospital/HIMS backend with ABDM M1, M2 HIP and M3 HIU integration through MediQliq Master.",
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

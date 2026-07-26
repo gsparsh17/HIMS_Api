@@ -40,9 +40,9 @@ const startServer = async () => {
       const { startCalendarJob } = require('./jobs/calendarJob');
       startCalendarJob();
     }
-    if (abdmConfig.isMaster) {
-      const { startAbdmJobWorker } = require('./jobs/abdmJobWorker');
-      startAbdmJobWorker();
+    if (abdmConfig.isHospital && (abdmConfig.featureM2 || abdmConfig.featureM3)) {
+      const { startAbdmHospitalJobWorker } = require('./jobs/abdmHospitalJobWorker');
+      startAbdmHospitalJobWorker();
     }
 
     if (abdmConfig.isHospital) {

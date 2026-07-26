@@ -90,7 +90,6 @@ const hospitalSchema = new mongoose.Schema(
       facilityManagerMobile: String
     },
 
-    abdmFacility: { type: mongoose.Schema.Types.ObjectId, ref: 'AbdmFacility', sparse: true },
     primaryAdmin: { type: mongoose.Schema.Types.ObjectId, ref: 'User', sparse: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
   },

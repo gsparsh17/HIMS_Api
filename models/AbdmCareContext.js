@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const recordReferenceSchema = new mongoose.Schema(
   {
+    hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
     model: String,
     recordId: mongoose.Schema.Types.ObjectId
   },
@@ -12,7 +13,7 @@ const abdmCareContextSchema = new mongoose.Schema(
   {
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
     patientReference: { type: String, required: true, index: true },
-    referenceNumber: { type: String, required: true, unique: true, index: true },
+    referenceNumber: { type: String, required: true, index: true },
     display: { type: String, required: true },
     hiType: {
       type: String,
@@ -51,6 +52,7 @@ const abdmCareContextSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-abdmCareContextSchema.index({ patientId: 1, hiType: 1, createdAt: -1 });
+abdmCareContextSchema.index({ hospitalId: 1, referenceNumber: 1 }, { unique: true });
+abdmCareContextSchema.index({ hospitalId: 1, patientId: 1, hiType: 1, createdAt: -1 });
 
 module.exports = mongoose.model('AbdmCareContext', abdmCareContextSchema);

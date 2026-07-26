@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const patientSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
@@ -102,18 +103,6 @@ const patientSchema = new mongoose.Schema({
     enum: ['opd', 'ipd', 'walkin'],
     default: 'ipd',
   },
-  aadhaar_number: {
-    type: String,
-    trim: true,
-    select: false,
-    validate: {
-      validator: function (v) {
-        if (!v) return true;
-        return /^\d{12}$/.test(v);
-      },
-      message: 'Aadhaar number must be exactly 12 digits'
-    }
-  },
   aadhaar_last4: {
     type: String,
     trim: true,
@@ -163,12 +152,6 @@ const patientSchema = new mongoose.Schema({
     existingSearchTxnId: String,
     existingLoginTxnId: String,
     existingSelectedIndex: String,
-    session: {
-      xToken: { type: String, select: false },
-      refreshToken: { type: String, select: false },
-      expiresAt: Date,
-      refreshExpiresAt: Date
-    },
     recordLinks: [{
       recordType: String,
       recordId: mongoose.Schema.Types.ObjectId,
@@ -294,8 +277,20 @@ patientSchema.index({
 patientSchema.index({ hospitalId: 1, phone: 1 });
 patientSchema.index({ hospitalId: 1, uhid: 1 }, { unique: true, sparse: true });
 patientSchema.index({ hospitalId: 1, patientId: 1 }, { unique: true, sparse: true });
-patientSchema.index({ 'abha.number': 1 });
-patientSchema.index({ 'abha.address': 1 });
+patientSchema.index(
+  { hospitalId: 1, 'abha.number': 1 },
+  {
+    unique: true,
+    partialFilterExpression: { 'abha.number': { $type: 'string' } }
+  }
+);
+patientSchema.index(
+  { hospitalId: 1, 'abha.address': 1 },
+  {
+    unique: true,
+    partialFilterExpression: { 'abha.address': { $type: 'string' } }
+  }
+);
 patientSchema.index({ 'abha.status': 1 });
 patientSchema.index({ is_walkin: 1, last_pharmacy_visit: -1 });
 patientSchema.index({ sponsor_type: 1, pharmacy_outstanding_balance: -1 });
@@ -304,13 +299,12 @@ patientSchema.index({ 'active_admissions.status': 1 });
 
 const Hospital = require('./Hospital');
 
-function generateStructuredPatientId(firstName, lastName, phone, hospitalCode) {
+function generateStructuredPatientId(hospitalCode) {
   const date = new Date();
   const year = date.getFullYear().toString().slice(-2);
   const month = (date.getMonth() + 1).toString().padStart(2, '0');
-  const namePart = (firstName.substring(0, 3) + (lastName ? lastName.substring(0, 1) : '')).toUpperCase();
-  const phonePart = phone.slice(-4);
-  return `${hospitalCode}-${namePart}${phonePart}-${year}${month}`;
+  const randomPart = crypto.randomBytes(7).toString('hex').toUpperCase();
+  return `${hospitalCode}-${year}${month}-${randomPart}`;
 }
 
 patientSchema.pre('save', async function (next) {
@@ -326,65 +320,25 @@ patientSchema.pre('save', async function (next) {
 
       if (!this.hospitalId) this.hospitalId = hospital._id;
 
-      const existingPatient = await mongoose.model('Patient').findOne({
-        hospitalId: hospital._id,
-        first_name: this.first_name,
-        last_name: this.last_name,
-        phone: this.phone
-      });
+      let finalGeneratedId = generateStructuredPatientId(
+        hospital.hospitalID
+      );
+      let checkId = finalGeneratedId;
+      let suffixCounter = 0;
 
-      if (existingPatient) {
-        this.uhid = existingPatient.uhid || existingPatient.patientId;
-        this.patientId = existingPatient.patientId;
-        this.hospitalId = existingPatient.hospitalId || hospital._id;
-      } else {
-        let finalGeneratedId = '';
-
-        if (this.aadhaar_number && this.aadhaar_number.length === 12) {
-          const date = new Date();
-          const yymm = `${date.getFullYear().toString().slice(-2)}${(date.getMonth() + 1).toString().padStart(2, '0')}`;
-
-          let hospitalPrefix = 'HS';
-          const hName = hospital.hospitalName || hospital.name;
-          if (hName) {
-            const words = hName.trim().split(/\s+/).filter(w => w.length > 0);
-            if (words.length > 0) {
-              hospitalPrefix = words.map(w => w[0]).join('').toUpperCase();
-            }
-          }
-          const uniqueSuffix = this.aadhaar_number.slice(-8);
-          finalGeneratedId = `${hospitalPrefix}${yymm}${uniqueSuffix}`;
-        } else {
-          finalGeneratedId = generateStructuredPatientId(
-            this.first_name,
-            this.last_name || '',
-            this.phone,
-            hospital.hospitalID
-          );
-        }
-
-        let isUnique = false;
-        let suffixCounter = 0;
-        let checkId = finalGeneratedId;
-
-        while (!isUnique) {
-          checkId = suffixCounter === 0 ? finalGeneratedId : `${finalGeneratedId}-${suffixCounter}`;
-          const exists = await mongoose.model('Patient').findOne({
-            hospitalId: hospital._id,
-            $or: [{ uhid: checkId }, { patientId: checkId }]
-          });
-
-          if (!exists) {
-            isUnique = true;
-          } else {
-            suffixCounter++;
-          }
-        }
-
-        this.uhid = checkId;
-        this.patientId = checkId;
-        this.hospitalId = hospital._id;
+      while (
+        await mongoose.model('Patient').exists({
+          hospitalId: hospital._id,
+          $or: [{ uhid: checkId }, { patientId: checkId }]
+        })
+      ) {
+        suffixCounter += 1;
+        checkId = `${finalGeneratedId}-${suffixCounter}`;
       }
+
+      this.uhid = checkId;
+      this.patientId = checkId;
+      this.hospitalId = hospital._id;
     }
 
     // Set walkin timestamp if applicable

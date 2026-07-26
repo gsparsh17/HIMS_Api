@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const ehrBundleSchema = new mongoose.Schema({
+  hospitalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    required: true,
+    index: true
+  },
   patientId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Patient',
@@ -65,9 +71,12 @@ const ehrBundleSchema = new mongoose.Schema({
   timestamps: true
 });
 
-ehrBundleSchema.index({ patientId: 1, createdAt: -1 });
-ehrBundleSchema.index({ abhaAddress: 1, createdAt: -1 });
-ehrBundleSchema.index({ status: 1 });
-ehrBundleSchema.index({ patientId: 1, bundleType: 1, careContextReference: 1, contentHash: 1 }, { unique: true, sparse: true });
+ehrBundleSchema.index({ hospitalId: 1, patientId: 1, createdAt: -1 });
+ehrBundleSchema.index({ hospitalId: 1, abhaAddress: 1, createdAt: -1 });
+ehrBundleSchema.index({ hospitalId: 1, status: 1 });
+ehrBundleSchema.index(
+  { hospitalId: 1, patientId: 1, bundleType: 1, careContextReference: 1, contentHash: 1 },
+  { unique: true, sparse: true }
+);
 
 module.exports = mongoose.model('EHRBundle', ehrBundleSchema);

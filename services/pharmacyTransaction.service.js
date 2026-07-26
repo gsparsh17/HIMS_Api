@@ -1011,7 +1011,6 @@ async function markIpdMedicationSaleDispatched({ preparedIpdItems, sale, created
 
 // ========== UPDATED: createUnifiedSale ==========
 async function createUnifiedSale(payload, req = {}) {
-  console.log('Creating unified sale with payload:', payload);
 
   const createdBy = getCreatedBy(req);
   const patientId = objectIdOrUndefined(payload.patient_id || payload.patientId);
@@ -1795,8 +1794,6 @@ async function createUnifiedSale(payload, req = {}) {
 
 // ========== UPDATED: createReturn ==========
 async function legacyCreateReturn(payload, req = {}) {
-  console.log('========== CREATE RETURN START ==========');
-  console.log('Creating pharmacy return with payload:', JSON.stringify(payload, null, 2));
 
   const round2 = (value) =>
     Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;

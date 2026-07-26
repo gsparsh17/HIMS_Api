@@ -1,12 +1,5 @@
-const ROLE_VALUES = new Set(['HOSPITAL', 'ABDM_MASTER']);
-
 function stripTrailingSlash(value = '') {
   return String(value || '').replace(/\/+$/, '');
-}
-
-function normalizeRole(value) {
-  const role = String(value || 'HOSPITAL').trim().toUpperCase();
-  return ROLE_VALUES.has(role) ? role : 'HOSPITAL';
 }
 
 function boolEnv(name, fallback = false) {
@@ -22,106 +15,107 @@ function csvEnv(name) {
     .filter(Boolean);
 }
 
-const appRole = normalizeRole(process.env.APP_ROLE);
 const environment = String(process.env.ABDM_ENV || 'sandbox').toLowerCase();
 const isProduction = environment === 'production';
 const legacyFacilityId = process.env.ABDM_FACILITY_ID;
 const hfrFacilityId = process.env.ABDM_HFR_FACILITY_ID || legacyFacilityId;
-const hipId = process.env.ABDM_HIP_ID || legacyFacilityId;
+const hipId = process.env.ABDM_HIP_ID || process.env.ABDM_HIP_SERVICE_ID || legacyFacilityId;
+const hiuId = process.env.ABDM_HIU_ID || hipId;
 
 const config = {
-  appRole,
+  appRole: 'HOSPITAL',
+  isHospital: true,
+  isMaster: false,
   environment,
   isProduction,
-  isMaster: appRole === 'ABDM_MASTER',
-  isHospital: appRole === 'HOSPITAL',
 
-  cmId: process.env.ABDM_CM_ID || (isProduction ? 'abdm' : 'sbx'),
-  clientId: process.env.ABDM_CLIENT_ID,
-  clientSecret: process.env.ABDM_CLIENT_SECRET,
-  bridgeId: process.env.ABDM_BRIDGE_ID || process.env.ABDM_CLIENT_ID,
-
-  sessionUrl:
-    process.env.ABDM_SESSION_URL ||
-    (isProduction
-      ? 'https://apis.abdm.gov.in/api/hiecm/gateway/v3/sessions'
-      : 'https://dev.abdm.gov.in/api/hiecm/gateway/v3/sessions'),
-
-  abhaBaseUrl: stripTrailingSlash(
-    process.env.ABDM_ABHA_BASE_URL ||
-      (isProduction
-        ? 'https://abha.abdm.gov.in/api/abha'
-        : 'https://abhasbx.abdm.gov.in/abha/api')
-  ),
-
-  hiecmBaseUrl: stripTrailingSlash(
-    process.env.ABDM_HIECM_BASE_URL ||
-      (isProduction ? 'https://apis.abdm.gov.in/api/hiecm' : 'https://dev.abdm.gov.in/api/hiecm')
-  ),
-
-  publicBaseUrl: stripTrailingSlash(process.env.ABDM_PUBLIC_BASE_URL || ''),
   masterUrl: stripTrailingSlash(process.env.ABDM_MASTER_URL || ''),
-
-  // HFR identity and HIP/service identity are intentionally separate. facilityId is
-  // retained as a backward-compatible alias for the actual HIP ID used in X-HIP-ID.
   hfrFacilityId,
   hipId,
+  hiuId,
   facilityId: hipId,
   tenantCode: process.env.ABDM_TENANT_CODE,
   connectorKeyId: process.env.ABDM_CONNECTOR_KEY_ID,
   connectorSecret: process.env.ABDM_CONNECTOR_SECRET,
-  masterAdminKey: process.env.ABDM_MASTER_ADMIN_KEY,
-  masterEncryptionKey: process.env.ABDM_MASTER_ENCRYPTION_KEY,
+  hospitalEncryptionKey: process.env.ABDM_HOSPITAL_ENCRYPTION_KEY,
 
-  storeCallbackPayloads: boolEnv('ABDM_STORE_CALLBACK_PAYLOADS', false),
   callbackTimeoutMs: Number(process.env.ABDM_CONNECTOR_TIMEOUT_MS || 15000),
   internalRequestMaxAgeMs: Number(process.env.ABDM_INTERNAL_REQUEST_MAX_AGE_MS || 5 * 60 * 1000),
   internalReplayTtlSeconds: Number(process.env.ABDM_INTERNAL_REPLAY_TTL_SECONDS || 10 * 60),
 
-  verifyCallbackJwt: boolEnv('ABDM_VERIFY_CALLBACK_JWT', isProduction),
-  callbackAllowedIps: csvEnv('ABDM_CALLBACK_ALLOWED_IPS'),
-
-  dataPushAllowedHosts: csvEnv('ABDM_DATA_PUSH_ALLOWED_HOSTS'),
-  cryptoAdapterAllowedHosts: csvEnv('ABDM_CRYPTO_ADAPTER_ALLOWED_HOSTS'),
-
   featureM1: boolEnv('ABDM_ENABLE_M1', true),
   featureM2: boolEnv('ABDM_ENABLE_M2', true),
-  featureM3: boolEnv('ABDM_ENABLE_M3', false),
+  featureM3: boolEnv('ABDM_ENABLE_M3', true),
+  featureSubscriptions: boolEnv('ABDM_ENABLE_SUBSCRIPTIONS', false),
 
+  otpResendSeconds: Number(process.env.ABDM_OTP_RESEND_SECONDS || 60),
+  otpMaxAttempts: Number(process.env.ABDM_OTP_MAX_ATTEMPTS || 5),
+  identityTransactionTtlMinutes: Number(process.env.ABDM_IDENTITY_TRANSACTION_TTL_MINUTES || 30),
+
+  fhirVersion: process.env.ABDM_FHIR_IG_VERSION || '6.5.0',
   fhirProfileBase:
-    process.env.ABDM_FHIR_PROFILE_BASE || 'https://nrces.in/ndhm/fhir/r4/StructureDefinition'
+    process.env.ABDM_FHIR_PROFILE_BASE ||
+    'https://nrces.in/ndhm/fhir/r4/StructureDefinition',
+  fhirValidatorUrl: stripTrailingSlash(process.env.ABDM_FHIR_VALIDATOR_URL || ''),
+  fhirValidatorAllowedHosts: csvEnv('ABDM_FHIR_VALIDATOR_ALLOWED_HOSTS'),
+  requireExternalFhirValidation: boolEnv(
+    'ABDM_REQUIRE_EXTERNAL_FHIR_VALIDATION',
+    isProduction
+  ),
+
+  consentValidatorUrl: stripTrailingSlash(
+    process.env.ABDM_CONSENT_VALIDATOR_URL || ''
+  ),
+  consentValidatorAllowedHosts: csvEnv(
+    'ABDM_CONSENT_VALIDATOR_ALLOWED_HOSTS'
+  ),
+  requireConsentValidation: boolEnv(
+    'ABDM_REQUIRE_CONSENT_VALIDATION',
+    isProduction
+  ),
+
+  cryptoMode: String(process.env.ABDM_CRYPTO_MODE || 'external').toLowerCase(),
+  cryptoAdapterUrl: stripTrailingSlash(process.env.ABDM_CRYPTO_ADAPTER_URL || ''),
+  cryptoAdapterAllowedHosts: csvEnv('ABDM_CRYPTO_ADAPTER_ALLOWED_HOSTS'),
+  dataPushAllowedHosts: csvEnv('ABDM_DATA_PUSH_ALLOWED_HOSTS'),
+  allowPrivateAdapterUrls: boolEnv('ABDM_ALLOW_PRIVATE_ADAPTER_URLS', false),
+  allowPrivateDataPushUrls: boolEnv('ABDM_ALLOW_PRIVATE_DATA_PUSH_URLS', false)
 };
 
-function assertMasterCredentials() {
-  if (!config.clientId || !config.clientSecret) {
-    throw new Error('ABDM_CLIENT_ID and ABDM_CLIENT_SECRET are required on the ABDM master deployment');
-  }
-  if (!config.bridgeId) {
-    throw new Error('ABDM_BRIDGE_ID (or ABDM_CLIENT_ID) is required on the ABDM master deployment');
-  }
-}
-
 function assertHospitalConnector() {
-  if (!config.masterUrl || !config.hipId || !config.connectorKeyId || !config.connectorSecret) {
-    throw new Error(
-      'Hospital ABDM connector requires ABDM_MASTER_URL, ABDM_HIP_ID, ABDM_CONNECTOR_KEY_ID and ABDM_CONNECTOR_SECRET'
-    );
+  const missing = [];
+  if (!config.masterUrl) missing.push('ABDM_MASTER_URL');
+  if (!config.hipId) missing.push('ABDM_HIP_ID');
+  if (!config.hiuId) missing.push('ABDM_HIU_ID');
+  if (!config.connectorKeyId) missing.push('ABDM_CONNECTOR_KEY_ID');
+  if (!config.connectorSecret) missing.push('ABDM_CONNECTOR_SECRET');
+  if (missing.length) {
+    throw new Error(`Hospital ABDM connector is missing: ${missing.join(', ')}`);
   }
 }
 
-function assertSecureCallbackConfiguration() {
-  if (config.isProduction && !config.verifyCallbackJwt && config.callbackAllowedIps.length === 0) {
+function assertEncryptionKey() {
+  if (!config.hospitalEncryptionKey) {
+    throw new Error('ABDM_HOSPITAL_ENCRYPTION_KEY is required');
+  }
+}
+
+function assertCryptoConfiguration() {
+  if (config.cryptoMode === 'external' && !config.cryptoAdapterUrl) {
     throw new Error(
-      'Production ABDM callbacks must be protected with ABDM_VERIFY_CALLBACK_JWT=true or ABDM_CALLBACK_ALLOWED_IPS'
+      'ABDM_CRYPTO_ADAPTER_URL is required when ABDM_CRYPTO_MODE=external'
     );
+  }
+  if (config.isProduction && config.cryptoMode === 'mock') {
+    throw new Error('ABDM_CRYPTO_MODE=mock is forbidden in production');
   }
 }
 
 module.exports = {
   ...config,
-  assertMasterCredentials,
   assertHospitalConnector,
-  assertSecureCallbackConfiguration,
+  assertEncryptionKey,
+  assertCryptoConfiguration,
   stripTrailingSlash,
   boolEnv,
   csvEnv

@@ -118,6 +118,15 @@ function preloadHospitalModels() {
     './models/AbdmCareContext',
     './models/AbdmCounterSequence',
     './models/AbdmLinkAuthentication',
+    './models/AbdmIdentityTransaction',
+    './models/AbdmCredential',
+    './models/AbdmHospitalConsent',
+    './models/AbdmHiuRequest',
+    './models/AbdmImportedRecord',
+    './models/AbdmDataTransfer',
+    './models/AbdmAccessAudit',
+    './models/AbdmSubscription',
+    './models/AbdmHospitalJob',
     './models/Immunization',
     './models/ClinicalDocument',
     './models/IPDConsent',
@@ -154,7 +163,7 @@ function preloadHospitalModels() {
     './models/BiometricDevice',
     './models/BiometricEmployeeMap',
     './models/AttendancePunch',
-    './models/StoredFile'
+        './models/StoredFile'
   ].forEach((modelPath) => require(modelPath));
 }
 
@@ -162,13 +171,14 @@ function mountHospitalRoutes() {
   preloadHospitalModels();
   const auditLogger = require('./middlewares/auditLogger');
   app.use(auditLogger({ apiPrefix: '/api' }));
-
+  
   // app.use('/api/files', require('./routes/file.routes'));
   app.use('/api/auth', require('./routes/auth.routes'));
   // Public contact endpoint used by the marketing/demo-request form. It has its
   // own validation and rate limiting; all remaining hospital APIs require login.
   app.use('/api/email', require('./routes/emailRoutes.js'));
   app.use('/api', require('./middlewares/auth').protect);
+
 
   app.use('/api/payments', require('./routes/paymentRoutes'));
   app.use('/api/imports', require('./routes/bulkImport.routes.js'));
@@ -233,61 +243,22 @@ function mountHospitalRoutes() {
   app.use('/api/approvals', require('./routes/approval.routes.js'));
   app.use('/api', require('./routes/userAccess.routes'));
 
+  if (abdmConfig.featureM2 || abdmConfig.featureM3) {
+    // Master -> hospital callbacks. Every request is authenticated with the
+    // hospital's HMAC connector key and protected against replay.
+    app.use('/internal/abdm', require('./routes/abdmConnector.routes'));
+  }
   if (abdmConfig.featureM2) {
-    // Public users never call this route directly; it is HMAC-authenticated from the ABDM Master.
-    app.use('/internal/abdm', (req, res, next) => {
-      // If we are in local sandbox mode and both are mounted, avoid middleware collisions
-      if (['/facility-status', '/proxy/abha', '/hip/action'].includes(req.path) && abdmConfig.isMaster) {
-        return require('./routes/abdmInternal.routes')(req, res, next);
-      }
-      return require('./routes/abdmConnector.routes')(req, res, next);
-    });
-    // Authenticated hospital-user endpoints for care contexts, HIP linking and FHIR generation.
     app.use('/api/abdm', require('./routes/abdmHospital.routes'));
   }
-}
-
-function preloadMasterModels() {
-  [
-    './models/AbdmFacility',
-    './models/AbdmTransaction',
-    './models/AbdmWebhookEvent',
-    './models/AbdmConsent',
-    './models/AbdmJob'
-  ].forEach((modelPath) => require(modelPath));
-}
-
-function mountMasterRoutes() {
-  preloadMasterModels();
-
-  // The central deployment also serves the MediQliq super-admin control plane.
-  // Audit logging is scoped to this route so ABDM callback payloads are not copied into general audit logs.
-  const auditLogger = require('./middlewares/auditLogger');
-  app.use(
-    '/api/mediqliq',
-    auditLogger({ apiPrefix: '/api/mediqliq' }),
-    require('./routes/mediqliqSuperAdmin.routes')
-  );
-
-  // Hospital server -> central master, authenticated using per-facility HMAC connector credentials.
-  // app.use('/internal/abdm', require('./routes/abdmInternal.routes')); // Handled by conditional router above
-  // MediQliq operations/admin control plane.
-  app.use('/api/abdm/master', require('./routes/abdmMasterAdmin.routes'));
-
-  if (abdmConfig.featureM2) {
-    const callbackLimiter = rateLimit({
-      windowMs: 60 * 1000,
-      max: Number(process.env.ABDM_CALLBACK_RATE_LIMIT_PER_MINUTE || 3000),
-      standardHeaders: true,
-      legacyHeaders: false
-    });
-    app.use('/api/v3', callbackLimiter, require('./routes/abdmPublic.routes'));
+  if (abdmConfig.featureM3) {
+    app.use('/api/abdm/hiu', require('./routes/abdmHiu.routes'));
   }
 }
 
-// For local sandbox testing, we mount both routes so you don't need to run two backend instances
+// This repository is hospital-only. Master and public ABDM callback routes are not mounted.
 mountHospitalRoutes();
-mountMasterRoutes();
+
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });

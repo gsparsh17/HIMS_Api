@@ -1276,9 +1276,6 @@ exports.getMedicationSummary = async (req, res) => {
 // ========== RECEIVE EXTERNAL PHARMACY STOCK (FIXED for NLEM) ==========
 exports.receiveExternalPharmacyStock = async (req, res) => {
   try {
-    console.log('[DEBUG] receiveExternalPharmacyStock - START');
-    console.log('[DEBUG] Request params:', req.params);
-    console.log('[DEBUG] Request body:', req.body);
 
     const { id } = req.params;
     const { quantity } = req.body;

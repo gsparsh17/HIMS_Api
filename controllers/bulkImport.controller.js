@@ -142,7 +142,7 @@ const ENTITY = {
       ['email', 'Email', false], ['phone', 'Phone', true], ['gender', 'Gender', true], ['dob', 'Date of Birth', true],
       ['patient_type', 'Patient Type', false], ['blood_group', 'Blood Group', false], ['address', 'Address', false],
       ['city', 'City', false], ['state', 'State', false], ['zipCode', 'ZIP Code', false], ['village', 'Village', false],
-      ['district', 'District', false], ['tehsil', 'Tehsil', false], ['aadhaar_number', 'Aadhaar Number', false],
+      ['district', 'District', false], ['tehsil', 'Tehsil', false], ['aadhaar_last4', 'Aadhaar Last 4 (optional)', false],
       ['emergency_contact', 'Emergency Contact', false], ['emergency_phone', 'Emergency Phone', false],
       ['medical_history', 'Medical History', false], ['allergies', 'Allergies', false], ['medications', 'Medications', false],
       ['sponsor_type', 'Sponsor Type', false], ['sponsor_name', 'Sponsor Name', false], ['sponsor_policy_number', 'Sponsor Policy Number', false],
@@ -295,7 +295,7 @@ function normalize(entity, row, hospitalId, userId) {
       phone: str('phone'), gender: String(str('gender') || '').toLowerCase(), dob: dateValue(str('dob')),
       patient_type: String(str('patient_type') || 'opd').toLowerCase(), blood_group: str('blood_group') || '', address: str('address'),
       city: str('city'), state: str('state'), zipCode: str('zipCode'), village: str('village'), district: str('district'), tehsil: str('tehsil'),
-      aadhaar_number: str('aadhaar_number'), emergency_contact: str('emergency_contact'), emergency_phone: str('emergency_phone'),
+      aadhaar_last4: str('aadhaar_last4'), emergency_contact: str('emergency_contact'), emergency_phone: str('emergency_phone'),
       medical_history: str('medical_history'), allergies: str('allergies'), medications: str('medications'),
       sponsor_type: str('sponsor_type') || 'self', sponsor_name: str('sponsor_name'), sponsor_policy_number: str('sponsor_policy_number'),
       abha: (str('abha_number') || str('abha_address')) ? {
@@ -386,7 +386,7 @@ function validate(entity, data) {
     if (!['male', 'female', 'other'].includes(data.gender)) errors.push('gender must be male, female or other');
     if (!data.dob || Number.isNaN(new Date(data.dob).getTime())) errors.push('dob must be a valid date');
     if (!['opd', 'ipd', 'walkin'].includes(data.patient_type)) errors.push('patient_type must be opd, ipd or walkin');
-    if (data.aadhaar_number && !/^\d{12}$/.test(String(data.aadhaar_number))) errors.push('aadhaar_number must be exactly 12 digits');
+    if (data.aadhaar_last4 && !/^\d{4}$/.test(String(data.aadhaar_last4))) errors.push('aadhaar_last4 must be exactly 4 digits');
   }
 
   if (entity === 'appointments') {

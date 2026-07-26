@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const Patient = require('../../models/Patient');
+const Hospital = require('../../models/Hospital');
 const Appointment = require('../../models/Appointment');
 const Prescription = require('../../models/Prescription');
 const LabReport = require('../../models/LabReport');
@@ -46,7 +47,45 @@ function profileUrl(hiType) {
   return `${abdmConfig.fhirProfileBase}/${PROFILE_NAMES[hiType]}`;
 }
 
-function patientResource(patient) {
+function organizationResource(hospital) {
+  return clean({
+    resourceType: 'Organization',
+    id: `organization-${hospital._id}`,
+    active: true,
+    identifier: [
+      hospital.onboarding?.hfrFacilityId
+        ? {
+            system: 'https://facility.abdm.gov.in',
+            value: hospital.onboarding.hfrFacilityId
+          }
+        : undefined,
+      hospital.hospitalID
+        ? {
+            system: 'https://mediqliq.com/identifier/hospital',
+            value: hospital.hospitalID
+          }
+        : undefined
+    ],
+    name: hospital.hospitalName || hospital.name,
+    telecom: [
+      hospital.contact ? { system: 'phone', value: hospital.contact } : undefined,
+      hospital.email ? { system: 'email', value: hospital.email } : undefined
+    ],
+    address: hospital.address
+      ? [
+          {
+            text: hospital.address,
+            city: hospital.city,
+            state: hospital.state,
+            postalCode: hospital.pinCode,
+            country: 'IN'
+          }
+        ]
+      : undefined
+  });
+}
+
+function patientResource(patient, hospital) {
   return clean({
     resourceType: 'Patient',
     id: `patient-${patient._id}`,
@@ -68,7 +107,10 @@ function patientResource(patient) {
       ? String(patient.gender).toLowerCase()
       : 'unknown',
     birthDate: patient.dob ? new Date(patient.dob).toISOString().slice(0, 10) : undefined,
-    address: patient.address ? [{ text: patient.address, city: patient.city, district: patient.district, state: patient.state, postalCode: patient.zipCode }] : undefined
+    address: patient.address ? [{ text: patient.address, city: patient.city, district: patient.district, state: patient.state, postalCode: patient.zipCode, country: 'IN' }] : undefined,
+    managingOrganization: hospital
+      ? { reference: `Organization/organization-${hospital._id}` }
+      : undefined
   });
 }
 
@@ -83,8 +125,20 @@ function rewriteReferences(value, referenceMap) {
   return output;
 }
 
-function bundleDocument({ hiType, patient, resources, title, date, careContextReference }) {
-  const sourceResources = [patientResource(patient), ...resources];
+function bundleDocument({
+  hiType,
+  patient,
+  hospital,
+  resources,
+  title,
+  date,
+  careContextReference
+}) {
+  const sourceResources = [
+    patientResource(patient, hospital),
+    organizationResource(hospital),
+    ...resources
+  ];
   const referenceMap = new Map();
   const normalized = sourceResources.map((resource) => {
     const uuid = crypto.randomUUID();
@@ -92,8 +146,15 @@ function bundleDocument({ hiType, patient, resources, title, date, careContextRe
     return { ...resource, id: uuid, __fullUrl: `urn:uuid:${uuid}` };
   });
 
-  const patientEntry = normalized.find((resource) => resource.resourceType === 'Patient');
-  const clinicalEntries = normalized.filter((resource) => resource.resourceType !== 'Patient');
+  const patientEntry = normalized.find(
+    (resource) => resource.resourceType === 'Patient'
+  );
+  const organizationEntry = normalized.find(
+    (resource) => resource.resourceType === 'Organization'
+  );
+  const clinicalEntries = normalized.filter(
+    (resource) => !['Patient', 'Organization'].includes(resource.resourceType)
+  );
   const compositionUuid = crypto.randomUUID();
   const composition = clean({
     resourceType: 'Composition',
@@ -102,6 +163,8 @@ function bundleDocument({ hiType, patient, resources, title, date, careContextRe
     status: 'final',
     type: { text: PROFILE_NAMES[hiType] },
     subject: { reference: patientEntry.__fullUrl },
+    author: [{ reference: organizationEntry.__fullUrl }],
+    custodian: { reference: organizationEntry.__fullUrl },
     date: iso(date) || new Date().toISOString(),
     title: title || PROFILE_NAMES[hiType],
     identifier: careContextReference
@@ -124,6 +187,7 @@ function bundleDocument({ hiType, patient, resources, title, date, careContextRe
   return clean({
     resourceType: 'Bundle',
     id: crypto.randomUUID(),
+    meta: { profile: [profileUrl(hiType)] },
     identifier: { system: 'https://mediqliq.com/abdm/ehr-bundle', value: crypto.randomUUID() },
     type: 'document',
     timestamp: new Date().toISOString(),
@@ -350,10 +414,29 @@ const COLLECTIONS = {
   ClinicalDocument: { model: ClinicalDocument, bucket: 'documents', patientField: 'patientId', dateField: 'documentDate' }
 };
 
-async function loadRecords(patientId, { dateRange = {}, recordReferences = [] } = {}) {
-  const patient = await Patient.findById(patientId).lean();
-  if (!patient) throw new Error('Patient not found');
-  const records = { patient, appointments: [], prescriptions: [], labs: [], radiology: [], discharges: [], vitals: [], invoices: [], immunizations: [], documents: [] };
+async function loadRecords(
+  patientId,
+  { dateRange = {}, recordReferences = [], hospitalId } = {}
+) {
+  const patientFilter = { _id: patientId };
+  if (hospitalId) patientFilter.hospitalId = hospitalId;
+  const patient = await Patient.findOne(patientFilter).lean();
+  if (!patient) throw new Error('Patient not found in the configured hospital');
+  const hospital = await Hospital.findById(patient.hospitalId).lean();
+  if (!hospital) throw new Error('Hospital profile was not found');
+  const records = {
+    patient,
+    hospital,
+    appointments: [],
+    prescriptions: [],
+    labs: [],
+    radiology: [],
+    discharges: [],
+    vitals: [],
+    invoices: [],
+    immunizations: [],
+    documents: []
+  };
 
   const grouped = new Map();
   for (const reference of recordReferences || []) {
@@ -398,7 +481,8 @@ function resourcesFor(hiType, records) {
 async function generateAbdmHiBundle(patientId, options = {}) {
   const records = await loadRecords(patientId, {
     dateRange: options.dateRange || {},
-    recordReferences: options.recordReferences || []
+    recordReferences: options.recordReferences || [],
+    hospitalId: options.hospitalId
   });
   const normalizedRequested = normalizeInternalHiTypes(options.hiTypes || []);
   const requested = normalizedRequested.length ? normalizedRequested : ALL_HI_TYPES;
@@ -410,6 +494,7 @@ async function generateAbdmHiBundle(patientId, options = {}) {
     bundles[hiType] = bundleDocument({
       hiType,
       patient: records.patient,
+      hospital: records.hospital,
       resources,
       title: PROFILE_NAMES[hiType],
       careContextReference: options.careContextReference
@@ -422,12 +507,14 @@ async function generateAbdmHiBundle(patientId, options = {}) {
       const contentHash = crypto.createHash('sha256').update(JSON.stringify(bundle)).digest('hex');
       saved.push(await EHRBundle.findOneAndUpdate(
         {
+          hospitalId: records.patient.hospitalId,
           patientId: records.patient._id,
           bundleType: hiType,
           careContextReference: options.careContextReference || null,
           contentHash
         },
         {
+          hospitalId: records.patient.hospitalId,
           patientId: records.patient._id,
           abhaNumber: records.patient.abha?.number,
           abhaAddress: records.patient.abha?.address,

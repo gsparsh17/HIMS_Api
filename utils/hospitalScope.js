@@ -1,31 +1,34 @@
-const Hospital = require('../models/Hospital');
-
-const toObjectIdString = (value) => {
-  if (!value) return null;
-  if (typeof value === 'string') return value;
-  if (value._id) return value._id.toString();
-  return value.toString();
-};
-
-async function resolveHospitalId(req) {
-  const fromUser = req?.user?.hospital_id || req?.user?.hospitalID || req?.user?.hospitalId;
-  const fromBody = req?.body?.hospital_id || req?.body?.hospitalID || req?.body?.hospitalId;
-  const fromQuery = req?.query?.hospital_id || req?.query?.hospitalID || req?.query?.hospitalId;
-  const resolved = toObjectIdString(fromUser || fromBody || fromQuery);
-  if (resolved) return resolved;
-
-  const hospital = await Hospital.findOne({}).select('_id');
-  return hospital?._id || null;
+function userHospitalId(user) {
+  return user?.hospital_id || user?.hospitalId || null;
 }
 
-function scopedFilter(req, extra = {}) {
-  const filter = { ...extra };
-  const hospitalId = req?.user?.hospital_id || req?.body?.hospital_id || req?.query?.hospital_id;
-  if (hospitalId) filter.hospital_id = hospitalId;
-  return filter;
+function assertUserHospital(user) {
+  const hospitalId = userHospitalId(user);
+  if (!hospitalId) {
+    const error = new Error('Authenticated user is not assigned to a hospital');
+    error.statusCode = 403;
+    throw error;
+  }
+  return hospitalId;
+}
+
+function assertSameHospital(ownerHospitalId, user) {
+  const hospitalId = assertUserHospital(user);
+  if (!ownerHospitalId || String(ownerHospitalId) !== String(hospitalId)) {
+    const error = new Error('Cross-hospital access is not permitted');
+    error.statusCode = 403;
+    throw error;
+  }
+  return hospitalId;
+}
+
+function hospitalFilter(user, field = 'hospitalId') {
+  return { [field]: assertUserHospital(user) };
 }
 
 module.exports = {
-  resolveHospitalId,
-  scopedFilter
+  userHospitalId,
+  assertUserHospital,
+  assertSameHospital,
+  hospitalFilter
 };

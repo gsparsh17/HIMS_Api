@@ -37,9 +37,10 @@ async function ensurePatientReference(patient) {
 async function upsertContext({ patient, hiType, display, records, dateFrom, dateTo, naturalKey }) {
   const pRef = await ensurePatientReference(patient);
   const existing = naturalKey
-    ? await AbdmCareContext.findOne({ patientId: patient._id, 'metadata.naturalKey': naturalKey })
+    ? await AbdmCareContext.findOne({ hospitalId: patient.hospitalId, patientId: patient._id, 'metadata.naturalKey': naturalKey })
     : null;
   if (existing) {
+    existing.hospitalId = patient.hospitalId;
     existing.display = display;
     existing.hiType = hiType;
     existing.records = records;
@@ -54,6 +55,7 @@ async function upsertContext({ patient, hiType, display, records, dateFrom, date
   }
 
   return AbdmCareContext.create({
+    hospitalId: patient.hospitalId,
     patientId: patient._id,
     patientReference: pRef,
     referenceNumber: opaque('CC'),
@@ -235,7 +237,7 @@ async function buildPatientCareContexts(patientId) {
 async function groupedForAbdm(patientId) {
   const patient = await Patient.findById(patientId);
   if (!patient) throw new Error('Patient not found');
-  const contexts = await AbdmCareContext.find({ patientId, active: { $ne: false } }).sort({ createdAt: -1 }).lean();
+  const contexts = await AbdmCareContext.find({ hospitalId: patient.hospitalId, patientId, active: { $ne: false } }).sort({ createdAt: -1 }).lean();
   const groups = new Map();
   for (const context of contexts) {
     if (!groups.has(context.hiType)) groups.set(context.hiType, []);
