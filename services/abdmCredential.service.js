@@ -1,8 +1,10 @@
 const AbdmCredential = require('../models/AbdmCredential');
+const Patient = require('../models/Patient');
 const { encryptJson, decryptJson } = require('./abdmVault.service');
 
 const ACCESS_TOKEN_FALLBACK_SECONDS = 1800;
 const TOKEN_EXPIRY_SKEW_MS = 60 * 1000;
+const refreshLocks = new Map();
 
 function positiveNumber(...values) {
   for (const value of values) {
@@ -16,7 +18,9 @@ function jwtExpiresAt(token) {
   try {
     const payloadPart = String(token || '').split('.')[1];
     if (!payloadPart) return null;
-    const payload = JSON.parse(Buffer.from(payloadPart, 'base64url').toString('utf8'));
+    const payload = JSON.parse(
+      Buffer.from(payloadPart, 'base64url').toString('utf8')
+    );
     const expiresAt = Number(payload.exp) * 1000;
     return Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : null;
   } catch (_error) {
@@ -28,16 +32,18 @@ function tokenExpiresAt({ token, expiresIn, fallbackSeconds, now = Date.now() })
   const jwtExpiry = jwtExpiresAt(token);
   const durationSeconds = positiveNumber(expiresIn, fallbackSeconds);
   const durationExpiry = durationSeconds ? now + durationSeconds * 1000 : null;
-  const rawExpiry = jwtExpiry && durationExpiry
-    ? Math.min(jwtExpiry, durationExpiry)
-    : jwtExpiry || durationExpiry;
+  const rawExpiry =
+    jwtExpiry && durationExpiry
+      ? Math.min(jwtExpiry, durationExpiry)
+      : jwtExpiry || durationExpiry;
 
   if (!rawExpiry) return null;
   return new Date(Math.max(now, rawExpiry - TOKEN_EXPIRY_SKEW_MS));
 }
 
 function normalizeSession(tokens = {}, now = Date.now()) {
-  const accessToken = tokens.token || tokens.accessToken || tokens.xToken;
+  const accessToken =
+    tokens.token || tokens.accessToken || tokens.xToken || tokens.access_token;
   const refreshToken = tokens.refreshToken || tokens.refresh_token;
   const accessExpiresAt = tokenExpiresAt({
     token: accessToken,
@@ -67,26 +73,74 @@ function normalizeSession(tokens = {}, now = Date.now()) {
   };
 }
 
-function sessionStatusFromDates({ accessExpiresAt, refreshExpiresAt } = {}, now = Date.now()) {
+function sessionStatusFromDates(
+  { accessExpiresAt, refreshExpiresAt } = {},
+  now = Date.now()
+) {
   const accessExpiry = accessExpiresAt ? new Date(accessExpiresAt) : null;
   const refreshExpiry = refreshExpiresAt ? new Date(refreshExpiresAt) : null;
-  const accessActive = accessExpiry && !Number.isNaN(accessExpiry.getTime()) && accessExpiry.getTime() > now;
-  const refreshActive = refreshExpiry && !Number.isNaN(refreshExpiry.getTime()) && refreshExpiry.getTime() > now;
+  const accessActive =
+    accessExpiry &&
+    !Number.isNaN(accessExpiry.getTime()) &&
+    accessExpiry.getTime() > now;
+  const refreshActive =
+    refreshExpiry &&
+    !Number.isNaN(refreshExpiry.getTime()) &&
+    refreshExpiry.getTime() > now;
 
   return {
-    status: accessActive ? 'ACTIVE' : 'REAUTH_REQUIRED',
-    reason: accessActive ? null : accessExpiry ? 'ACCESS_TOKEN_EXPIRED' : 'ACCESS_TOKEN_MISSING',
+    status: accessActive
+      ? 'ACTIVE'
+      : refreshActive
+        ? 'REFRESH_AVAILABLE'
+        : 'REAUTH_REQUIRED',
+    reason: accessActive
+      ? null
+      : refreshActive
+        ? 'ACCESS_TOKEN_EXPIRED'
+        : refreshExpiry
+          ? 'REFRESH_TOKEN_EXPIRED'
+          : accessExpiry
+            ? 'REFRESH_TOKEN_MISSING'
+            : 'SESSION_MISSING',
     accessExpiresAt: accessExpiry,
     refreshExpiresAt: refreshExpiry,
     hasUnexpiredRefreshToken: Boolean(refreshActive)
   };
 }
 
-async function storePatientSession({ patient, tokens, updatedBy }) {
-  const session = normalizeSession(tokens);
-  if (!session.accessToken) return null;
+async function persistPatientSession({
+  patientId,
+  hospitalId,
+  tokens,
+  updatedBy,
+  existingSession
+}) {
+  const mergedTokens = {
+    ...tokens,
+    refreshToken:
+      tokens.refreshToken ||
+      tokens.refresh_token ||
+      existingSession?.refreshToken,
+    refreshExpiresIn:
+      tokens.refreshExpiresIn ||
+      tokens.refresh_expires_in ||
+      tokens.refreshTokenExpiresIn
+  };
+  const session = normalizeSession(mergedTokens);
+  if (!session.accessToken) {
+    throw new Error('ABDM token response did not include an access token');
+  }
 
-  const aad = `abdm-patient-session:${patient._id}`;
+  if (
+    !session.refreshExpiresAt &&
+    existingSession?.refreshExpiresAt &&
+    session.refreshToken === existingSession.refreshToken
+  ) {
+    session.refreshExpiresAt = new Date(existingSession.refreshExpiresAt);
+  }
+
+  const aad = `abdm-patient-session:${patientId}`;
   const encryptedSession = encryptJson(
     {
       accessToken: session.accessToken,
@@ -95,11 +149,11 @@ async function storePatientSession({ patient, tokens, updatedBy }) {
     aad
   );
 
-  return AbdmCredential.findOneAndUpdate(
-    { patientId: patient._id },
+  const record = await AbdmCredential.findOneAndUpdate(
+    { patientId },
     {
-      patientId: patient._id,
-      hospitalId: patient.hospitalId,
+      patientId,
+      hospitalId,
       encryptedSession,
       accessExpiresAt: session.accessExpiresAt,
       refreshExpiresAt: session.refreshExpiresAt,
@@ -113,12 +167,30 @@ async function storePatientSession({ patient, tokens, updatedBy }) {
     },
     { upsert: true, new: true }
   );
+
+  // Remove the pre-vault plaintext token location whenever a valid encrypted
+  // credential is stored. This is idempotent and safe during gradual rollout.
+  await Patient.updateOne({ _id: patientId }, { $unset: { 'abha.session': 1 } });
+  return record;
+}
+
+async function storePatientSession({ patient, tokens, updatedBy }) {
+  return persistPatientSession({
+    patientId: patient._id,
+    hospitalId: patient.hospitalId,
+    tokens,
+    updatedBy
+  });
+}
+
+async function getCredentialRecord(patientId) {
+  return AbdmCredential.findOne({ patientId }).select(
+    '+encryptedSession +encryptedSession.ciphertext +encryptedSession.iv +encryptedSession.tag'
+  );
 }
 
 async function getPatientSession(patientId) {
-  const record = await AbdmCredential.findOne({ patientId }).select(
-    '+encryptedSession +encryptedSession.ciphertext +encryptedSession.iv +encryptedSession.tag'
-  );
+  const record = await getCredentialRecord(patientId);
   if (!record) return null;
 
   const session = decryptJson(
@@ -127,6 +199,7 @@ async function getPatientSession(patientId) {
   );
   return {
     ...session,
+    hospitalId: record.hospitalId,
     accessExpiresAt: record.accessExpiresAt,
     refreshExpiresAt: record.refreshExpiresAt,
     scopes: record.scopes
@@ -149,39 +222,102 @@ async function getPatientSessionStatus(patientId) {
   return sessionStatusFromDates(record);
 }
 
-function reauthenticationRequiredError(status) {
+function reauthenticationRequiredError(status, cause) {
   const error = new Error(
-    'The ABHA login session has expired. Verify the existing ABHA with OTP again, then retry the QR or card.'
+    'The ABDM profile session cannot be renewed. Authenticate the patient’s existing ABHA again before accessing the official profile, QR code or card.'
   );
-  error.statusCode = 409;
+  error.statusCode = 401;
   error.code = 'ABHA_REAUTH_REQUIRED';
   error.details = {
-    reason: status?.reason || 'ACCESS_TOKEN_EXPIRED',
+    reason: status?.reason || 'REFRESH_TOKEN_UNUSABLE',
     accessExpiresAt: status?.accessExpiresAt || null,
-    refreshExpiresAt: status?.refreshExpiresAt || null
+    refreshExpiresAt: status?.refreshExpiresAt || null,
+    ...(cause?.details ? { upstream: cause.details } : {})
   };
   return error;
 }
 
-async function getActiveAccessToken(patientId) {
-  const session = await getPatientSession(patientId);
-  const status = session
-    ? sessionStatusFromDates(session)
-    : {
-        status: 'REAUTH_REQUIRED',
-        reason: 'SESSION_MISSING',
-        accessExpiresAt: null,
-        refreshExpiresAt: null
-      };
-
-  if (!session?.accessToken || status.status !== 'ACTIVE') {
+async function performRefresh(patientId, session, updatedBy) {
+  const status = sessionStatusFromDates(session);
+  if (!session?.refreshToken || !status.hasUnexpiredRefreshToken) {
     throw reauthenticationRequiredError(status);
   }
-  return session.accessToken;
+
+  try {
+    // Loaded lazily so the credential module remains straightforward to unit test
+    // and to avoid sending refresh tokens anywhere except the server-side proxy.
+    const { abdmGet } = require('./abdm.service');
+    const data = await abdmGet('/v3/profile/account/request/token', {
+      'R-token': `Bearer ${session.refreshToken}`
+    });
+    const tokens = data?.tokens || data?.token || data;
+    await persistPatientSession({
+      patientId,
+      hospitalId: session.hospitalId,
+      tokens,
+      updatedBy,
+      existingSession: session
+    });
+    return getPatientSession(patientId);
+  } catch (error) {
+    if ([400, 401, 403].includes(Number(error.statusCode))) {
+      await clearPatientSession(patientId);
+      throw reauthenticationRequiredError(status, error);
+    }
+    throw error;
+  }
+}
+
+async function refreshPatientSession(patientId, { updatedBy } = {}) {
+  const key = String(patientId);
+  if (refreshLocks.has(key)) return refreshLocks.get(key);
+  const promise = (async () => {
+    const session = await getPatientSession(patientId);
+    if (!session) throw reauthenticationRequiredError({ reason: 'SESSION_MISSING' });
+    return performRefresh(patientId, session, updatedBy);
+  })().finally(() => refreshLocks.delete(key));
+  refreshLocks.set(key, promise);
+  return promise;
+}
+
+async function getActiveAccessToken(patientId, options = {}) {
+  const session = await getPatientSession(patientId);
+  if (!session) {
+    throw reauthenticationRequiredError({ reason: 'SESSION_MISSING' });
+  }
+  const status = sessionStatusFromDates(session);
+  if (!options.forceRefresh && status.status === 'ACTIVE' && session.accessToken) {
+    return session.accessToken;
+  }
+  if (status.hasUnexpiredRefreshToken && session.refreshToken) {
+    const refreshed = await refreshPatientSession(patientId, options);
+    if (refreshed?.accessToken) return refreshed.accessToken;
+  }
+  throw reauthenticationRequiredError({
+    ...status,
+    reason: session.accessToken ? status.reason : 'ACCESS_TOKEN_MISSING'
+  });
+}
+
+async function withPatientAccessToken(patientId, operation, options = {}) {
+  let token = await getActiveAccessToken(patientId, options);
+  try {
+    return await operation(token);
+  } catch (error) {
+    if (Number(error.statusCode) !== 401) throw error;
+    token = await getActiveAccessToken(patientId, {
+      ...options,
+      forceRefresh: true
+    });
+    return operation(token);
+  }
 }
 
 async function clearPatientSession(patientId) {
-  await AbdmCredential.deleteOne({ patientId });
+  await Promise.all([
+    AbdmCredential.deleteOne({ patientId }),
+    Patient.updateOne({ _id: patientId }, { $unset: { 'abha.session': 1 } })
+  ]);
 }
 
 module.exports = {
@@ -190,6 +326,8 @@ module.exports = {
   storePatientSession,
   getPatientSession,
   getPatientSessionStatus,
+  refreshPatientSession,
   getActiveAccessToken,
+  withPatientAccessToken,
   clearPatientSession
 };

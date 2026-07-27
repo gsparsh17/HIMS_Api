@@ -15,6 +15,8 @@ const { masterRequest } = require('../services/abdmMasterClient.service');
 const { decryptJson } = require('../services/abdmVault.service');
 const Patient = require('../models/Patient');
 const { assertUserHospital, assertSameHospital } = require('../utils/hospitalScope');
+const { withPatientAccessToken } = require('../services/abdmCredential.service');
+const { assertAbdmExchangeEligible } = require('../services/abdmExchangeEligibility.service');
 
 function pagination(req) {
   const page = Math.max(1, Number(req.query.page || 1));
@@ -223,6 +225,7 @@ exports.createSubscription = async (req, res) => {
     const patient = await Patient.findById(patientId);
     if (!patient) throw new Error('Patient not found');
     const hospitalId = assertSameHospital(patient.hospitalId, req.user);
+    assertAbdmExchangeEligible(patient);
     const subscription = await AbdmSubscription.create({
       hospitalId,
       subscriptionRequestId: requestId,
@@ -234,9 +237,8 @@ exports.createSubscription = async (req, res) => {
       createdBy: req.user._id
     });
     const body = {
-      request: { id: requestId, timestamp: new Date().toISOString() },
       subscription: req.body.subscription || {
-        patient: { id: req.body.abhaAddress },
+        patient: { id: req.body.abhaAddress || patient.abha.address },
         purpose: req.body.purpose,
         categories: req.body.categories,
         period: req.body.period
@@ -253,6 +255,136 @@ exports.createSubscription = async (req, res) => {
     return res.status(error.statusCode || 400).json({ success: false, error: error.message, details: error.details });
   }
 };
+
+
+function assertSubscriptionsEnabled() {
+  if (!abdmConfig.featureSubscriptions) {
+    const error = new Error('Subscriptions are disabled');
+    error.statusCode = 409;
+    throw error;
+  }
+}
+
+async function subscriptionPatient(req) {
+  const patient = await Patient.findById(req.body.patientId || req.query.patientId || req.params.patientId);
+  if (!patient) {
+    const error = new Error('Patient not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  assertSameHospital(patient.hospitalId, req.user);
+  assertAbdmExchangeEligible(patient);
+  return patient;
+}
+
+async function patientAuthenticatedAction(req, action, extra = {}) {
+  assertSubscriptionsEnabled();
+  const patient = await subscriptionPatient(req);
+  return withPatientAccessToken(
+    patient._id,
+    (token) => masterRequest('/internal/abdm/m3/action', {
+      method: 'POST',
+      body: {
+        action,
+        authToken: token,
+        resourceId: extra.resourceId,
+        lockerId: extra.lockerId,
+        query: extra.query,
+        body: extra.body
+      }
+    }),
+    { updatedBy: req.user._id }
+  );
+}
+
+exports.listHealthLockers = async (req, res) => {
+  try {
+    assertSubscriptionsEnabled();
+    const result = await masterRequest('/internal/abdm/m3/action', {
+      method: 'POST',
+      body: { action: 'LIST_HEALTH_LOCKERS', query: req.query }
+    });
+    return res.json({ success: true, requestId: result.requestId, data: result.data });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      error: error.message,
+      details: error.details
+    });
+  }
+};
+
+exports.listSubscriptions = async (req, res) => {
+  try {
+    assertSubscriptionsEnabled();
+    const filter = { hospitalId: assertUserHospital(req.user) };
+    if (req.query.patientId) filter.patientId = req.query.patientId;
+    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    const subscriptions = await AbdmSubscription.find(filter).sort({ createdAt: -1 }).limit(100).lean();
+    return res.json({ success: true, subscriptions });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+exports.approveSubscription = async (req, res) => {
+  try {
+    const result = await patientAuthenticatedAction(req, 'APPROVE_SUBSCRIPTION', {
+      resourceId: req.params.subscriptionRequestId,
+      body: req.body.approval || req.body.body || req.body
+    });
+    await AbdmSubscription.findOneAndUpdate(
+      { hospitalId: assertUserHospital(req.user), subscriptionRequestId: req.params.subscriptionRequestId },
+      { status: 'GRANTED', metadata: { approvedAt: new Date(), masterRequestId: result.requestId } }
+    );
+    return res.status(202).json({ success: true, requestId: result.requestId, data: result.data });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+exports.denySubscription = async (req, res) => {
+  try {
+    const result = await patientAuthenticatedAction(req, 'DENY_SUBSCRIPTION', {
+      resourceId: req.params.subscriptionRequestId,
+      body: { reason: req.body.reason || 'Not approved' }
+    });
+    await AbdmSubscription.findOneAndUpdate(
+      { hospitalId: assertUserHospital(req.user), subscriptionRequestId: req.params.subscriptionRequestId },
+      { status: 'DENIED', metadata: { deniedAt: new Date(), masterRequestId: result.requestId } }
+    );
+    return res.status(202).json({ success: true, requestId: result.requestId, data: result.data });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+function remoteSubscriptionHandler(action, options = {}) {
+  return async (req, res) => {
+    try {
+      const result = await patientAuthenticatedAction(req, action, {
+        resourceId: options.resourceParam ? req.params[options.resourceParam] : undefined,
+        lockerId: options.lockerParam ? req.params[options.lockerParam] : undefined,
+        query: req.query,
+        body: options.sendBody ? (req.body.body || req.body) : undefined
+      });
+      return res.status(options.accepted ? 202 : 200).json({ success: true, requestId: result.requestId, data: result.data });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ success: false, error: error.message, details: error.details });
+    }
+  };
+}
+
+exports.listRemoteSubscriptionRequests = remoteSubscriptionHandler('LIST_SUBSCRIPTION_REQUESTS');
+exports.getRemoteSubscriptionRequest = remoteSubscriptionHandler('GET_SUBSCRIPTION_REQUEST', { resourceParam: 'subscriptionRequestId' });
+exports.getRemoteSubscription = remoteSubscriptionHandler('GET_SUBSCRIPTION', { resourceParam: 'subscriptionId' });
+exports.editSubscription = remoteSubscriptionHandler('EDIT_SUBSCRIPTION', { resourceParam: 'subscriptionId', sendBody: true, accepted: true });
+exports.disableSubscription = remoteSubscriptionHandler('DISABLE_SUBSCRIPTION', { resourceParam: 'subscriptionId', accepted: true });
+exports.enableSubscription = remoteSubscriptionHandler('ENABLE_SUBSCRIPTION', { resourceParam: 'subscriptionId', accepted: true });
+exports.patientSubscriptionRequests = remoteSubscriptionHandler('PATIENT_SUBSCRIPTION_REQUESTS');
+exports.setupHealthLocker = remoteSubscriptionHandler('SETUP_HEALTH_LOCKER', { sendBody: true, accepted: true });
+exports.listPatientLockers = remoteSubscriptionHandler('LIST_PATIENT_LOCKERS');
+exports.getPatientLocker = remoteSubscriptionHandler('GET_PATIENT_LOCKER', { lockerParam: 'lockerId' });
 
 exports.summary = async (req, res) => {
   const hospitalId = assertUserHospital(req.user);

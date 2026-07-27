@@ -14,6 +14,45 @@ function checksum(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+function chunkEntries(entries, pageSize) {
+  const chunks = [];
+  for (let index = 0; index < entries.length; index += pageSize) {
+    chunks.push(entries.slice(index, index + pageSize));
+  }
+  return chunks.length ? chunks : [[]];
+}
+
+async function postPage({ url, transactionId, entries, keyMaterial, pageNumber, pageCount, idempotencyKey }) {
+  const response = await fetchFn(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-MediQliq-Idempotency-Key': `${idempotencyKey}:${pageNumber}`
+    },
+    body: JSON.stringify({
+      pageNumber,
+      pageCount,
+      transactionId,
+      entries,
+      keyMaterial
+    }),
+    signal: AbortSignal.timeout(
+      Number(process.env.ABDM_DATA_PUSH_TIMEOUT_MS || 30000)
+    ),
+    redirect: 'error'
+  });
+  const responseBody = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(
+      responseBody.message || `HIU data push page ${pageNumber + 1}/${pageCount} failed with HTTP ${response.status}`
+    );
+    error.statusCode = response.status;
+    error.details = responseBody;
+    throw error;
+  }
+  return responseBody;
+}
+
 async function pushHealthInformation({
   hospitalId,
   patientId,
@@ -63,9 +102,7 @@ async function pushHealthInformation({
       consentId,
       patientId,
       hiTypes: records.map((item) => item.hiType),
-      careContextReferences: records.map(
-        (item) => item.careContextReference
-      ),
+      careContextReferences: records.map((item) => item.careContextReference),
       status: 'PREPARING',
       recordCount: records.length,
       destinationHost: parsed.hostname,
@@ -77,10 +114,9 @@ async function pushHealthInformation({
 
   try {
     for (const record of records) {
-      const bundle =
-        typeof record.content === 'string'
-          ? JSON.parse(record.content)
-          : record.content;
+      const bundle = typeof record.content === 'string'
+        ? JSON.parse(record.content)
+        : record.content;
       // eslint-disable-next-line no-await-in-loop
       record.validation = await assertValidBundle(bundle);
     }
@@ -96,36 +132,35 @@ async function pushHealthInformation({
     transfer.payloadHash = checksum(JSON.stringify(encrypted));
     await transfer.save();
 
-    const response = await fetchFn(parsed.toString(), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-MediQliq-Idempotency-Key': idempotencyKey
-      },
-      body: JSON.stringify({
+    const pages = chunkEntries(encrypted.entries, abdmConfig.dataPushPageSize);
+    const acknowledgements = [];
+    transfer.status = 'PUSHING';
+    transfer.metadata = {
+      ...(transfer.metadata || {}),
+      pageCount: pages.length,
+      pageSize: abdmConfig.dataPushPageSize
+    };
+    await transfer.save();
+
+    for (let pageNumber = 0; pageNumber < pages.length; pageNumber += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const acknowledgement = await postPage({
+        url: parsed.toString(),
         transactionId,
-        entries: encrypted.entries,
-        keyMaterial: encrypted.keyMaterial
-      }),
-      signal: AbortSignal.timeout(
-        Number(process.env.ABDM_DATA_PUSH_TIMEOUT_MS || 30000)
-      ),
-      redirect: 'error'
-    });
-    const responseBody = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = new Error(
-        responseBody.message || `HIU data push failed with HTTP ${response.status}`
-      );
-      error.details = responseBody;
-      throw error;
+        entries: pages[pageNumber],
+        keyMaterial: encrypted.keyMaterial,
+        pageNumber,
+        pageCount: pages.length,
+        idempotencyKey
+      });
+      acknowledgements.push({ pageNumber, acknowledgement });
     }
 
     transfer.status = 'TRANSFERRED';
     transfer.completedAt = new Date();
-    transfer.acknowledgement = responseBody;
+    transfer.acknowledgement = { pages: acknowledgements };
     await transfer.save();
-    return { transfer, acknowledgement: responseBody };
+    return { transfer, acknowledgement: transfer.acknowledgement };
   } catch (error) {
     transfer.status = 'FAILED';
     transfer.error = { message: error.message, details: error.details, at: new Date() };
@@ -134,4 +169,4 @@ async function pushHealthInformation({
   }
 }
 
-module.exports = { pushHealthInformation };
+module.exports = { pushHealthInformation, chunkEntries };

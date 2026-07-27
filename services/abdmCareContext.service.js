@@ -12,6 +12,7 @@ const Vital = require('../models/Vital');
 const IPDVitals = require('../models/IPDVitals');
 const AbdmCareContext = require('../models/AbdmCareContext');
 const { toAbdmHiType } = require('../utils/abdmHiTypes');
+const { assertAbdmExchangeEligible } = require('./abdmExchangeEligibility.service');
 
 function opaque(prefix) {
   return `${prefix}_${crypto.randomBytes(18).toString('base64url')}`;
@@ -74,6 +75,7 @@ async function upsertContext({ patient, hiType, display, records, dateFrom, date
 async function buildPatientCareContexts(patientId) {
   const patient = await Patient.findById(patientId);
   if (!patient) throw new Error('Patient not found');
+  assertAbdmExchangeEligible(patient);
 
   const [appointments, prescriptions, labs, radiology, discharges, invoices, immunizations, documents, opdVitals, ipdVitals] = await Promise.all([
     Appointment.find({ patient_id: patient._id }).sort({ appointment_date: -1 }).lean(),
@@ -237,6 +239,7 @@ async function buildPatientCareContexts(patientId) {
 async function groupedForAbdm(patientId) {
   const patient = await Patient.findById(patientId);
   if (!patient) throw new Error('Patient not found');
+  assertAbdmExchangeEligible(patient);
   const contexts = await AbdmCareContext.find({ hospitalId: patient.hospitalId, patientId, active: { $ne: false } }).sort({ createdAt: -1 }).lean();
   const groups = new Map();
   for (const context of contexts) {

@@ -21,6 +21,20 @@ router.post(
 router.get('/requests', clinicalReader, controller.listRequests);
 router.get('/patients/:patientId/records', clinicalReader, controller.listImportedRecords);
 router.get('/records/:recordId', clinicalReader, controller.getImportedRecord);
+router.get('/subscriptions/health-lockers', clinicalReader, controller.listHealthLockers);
 router.post('/subscriptions', clinician, controller.createSubscription);
+router.get('/subscriptions', clinicalReader, controller.listSubscriptions);
+router.post('/subscriptions/requests/:subscriptionRequestId/approve', clinician, controller.approveSubscription);
+router.post('/subscriptions/requests/:subscriptionRequestId/deny', clinician, controller.denySubscription);
+router.get('/subscriptions/remote/requests', clinicalReader, controller.listRemoteSubscriptionRequests);
+router.get('/subscriptions/remote/requests/:subscriptionRequestId', clinicalReader, controller.getRemoteSubscriptionRequest);
+router.get('/subscriptions/remote/:subscriptionId', clinicalReader, controller.getRemoteSubscription);
+router.put('/subscriptions/remote/:subscriptionId', clinician, controller.editSubscription);
+router.post('/subscriptions/remote/:subscriptionId/disable', clinician, controller.disableSubscription);
+router.post('/subscriptions/remote/:subscriptionId/enable', clinician, controller.enableSubscription);
+router.get('/subscriptions/patient/requests', clinicalReader, controller.patientSubscriptionRequests);
+router.post('/subscriptions/lockers/setup', clinician, controller.setupHealthLocker);
+router.get('/subscriptions/lockers', clinicalReader, controller.listPatientLockers);
+router.get('/subscriptions/lockers/:lockerId', clinicalReader, controller.getPatientLocker);
 
 module.exports = router;

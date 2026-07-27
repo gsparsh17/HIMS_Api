@@ -3,6 +3,7 @@ const AbdmHospitalJob = require('../models/AbdmHospitalJob');
 const abdmConfig = require('../config/abdm.config');
 const AbdmHospitalConsent = require('../models/AbdmHospitalConsent');
 const AbdmCareContext = require('../models/AbdmCareContext');
+const Patient = require('../models/Patient');
 const { generateAbdmHiBundle } = require('./fhir/abdmHiBundle.service');
 const { toAbdmHiType } = require('../utils/abdmHiTypes');
 const {
@@ -12,6 +13,7 @@ const {
 const { pushHealthInformation } = require('./abdmDataTransfer.service');
 const { masterRequest } = require('./abdmMasterClient.service');
 const { receiveEncryptedData } = require('./abdmHiuHospital.service');
+const { assertAbdmExchangeEligible } = require('./abdmExchangeEligibility.service');
 
 function hash(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
@@ -93,6 +95,7 @@ function notifyBody({ consentId, transactionId, status, contexts, error }) {
       doneAt: new Date().toISOString(),
       notifier: { type: 'HIP', id: abdmConfig.hipId },
       statusNotification: {
+        hipId: abdmConfig.hipId,
         sessionStatus: status,
         statusResponses: contexts.map((context) => ({
           careContextReference: context.referenceNumber,
@@ -134,6 +137,9 @@ async function processHipDataRequest(payload, hospitalId) {
   contexts.forEach((context) => assertContextAllowed(consent, context));
   const patientIds = Array.from(new Set(contexts.map((item) => String(item.patientId))));
   if (patientIds.length !== 1) throw new Error('Consent maps to multiple local patients');
+  const patient = await Patient.findOne({ _id: patientIds[0], hospitalId });
+  if (!patient) throw new Error('Consented patient was not found');
+  assertAbdmExchangeEligible(patient);
 
   const records = [];
   for (const context of contexts) {

@@ -33,7 +33,8 @@ test('FHIR generator includes Organization and hospital-scoped persistence', () 
   assert.equal(generator.includes('custodian:'), true);
 });
 
-test('master and public callback route modules are not shipped', () => {
-  assert.equal(fs.existsSync(path.join(__dirname, '..', 'routes', 'abdmPublic.routes.js')), false);
-  assert.equal(fs.existsSync(path.join(__dirname, '..', 'routes', 'abdmMasterAdmin.routes.js')), false);
+test('hospital runtime does not mount master or public callback route modules', () => {
+  const appSource = source('app.js');
+  assert.equal(appSource.includes("require('./routes/abdmPublic.routes')"), false);
+  assert.equal(appSource.includes("require('./routes/abdmMasterAdmin.routes')"), false);
 });

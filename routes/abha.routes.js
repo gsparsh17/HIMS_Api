@@ -23,14 +23,33 @@ router.post('/existing/verify-otp', controller.verifyExistingAbhaOtp);
 router.post('/mobile/request-otp', controller.requestMobileOtp);
 router.post('/mobile/verify-otp', controller.verifyMobileOtp);
 
+router.post('/login/request', controller.requestAdvancedLogin);
+router.post('/login/verify', controller.verifyAdvancedLogin);
+router.post('/login/verify-user', controller.completeAdvancedLoginUser);
+router.post('/login/password/search', controller.searchPasswordLogin);
+router.post('/login/password/verify', controller.verifyPasswordLogin);
+router.post('/login/address/search', controller.searchAbhaAddressLogin);
+router.post('/login/address/request-otp', controller.requestAbhaAddressLoginOtp);
+router.post('/login/address/verify-otp', controller.verifyAbhaAddressLoginOtp);
+
+router.post('/document/request-otp', controller.requestDocumentEnrollmentOtp);
+router.post('/document/verify-otp', controller.verifyDocumentEnrollmentOtp);
+router.post('/document/enrol', controller.enrolByDocument);
+router.post('/biometric/init', controller.initBiometricEnrollment);
+router.post('/biometric/capture-pid', controller.captureBiometricPid);
+router.post('/biometric/enrol', controller.enrolByBiometric);
+
 router.post('/address/suggestions', controller.getAddressSuggestions);
 router.post('/address/validate', controller.validateAddress);
 router.post('/address/create', controller.createAddress);
+router.post('/email/verification-link', controller.requestEmailVerification);
 
 router.get('/patients/search', controller.searchPatientsByAbha);
 router.get('/patients/:patientId', controller.getPatientAbha);
 router.get('/patients/:patientId/qr-code', controller.getQrCode);
 router.get('/patients/:patientId/card', controller.getAbhaCard);
+router.get('/patients/:patientId/profile', controller.getProfile);
+router.post('/patients/:patientId/logout', controller.logoutProfile);
 
 router.post('/records/link', controller.linkRecord);
 router.post('/records/link-patient-records/:patientId', controller.linkAllPatientRecords);

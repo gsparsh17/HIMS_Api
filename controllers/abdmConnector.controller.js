@@ -31,6 +31,7 @@ const abdmConfig = require('../config/abdm.config');
 const {
   validateConsentArtefact
 } = require('../services/abdmConsentValidation.service');
+const { assessPatientIdentity } = require('../services/abdmIdentityMatch.service');
 
 function digits(value) {
   const text = String(value || '');
@@ -256,6 +257,15 @@ exports.profileShare = async (req, res) => {
             districtName: shared.address?.district,
             stateName: shared.address?.state,
             pinCode: shared.address?.pincode
+          },
+          identityReconciliation: {
+            status: 'MATCHED',
+            checkedAt: new Date(),
+            method: 'ABDM_PROFILE_SHARE_NEW_PATIENT',
+            score: 100,
+            matchedFields: ['NAME', 'DOB', 'GENDER', 'MOBILE'],
+            mismatchedFields: [],
+            unavailableFields: []
           }
         }
       });
@@ -278,9 +288,36 @@ exports.profileShare = async (req, res) => {
         );
       }
 
+      const assessment = assessPatientIdentity(patient, shared);
+      if (!assessment.matched) {
+        patient.abha.status = 'IDENTITY_MISMATCH';
+        patient.abha.kycVerified = false;
+        patient.abha.identityReconciliation = {
+          status: 'MISMATCH',
+          checkedAt: new Date(),
+          method: 'ABDM_PROFILE_SHARE',
+          score: assessment.score,
+          matchedFields: assessment.matchedFields,
+          mismatchedFields: assessment.mismatchedFields,
+          unavailableFields: assessment.unavailableFields,
+          profileFingerprint: assessment.profileFingerprint
+        };
+        await patient.save();
+        return res.json(errorOutbound('ACK_PROFILE_SHARE', requestId, 'ABDM-1010', 'The shared ABDM profile does not match the selected local patient'));
+      }
       if (abhaNumber) patient.abha.number = abhaNumber;
       if (abhaAddress) patient.abha.address = abhaAddress;
       patient.abha.status = 'VERIFIED';
+      patient.abha.identityReconciliation = {
+        status: 'MATCHED',
+        checkedAt: new Date(),
+        method: 'ABDM_PROFILE_SHARE',
+        score: assessment.score,
+        matchedFields: assessment.matchedFields,
+        mismatchedFields: [],
+        unavailableFields: assessment.unavailableFields,
+        profileFingerprint: assessment.profileFingerprint
+      };
       patient.abha.kycVerified = true;
       patient.abha.registrationMode = 'profile_share';
       patient.abha.verificationMethod = 'ABDM_PROFILE_SHARE';
@@ -304,7 +341,7 @@ exports.profileShare = async (req, res) => {
               profile: {
                 context: counterId,
                 tokenNumber: String(tokenNumber),
-                expiry: '180'
+                expiry: String(abdmConfig.scanShareTokenExpirySeconds)
               }
             },
             response: { requestId }
@@ -367,6 +404,7 @@ exports.discover = async (req, res) => {
           body: {
             transactionId: body.transactionId,
             patient: patientGroups,
+            matchedBy: requestedPatient.id ? ['ABHA_ADDRESS'] : ['MR'],
             response: { requestId }
           }
         }
@@ -589,6 +627,7 @@ exports.linkConfirm = async (req, res) => {
           body: {
             transactionId: body.transactionId,
             patient: patientGroups,
+            matchedBy: requestedPatient.id ? ['ABHA_ADDRESS'] : ['MR'],
             response: { requestId }
           }
         }
@@ -773,6 +812,39 @@ exports.careContextUpdate = async (req, res) => {
 
 exports.smsNotify = async (_req, res) => {
   return res.json({ success: true, summary: { received: true }, outbound: [] });
+};
+
+exports.runningTokenStatus = async (req, res) => {
+  try {
+    const hospitalId = await configuredHospitalId();
+    const body = req.body?.body || {};
+    const requestId = requestIdFromEnvelope(req);
+    const context = String(body.context || '1');
+    const dateKey = new Date().toISOString().slice(0, 10);
+    const sequence = await AbdmCounterSequence.findOne({
+      hospitalId,
+      counterId: context,
+      dateKey
+    }).lean();
+    return res.json({
+      success: true,
+      summary: { context, runningTokenNumber: sequence?.sequence || 0 },
+      outbound: [{
+        action: 'RESPOND_RUNNING_TOKEN_STATUS',
+        body: {
+          token: {
+            hipId: abdmConfig.hipId,
+            context,
+            runningTokenNumber: String(sequence?.sequence || 0),
+            averageTokenServiceTimeInMinutes: Number(process.env.ABDM_AVERAGE_TOKEN_SERVICE_MINUTES || 10)
+          },
+          response: { requestId }
+        }
+      }]
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
 };
 
 async function storeHipConsentEnvelope(envelope) {

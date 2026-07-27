@@ -15,6 +15,8 @@ const {
   assertUserHospital,
   assertSameHospital
 } = require('../utils/hospitalScope');
+const { assertAbdmExchangeEligible } = require('../services/abdmExchangeEligibility.service');
+const { withPatientAccessToken } = require('../services/abdmCredential.service');
 
 function abdmGender(value) {
   const gender = String(value || '').toLowerCase();
@@ -128,19 +130,7 @@ exports.groupedCareContexts = async (req, res) => {
 exports.initiateHipLinking = async (req, res) => {
   try {
     const patient = await scopedPatient(req.params.patientId, req.user);
-    if (patient.abha?.status !== 'VERIFIED') {
-      return res.status(409).json({
-        success: false,
-        error:
-          'Patient ABHA must be verified before HIP-initiated care-context linking'
-      });
-    }
-    if (!patient.abha?.address && !patient.abha?.number) {
-      return res.status(409).json({
-        success: false,
-        error: 'Verified ABHA address or ABHA number is required'
-      });
-    }
+    assertAbdmExchangeEligible(patient);
 
     await buildPatientCareContexts(patient._id);
     const query = {
@@ -230,12 +220,8 @@ exports.notifyCareContextUpdate = async (req, res) => {
       _id: context.patientId,
       hospitalId
     });
-    if (!patient?.abha?.address) {
-      return res.status(409).json({
-        success: false,
-        error: 'Patient does not have a verified ABHA address'
-      });
-    }
+    if (!patient) throw new Error('Patient not found');
+    assertAbdmExchangeEligible(patient);
 
     const body = {
       notification: {
@@ -279,6 +265,7 @@ exports.generateFhir = async (req, res) => {
         .json({ success: false, error: 'patientId is required' });
     }
     const patient = await scopedPatient(patientId, req.user);
+    assertAbdmExchangeEligible(patient);
     const result = await generateAbdmHiBundle(patient._id, {
       hiTypes,
       dateRange,
@@ -334,6 +321,49 @@ exports.listJobs = async (req, res) => {
     .limit(limit)
     .lean();
   return res.json({ success: true, count: jobs.length, jobs });
+};
+
+
+exports.sendHipLinkSms = async (req, res) => {
+  try {
+    const patient = await scopedPatient(req.params.patientId, req.user);
+    assertAbdmExchangeEligible(patient);
+    const result = await masterRequest('/internal/abdm/m2/action', {
+      method: 'POST',
+      body: {
+        action: 'SEND_LINK_SMS',
+        body: {
+          notification: {
+            phoneNo: String(patient.phone || '').replace(/\D/g, ''),
+            hip: { id: abdmConfig.hipId, name: req.body.hipName || 'Hospital' }
+          }
+        }
+      }
+    });
+    return res.status(202).json({ success: true, requestId: result.requestId });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
+exports.requestRunningTokenStatus = async (req, res) => {
+  try {
+    const patient = await scopedPatient(req.params.patientId, req.user);
+    assertAbdmExchangeEligible(patient);
+    const result = await withPatientAccessToken(patient._id, (token) =>
+      masterRequest('/internal/abdm/m3/action', {
+        method: 'POST',
+        body: {
+          action: 'REQUEST_RUNNING_TOKEN_STATUS',
+          authToken: token,
+          body: { hipId: abdmConfig.hipId, context: String(req.body.context || '1') }
+        }
+      }), { updatedBy: req.user._id }
+    );
+    return res.status(202).json({ success: true, requestId: result.requestId });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
 };
 
 exports.retryJob = async (req, res) => {

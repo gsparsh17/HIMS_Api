@@ -79,7 +79,10 @@ const config = {
   cryptoAdapterAllowedHosts: csvEnv('ABDM_CRYPTO_ADAPTER_ALLOWED_HOSTS'),
   dataPushAllowedHosts: csvEnv('ABDM_DATA_PUSH_ALLOWED_HOSTS'),
   allowPrivateAdapterUrls: boolEnv('ABDM_ALLOW_PRIVATE_ADAPTER_URLS', false),
-  allowPrivateDataPushUrls: boolEnv('ABDM_ALLOW_PRIVATE_DATA_PUSH_URLS', false)
+  allowPrivateDataPushUrls: boolEnv('ABDM_ALLOW_PRIVATE_DATA_PUSH_URLS', false),
+  scanShareTokenExpirySeconds: Number(process.env.ABDM_SCAN_SHARE_TOKEN_EXPIRY_SECONDS || 1800),
+  dataPushPageSize: Math.max(1, Number(process.env.ABDM_DATA_PUSH_PAGE_SIZE || 50)),
+  requireCryptoIntegrity: boolEnv('ABDM_REQUIRE_CRYPTO_INTEGRITY', true)
 };
 
 function assertHospitalConnector() {

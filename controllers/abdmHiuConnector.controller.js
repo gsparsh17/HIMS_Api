@@ -122,31 +122,37 @@ exports.data = async (req, res) => {
 
 async function updateSubscription(body, fallbackStatus) {
   const hospitalId = await configuredHospitalId();
-  const requestId =
+  const officialRequestId =
     body.subscriptionRequest?.id ||
-    body.request?.id ||
     body.subscriptionRequestId;
   const subscriptionId = body.subscription?.id || body.subscriptionId;
+  const correlationRequestId =
+    body.response?.requestId || body.request?.id || body.requestId;
   const status = String(
     body.status || body.subscription?.status || fallbackStatus
   ).toUpperCase();
-  if (!requestId && !subscriptionId) return null;
-  const query = requestId
-    ? { hospitalId, subscriptionRequestId: requestId }
-    : { hospitalId, subscriptionId };
-  return AbdmSubscription.findOneAndUpdate(
-    query,
-    {
-      hospitalId,
-      ...(requestId ? { subscriptionRequestId: requestId } : {}),
-      ...(subscriptionId ? { subscriptionId } : {}),
-      status: ['REQUESTED', 'GRANTED', 'DENIED', 'REVOKED', 'EXPIRED', 'FAILED'].includes(status)
-        ? status
-        : fallbackStatus,
-      metadata: { callback: body }
-    },
-    { new: true }
-  );
+  if (!officialRequestId && !subscriptionId && !correlationRequestId) return null;
+
+  const candidates = [];
+  if (officialRequestId) candidates.push({ subscriptionRequestId: officialRequestId });
+  if (subscriptionId) candidates.push({ subscriptionId });
+  if (correlationRequestId) candidates.push({ 'metadata.masterRequestId': correlationRequestId });
+  const record = await AbdmSubscription.findOne({ hospitalId, $or: candidates });
+  if (!record) return null;
+
+  if (officialRequestId) record.subscriptionRequestId = officialRequestId;
+  if (subscriptionId) record.subscriptionId = subscriptionId;
+  record.status = ['REQUESTED', 'GRANTED', 'DENIED', 'REVOKED', 'EXPIRED', 'FAILED'].includes(status)
+    ? status
+    : fallbackStatus;
+  record.metadata = {
+    ...(record.metadata || {}),
+    callback: body,
+    callbackRequestId: correlationRequestId,
+    lastCallbackAt: new Date()
+  };
+  await record.save();
+  return record;
 }
 
 exports.subscriptionOnInit = async (req, res) => {
@@ -157,6 +163,8 @@ exports.subscriptionOnInit = async (req, res) => {
 exports.subscriptionNotify = async (req, res) => {
   const body = payload(req);
   const record = await updateSubscription(body, 'REQUESTED');
+  const subscriptionRequestId =
+    body.subscriptionRequest?.id || body.subscriptionRequestId || record?.subscriptionRequestId;
   return res.json({
     success: true,
     summary: record || { received: true },
@@ -164,7 +172,10 @@ exports.subscriptionNotify = async (req, res) => {
       {
         action: 'HIU_ACK_SUBSCRIPTION',
         body: {
-          acknowledgement: { status: 'OK' },
+          acknowledgement: {
+            status: 'OK',
+            ...(subscriptionRequestId ? { subscriptionRequestId } : {})
+          },
           response: { requestId: requestId(req) }
         }
       }
@@ -173,14 +184,19 @@ exports.subscriptionNotify = async (req, res) => {
 };
 
 exports.subscriptionCareContextNotify = async (req, res) => {
+  const body = payload(req);
+  const eventId = body.event?.id || body.eventId;
   return res.json({
     success: true,
-    summary: { received: true },
+    summary: { received: true, eventId },
     outbound: [
       {
         action: 'HIU_ACK_SUBSCRIPTION_CARE_CONTEXT',
         body: {
-          acknowledgement: { status: 'OK' },
+          acknowledgement: {
+            status: 'OK',
+            ...(eventId ? { eventId } : {})
+          },
           response: { requestId: requestId(req) }
         }
       }

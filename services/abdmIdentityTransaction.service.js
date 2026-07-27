@@ -127,9 +127,9 @@ async function assertResendAllowed(transaction) {
 }
 
 async function recordAttempt(transaction, error) {
-  transaction.attempts += 1;
+  if (error?.countAttempt !== false) transaction.attempts += 1;
   transaction.lastAttemptAt = new Date();
-  if (transaction.attempts >= transaction.maxAttempts) {
+  if (error?.countAttempt !== false && transaction.attempts >= transaction.maxAttempts) {
     transaction.status = 'LOCKED';
   } else if (error) {
     transaction.status = 'FAILED';

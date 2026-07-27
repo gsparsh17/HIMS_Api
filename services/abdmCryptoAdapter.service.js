@@ -70,6 +70,42 @@ function assertMockAllowed() {
   }
 }
 
+
+function digestCandidates(value) {
+  const buffer = Buffer.from(typeof value === 'string' ? value : JSON.stringify(value));
+  const digest = crypto.createHash('sha256').update(buffer).digest();
+  return new Set([digest.toString('hex').toLowerCase(), digest.toString('base64'), digest.toString('base64url')]);
+}
+
+function assertDecryptionIntegrity({ encryptedEntries = [], decrypted }) {
+  if (abdmConfig.requireCryptoIntegrity && decrypted.integrityVerified !== true) {
+    const error = new Error('Crypto adapter did not explicitly confirm payload integrity');
+    error.code = 'ABDM_CRYPTO_INTEGRITY_UNVERIFIED';
+    throw error;
+  }
+  const records = decrypted.records || [];
+  if (records.length !== encryptedEntries.length) {
+    const error = new Error('Decrypted record count does not match encrypted entry count');
+    error.code = 'ABDM_CRYPTO_ENTRY_COUNT_MISMATCH';
+    throw error;
+  }
+  records.forEach((record, index) => {
+    const checksum = encryptedEntries[index]?.checksum;
+    if (!checksum) {
+      const error = new Error(`Encrypted entry ${index} does not contain a checksum`);
+      error.code = 'ABDM_CHECKSUM_MISSING';
+      throw error;
+    }
+    const value = String(checksum).trim();
+    if (!digestCandidates(record.content).has(value.toLowerCase()) && !digestCandidates(record.content).has(value)) {
+      const error = new Error(`Checksum verification failed for encrypted entry ${index}`);
+      error.code = 'ABDM_CHECKSUM_MISMATCH';
+      throw error;
+    }
+  });
+  return true;
+}
+
 async function generateReceiverKeyMaterial(input) {
   if (abdmConfig.cryptoMode === 'external') {
     const result = await externalCall('/v1/receiver-key-material', input);
@@ -130,6 +166,7 @@ async function decryptHealthInformation(input) {
   if (abdmConfig.cryptoMode === 'mock') {
     assertMockAllowed();
     return {
+      integrityVerified: true,
       records: (input.entries || []).map((entry) => ({
         content: Buffer.from(entry.content, 'base64').toString('utf8'),
         careContextReference: entry.careContextReference,
@@ -144,5 +181,6 @@ async function decryptHealthInformation(input) {
 module.exports = {
   generateReceiverKeyMaterial,
   encryptHealthInformation,
-  decryptHealthInformation
+  decryptHealthInformation,
+  assertDecryptionIntegrity
 };

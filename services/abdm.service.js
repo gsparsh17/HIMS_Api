@@ -39,6 +39,14 @@ async function abdmGet(path, extraHeaders = {}, responseType = 'json') {
   return proxyAbha({ method: 'GET', path, extraHeaders, responseType });
 }
 
+async function abdmPatch(path, body, extraHeaders = {}) {
+  return proxyAbha({ method: 'PATCH', path, body, extraHeaders });
+}
+
+async function abdmRequest(method, path, body, extraHeaders = {}, responseType = 'json') {
+  return proxyAbha({ method, path, body, extraHeaders, responseType });
+}
+
 async function getPublicKeyPem() {
   if (cachedPublicKey && Date.now() < publicKeyExpiresAt) return cachedPublicKey;
   const data = await abdmGet('/v3/profile/public/certificate');
@@ -64,5 +72,7 @@ async function encryptForAbdm(value) {
 module.exports = {
   encryptForAbdm,
   abdmPost,
-  abdmGet
+  abdmGet,
+  abdmPatch,
+  abdmRequest
 };

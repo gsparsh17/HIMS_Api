@@ -41,6 +41,8 @@ const schema = new mongoose.Schema(
     keyMaterial: mongoose.Schema.Types.Mixed,
     encryptedPrivateMaterial: { type: encryptedBlobSchema, select: false },
     keyExpiresAt: Date,
+    expectedPageCount: { type: Number, default: 1 },
+    receivedPageCount: { type: Number, default: 0 },
     receivedEntryCount: { type: Number, default: 0 },
     importedRecordCount: { type: Number, default: 0 },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

@@ -16,6 +16,7 @@ router.post('/link-token', controller.linkToken);
 router.post('/link-care-context', controller.linkCareContext);
 router.post('/care-context-update', controller.careContextUpdate);
 router.post('/sms-notify', controller.smsNotify);
+router.post('/running-token/status', controller.runningTokenStatus);
 router.post('/consent/notify', controller.consentNotify);
 router.post('/health-information/request', controller.healthInformationRequest);
 router.post('/hiu/patient/on-share', controller.hiuPatientOnShare);

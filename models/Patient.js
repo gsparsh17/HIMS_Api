@@ -115,6 +115,7 @@ const patientSchema = new mongoose.Schema({
       type: String,
       enum: [
         'UNLINKED', 'OTP_SENT', 'VERIFICATION_PENDING', 'VERIFIED',
+        'IDENTITY_MISMATCH',
         'ACTIVE', 'DEACTIVATED', 'DELETED',
         'not_linked', 'otp_sent', 'pending_verification', 'manually_captured'
       ],
@@ -125,7 +126,11 @@ const patientSchema = new mongoose.Schema({
     kycVerified: { type: Boolean, default: false },
     registrationMode: {
       type: String,
-      enum: ['aadhaar_otp', 'mobile_otp', 'mobile_search', 'profile_share', 'manual_capture', 'none'],
+      enum: [
+        'aadhaar_otp', 'mobile_otp', 'mobile_search', 'profile_share',
+        'manual_capture', 'driving_licence', 'face', 'fingerprint', 'iris',
+        'password', 'abha_address', 'none'
+      ],
       default: 'none'
     },
     linkedAt: Date,
@@ -143,6 +148,20 @@ const patientSchema = new mongoose.Schema({
       districtName: String,
       stateName: String,
       pinCode: String
+    },
+    identityReconciliation: {
+      status: {
+        type: String,
+        enum: ['NOT_CHECKED', 'MATCHED', 'MISMATCH'],
+        default: 'NOT_CHECKED'
+      },
+      checkedAt: Date,
+      method: String,
+      score: Number,
+      matchedFields: [String],
+      mismatchedFields: [String],
+      unavailableFields: [String],
+      profileFingerprint: { type: String, select: false }
     },
     lastOtpTxnId: String,
     lastOtpSentAt: Date,

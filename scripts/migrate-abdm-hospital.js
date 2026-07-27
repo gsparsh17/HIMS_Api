@@ -16,6 +16,8 @@ const AbdmSubscription = require('../models/AbdmSubscription');
 const AbdmHospitalJob = require('../models/AbdmHospitalJob');
 const EHRBundle = require('../models/EHRBundle');
 const { encryptJson } = require('../services/abdmVault.service');
+const { normalizeSession } = require('../services/abdmCredential.service');
+const { assessPatientIdentity } = require('../services/abdmIdentityMatch.service');
 const {
   configuredHospitalId,
   clearConfiguredHospitalCache
@@ -49,17 +51,23 @@ async function migratePlaintextTokens() {
 
   for await (const patient of cursor) {
     const session = patient.abha?.session || {};
-    if (apply && session.xToken) {
+    if (apply && (session.xToken || session.refreshToken)) {
+      const normalized = normalizeSession({
+        xToken: session.xToken,
+        refreshToken: session.refreshToken,
+        expiresIn: session.expiresIn,
+        refreshExpiresIn: session.refreshExpiresIn
+      });
       const encryptedSession = encryptJson(
         {
-          accessToken: session.xToken,
-          refreshToken: session.refreshToken
+          accessToken: normalized.accessToken,
+          refreshToken: normalized.refreshToken
         },
         `abdm-patient-session:${patient._id}`
       );
-      const accessExpiresAt =
-        session.expiresAt || new Date(Date.now() + 30 * 60 * 1000);
-      const refreshExpiresAt = session.refreshExpiresAt || accessExpiresAt;
+      const accessExpiresAt = session.expiresAt || normalized.accessExpiresAt;
+      const refreshExpiresAt =
+        session.refreshExpiresAt || normalized.refreshExpiresAt || accessExpiresAt;
       await AbdmCredential.findOneAndUpdate(
         { patientId: patient._id },
         {
@@ -68,7 +76,8 @@ async function migratePlaintextTokens() {
           encryptedSession,
           accessExpiresAt,
           refreshExpiresAt,
-          purgeAt: refreshExpiresAt
+          purgeAt: refreshExpiresAt,
+          scopes: session.scopes || []
         },
         { upsert: true }
       );
@@ -83,6 +92,50 @@ async function migratePlaintextTokens() {
     );
   }
   return migrated;
+}
+
+async function reconcileVerifiedPatientIdentities() {
+  const cursor = Patient.find({
+    'abha.status': { $in: ['VERIFIED', 'verified', 'Verified'] },
+    $or: [
+      { 'abha.identityReconciliation.status': { $exists: false } },
+      { 'abha.identityReconciliation.status': 'NOT_CHECKED' }
+    ]
+  }).cursor();
+  const counts = { matched: 0, mismatched: 0, reviewRequired: 0 };
+
+  for await (const patient of cursor) {
+    const assessment = assessPatientIdentity(patient, patient.abha?.profile || {});
+    const hasDefiniteMismatch = assessment.mismatchedFields.length > 0;
+    const status = assessment.matched
+      ? 'MATCHED'
+      : hasDefiniteMismatch
+        ? 'MISMATCH'
+        : 'NOT_CHECKED';
+
+    if (status === 'MATCHED') counts.matched += 1;
+    else if (status === 'MISMATCH') counts.mismatched += 1;
+    else counts.reviewRequired += 1;
+
+    if (!apply) continue;
+    const update = {
+      'abha.identityReconciliation.status': status,
+      'abha.identityReconciliation.checkedAt': new Date(),
+      'abha.identityReconciliation.method': 'MIGRATION_STORED_PROFILE',
+      'abha.identityReconciliation.score': assessment.score,
+      'abha.identityReconciliation.matchedFields': assessment.matchedFields,
+      'abha.identityReconciliation.mismatchedFields': assessment.mismatchedFields,
+      'abha.identityReconciliation.unavailableFields': assessment.unavailableFields,
+      'abha.identityReconciliation.profileFingerprint': assessment.profileFingerprint
+    };
+    if (status === 'MISMATCH') {
+      update['abha.status'] = 'IDENTITY_MISMATCH';
+      update['abha.kycVerified'] = false;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await Patient.updateOne({ _id: patient._id }, { $set: update });
+  }
+  return counts;
 }
 
 async function collectionsMissingHospitalId() {
@@ -218,6 +271,8 @@ async function run() {
 
   const tokenPatients = await migratePlaintextTokens();
   console.log(`Patients with legacy plaintext ABHA sessions: ${tokenPatients}`);
+  const identityReconciliation = await reconcileVerifiedPatientIdentities();
+  console.log(`Verified patient identity reconciliation: ${JSON.stringify(identityReconciliation)}`);
 
   if (apply) {
     await backfillHospitalScope(hospitalId, missingScope.models);
@@ -231,7 +286,7 @@ async function run() {
   if (apply) {
     await syncAbdmIndexes();
     console.log(
-      'Hospital scope was backfilled, sensitive ABDM artefacts were encrypted, and indexes were synchronized.'
+      'Hospital scope and identity reconciliation were backfilled, sensitive ABDM artefacts were encrypted, and indexes were synchronized.'
     );
   } else {
     console.log(

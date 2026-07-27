@@ -13,6 +13,7 @@ const Immunization = require('../../models/Immunization');
 const ClinicalDocument = require('../../models/ClinicalDocument');
 const EHRBundle = require('../../models/EHRBundle');
 const abdmConfig = require('../../config/abdm.config');
+const { assertValidBundle } = require('../abdmFhirValidation.service');
 const { normalizeInternalHiTypes } = require('../../utils/abdmHiTypes');
 
 const PROFILE_NAMES = {
@@ -491,7 +492,7 @@ async function generateAbdmHiBundle(patientId, options = {}) {
   for (const hiType of requested) {
     const resources = resourcesFor(hiType, records);
     if (!resources.length) continue;
-    bundles[hiType] = bundleDocument({
+    const bundle = bundleDocument({
       hiType,
       patient: records.patient,
       hospital: records.hospital,
@@ -499,6 +500,11 @@ async function generateAbdmHiBundle(patientId, options = {}) {
       title: PROFILE_NAMES[hiType],
       careContextReference: options.careContextReference
     });
+    // Every generated document is validated before it can be persisted or transferred.
+    // The external NRCeS validator is fail-closed when required by configuration.
+    // eslint-disable-next-line no-await-in-loop
+    await assertValidBundle(bundle);
+    bundles[hiType] = bundle;
   }
 
   const saved = [];

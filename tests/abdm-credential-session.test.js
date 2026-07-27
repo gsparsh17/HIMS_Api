@@ -5,6 +5,7 @@ const Module = require('node:module');
 const originalLoad = Module._load;
 Module._load = function mockedLoad(request, parent, isMain) {
   if (request === '../models/AbdmCredential') return {};
+  if (request === '../models/Patient') return {};
   if (request === './abdmVault.service') {
     return {
       encryptJson: (value) => value,
@@ -43,7 +44,7 @@ test('normalizes camelCase and snake_case token response fields', () => {
   assert.equal(session.refreshExpiresAt.toISOString(), '2026-08-11T11:59:00.000Z');
 });
 
-test('reports active and reauthentication-required session states', () => {
+test('reports active, refresh-available and reauthentication-required session states', () => {
   const now = Date.UTC(2026, 6, 27, 12, 0, 0);
   assert.equal(sessionStatusFromDates({
     accessExpiresAt: new Date(now + 60_000),
@@ -54,19 +55,15 @@ test('reports active and reauthentication-required session states', () => {
     accessExpiresAt: new Date(now - 60_000),
     refreshExpiresAt: new Date(now + 120_000)
   }, now);
-  assert.equal(expired.status, 'REAUTH_REQUIRED');
+  assert.equal(expired.status, 'REFRESH_AVAILABLE');
   assert.equal(expired.reason, 'ACCESS_TOKEN_EXPIRED');
   assert.equal(expired.hasUnexpiredRefreshToken, true);
 });
 
-test('asset controller does not accept a browser supplied X-token', () => {
+test('asset controller uses server-side refresh-and-retry and rejects browser token injection', () => {
   const fs = require('node:fs');
   const source = fs.readFileSync(require.resolve('../controllers/abha.controller'), 'utf8');
-  const start = source.indexOf('async function xTokenForPatient');
-  const end = source.indexOf('exports.getQrCode', start);
-  const helper = source.slice(start, end);
-
-  assert.match(helper, /getActiveAccessToken\(patientId\)/);
-  assert.doesNotMatch(helper, /req\.headers|x-token/i);
+  assert.match(source, /withPatientAccessToken/);
+  assert.doesNotMatch(source, /req\.headers\[['"]x-token['"]\]/i);
   assert.match(source, /ABHA_REAUTH_REQUIRED|code:\s*error\.code/);
 });

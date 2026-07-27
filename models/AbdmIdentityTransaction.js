@@ -26,7 +26,15 @@ const schema = new mongoose.Schema(
         'EXISTING_ABHA_LOGIN',
         'MOBILE_VERIFICATION',
         'ABHA_ADDRESS_CREATION',
-        'PROFILE_UPDATE'
+        'PROFILE_UPDATE',
+        'DOCUMENT_ENROLMENT',
+        'BIOMETRIC_ENROLMENT',
+        'GENERIC_ABHA_LOGIN',
+        'PASSWORD_LOGIN',
+        'ABHA_ADDRESS_LOGIN',
+        'FACE_LOGIN',
+        'FINGERPRINT_LOGIN',
+        'IRIS_LOGIN'
       ],
       index: true
     },

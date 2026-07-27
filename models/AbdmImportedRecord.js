@@ -32,12 +32,14 @@ const schema = new mongoose.Schema(
     },
     validation: mongoose.Schema.Types.Mixed,
     receivedAt: { type: Date, default: Date.now },
-    importedAt: { type: Date, default: Date.now }
+    importedAt: { type: Date, default: Date.now },
+    purgeAt: { type: Date, index: true }
   },
   { timestamps: true }
 );
 
 schema.index({ hospitalId: 1, transactionId: 1, bundleHash: 1 }, { unique: true });
 schema.index({ hospitalId: 1, patientId: 1, hiType: 1, recordDate: -1 });
+schema.index({ purgeAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model('AbdmImportedRecord', schema);
