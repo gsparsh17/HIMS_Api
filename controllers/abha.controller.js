@@ -11,7 +11,8 @@ const { generateEhrBundle } = require('../services/ehr.service');
 const { encryptForAbdm, abdmPost, abdmGet } = require('../services/abdm.service');
 const {
   storePatientSession,
-  getActiveAccessToken
+  getActiveAccessToken,
+  getPatientSessionStatus
 } = require('../services/abdmCredential.service');
 const {
   consentEvidence,
@@ -262,7 +263,8 @@ exports.enrolByAadhaarOtp = async (req, res) => {
       message: data.message,
       isNew: data.isNew,
       patientId: saved._id,
-      abha: safeAbha(saved)
+      abha: safeAbha(saved),
+      credential: await getPatientSessionStatus(saved._id)
     });
   } catch (error) {
     if (transaction) await recordAttempt(transaction, error).catch(() => {});
@@ -324,7 +326,7 @@ exports.captureExistingAbha = async (req, res) => {
       abha: safeAbha(saved)
     });
   } catch (error) {
-    return res.status(error.statusCode || 500).json({ success: false, error: error.message });
+    return res.status(error.statusCode || 500).json({ success: false, code: error.code, error: error.message });
   }
 };
 
@@ -372,7 +374,7 @@ exports.searchExistingAbhaByMobile = async (req, res) => {
     );
     return res.json({ success: true, txnId: transaction.txnId, accounts: normalized.accounts });
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
@@ -429,7 +431,7 @@ exports.requestExistingAbhaOtp = async (req, res) => {
     );
     return res.json({ success: true, txnId: loginTransaction.txnId, message: data.message });
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
@@ -468,10 +470,15 @@ exports.verifyExistingAbhaOtp = async (req, res) => {
       userId: req.user._id
     });
     await markCompleted(transaction);
-    return res.json({ success: true, message: data.message, abha: safeAbha(saved) });
+    return res.json({
+      success: true,
+      message: data.message,
+      abha: safeAbha(saved),
+      credential: await getPatientSessionStatus(saved._id)
+    });
   } catch (error) {
     if (transaction) await recordAttempt(transaction, error).catch(() => {});
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
@@ -527,7 +534,7 @@ exports.requestMobileOtp = async (req, res) => {
     );
     return res.json({ success: true, txnId: transaction.txnId, message: data.message });
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
@@ -569,56 +576,58 @@ exports.verifyMobileOtp = async (req, res) => {
     return res.json({ success: true, message: data.message || 'Mobile verified' });
   } catch (error) {
     if (transaction) await recordAttempt(transaction, error).catch(() => {});
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
-async function xTokenForPatient(patientId, req) {
-  const supplied = req.headers['x-token'];
-  if (supplied) return String(supplied).replace(/^Bearer\s+/i, '');
+async function xTokenForPatient(patientId) {
+  // Never accept a browser-supplied ABDM user token. Patient tokens are resolved
+  // only from the hospital's encrypted credential store after tenant ownership checks.
   return getActiveAccessToken(patientId);
 }
 
 exports.getQrCode = async (req, res) => {
   try {
     const patient = await ensurePatient(req.params.patientId, req.user);
-    const token = await xTokenForPatient(patient._id, req);
+    const token = await xTokenForPatient(patient._id);
     const response = await abdmGet(
       '/v3/profile/account/qrCode',
       { 'X-token': `Bearer ${token}` },
       'buffer'
     );
     res.setHeader('Content-Type', response.contentType);
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
     return res.send(response.buffer);
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
 exports.getAbhaCard = async (req, res) => {
   try {
     const patient = await ensurePatient(req.params.patientId, req.user);
-    const token = await xTokenForPatient(patient._id, req);
+    const token = await xTokenForPatient(patient._id);
     const response = await abdmGet(
       '/v3/profile/account/abha-card',
       { 'X-token': `Bearer ${token}` },
       'buffer'
     );
     res.setHeader('Content-Type', response.contentType);
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
     res.setHeader(
       'Content-Disposition',
       `inline; filename="abha-card-${patient.patientId || patient._id}.pdf"`
     );
     return res.send(response.buffer);
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
 exports.getAddressSuggestions = async (req, res) => {
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
-    const token = await xTokenForPatient(patient._id, req);
+    const token = await xTokenForPatient(patient._id);
     const data = await abdmPost(
       '/v3/profile/account/abha-address/suggestion',
       req.body.payload || {},
@@ -626,14 +635,14 @@ exports.getAddressSuggestions = async (req, res) => {
     );
     return res.json({ success: true, data });
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
 exports.validateAddress = async (req, res) => {
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
-    const token = await xTokenForPatient(patient._id, req);
+    const token = await xTokenForPatient(patient._id);
     const data = await abdmPost(
       '/v3/profile/account/abha-address/validate',
       { abhaAddress: req.body.abhaAddress },
@@ -641,14 +650,14 @@ exports.validateAddress = async (req, res) => {
     );
     return res.json({ success: true, data });
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
 exports.createAddress = async (req, res) => {
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
-    const token = await xTokenForPatient(patient._id, req);
+    const token = await xTokenForPatient(patient._id);
     const data = await abdmPost(
       '/v3/profile/account/abha-address',
       req.body.payload || { abhaAddress: req.body.abhaAddress },
@@ -670,16 +679,21 @@ exports.createAddress = async (req, res) => {
     }
     return res.json({ success: true, data, abha: safeAbha(patient) });
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
 exports.getPatientAbha = async (req, res) => {
   try {
     const patient = await ensurePatient(req.params.patientId, req.user);
-    return res.json({ success: true, patientId: patient._id, abha: safeAbha(patient) });
+    return res.json({
+      success: true,
+      patientId: patient._id,
+      abha: safeAbha(patient),
+      credential: await getPatientSessionStatus(patient._id)
+    });
   } catch (error) {
-    return res.status(error.statusCode || 500).json({ success: false, error: error.message });
+    return res.status(error.statusCode || 500).json({ success: false, code: error.code, error: error.message });
   }
 };
 
@@ -753,7 +767,7 @@ exports.searchPatientsByAbha = async (req, res) => {
       }))
     });
   } catch (error) {
-    return res.status(error.statusCode || 500).json({ success: false, error: error.message });
+    return res.status(error.statusCode || 500).json({ success: false, code: error.code, error: error.message });
   }
 };
 
