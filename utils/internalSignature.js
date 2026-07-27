@@ -1,15 +1,14 @@
 const crypto = require('crypto');
 
 function canonicalJsonValue(value) {
+  if (value === undefined) return undefined;
   if (value === null) return 'null';
   if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJsonValue(item)).join(',')}]`;
+    return `[${value.map((item) => item === undefined ? 'null' : canonicalJsonValue(item)).join(',')}]`;
   }
   if (typeof value === 'object') {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJsonValue(value[key])}`)
-      .join(',')}}`;
+    const keys = Object.keys(value).filter(k => value[k] !== undefined).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJsonValue(value[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
 }
