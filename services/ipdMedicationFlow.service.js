@@ -1,6 +1,7 @@
 const Pharmacy = require('../models/Pharmacy');
 const NursingNote = require('../models/NursingNote');
 const { frequencyToPerDay, parseDurationDays } = require('./pharmacyTransaction.service');
+const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 
 function normaliseBoolean(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -110,10 +111,9 @@ async function createOrUpdatePharmacyRequest({ medication, requestedQuantity, re
 }
 
 function assertAdmissionHospitalAccess(req, admission) {
-  const role = req.user?.role;
-  if (role === 'mediqliq_super_admin') return;
-  const userHospitalId = req.user?.hospital_id || req.user?.hospitalId;
-  if (userHospitalId && admission?.hospitalId && String(userHospitalId) !== String(admission.hospitalId)) {
+  if (isPlatformAdmin(req.user)) return;
+  const scopedHospitalId = userHospitalId(req.user);
+  if (scopedHospitalId && admission?.hospitalId && String(scopedHospitalId) !== String(admission.hospitalId)) {
     const error = new Error('This admission belongs to a different hospital.');
     error.statusCode = 403;
     throw error;

@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const AuditLog = require('../models/AuditLog');
+const { userHospitalId } = require('../utils/hospitalScope');
 
 const SENSITIVE_KEY_PATTERN = /(password|passcode|token|secret|authorization|cookie|otp|pin|api[_-]?key|refresh|access|aadhaar|aadhar|abha|mobile|phone|loginId|x-token)/i;
 const MAX_SERIALIZED_LENGTH = 8000;
@@ -68,11 +69,13 @@ function buildActor(req) {
 
 function getHospitalId(req) {
   return (
+    req.hospital_id ||
     req.hospitalId ||
-    req.user?.hospitalId ||
-    req.user?.hospitalID ||
+    userHospitalId(req.user) ||
+    req.body?.hospital_id ||
     req.body?.hospitalId ||
     req.body?.hospitalID ||
+    req.params?.hospital_id ||
     req.params?.hospitalId ||
     undefined
   );

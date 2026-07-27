@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const AuditLog = require('../models/AuditLog');
 const Hospital = require('../models/Hospital');
+const { userHospitalId } = require('../utils/hospitalScope');
 
 const userSelect = 'name email role';
 const hospitalSelect = 'hospitalID hospitalName';
@@ -64,7 +65,7 @@ function appendCommonFilters(req, filter) {
 }
 
 async function resolveHospitalForAdmin(req) {
-  const requestedHospitalId = req.query.hospitalId || req.query.hospital_id || req.user?.hospitalId || req.user?.hospitalID;
+  const requestedHospitalId = req.query.hospitalId || req.query.hospital_id || userHospitalId(req.user);
 
   if (requestedHospitalId) {
     if (!isValidObjectId(requestedHospitalId)) {

@@ -17,20 +17,29 @@ const Prescription = require('../models/Prescription');
 const Doctor = require('../models/Doctor');
 const Patient = require('../models/Patient');
 const NursingNote = require('../models/NursingNote');
+const { userHospitalId, isPlatformAdmin, unwrapId } = require('../utils/hospitalScope');
 
 function objectIdOrUndefined(id) {
   return id && mongoose.Types.ObjectId.isValid(id) ? id : undefined;
 }
 
 function getHospitalId(req = {}, explicitHospitalId) {
+  const authenticatedHospitalId = userHospitalId(req.user);
+  if (authenticatedHospitalId && !isPlatformAdmin(req.user)) {
+    return objectIdOrUndefined(unwrapId(authenticatedHospitalId));
+  }
+
   return objectIdOrUndefined(
-    explicitHospitalId ||
-      req.user?.hospital_id ||
-      req.user?.hospitalId ||
-      req.body?.hospitalId ||
-      req.body?.hospital_id ||
-      req.query?.hospitalId ||
-      req.query?.hospital_id
+    unwrapId(
+      explicitHospitalId ||
+        authenticatedHospitalId ||
+        req.hospital_id ||
+        req.hospitalId ||
+        req.body?.hospitalId ||
+        req.body?.hospital_id ||
+        req.query?.hospitalId ||
+        req.query?.hospital_id
+    )
   );
 }
 

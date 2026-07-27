@@ -131,6 +131,8 @@ exports.demoLogin = async (req, res) => {
       email: targetUser.email,
       role: targetUser.role,
       token: newToken,
+      hospital_id: hospital?._id,
+      hospitalId: hospital?._id,
       hospitalID: hospital?._id,
       isDemoLogin: true,
       originalDemoUser: {
@@ -298,6 +300,8 @@ function loginBase(user, hospital) {
     email: user.email,
     role: user.role,
     token: generateToken(user._id, user.role),
+    hospital_id: user.hospital_id || hospital?._id,
+    hospitalId: user.hospital_id || hospital?._id,
     hospitalID: user.hospital_id || hospital?._id,
     // Main role-oriented feature list used by navigation and guarded API routes.
     modulePermissions: effectiveMainFeaturePermissions(user)
@@ -312,6 +316,8 @@ exports.getCurrentUser = async (req, res) => {
       name: req.user.name,
       email: req.user.email,
       role: req.user.role,
+      hospital_id: req.user.hospital_id,
+      hospitalId: req.user.hospital_id,
       hospitalID: req.user.hospital_id,
       modulePermissions: effectiveMainFeaturePermissions(req.user)
     }

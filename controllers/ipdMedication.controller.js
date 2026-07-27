@@ -8,6 +8,7 @@ const MedicineBatch = require('../models/MedicineBatch');
 const Pharmacy = require('../models/Pharmacy');
 const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
 const { normaliseBoolean, resolveDoseQtyBaseUnits, calculateMedicationRequiredBaseUnits, generateTimingSlots: generateMedicationTimingSlots, createOrUpdatePharmacyRequest, assertAdmissionHospitalAccess } = require('../services/ipdMedicationFlow.service');
+const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 
 // ========== HELPER FUNCTIONS ==========
 
@@ -669,8 +670,8 @@ exports.getPendingPharmacyRequests = async (req, res) => {
       'pharmacyRequest.pharmacyId': pharmacyId,
       'pharmacyRequest.pharmacyStatus': 'Pending'
     };
-    const userHospitalId = req.user?.hospital_id || req.user?.hospitalId;
-    if (userHospitalId && req.user?.role !== 'mediqliq_super_admin') requestFilter.hospitalId = userHospitalId;
+    const scopedHospitalId = userHospitalId(req.user);
+    if (scopedHospitalId && !isPlatformAdmin(req.user)) requestFilter.hospitalId = scopedHospitalId;
     const medications = await IPDMedicationChart.find(requestFilter)
       .populate('admissionId', 'admissionNumber')
       .populate('patientId', 'first_name last_name patientId phone uhid')
@@ -868,8 +869,8 @@ exports.getNurseTodaySchedule = async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
 
     const admissionFilter = { status: { $in: ['Admitted', 'Under Treatment'] } };
-    const userHospitalId = req.user?.hospital_id || req.user?.hospitalId;
-    if (userHospitalId && req.user?.role !== 'mediqliq_super_admin') admissionFilter.hospitalId = userHospitalId;
+    const scopedHospitalId = userHospitalId(req.user);
+    if (scopedHospitalId && !isPlatformAdmin(req.user)) admissionFilter.hospitalId = scopedHospitalId;
     const admissions = await IPDAdmission.find(admissionFilter).select('_id');
 
     const admissionIds = admissions.map(a => a._id);

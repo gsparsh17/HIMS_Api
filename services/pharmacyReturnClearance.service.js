@@ -26,6 +26,7 @@ const {
   getAdvanceBalance,
 } = require('./pharmacyTransaction.service');
 const { MONEY_EPSILON, money, nonNegativeMoney, currentSaleNet, calculateReturnAllocation, calculateFinalClearanceAmounts } = require('./pharmacyReturnClearance.math');
+const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 
 const REFUND_METHODS = new Set(['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'IPDAdvance', 'PharmacyAdvance']);
 const CASH_REFUND_METHODS = new Set(['Cash', 'UPI', 'Card', 'Bank', 'Net Banking']);
@@ -56,16 +57,18 @@ function queryWithSession(query, session) {
 }
 
 function getRequestHospitalId(req) {
-  return req?.user?.hospital_id || req?.user?.hospitalId || req?.body?.hospitalId;
+  return userHospitalId(req?.user) || (isPlatformAdmin(req?.user) ? req?.body?.hospitalId : null);
 }
+
 
 function getRequestUserId(req) {
   return req?.user?._id || req?.user?.id;
 }
 
 function isSuperAdmin(req) {
-  return req?.user?.role === 'mediqliq_super_admin';
+  return isPlatformAdmin(req?.user);
 }
+
 
 function assertHospitalScope(req, record) {
   const userHospitalId = getRequestHospitalId(req);

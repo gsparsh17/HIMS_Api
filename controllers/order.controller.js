@@ -13,6 +13,7 @@ const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const PharmacyReturn = require('../models/PharmacyReturn');
 const { createUnifiedSale } = require('../services/pharmacyTransaction.service');
+const { userHospitalId } = require('../utils/hospitalScope');
 
 // ========== HELPER FUNCTIONS ==========
 const toNumber = (value, fallback = 0) => {
@@ -292,7 +293,7 @@ exports.createPurchaseOrder = async (req, res) => {
     }
 
     const purchaseOrder = new PurchaseOrder({
-      hospitalId: req.user?.hospital_id || req.user?.hospitalId || null,
+      hospitalId: userHospitalId(req.user) || null,
       supplier_id,
       items: validatedItems,
       subtotal: roundMoney(subtotal),
@@ -470,7 +471,7 @@ async function resolveOrderItemMedicine({ order, orderItem, user }) {
   if (!validateGSTRate(orderItem.gst_rate)) throw new Error(`A valid GST rate is required for "${orderItem.medicine_name}".`);
 
   const medicine = await Medicine.create({
-    hospitalId: order.hospitalId || user?.hospital_id || user?.hospitalId || null,
+    hospitalId: order.hospitalId || userHospitalId(user) || null,
     name: orderItem.medicine_name,
     generic_name: orderItem.generic_name || '',
     brand: orderItem.brand || '',

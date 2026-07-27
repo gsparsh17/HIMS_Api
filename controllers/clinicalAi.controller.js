@@ -4,6 +4,7 @@ const ImagingTest = require('../models/ImagingTest');
 const Procedure = require('../models/Procedure');
 const geminiClinical = require('../services/geminiClinical.service');
 const nurseVitalsDictation = require('../services/nurseVitalsDictation.service');
+const { userHospitalId } = require('../utils/hospitalScope');
 
 const ALLOWED_ROLES = new Set([
   'doctor',
@@ -17,7 +18,8 @@ const MAX_TEXT_LENGTH = 12000;
 const MAX_FIELDS = 60;
 
 function assertClinicalAccess(req) {
-  if (!req.user || !ALLOWED_ROLES.has(req.user.role)) {
+  const role = String(req.user?.role || '').trim().toLowerCase();
+  if (!req.user || !ALLOWED_ROLES.has(role)) {
     const error = new Error('Clinical dictation is available only to authenticated clinical or administrative users.');
     error.statusCode = 403;
     throw error;
@@ -302,7 +304,7 @@ exports.parseOrders = async (req, res) => {
     assertClinicalAccess(req);
     const transcript = cleanText(req.body?.transcript, 'transcript');
     const parsed = await geminiClinical.parseOrders({ transcript, context: sanitizeContext(req.body?.context) });
-    const hospitalId = req.user?.hospital_id || req.user?.hospitalId || null;
+    const hospitalId = userHospitalId(req.user);
     const data = await resolveOrders(parsed, hospitalId);
     res.json({ success: true, data });
   } catch (error) {

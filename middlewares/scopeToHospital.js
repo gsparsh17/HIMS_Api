@@ -1,7 +1,8 @@
 const Hospital = require('../models/Hospital');
+const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 
 function hospitalIdsForUser(user) {
-  const values = [user?.hospital_id, user?.primary_hospital_id, ...(user?.hospital_ids || [])]
+  const values = [userHospitalId(user), user?.primary_hospital_id, ...(user?.hospital_ids || [])]
     .filter(Boolean)
     .map((item) => item?._id || item);
   return values.filter((value, index) => values.findIndex((other) => String(other) === String(value)) === index);
@@ -11,7 +12,7 @@ exports.scopeToHospital = async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: 'Authentication required' });
 
-    if (['mediqliq_super_admin', 'super_admin'].includes(req.user.role)) {
+    if (isPlatformAdmin(req.user)) {
       if (req.query.hospital_id) {
         const hospital = await Hospital.findById(req.query.hospital_id);
         if (!hospital) return res.status(400).json({ error: 'Hospital not found' });
@@ -47,7 +48,7 @@ exports.requireHospitalContext = (req, res, next) => {
 
 exports.checkHospitalAccess = (paramName = 'hospitalId') => (req, res, next) => {
   const hospitalId = req.params[paramName] || req.query.hospital_id;
-  if (!hospitalId || ['mediqliq_super_admin', 'super_admin'].includes(req.user?.role)) return next();
+  if (!hospitalId || isPlatformAdmin(req.user)) return next();
   const hasAccess = (req.user_hospital_ids || hospitalIdsForUser(req.user)).some((id) => String(id) === String(hospitalId));
   if (!hasAccess) return res.status(403).json({ error: 'No access to this hospital' });
   return next();

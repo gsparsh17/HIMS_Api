@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { userHospitalId } = require('../utils/hospitalScope');
 
 function idString(value) {
   if (!value) return null;
@@ -7,8 +8,9 @@ function idString(value) {
 }
 
 function hospitalIdFromUser(user) {
-  return user?.hospital_id || user?.hospitalId || user?.hospitalID || null;
+  return userHospitalId(user);
 }
+
 
 function requireHospitalId(req) {
   const hospitalId = hospitalIdFromUser(req?.user);

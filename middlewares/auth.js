@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 const {
   ACCESS_ORDER,
   toMainFeatureKey,
@@ -9,6 +10,15 @@ const {
 } = require("../utils/mainFeatureAccess");
 
 const ADMIN_ROLES = new Set(["admin", "mediqliq_super_admin"]);
+
+function normalizedRole(userOrRole) {
+  const value = typeof userOrRole === 'object' ? userOrRole?.role : userOrRole;
+  return String(value || '').trim().toLowerCase();
+}
+
+function isAdminRole(user) {
+  return ADMIN_ROLES.has(normalizedRole(user));
+}
 
 // Permission checks are enabled by default. Set DISABLE_PERMISSION_CHECKS=true only for
 // controlled local troubleshooting; never use that setting in production.
@@ -76,6 +86,11 @@ async function authenticateRequest(req, { optional = false } = {}) {
 
 function attachEffectivePermissions(req, user) {
   req.user = user;
+  const hospitalId = userHospitalId(user);
+  if (hospitalId) {
+    req.hospital_id = req.hospital_id || hospitalId;
+    req.hospitalId = req.hospitalId || hospitalId;
+  }
   if (isPermissionCheckDisabled()) {
     const { MAIN_FEATURES } = require("../utils/mainFeatureAccess");
     req.effectiveModulePermissions = MAIN_FEATURES.map(({ key, label, description }) => ({
@@ -132,7 +147,9 @@ exports.authorize = (...roles) => (req, res, next) => {
     return next();
   }
 
-  if (ADMIN_ROLES.has(req.user.role) || roles.includes(req.user.role)) {
+  const role = normalizedRole(req.user);
+  const allowedRoles = roles.map(normalizedRole);
+  if (isAdminRole(req.user) || allowedRoles.includes(role)) {
     return next();
   }
 
@@ -154,7 +171,7 @@ exports.isAdmin = (req, res, next) => {
     return next();
   }
 
-  return ADMIN_ROLES.has(req.user.role)
+  return isAdminRole(req.user)
     ? next()
     : res.status(403).json({ success: false, error: "Admin privileges required." });
 };
@@ -165,7 +182,7 @@ exports.isMediQliqSuperAdmin = (req, res, next) => {
     return next();
   }
 
-  return req.user?.role === "mediqliq_super_admin"
+  return isPlatformAdmin(req.user)
     ? next()
     : res.status(req.user ? 403 : 401).json({
         success: false,
@@ -228,7 +245,7 @@ const hasActionPermission = (user, action) => {
   if (!user) return false;
   
   // Super admin and admin have all actions
-  if (user.role === 'mediqliq_super_admin' || user.role === 'admin') {
+  if (isAdminRole(user)) {
     return true;
   }
 
@@ -261,7 +278,7 @@ exports.requireActionPermission = (action) => {
       return next();
     }
 
-    if (req.user.role === 'mediqliq_super_admin' || req.user.role === 'admin') {
+    if (isAdminRole(req.user)) {
       return next();
     }
 
@@ -294,7 +311,7 @@ exports.hasModuleAccess = (user, moduleKey, minimumAccess = 'view') => {
   if (!user) return false;
   
   // Super admin and admin have all module access
-  if (user.role === 'mediqliq_super_admin' || user.role === 'admin') {
+  if (isAdminRole(user)) {
     return true;
   }
 
@@ -316,7 +333,7 @@ exports.getUserActions = (user) => {
   if (!user) return [];
   
   // Super admin and admin have all actions
-  if (user.role === 'mediqliq_super_admin' || user.role === 'admin') {
+  if (isAdminRole(user)) {
     return [
       'approve',
       'discount_override',
@@ -383,9 +400,9 @@ exports.attachHospitalScope = (req, res, next) => {
   }
 
   req.hospitalScope =
-    req.user?.role === "mediqliq_super_admin"
+    isPlatformAdmin(req.user)
       ? null
-      : req.user?.hospital_id || null;
+      : userHospitalId(req.user);
   return next();
 };
 
@@ -395,11 +412,12 @@ exports.assertHospitalScope = (recordHospitalId) => (req, res, next) => {
     return next();
   }
 
-  if (req.user?.role === "mediqliq_super_admin" || !req.user?.hospital_id) {
+  const hospitalId = userHospitalId(req.user);
+  if (isPlatformAdmin(req.user) || !hospitalId) {
     return next();
   }
 
-  if (recordHospitalId && String(recordHospitalId) !== String(req.user.hospital_id)) {
+  if (recordHospitalId && String(recordHospitalId) !== String(hospitalId)) {
     return res
       .status(403)
       .json({ success: false, error: "Cross-hospital access denied" });
@@ -450,7 +468,7 @@ exports.checkModuleAccess = (user, moduleKey, minimumAccess = "view") => {
   }
 
   // Super admin and admin have all access
-  if (user.role === 'mediqliq_super_admin' || user.role === 'admin') {
+  if (isAdminRole(user)) {
     return true;
   }
 
@@ -472,7 +490,7 @@ exports.isOwner = (param = "id") => (req, res, next) => {
   }
 
   if (
-    ADMIN_ROLES.has(req.user.role) ||
+    isAdminRole(req.user) ||
     String(req.params[param]) === String(req.user._id)
   ) {
     return next();
@@ -493,7 +511,7 @@ exports.isStaff = (req, res, next) => {
     return next();
   }
 
-  return req.user.role === "patient"
+  return normalizedRole(req.user) === "patient"
     ? res.status(403).json({ success: false, error: "Staff privileges required" })
     : next();
 };

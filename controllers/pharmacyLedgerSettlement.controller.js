@@ -1,5 +1,7 @@
 'use strict';
 
+const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
+
 const {
   previewLedgerSettlement,
   postLedgerSettlement,
@@ -27,7 +29,7 @@ function requestContext(req) {
   }
   
   return {
-    hospitalId: req.user?.hospital_id || req.user?.hospitalId || req.body?.hospitalId || req.query?.hospitalId,
+    hospitalId: userHospitalId(req.user) || (isPlatformAdmin(req.user) ? (req.body?.hospitalId || req.query?.hospitalId) : undefined),
     pharmacyId: req.body?.pharmacyId || req.query?.pharmacyId,
     createdBy: userId,
   };

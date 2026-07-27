@@ -22,7 +22,8 @@ const {
   markCompleted
 } = require('../services/abdmIdentityTransaction.service');
 const abdmConfig = require('../config/abdm.config');
-const { assertSameHospital } = require('../utils/hospitalScope');
+const { assertSameHospital, assertUserHospital } = require('../utils/hospitalScope');
+const { abhaStatusFilter, patientSearchConditions } = require('../utils/searchNormalization');
 
 function cleanDigits(value) {
   return String(value || '').replace(/\D/g, '');
@@ -695,42 +696,64 @@ function patientDisplayName(patient) {
 
 exports.searchPatientsByAbha = async (req, res) => {
   try {
-    const hospitalId = req.user.hospital;
+    const hospitalId = assertUserHospital(req.user);
     const { query, status, limit = 20 } = req.query;
     const filter = { hospitalId };
-    if (query) {
-      const escaped = String(query)
-        .trim()
-        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(escaped, 'i');
-      filter.$or = [
-        { 'abha.number': regex },
-        { 'abha.address': regex },
-        { first_name: regex },
-        { last_name: regex },
-        { phone: regex },
-        { patientId: regex },
-        { uhid: regex }
-      ];
-    }
-    if (status) filter['abha.status'] = String(status).toUpperCase();
+    const searchConditions = patientSearchConditions(query);
+    if (searchConditions.length) filter.$or = searchConditions;
+    if (status) filter['abha.status'] = abhaStatusFilter(status);
+
+    const parsedLimit = Number.parseInt(limit, 10);
+    const safeLimit = Math.min(Math.max(Number.isFinite(parsedLimit) ? parsedLimit : 20, 1), 100);
     const patients = await Patient.find(filter)
-      .select(
-        'patientId uhid first_name middle_name last_name phone gender dob patient_type abha registered_at hospitalId'
-      )
+      .select([
+        'patientId',
+        'uhid',
+        'salutation',
+        'first_name',
+        'middle_name',
+        'last_name',
+        'phone',
+        'gender',
+        'dob',
+        'patient_type',
+        'registered_at',
+        'hospitalId',
+        'abha.number',
+        'abha.address',
+        'abha.status',
+        'abha.kycVerified',
+        'abha.registrationMode',
+        'abha.verificationMethod',
+        'abha.verifiedAt',
+        'abha.profile'
+      ].join(' '))
       .sort({ registered_at: -1 })
-      .limit(Math.min(Number(limit) || 20, 100))
+      .limit(safeLimit)
       .lean();
+
     return res.json({
       success: true,
       count: patients.length,
       patients: patients.map((patient) => ({
-        ...patient,
-        name: patientDisplayName(patient)
+        _id: patient._id,
+        patientId: patient.patientId,
+        uhid: patient.uhid,
+        name: patientDisplayName(patient),
+        first_name: patient.first_name,
+        middle_name: patient.middle_name,
+        last_name: patient.last_name,
+        phone: patient.phone,
+        gender: patient.gender,
+        dob: patient.dob,
+        patient_type: patient.patient_type,
+        registered_at: patient.registered_at,
+        hospitalId: patient.hospitalId,
+        abha: safeAbha(patient)
       }))
     });
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 };
 
@@ -935,7 +958,7 @@ exports.getEhrBundle = async (req, res) => {
   try {
     const bundle = await EHRBundle.findOne({
       _id: req.params.bundleId,
-      hospitalId: req.user.hospital
+      hospitalId: assertUserHospital(req.user)
     }).lean();
     if (!bundle) {
       return res.status(404).json({

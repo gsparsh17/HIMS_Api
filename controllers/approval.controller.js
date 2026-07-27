@@ -1,56 +1,67 @@
 const ApprovalRequest = require('../models/ApprovalRequest');
-const Sale = require('../models/Sale');
-const mongoose = require('mongoose');
+const IPDAdmission = require('../models/IPDAdmission');
+const { requestHospitalId } = require('../utils/hospitalScope');
+
+const APPROVAL_STATUSES = {
+  pending: 'Pending',
+  approved: 'Approved',
+  rejected: 'Rejected'
+};
+
+const REQUEST_TYPES = new Set(['DISCOUNT_APPROVAL', 'OTHER']);
+
+function normalizeApprovalStatus(value) {
+  return APPROVAL_STATUSES[String(value || '').trim().toLowerCase()] || null;
+}
+
+function normalizeRequestType(value) {
+  const normalized = String(value || 'DISCOUNT_APPROVAL')
+    .trim()
+    .replace(/[\s-]+/g, '_')
+    .toUpperCase();
+  return REQUEST_TYPES.has(normalized) ? normalized : null;
+}
+
+function sendError(res, error) {
+  return res.status(error.statusCode || 500).json({
+    success: false,
+    error: error.statusCode ? error.message : 'Internal server error'
+  });
+}
 
 exports.createRequest = async (req, res) => {
   try {
-    const { requestType, patientId, admissionId, details } = req.body;
-    
-    console.log("DEBUG: createRequest req.user", req.user);
-    console.log("DEBUG: createRequest req.hospital_id", req.hospital_id);
-    console.log("DEBUG: createRequest req.hospitalId", req.hospitalId);
-    
-    console.log("DEBUG: createRequest req.headers['x-hospital-id']", req.headers['x-hospital-id']);
-    
-    let resolvedHospitalId = req.user?.hospital_id || req.user?.hospitalID || req.hospital_id || req.hospitalId || req.headers['x-hospital-id'] || req.body?.hospitalId;
-    
-    // Fallback: If still undefined, try to get from admission
-    if (!resolvedHospitalId && admissionId) {
-      const IPDAdmission = require('../models/IPDAdmission');
-      const admission = await IPDAdmission.findById(admissionId);
-      if (admission && admission.hospitalId) {
-        resolvedHospitalId = admission.hospitalId;
+    const hospitalId = requestHospitalId(req);
+    const { patientId, admissionId, details } = req.body;
+    const requestType = normalizeRequestType(req.body.requestType);
+    if (!requestType) {
+      return res.status(400).json({ success: false, error: 'Invalid request type.' });
+    }
+
+    if (admissionId) {
+      const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('_id');
+      if (!admission) {
+        return res.status(404).json({ success: false, error: 'Admission not found for this hospital.' });
       }
     }
 
-    // Fallback 2: Get first hospital in DB (for demo accounts missing hospital_id)
-    if (!resolvedHospitalId) {
-      const Hospital = require('../models/Hospital');
-      const hospital = await Hospital.findOne();
-      if (hospital) {
-        resolvedHospitalId = hospital._id;
-      }
-    }
-
-    if (!resolvedHospitalId) {
-      return res.status(400).json({ error: 'Hospital ID is required but could not be resolved from user, headers, body, or admission.' });
-    }
-
-    // Check if there is an existing pending request for this context to avoid duplicates
-    if (admissionId && requestType) {
+    if (admissionId) {
       const existing = await ApprovalRequest.findOne({
-        hospitalId: resolvedHospitalId,
+        hospitalId,
         requestType,
         admissionId,
         status: 'Pending'
       });
       if (existing) {
-        return res.status(400).json({ error: 'A pending approval request already exists for this admission.' });
+        return res.status(409).json({
+          success: false,
+          error: 'A pending approval request already exists for this admission.'
+        });
       }
     }
 
-    const request = new ApprovalRequest({
-      hospitalId: resolvedHospitalId,
+    const request = await ApprovalRequest.create({
+      hospitalId,
       requestType,
       patientId,
       admissionId,
@@ -59,119 +70,101 @@ exports.createRequest = async (req, res) => {
       status: 'Pending'
     });
 
-    await request.save();
-    res.status(201).json({ success: true, request });
-  } catch (err) {
-    console.error('Error creating approval request:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(201).json({ success: true, request });
+  } catch (error) {
+    console.error('Error creating approval request:', error.message);
+    return sendError(res, error);
   }
 };
 
 exports.getRequests = async (req, res) => {
   try {
-    let resolvedHospitalId = req.user?.hospital_id || req.user?.hospitalID || req.hospital_id || req.hospitalId || req.headers['x-hospital-id'] || req.query?.hospitalId;
-    
-    if (!resolvedHospitalId) {
-      const Hospital = require('../models/Hospital');
-      const hospital = await Hospital.findOne();
-      if (hospital) resolvedHospitalId = hospital._id;
+    const hospitalId = requestHospitalId(req);
+    const { admissionId } = req.query;
+    const query = { hospitalId };
+
+    if (req.query.status) {
+      const status = normalizeApprovalStatus(req.query.status);
+      if (!status) return res.status(400).json({ success: false, error: 'Invalid status.' });
+      query.status = status;
     }
 
-    const { status, requestType, admissionId } = req.query;
-    
-    const query = { hospitalId: resolvedHospitalId };
-    if (status) query.status = status;
-    if (requestType) query.requestType = requestType;
+    if (req.query.requestType) {
+      const requestType = normalizeRequestType(req.query.requestType);
+      if (!requestType) {
+        return res.status(400).json({ success: false, error: 'Invalid request type.' });
+      }
+      query.requestType = requestType;
+    }
+
     if (admissionId) query.admissionId = admissionId;
 
     const requests = await ApprovalRequest.find(query)
       .populate('requestedBy', 'name email first_name last_name')
       .populate('approvedBy', 'name email first_name last_name')
-      .populate({
-        path: 'patientId',
-        select: 'first_name last_name patientId uhid phone'
-      })
-      .populate({
-        path: 'admissionId',
-        select: 'admissionNumber'
-      })
+      .populate({ path: 'patientId', select: 'first_name last_name patientId uhid phone' })
+      .populate({ path: 'admissionId', select: 'admissionNumber' })
       .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, requests });
-  } catch (err) {
-    console.error('Error fetching approval requests:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(200).json({ success: true, requests });
+  } catch (error) {
+    console.error('Error fetching approval requests:', error.message);
+    return sendError(res, error);
   }
 };
 
 exports.updateRequestStatus = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { status, rejectionReason } = req.body;
-
-    if (!['Approved', 'Rejected'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status update.' });
-    }
-
-    let resolvedHospitalId = req.user?.hospital_id || req.user?.hospitalID || req.hospital_id || req.hospitalId || req.headers['x-hospital-id'] || req.body?.hospitalId;
-    if (!resolvedHospitalId) {
-      const Hospital = require('../models/Hospital');
-      const hospital = await Hospital.findOne();
-      if (hospital) resolvedHospitalId = hospital._id;
+    const hospitalId = requestHospitalId(req);
+    const status = normalizeApprovalStatus(req.body.status);
+    if (!status || status === 'Pending') {
+      return res.status(400).json({ success: false, error: 'Status must be Approved or Rejected.' });
     }
 
     const request = await ApprovalRequest.findOne({
-      _id: id,
-      hospitalId: resolvedHospitalId
+      _id: req.params.id,
+      hospitalId
     });
 
-    if (!request) {
-      return res.status(404).json({ error: 'Request not found.' });
-    }
-
+    if (!request) return res.status(404).json({ success: false, error: 'Request not found.' });
     if (request.status !== 'Pending') {
-      return res.status(400).json({ error: 'Request is already processed.' });
+      return res.status(409).json({ success: false, error: 'Request is already processed.' });
     }
 
     request.status = status;
     request.approvedBy = req.user._id;
     request.approvedAt = new Date();
-    
-    if (status === 'Rejected' && rejectionReason) {
-      request.rejectionReason = rejectionReason;
+    if (status === 'Rejected' && req.body.rejectionReason) {
+      request.rejectionReason = req.body.rejectionReason;
     }
 
     await request.save();
-    res.status(200).json({ success: true, request });
-  } catch (err) {
-    console.error('Error updating approval request:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(200).json({ success: true, request });
+  } catch (error) {
+    console.error('Error updating approval request:', error.message);
+    return sendError(res, error);
   }
 };
 
 exports.deleteRequest = async (req, res) => {
   try {
-    let resolvedHospitalId = req.user?.hospital_id || req.user?.hospitalID || req.hospital_id || req.hospitalId || req.headers['x-hospital-id'] || req.query?.hospitalId;
-    if (!resolvedHospitalId) {
-      const Hospital = require('../models/Hospital');
-      const hospital = await Hospital.findOne();
-      if (hospital) resolvedHospitalId = hospital._id;
-    }
-
-    const { id } = req.params;
+    const hospitalId = requestHospitalId(req);
     const request = await ApprovalRequest.findOneAndDelete({
-      _id: id,
-      hospitalId: resolvedHospitalId,
+      _id: req.params.id,
+      hospitalId,
       status: 'Pending'
     });
 
     if (!request) {
-      return res.status(404).json({ error: 'Pending request not found or already processed.' });
+      return res.status(404).json({
+        success: false,
+        error: 'Pending request not found or already processed.'
+      });
     }
 
-    res.status(200).json({ success: true, message: 'Request cancelled successfully.' });
-  } catch (err) {
-    console.error('Error deleting approval request:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(200).json({ success: true, message: 'Request cancelled successfully.' });
+  } catch (error) {
+    console.error('Error deleting approval request:', error.message);
+    return sendError(res, error);
   }
 };

@@ -18,6 +18,7 @@ const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
 const IPDCharge = require('../models/IPDCharge');
 const Hospital = require('../models/Hospital');
+const { userHospitalId } = require('../utils/hospitalScope');
 const Doctor = require('../models/Doctor');
 const {
   objectIdOrUndefined,
@@ -2373,7 +2374,7 @@ exports.getInventoryBatches = asyncHandler(async (req, res) => {
 
 // ========== NEW: Get Hospital Details ==========
 exports.getHospitalDetails = asyncHandler(async (req, res) => {
-  const hospitalId = req.user?.hospital_id || req.user?.hospitalId;
+  const hospitalId = userHospitalId(req.user);
 
   if (!hospitalId) {
     // Return default if no hospital ID found

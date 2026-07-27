@@ -9,6 +9,7 @@ const Sale = require('../models/Sale');
 const { money, nextFinancialNumber } = require('../utils/financeNumbers');
 const { quotePricing } = require('./pricingEngine.service');
 const SponsorLedgerEntry = require('../models/SponsorLedgerEntry');
+const { userHospitalId } = require('../utils/hospitalScope');
 
 const ACTIVE_CHARGE_FILTER = {
   $or: [
@@ -124,7 +125,7 @@ function sessionOptions(session) {
 
 async function findAdmission(admissionId, session, user) {
   const filter = { _id: admissionId };
-  const hospitalId = user?.hospital_id || user?.hospitalId || user?.hospitalID;
+  const hospitalId = userHospitalId(user);
 
   if (hospitalId) {
     filter.hospitalId = hospitalId;
@@ -1301,9 +1302,9 @@ async function createCreditNote(invoiceId, payload, user) {
       throw error;
     }
 
-    const userHospitalId = user?.hospital_id || user?.hospitalId || user?.hospitalID;
+    const scopedHospitalId = userHospitalId(user);
 
-    if (userHospitalId && String(invoice.hospital_id) !== String(userHospitalId)) {
+    if (scopedHospitalId && String(invoice.hospital_id) !== String(scopedHospitalId)) {
       const error = new Error('Invoice not found in this hospital');
       error.statusCode = 404;
       throw error;
