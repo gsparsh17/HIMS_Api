@@ -33,7 +33,7 @@ const schema = new mongoose.Schema(
     validation: mongoose.Schema.Types.Mixed,
     receivedAt: { type: Date, default: Date.now },
     importedAt: { type: Date, default: Date.now },
-    purgeAt: { type: Date, index: true }
+    purgeAt: { type: Date }
   },
   { timestamps: true }
 );

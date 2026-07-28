@@ -20,7 +20,7 @@ const abdmLinkAuthenticationSchema = new mongoose.Schema(
     careContextReferences: [{ type: String }],
     otpHash: { type: String, required: true, select: false },
     otpSalt: { type: String, required: true, select: false },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
     attempts: { type: Number, default: 0 },
     maxAttempts: { type: Number, default: 5 },
     status: {

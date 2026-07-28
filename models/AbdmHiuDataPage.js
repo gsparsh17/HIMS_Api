@@ -30,7 +30,7 @@ const schema = new mongoose.Schema(
     entryCount: { type: Number, required: true, min: 0 },
     payloadHash: { type: String, required: true },
     encryptedPayload: { type: encryptedBlobSchema, required: true, select: false },
-    purgeAt: { type: Date, required: true, index: true }
+    purgeAt: { type: Date, required: true }
   },
   { timestamps: true }
 );

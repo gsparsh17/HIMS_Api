@@ -76,7 +76,7 @@ const schema = new mongoose.Schema(
     lastOtpSentAt: Date,
     lastAttemptAt: Date,
     completedAt: Date,
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
     consent: consentEvidenceSchema,
     requestContext: {
       requestId: String,

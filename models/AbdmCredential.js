@@ -28,7 +28,7 @@ const schema = new mongoose.Schema(
     encryptedSession: { type: encryptedBlobSchema, required: true, select: false },
     accessExpiresAt: Date,
     refreshExpiresAt: Date,
-    purgeAt: { type: Date, required: true, index: true },
+    purgeAt: { type: Date, required: true },
     scopes: [String],
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },

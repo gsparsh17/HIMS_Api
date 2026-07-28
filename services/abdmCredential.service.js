@@ -42,6 +42,8 @@ function tokenExpiresAt({ token, expiresIn, fallbackSeconds, now = Date.now() })
 }
 
 function normalizeSession(tokens = {}, now = Date.now()) {
+  if (typeof tokens === 'string') tokens = { token: tokens };
+
   const accessToken =
     tokens.token || tokens.accessToken || tokens.xToken || tokens.access_token;
   const refreshToken = tokens.refreshToken || tokens.refresh_token;
@@ -70,6 +72,50 @@ function normalizeSession(tokens = {}, now = Date.now()) {
     accessExpiresAt,
     refreshExpiresAt: refreshExpiresAt || accessExpiresAt,
     scopes: tokens.scopes || tokens.scope || []
+  };
+}
+
+function extractTokenPayload(response) {
+  const candidates = [
+    response?.tokens,
+    response?.data?.tokens,
+    response?.result?.tokens,
+    response?.response?.tokens,
+    response?.payload?.tokens,
+    response?.data,
+    response?.result,
+    response?.response,
+    response?.payload,
+    response
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (typeof candidate === 'string') return { token: candidate };
+    if (typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+
+    const accessToken =
+      candidate.token ||
+      candidate.accessToken ||
+      candidate.xToken ||
+      candidate.access_token;
+    if (accessToken) return candidate;
+  }
+
+  return null;
+}
+
+function tokenResponseShape(response) {
+  const keys = (value) =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.keys(value)
+      : [];
+
+  return {
+    topLevelKeys: keys(response),
+    dataKeys: keys(response?.data),
+    tokensKeys: keys(response?.tokens),
+    nestedTokenKeys: keys(response?.data?.tokens)
   };
 }
 
@@ -250,7 +296,17 @@ async function performRefresh(patientId, session, updatedBy) {
     const data = await abdmGet('/v3/profile/account/request/token', {
       'R-token': `Bearer ${session.refreshToken}`
     });
-    const tokens = data?.tokens || data?.token || data;
+    const tokens = extractTokenPayload(data);
+    if (!tokens) {
+      const error = new Error(
+        'ABDM refresh response did not contain a patient access token'
+      );
+      error.statusCode = 502;
+      error.code = 'ABDM_REFRESH_TOKEN_RESPONSE_INVALID';
+      error.details = tokenResponseShape(data);
+      throw error;
+    }
+
     await persistPatientSession({
       patientId,
       hospitalId: session.hospitalId,
@@ -321,6 +377,7 @@ async function clearPatientSession(patientId) {
 }
 
 module.exports = {
+  extractTokenPayload,
   normalizeSession,
   sessionStatusFromDates,
   storePatientSession,
