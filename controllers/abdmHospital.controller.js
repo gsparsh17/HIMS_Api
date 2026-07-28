@@ -25,6 +25,60 @@ function abdmGender(value) {
   return 'O';
 }
 
+function abdmLinkingIdentity(patient) {
+  const digits = String(patient?.abha?.number || '').replace(/\D/g, '');
+  if (digits.length !== 14) {
+    const error = new Error(
+      'A valid 14-digit ABHA number is required for HIP care-context linking'
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const dob = patient?.dob ? new Date(patient.dob) : null;
+  const yearOfBirth =
+    dob && !Number.isNaN(dob.getTime()) ? dob.getUTCFullYear() : NaN;
+  if (!Number.isInteger(yearOfBirth)) {
+    const error = new Error(
+      'A valid patient date of birth is required for HIP care-context linking'
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const name = [
+    patient?.first_name,
+    patient?.middle_name,
+    patient?.last_name
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+
+  if (!name) {
+    const error = new Error(
+      'Patient name is required for HIP care-context linking'
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    // The official ABDM M2 request expects the 14-digit ABHA number as JSON number.
+    abhaNumber: Number(digits),
+    ...(patient?.abha?.address
+      ? {
+          abhaAddress: String(patient.abha.address)
+            .trim()
+            .toLowerCase()
+        }
+      : {}),
+    name,
+    gender: abdmGender(patient?.gender),
+    yearOfBirth
+  };
+}
+
 async function scopedPatient(patientId, user) {
   const patient = await Patient.findById(patientId);
   if (!patient) {
@@ -34,6 +88,90 @@ async function scopedPatient(patientId, user) {
   }
   assertSameHospital(patient.hospitalId, user);
   return patient;
+}
+
+
+function patientAuthTokenMetadata(token) {
+  const raw = String(token || '')
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  try {
+    const parts = raw.split('.');
+    if (parts.length !== 3) return { raw, jwt: false };
+
+    const payload = JSON.parse(
+      Buffer.from(parts[1], 'base64url').toString('utf8')
+    );
+
+    return {
+      raw,
+      jwt: true,
+      clientId: payload.clientId || payload.client_id || null,
+      system: payload.system || null,
+      type: payload.typ || null,
+      expiresAt: payload.exp
+        ? new Date(Number(payload.exp) * 1000)
+        : null
+    };
+  } catch (_error) {
+    return { raw, jwt: false };
+  }
+}
+
+function requireHiecmPatientAuthToken(token) {
+  const metadata = patientAuthTokenMetadata(token);
+
+  if (!metadata.raw || !metadata.jwt) {
+    const error = new Error(
+      'A valid ABDM PHR/HIE-CM patient authentication JWT is required'
+    );
+    error.statusCode = 401;
+    error.code = 'ABDM_PHR_AUTH_REQUIRED';
+    throw error;
+  }
+
+  const clientId = String(metadata.clientId || '').toLowerCase();
+  const system = String(metadata.system || '').toUpperCase();
+
+  // Tokens issued for the M1 ABHA profile API are not valid as HIE-CM
+  // X-AUTH-TOKEN values. The existing ABHA-address login OTP flow issues
+  // the PHR-WEB/ABDM patient token required for running-token operations.
+  if (clientId === 'abha-profile-app-api' || system === 'ABHA-N') {
+    const error = new Error(
+      'The stored token is an M1 ABHA profile token. Complete ABHA Address/PHR login by OTP before requesting running-token status.'
+    );
+    error.statusCode = 409;
+    error.code = 'ABDM_PHR_AUTH_REQUIRED';
+    error.details = {
+      requiredFlow: 'ABHA_ADDRESS_LOGIN',
+      endpoints: [
+        '/api/abha/login/address/search',
+        '/api/abha/login/address/request-otp',
+        '/api/abha/login/address/verify-otp'
+      ]
+    };
+    throw error;
+  }
+
+  if (
+    metadata.expiresAt &&
+    !Number.isNaN(metadata.expiresAt.getTime()) &&
+    metadata.expiresAt.getTime() <= Date.now()
+  ) {
+    const error = new Error(
+      'The ABDM PHR/HIE-CM patient authentication token has expired'
+    );
+    error.statusCode = 401;
+    error.code = 'ABDM_PHR_AUTH_REQUIRED';
+    error.details = {
+      reason: 'PHR_TOKEN_EXPIRED',
+      requiredFlow: 'ABHA_ADDRESS_LOGIN'
+    };
+    throw error;
+  }
+
+  return metadata.raw;
 }
 
 exports.integrationStatus = async (_req, res) => {
@@ -150,15 +288,7 @@ exports.initiateHipLinking = async (req, res) => {
       });
     }
 
-    const body = {
-      ...(patient.abha?.number ? { abhaNumber: patient.abha.number } : {}),
-      ...(patient.abha?.address ? { abhaAddress: patient.abha.address } : {}),
-      name: [patient.first_name, patient.middle_name, patient.last_name]
-        .filter(Boolean)
-        .join(' '),
-      gender: abdmGender(patient.gender),
-      yearOfBirth: new Date(patient.dob).getFullYear()
-    };
+    const body = abdmLinkingIdentity(patient);
 
     const result = await masterRequest('/internal/abdm/m2/action', {
       method: 'POST',
@@ -350,15 +480,23 @@ exports.requestRunningTokenStatus = async (req, res) => {
   try {
     const patient = await scopedPatient(req.params.patientId, req.user);
     assertAbdmExchangeEligible(patient);
-    const result = await withPatientAccessToken(patient._id, (token) =>
-      masterRequest('/internal/abdm/m3/action', {
-        method: 'POST',
-        body: {
-          action: 'REQUEST_RUNNING_TOKEN_STATUS',
-          authToken: token,
-          body: { hipId: abdmConfig.hipId, context: String(req.body.context || '1') }
-        }
-      }), { updatedBy: req.user._id }
+    const result = await withPatientAccessToken(
+      patient._id,
+      (token) => {
+        const patientAuthToken = requireHiecmPatientAuthToken(token);
+        return masterRequest('/internal/abdm/m3/action', {
+          method: 'POST',
+          body: {
+            action: 'REQUEST_RUNNING_TOKEN_STATUS',
+            authToken: patientAuthToken,
+            body: {
+              hipId: abdmConfig.hipId,
+              context: String(req.body.context || '1')
+            }
+          }
+        });
+      },
+      { updatedBy: req.user._id }
     );
     return res.status(202).json({ success: true, requestId: result.requestId });
   } catch (error) {

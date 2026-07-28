@@ -339,7 +339,7 @@ exports.enrolByAadhaarOtp = async (req, res) => {
       credential: await getPatientSessionStatus(saved._id)
     });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({
       success: false,
       error: error.message,
@@ -474,7 +474,8 @@ exports.requestExistingAbhaOtp = async (req, res) => {
     }).sort({ createdAt: -1 });
     if (previousLogin) await assertResendAllowed(previousLogin);
     const encryptedIndex = await encryptForAbdm(String(index));
-    const data = await abdmPost(config.requestPath || '/v3/profile/login/request/otp', {
+
+    const data = await abdmPost('/v3/profile/login/request/otp', {
       scope: ['abha-login', 'search-abha', 'mobile-verify'],
       loginHint: 'index',
       loginId: encryptedIndex,
@@ -549,7 +550,7 @@ exports.verifyExistingAbhaOtp = async (req, res) => {
       credential: await getPatientSessionStatus(saved._id)
     });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -647,7 +648,7 @@ exports.verifyMobileOtp = async (req, res) => {
     await markCompleted(transaction);
     return res.json({ success: true, message: data.message || 'Mobile verified' });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -762,7 +763,7 @@ exports.getProfile = async (req, res) => {
             'abha.identityReconciliation.score': error.details?.score
           }
         }
-      ).catch(() => {});
+      ).catch(() => { });
     }
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
@@ -783,7 +784,7 @@ exports.logoutProfile = async (req, res) => {
     return res.json({ success: true, message: 'ABHA profile session logged out' });
   } catch (error) {
     if (error.code === 'ABHA_REAUTH_REQUIRED') {
-      await clearPatientSession(req.params.patientId).catch(() => {});
+      await clearPatientSession(req.params.patientId).catch(() => { });
       return res.json({ success: true, message: 'ABHA profile session was already expired' });
     }
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
@@ -1096,8 +1097,8 @@ exports.requestAdvancedLogin = async (req, res) => {
       config.requestPath || '/v3/profile/login/request/otp',
       {
         scope: config.scope,
-      loginHint: config.loginHint,
-      loginId: encryptedLoginId,
+        loginHint: config.loginHint,
+        loginId: encryptedLoginId,
         otpSystem: config.otpSystem
       }
     );
@@ -1188,7 +1189,7 @@ exports.verifyAdvancedLogin = async (req, res) => {
     await transaction.save();
     return res.json({ success: true, selectionRequired: true, txnId: transaction.txnId, accounts });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -1223,7 +1224,7 @@ exports.completeAdvancedLoginUser = async (req, res) => {
     await markCompleted(transaction, { selectedAbhaNumber: abhaNumber });
     return res.json({ success: true, abha: safeAbha(saved) });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -1282,7 +1283,7 @@ exports.verifyPasswordLogin = async (req, res) => {
     await markCompleted(transaction);
     return res.json({ success: true, abha: safeAbha(saved) });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -1327,7 +1328,7 @@ exports.verifyDocumentEnrollmentOtp = async (req, res) => {
     await transaction.save();
     return res.json({ success: true, txnId: data.txnId || transaction.txnId, message: data.message });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -1352,7 +1353,7 @@ exports.enrolByDocument = async (req, res) => {
     await markCompleted(transaction);
     return res.json({ success: true, message: data.message, abha: safeAbha(saved) });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -1428,7 +1429,7 @@ exports.enrolByBiometric = async (req, res) => {
     if (transaction) await markCompleted(transaction);
     return res.json({ success: true, message: data.message, abha: safeAbha(saved) });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -1480,7 +1481,7 @@ exports.verifyAbhaAddressLoginOtp = async (req, res) => {
     await markCompleted(transaction);
     return res.json({ success: true, abha: safeAbha(saved) });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };

@@ -2,7 +2,12 @@ const mongoose = require('mongoose');
 
 const recordReferenceSchema = new mongoose.Schema(
   {
-    hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
+    hospitalId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Hospital',
+      required: true,
+      index: true
+    },
     model: String,
     recordId: mongoose.Schema.Types.ObjectId
   },
@@ -11,7 +16,18 @@ const recordReferenceSchema = new mongoose.Schema(
 
 const abdmCareContextSchema = new mongoose.Schema(
   {
-    patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
+    hospitalId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Hospital',
+      required: true,
+      index: true
+    },
+    patientId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Patient',
+      required: true,
+      index: true
+    },
     patientReference: { type: String, required: true, index: true },
     referenceNumber: { type: String, required: true, index: true },
     display: { type: String, required: true },
@@ -37,7 +53,12 @@ const abdmCareContextSchema = new mongoose.Schema(
     abhaNumber: { type: String, index: true },
     linkStatus: {
       type: String,
-      enum: ['LOCAL_RECORD_READY', 'ABDM_LINK_PENDING', 'ABDM_LINKED', 'ABDM_LINK_FAILED'],
+      enum: [
+        'LOCAL_RECORD_READY',
+        'ABDM_LINK_PENDING',
+        'ABDM_LINKED',
+        'ABDM_LINK_FAILED'
+      ],
       default: 'LOCAL_RECORD_READY',
       index: true
     },
@@ -52,7 +73,15 @@ const abdmCareContextSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-abdmCareContextSchema.index({ hospitalId: 1, referenceNumber: 1 }, { unique: true });
-abdmCareContextSchema.index({ hospitalId: 1, patientId: 1, hiType: 1, createdAt: -1 });
+abdmCareContextSchema.index(
+  { hospitalId: 1, referenceNumber: 1 },
+  { unique: true }
+);
+abdmCareContextSchema.index({
+  hospitalId: 1,
+  patientId: 1,
+  hiType: 1,
+  createdAt: -1
+});
 
 module.exports = mongoose.model('AbdmCareContext', abdmCareContextSchema);

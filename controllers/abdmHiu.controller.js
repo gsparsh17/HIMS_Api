@@ -48,34 +48,74 @@ exports.createConsentRequest = async (req, res) => {
 };
 
 exports.listConsents = async (req, res) => {
-  const { page, limit, skip } = pagination(req);
-  const filter = { hospitalId: assertUserHospital(req.user), role: 'HIU' };
-  if (req.query.patientId) filter.patientId = req.query.patientId;
-  if (req.query.status) filter.status = String(req.query.status).toUpperCase();
-  const [items, total] = await Promise.all([
-    AbdmHospitalConsent.find(filter)
-      .select('-encryptedArtefact')
-      .populate('patientId', 'patientId uhid first_name middle_name last_name abha')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    AbdmHospitalConsent.countDocuments(filter)
-  ]);
-  return res.json({ success: true, page, limit, total, consents: items });
+  try {
+    const { page, limit, skip } = pagination(req);
+    const filter = {
+      hospitalId: assertUserHospital(req.user),
+      role: 'HIU'
+    };
+    if (req.query.patientId) filter.patientId = req.query.patientId;
+    if (req.query.status) {
+      filter.status = String(req.query.status).toUpperCase();
+    }
+
+    const [items, total] = await Promise.all([
+      AbdmHospitalConsent.find(filter)
+        .populate(
+          'patientId',
+          'patientId uhid first_name middle_name last_name abha'
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      AbdmHospitalConsent.countDocuments(filter)
+    ]);
+
+    return res.json({
+      success: true,
+      page,
+      limit,
+      total,
+      consents: items
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      details: error.details
+    });
+  }
 };
 
 exports.getConsent = async (req, res) => {
-  const consent = await AbdmHospitalConsent.findOne({
-    _id: req.params.consentId,
-    hospitalId: assertUserHospital(req.user),
-    role: 'HIU'
-  })
-    .select('-encryptedArtefact')
-    .populate('patientId', 'patientId uhid first_name middle_name last_name abha')
-    .lean();
-  if (!consent) return res.status(404).json({ success: false, error: 'Consent not found' });
-  return res.json({ success: true, consent });
+  try {
+    const consent = await AbdmHospitalConsent.findOne({
+      _id: req.params.consentId,
+      hospitalId: assertUserHospital(req.user),
+      role: 'HIU'
+    })
+      .populate(
+        'patientId',
+        'patientId uhid first_name middle_name last_name abha'
+      )
+      .lean();
+
+    if (!consent) {
+      return res.status(404).json({
+        success: false,
+        error: 'Consent not found'
+      });
+    }
+
+    return res.json({ success: true, consent });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      details: error.details
+    });
+  }
 };
 
 exports.refreshConsentStatus = async (req, res) => {
@@ -130,22 +170,42 @@ exports.requestHealthInformation = async (req, res) => {
 };
 
 exports.listRequests = async (req, res) => {
-  const { page, limit, skip } = pagination(req);
-  const filter = { hospitalId: assertUserHospital(req.user) };
-  if (req.query.patientId) filter.patientId = req.query.patientId;
-  if (req.query.consentId) filter.consentId = req.query.consentId;
-  if (req.query.status) filter.status = String(req.query.status).toUpperCase();
-  const [items, total] = await Promise.all([
-    AbdmHiuRequest.find(filter)
-      .select('-encryptedPrivateMaterial')
-      .populate('patientId', 'patientId uhid first_name middle_name last_name')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    AbdmHiuRequest.countDocuments(filter)
-  ]);
-  return res.json({ success: true, page, limit, total, requests: items });
+  try {
+    const { page, limit, skip } = pagination(req);
+    const filter = { hospitalId: assertUserHospital(req.user) };
+    if (req.query.patientId) filter.patientId = req.query.patientId;
+    if (req.query.consentId) filter.consentId = req.query.consentId;
+    if (req.query.status) {
+      filter.status = String(req.query.status).toUpperCase();
+    }
+
+    const [items, total] = await Promise.all([
+      AbdmHiuRequest.find(filter)
+        .populate(
+          'patientId',
+          'patientId uhid first_name middle_name last_name'
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      AbdmHiuRequest.countDocuments(filter)
+    ]);
+
+    return res.json({
+      success: true,
+      page,
+      limit,
+      total,
+      requests: items
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      details: error.details
+    });
+  }
 };
 
 exports.listImportedRecords = async (req, res) => {
@@ -161,7 +221,6 @@ exports.listImportedRecords = async (req, res) => {
     if (req.query.includeInactive !== 'true') filter.status = 'ACTIVE';
     const [items, total] = await Promise.all([
       AbdmImportedRecord.find(filter)
-        .select('-encryptedFhirBundle')
         .sort({ recordDate: -1, importedAt: -1 })
         .skip(skip)
         .limit(limit)
