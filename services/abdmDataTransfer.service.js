@@ -4,6 +4,9 @@ const abdmConfig = require('../config/abdm.config');
 const { assertSafeOutboundUrl } = require('../utils/safeOutboundUrl');
 const { assertValidBundle } = require('./abdmFhirValidation.service');
 const { encryptHealthInformation } = require('./abdmCryptoAdapter.service');
+const { recordDisclosure } = require('./abdmPacket.service');
+const { canonicalJson, sha256 } = require('../utils/abdmCanonical');
+const { OUTBOUND_POLICIES } = require('../utils/safeOutboundUrl');
 
 const fetchFn = (...args) => {
   if (typeof fetch === 'function') return fetch(...args);
@@ -60,7 +63,8 @@ async function pushHealthInformation({
   transactionId,
   dataPushUrl,
   peerKeyMaterial,
-  records
+  records,
+  consent
 }) {
   if (!Array.isArray(records) || records.length === 0) {
     throw new Error('No health-information records were supplied');
@@ -68,7 +72,7 @@ async function pushHealthInformation({
 
   const idempotencyKey = checksum(
     `${consentId}:${transactionId}:${records
-      .map((item) => item.careContextReference)
+      .map((item) => `${item.careContextReference}:${item.bundleHash || ''}`)
       .sort()
       .join(',')}`
   );
@@ -89,7 +93,8 @@ async function pushHealthInformation({
       requireHttps: process.env.NODE_ENV === 'production',
       allowPrivate:
         process.env.NODE_ENV !== 'production' &&
-        abdmConfig.allowPrivateDataPushUrls
+        abdmConfig.allowPrivateDataPushUrls,
+      policy: OUTBOUND_POLICIES.PUBLIC_DATA_PUSH
     })
   );
 
@@ -103,6 +108,13 @@ async function pushHealthInformation({
       patientId,
       hiTypes: records.map((item) => item.hiType),
       careContextReferences: records.map((item) => item.careContextReference),
+      packetIds: records.map((item) => item.packetId).filter(Boolean),
+      packetVersionIds: records.map((item) => item.packetVersionId).filter(Boolean),
+      bundleHashes: records.map((item) => item.bundleHash).filter(Boolean),
+      sourceSnapshotHashes: records.map((item) => item.sourceSnapshotHash).filter(Boolean),
+      consentScopeHash: records.find((item) => item.consentScopeHash)?.consentScopeHash,
+      validationEvidence: records.map((item) => item.validationEvidence).filter(Boolean),
+      approvalActorIds: records.flatMap((item) => item.approvalIds || []),
       status: 'PREPARING',
       recordCount: records.length,
       destinationHost: parsed.hostname,
@@ -117,6 +129,23 @@ async function pushHealthInformation({
       const bundle = typeof record.content === 'string'
         ? JSON.parse(record.content)
         : record.content;
+      const actualBundleHash = sha256(canonicalJson(bundle));
+      if (record.bundleHash && record.bundleHash !== actualBundleHash) {
+        const error = new Error(`Approved ABDM packet hash changed for ${record.careContextReference}`);
+        error.code = 'ABDM_PACKET_INTEGRITY_FAILED';
+        error.statusCode = 409;
+        throw error;
+      }
+      if (abdmConfig.packetFeatureEnabled && abdmConfig.packetDefaultReviewPolicy !== 'PREVIEW_ONLY') {
+        if (!record.packetVersionId || !record.packetId || !record.bundleHash) {
+          const error = new Error(`Approved ABDM packet evidence is missing for ${record.careContextReference}`);
+          error.code = 'ABDM_PACKET_APPROVAL_REQUIRED';
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+      // Revalidate immediately before encryption. This catches validator package
+      // changes and protects against data mutation between approval and transfer.
       // eslint-disable-next-line no-await-in-loop
       record.validation = await assertValidBundle(bundle);
     }
@@ -160,6 +189,14 @@ async function pushHealthInformation({
     transfer.completedAt = new Date();
     transfer.acknowledgement = { pages: acknowledgements };
     await transfer.save();
+    await recordDisclosure({
+      hospitalId,
+      patientId,
+      transfer,
+      consent: consent || { consentId },
+      records,
+      outcome: 'SUCCESS'
+    });
     return { transfer, acknowledgement: transfer.acknowledgement };
   } catch (error) {
     transfer.status = 'FAILED';

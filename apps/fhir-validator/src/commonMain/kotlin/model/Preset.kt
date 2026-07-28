@@ -1,0 +1,46 @@
+package model
+
+import kotlinx.serialization.Contextual
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class Preset (
+    val key: String,
+    val localizedLabels: Map<String, String>,
+    // org.hl7.fhir.* deprecation is intentional pending upstream API updates.
+    // Kotlin also substitutes ValidationContext in common code triggering
+    //   TYPEALIAS_EXPANSION_DEPRECATION.
+    @Suppress("TYPEALIAS_EXPANSION_DEPRECATION")
+    @Contextual val validationContext: ValidationContext,
+    val igPackageInfo: Set<PackageInfo>,
+    val extensionSet: Set<String>,
+    val profileSet: Set<String>
+) {
+    companion object {
+        fun getSelectedPreset(key: String?, presets: List<Preset>): Preset? {
+            for (preset in presets) {
+                if (key == preset.key) {
+                    return preset
+                }
+            }
+            return null
+        }
+
+        // org.hl7.fhir.* deprecation is intentional pending upstream API updates.
+        // Kotlin also substitutes ValidationContext in common code triggering
+        //   TYPEALIAS_EXPANSION_DEPRECATION.
+        @Suppress("TYPEALIAS_EXPANSION_DEPRECATION")
+        fun getLocalizedValidationContextFromPresets(validationContext: ValidationContext, presets: List<Preset>): ValidationContext? {
+            if (presets.isEmpty() || validationContext.getBaseEngine() == null) {
+                return validationContext
+            }
+            val presetValidationContext = getSelectedPreset(validationContext.getBaseEngine(), presets)?.validationContext
+            if (presetValidationContext != null) {
+                return ValidationContext()
+                    .setLocale(validationContext.getLanguageCode())
+                    .setBaseEngine(validationContext.getBaseEngine())
+            }
+            return presetValidationContext
+        }
+    }
+}

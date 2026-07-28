@@ -1,0 +1,24 @@
+FROM gradle:8.10.2-jdk17-alpine AS build
+WORKDIR /src
+COPY . .
+RUN ./gradlew --no-daemon clean jvmJar
+
+FROM eclipse-temurin:17-jre-alpine
+ARG APP_USER=validator
+RUN addgroup -S ${APP_USER} && adduser -S ${APP_USER} -G ${APP_USER} \
+    && mkdir -p /app /home/${APP_USER}/.fhir/packages/ndhm.in#6.5.0 \
+    && chown -R ${APP_USER}:${APP_USER} /app /home/${APP_USER}
+COPY --from=build /src/build/libs/validator-wrapper-jvm-*.jar /app/validator-wrapper.jar
+COPY ndhm.in-6.5.0.tgz /tmp/ndhm.in-6.5.0.tgz
+RUN tar -xzf /tmp/ndhm.in-6.5.0.tgz -C /home/${APP_USER}/.fhir/packages/ndhm.in#6.5.0 \
+    && rm /tmp/ndhm.in-6.5.0.tgz \
+    && chown -R ${APP_USER}:${APP_USER} /home/${APP_USER}/.fhir
+USER ${APP_USER}
+WORKDIR /app
+ENV KTOR_DEPLOYMENT_ENVIRONMENT=prod \
+    KTOR_DEPLOYMENT_PROD_HOST=0.0.0.0 \
+    KTOR_DEPLOYMENT_PROD_PORT=3500 \
+    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+CrashOnOutOfMemoryError"
+EXPOSE 3500
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -q -O- http://127.0.0.1:3500/validator/version >/dev/null || exit 1
+ENTRYPOINT ["java","-jar","/app/validator-wrapper.jar","-startServer"]

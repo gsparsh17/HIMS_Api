@@ -1,26 +1,43 @@
 const abdmConfig = require('../config/abdm.config');
-const { assertSafeOutboundUrl } = require('../utils/safeOutboundUrl');
+const {
+  OUTBOUND_POLICIES,
+  assertSafeOutboundUrl
+} = require('../utils/safeOutboundUrl');
+const { canonicalJson, sha256, timingSafeEqualText } = require('../utils/abdmCanonical');
+const { PROFILE_NAMES } = require('../config/abdm.profiles');
 
 const fetchFn = (...args) => {
   if (typeof fetch === 'function') return fetch(...args);
   return import('node-fetch').then(({ default: fetchImpl }) => fetchImpl(...args));
 };
 
+const DOCUMENT_BUNDLE_PROFILE = `${abdmConfig.fhirProfileBase}/DocumentBundle`;
 const PROFILE_REQUIREMENTS = {
   PRESCRIPTIONRECORD: ['MedicationRequest'],
   DIAGNOSTICREPORTRECORD: ['DiagnosticReport'],
   OPCONSULTRECORD: ['Encounter'],
-  DISCHARGESUMMARYRECORD: ['DocumentReference'],
+  DISCHARGESUMMARYRECORD: ['Encounter'],
   IMMUNIZATIONRECORD: ['Immunization'],
   HEALTHDOCUMENTRECORD: ['DocumentReference'],
   WELLNESSRECORD: ['Observation'],
   INVOICERECORD: ['Invoice']
 };
 
-function allProfiles(bundle, composition) {
-  return [...(bundle?.meta?.profile || []), ...(composition?.meta?.profile || [])]
-    .map(String)
-    .map((value) => value.toUpperCase());
+function profileNameFromUrl(value) {
+  return String(value || '').split('/').pop().split('|')[0].toUpperCase();
+}
+
+function compositionProfile(composition) {
+  return (composition?.meta?.profile || [])
+    .map(profileNameFromUrl)
+    .find((name) => Object.prototype.hasOwnProperty.call(PROFILE_REQUIREMENTS, name)) || null;
+}
+
+function walkReferences(value, visitor) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) return value.forEach((item) => walkReferences(item, visitor));
+  if (typeof value.reference === 'string') visitor(value);
+  Object.values(value).forEach((item) => walkReferences(item, visitor));
 }
 
 function structuralValidation(bundle) {
@@ -29,14 +46,17 @@ function structuralValidation(bundle) {
   if (!bundle || bundle.resourceType !== 'Bundle') errors.push('FHIR document must be a Bundle');
   if (bundle?.type !== 'document') errors.push('FHIR Bundle.type must be document');
   if (!Array.isArray(bundle?.entry) || bundle.entry.length === 0) errors.push('FHIR Bundle.entry must contain resources');
+  if (!bundle?.meta?.versionId) errors.push('FHIR Bundle.meta.versionId is required');
+  if (!(bundle?.meta?.profile || []).some((profile) => String(profile).split('|')[0] === DOCUMENT_BUNDLE_PROFILE)) {
+    errors.push('FHIR Bundle.meta.profile must declare the NRCeS DocumentBundle profile');
+  }
 
   const entries = bundle?.entry || [];
   const resources = entries.map((entry) => entry.resource).filter(Boolean);
-  const composition = resources.find((resource) => resource.resourceType === 'Composition');
+  const composition = entries[0]?.resource;
   const patient = resources.find((resource) => resource.resourceType === 'Patient');
   const organization = resources.find((resource) => resource.resourceType === 'Organization');
-  if (!composition) errors.push('FHIR document is missing Composition');
-  if (entries[0]?.resource?.resourceType !== 'Composition') errors.push('Composition must be the first document Bundle entry');
+  if (!composition || composition.resourceType !== 'Composition') errors.push('Composition must be the first document Bundle entry');
   if (!patient) errors.push('FHIR document is missing Patient');
   if (!organization) errors.push('FHIR document is missing Organization');
   if (!bundle?.identifier?.system || !bundle?.identifier?.value) errors.push('Bundle.identifier system and value are required');
@@ -50,95 +70,265 @@ function structuralValidation(bundle) {
     if (!entry.resource?.resourceType || !entry.resource?.id) errors.push(`Entry ${index} is missing resourceType or id`);
   }
 
-  if (composition) {
+  const recognized = compositionProfile(composition);
+  if (composition?.resourceType === 'Composition') {
     if (composition.status !== 'final') errors.push('Composition.status must be final');
     if (!composition.type) errors.push('Composition.type is required');
+    if (!composition.meta?.versionId) errors.push('Composition.meta.versionId is required');
+    if (!recognized) errors.push('Composition.meta.profile is not one of the eight supported NRCeS record profiles');
     if (!composition.subject?.reference || !fullUrls.has(composition.subject.reference)) errors.push('Composition.subject must resolve within the Bundle');
     if (!Array.isArray(composition.author) || !composition.author.length) errors.push('Composition.author is required');
     for (const author of composition.author || []) {
       if (!fullUrls.has(author.reference)) errors.push('Composition.author must resolve within the Bundle');
     }
+    if (!composition.custodian?.reference || !fullUrls.has(composition.custodian.reference)) {
+      errors.push('Composition.custodian must resolve within the Bundle');
+    }
     if (!Array.isArray(composition.section) || !composition.section.length) errors.push('Composition.section is required');
     for (const section of composition.section || []) {
       for (const reference of section.entry || []) {
         if (!fullUrls.has(reference.reference)) errors.push(`Composition section reference does not resolve: ${reference.reference}`);
+        if (!reference.type) errors.push(`Composition section reference must include Reference.type: ${reference.reference}`);
       }
     }
   }
 
-  const profiles = allProfiles(bundle, composition);
-  const recognized = Object.keys(PROFILE_REQUIREMENTS).find((name) => profiles.some((profile) => profile.includes(name)));
-  if (!recognized) errors.push('Bundle/Composition profile is not one of the eight supported NRCeS HI document profiles');
   if (recognized) {
     for (const requiredType of PROFILE_REQUIREMENTS[recognized]) {
       if (!resources.some((resource) => resource.resourceType === requiredType)) errors.push(`${recognized} requires a ${requiredType} resource`);
     }
+    if (['OPCONSULTRECORD', 'DISCHARGESUMMARYRECORD'].includes(recognized)) {
+      if (!composition?.encounter?.reference || !fullUrls.has(composition.encounter.reference)) {
+        errors.push(`${recognized} requires a resolvable Composition.encounter`);
+      }
+    }
   }
 
-  const localReferences = [];
-  const walk = (value) => {
-    if (!value || typeof value !== 'object') return;
-    if (Array.isArray(value)) return value.forEach(walk);
-    if (typeof value.reference === 'string') localReferences.push(value.reference);
-    Object.values(value).forEach(walk);
-  };
-  resources.forEach(walk);
-  for (const reference of localReferences) {
-    if (reference.startsWith('http://') || reference.startsWith('https://')) errors.push(`External FHIR reference is not permitted: ${reference}`);
-    if (reference.startsWith('urn:uuid:') && !fullUrls.has(reference)) errors.push(`FHIR reference does not resolve: ${reference}`);
-  }
+  resources.forEach((resource) => {
+    walkReferences(resource, (reference) => {
+      const value = reference.reference;
+      if (value.startsWith('http://') || value.startsWith('https://')) errors.push(`External FHIR reference is not permitted: ${value}`);
+      if (value.startsWith('urn:uuid:') && !fullUrls.has(value)) errors.push(`FHIR reference does not resolve: ${value}`);
+    });
+  });
 
   return {
     valid: errors.length === 0,
     errors,
     warnings,
-    recognizedProfile: recognized || null,
+    recognizedProfile: recognized,
     resourceCount: resources.length,
-    fhirVersion: 'R4',
-    implementationGuide: abdmConfig.fhirVersion
+    fhirVersion: abdmConfig.fhirR4Version,
+    implementationGuide: abdmConfig.fhirVersion,
+    package: abdmConfig.fhirPackage,
+    bundleHash: sha256(canonicalJson(bundle), true)
   };
 }
 
-async function externalValidation(bundle) {
-  if (!abdmConfig.fhirValidatorUrl) return null;
-  const url = await assertSafeOutboundUrl(abdmConfig.fhirValidatorUrl, {
-    label: 'FHIR validator URL',
-    allowedHosts: abdmConfig.fhirValidatorAllowedHosts,
-    requireHttps: process.env.NODE_ENV === 'production',
-    allowPrivate: process.env.NODE_ENV !== 'production'
-  });
-  const response = await fetchFn(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/fhir+json' },
-    body: JSON.stringify(bundle),
-    signal: AbortSignal.timeout(Number(process.env.ABDM_FHIR_VALIDATOR_TIMEOUT_MS || 30000)),
-    redirect: 'error'
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(result.message || `FHIR validator failed with HTTP ${response.status}`);
-    error.details = result;
-    throw error;
+function internalServiceHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  if (abdmConfig.internalServiceAuthToken) {
+    headers[abdmConfig.internalServiceAuthHeader] = abdmConfig.internalServiceAuthToken;
   }
-  return result;
+  if (process.env.ABDM_FHIR_VALIDATOR_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.ABDM_FHIR_VALIDATOR_TOKEN}`;
+  }
+  return headers;
 }
 
-function externalIsValid(external) {
-  if (!external) return false;
-  if (external.valid === true) return true;
-  const issues = external.issue || external.issues || [];
-  return Array.isArray(issues) && !issues.some((issue) => ['error', 'fatal'].includes(String(issue.severity).toLowerCase()));
+async function safeInternalUrl(rawUrl, label) {
+  return assertSafeOutboundUrl(rawUrl, {
+    policy: OUTBOUND_POLICIES.TRUSTED_INTERNAL_SERVICE,
+    label,
+    allowedHosts: abdmConfig.trustedInternalServiceHosts.length
+      ? abdmConfig.trustedInternalServiceHosts
+      : abdmConfig.fhirValidatorAllowedHosts,
+    allowedPorts: abdmConfig.trustedInternalServicePorts
+  });
+}
+
+async function readJsonResponse(response, maxBytes) {
+  const text = await response.text();
+  if (Buffer.byteLength(text) > maxBytes) {
+    const error = new Error('FHIR validator response exceeded the configured size limit');
+    error.code = 'ABDM_FHIR_VALIDATOR_RESPONSE_TOO_LARGE';
+    throw error;
+  }
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    const error = new Error('FHIR validator returned invalid JSON');
+    error.code = 'ABDM_FHIR_VALIDATOR_INVALID_JSON';
+    throw error;
+  }
+}
+
+function redactIssueMessage(value) {
+  return String(value || 'FHIR validation issue')
+    .replace(/"[^"\n]{4,}"/g, '"[REDACTED]"')
+    .replace(/\b\d{10,16}\b/g, '[REDACTED_IDENTIFIER]')
+    .slice(0, 500);
+}
+
+function normalizeSeverity(value) {
+  const severity = String(value || 'error').toLowerCase();
+  if (severity === 'information' || severity === 'informational' || severity === 'hint') return 'information';
+  if (severity === 'warning') return 'warning';
+  if (severity === 'fatal') return 'fatal';
+  return 'error';
+}
+
+function normalizeIssue(issue = {}) {
+  const severity = normalizeSeverity(issue.severity || issue.level || issue.issueSeverity);
+  const path = issue.path || issue.expression?.[0] || issue.location?.[0] || issue.diagnosticsPath;
+  return {
+    severity,
+    code: String(issue.code || issue.type || issue.messageId || issue.details?.coding?.[0]?.code || 'PROFILE_CONFORMANCE').toUpperCase(),
+    path: path ? String(path).slice(0, 500) : undefined,
+    line: Number.isFinite(Number(issue.line)) ? Number(issue.line) : undefined,
+    column: Number.isFinite(Number(issue.col || issue.column)) ? Number(issue.col || issue.column) : undefined,
+    message: redactIssueMessage(issue.message || issue.diagnostics || issue.details?.text)
+  };
+}
+
+function wrapperIssues(raw = {}) {
+  if (!Array.isArray(raw.outcomes)) return [];
+  return raw.outcomes.flatMap((outcome) => Array.isArray(outcome?.issues) ? outcome.issues : []);
+}
+
+function normalizeExternalResult(raw = {}, expected = {}) {
+  const wrapper = wrapperIssues(raw);
+  const rawIssues = wrapper.length
+    ? wrapper
+    : (raw.errors || raw.issue || raw.issues || raw.operationOutcome?.issue || []);
+  const rawWarnings = raw.warnings || [];
+  const normalized = [...(Array.isArray(rawIssues) ? rawIssues : []), ...(Array.isArray(rawWarnings) ? rawWarnings : [])]
+    .map(normalizeIssue);
+  const errors = normalized.filter((issue) => ['fatal', 'error'].includes(issue.severity));
+  const warnings = normalized.filter((issue) => !['fatal', 'error'].includes(issue.severity));
+  const explicitlyValid = raw.valid === true;
+  const wrapperCompleted = Array.isArray(raw.outcomes) && raw.outcomes.length > 0;
+  const valid = errors.length === 0 && (explicitlyValid || wrapperCompleted);
+  return {
+    valid,
+    errors,
+    warnings,
+    fhirVersion: raw.fhirVersion || expected.fhirVersion,
+    package: raw.package || expected.package,
+    profile: raw.profile || expected.profile,
+    bundleHash: raw.bundleHash || expected.bundleHash,
+    validatedAt: raw.validatedAt || new Date().toISOString(),
+    validatorVersion: raw.validatorVersion || raw.version || raw.appVersion
+  };
+}
+
+function externalRequestBody(bundle, expectedProfile, bundleHash) {
+  if (abdmConfig.fhirValidatorMode !== 'hapi-wrapper') {
+    return {
+      bundle,
+      expectedProfile,
+      bundleHash,
+      fhirVersion: abdmConfig.fhirR4Version,
+      package: abdmConfig.fhirPackage
+    };
+  }
+
+  return {
+    validationContext: {
+      sv: abdmConfig.fhirR4Version,
+      locale: 'en',
+      igs: [abdmConfig.fhirPackage],
+      profiles: expectedProfile ? [expectedProfile] : [],
+      extensions: ['any'],
+      assumeValidRestReferences: false,
+      hintAboutNonMustSupport: true
+    },
+    filesToValidate: [
+      {
+        fileName: `abdm-bundle-${bundleHash.slice(0, 16)}.json`,
+        fileContent: canonicalJson(bundle)
+      }
+    ]
+  };
+}
+
+async function externalValidation(bundle, expectedProfile) {
+  if (!abdmConfig.fhirValidatorUrl) return null;
+  const url = await safeInternalUrl(abdmConfig.fhirValidatorUrl, 'FHIR validator URL');
+  const bundleHash = sha256(canonicalJson(bundle), true);
+  const response = await fetchFn(url, {
+    method: 'POST',
+    headers: internalServiceHeaders(),
+    body: JSON.stringify(externalRequestBody(bundle, expectedProfile, bundleHash)),
+    signal: AbortSignal.timeout(abdmConfig.fhirValidatorTimeoutMs),
+    redirect: 'error'
+  });
+  const raw = await readJsonResponse(response, abdmConfig.fhirValidatorMaxResponseBytes);
+  if (!response.ok) {
+    const error = new Error(raw.message || `FHIR validator failed with HTTP ${response.status}`);
+    error.code = raw.code || 'ABDM_FHIR_VALIDATOR_HTTP_ERROR';
+    error.statusCode = response.status;
+    error.details = normalizeExternalResult(raw, {
+      fhirVersion: abdmConfig.fhirR4Version,
+      package: abdmConfig.fhirPackage,
+      profile: expectedProfile,
+      bundleHash
+    });
+    throw error;
+  }
+
+  const normalized = normalizeExternalResult(raw, {
+    fhirVersion: abdmConfig.fhirR4Version,
+    package: abdmConfig.fhirPackage,
+    profile: expectedProfile,
+    bundleHash
+  });
+  if (normalized.bundleHash && !timingSafeEqualText(normalized.bundleHash, bundleHash)) {
+    const error = new Error('FHIR validator response hash does not match the submitted bundle');
+    error.code = 'ABDM_FHIR_VALIDATOR_HASH_MISMATCH';
+    throw error;
+  }
+  if (normalized.package && normalized.package !== abdmConfig.fhirPackage) {
+    const error = new Error('FHIR validator used an unexpected implementation-guide package');
+    error.code = 'ABDM_FHIR_VALIDATOR_PACKAGE_MISMATCH';
+    throw error;
+  }
+  if (normalized.fhirVersion && normalized.fhirVersion !== abdmConfig.fhirR4Version) {
+    const error = new Error('FHIR validator used an unexpected FHIR version');
+    error.code = 'ABDM_FHIR_VALIDATOR_VERSION_MISMATCH';
+    throw error;
+  }
+  return normalized;
 }
 
 async function validateBundle(bundle, options = {}) {
   const structural = structuralValidation(bundle);
   if (!structural.valid) return structural;
+
+  const recognizedName = Object.values(PROFILE_NAMES).find(
+    (profile) => profile.toUpperCase() === structural.recognizedProfile
+  );
+  const expectedProfile = options.expectedProfile || (
+    recognizedName ? `${abdmConfig.fhirProfileBase}/${recognizedName}` : null
+  );
   if (options.external !== false && abdmConfig.requireExternalFhirValidation && !abdmConfig.fhirValidatorUrl) {
-    return { ...structural, valid: false, errors: [...structural.errors, 'External NRCeS FHIR validation is required but ABDM_FHIR_VALIDATOR_URL is not configured'] };
+    return {
+      ...structural,
+      valid: false,
+      errors: [...structural.errors, 'External NRCeS FHIR validation is required but ABDM_FHIR_VALIDATOR_URL is not configured']
+    };
   }
   if (options.external !== false && abdmConfig.fhirValidatorUrl) {
-    const external = await externalValidation(bundle);
-    return { ...structural, valid: externalIsValid(external), external, errors: externalIsValid(external) ? structural.errors : [...structural.errors, 'External NRCeS FHIR validation failed'] };
+    const external = await externalValidation(bundle, expectedProfile);
+    return {
+      ...structural,
+      valid: external.valid,
+      external,
+      errors: external.errors,
+      warnings: external.warnings,
+      bundleHash: external.bundleHash || structural.bundleHash
+    };
   }
   return structural;
 }
@@ -148,10 +338,51 @@ async function assertValidBundle(bundle, options) {
   if (!result.valid) {
     const error = new Error('FHIR bundle validation failed');
     error.code = 'ABDM_FHIR_VALIDATION_FAILED';
+    error.statusCode = 422;
     error.details = result;
     throw error;
   }
   return result;
 }
 
-module.exports = { structuralValidation, validateBundle, assertValidBundle, PROFILE_REQUIREMENTS };
+async function checkFhirValidatorHealth() {
+  if (!abdmConfig.fhirValidatorUrl) return { configured: false, healthy: false };
+  const rawHealth = abdmConfig.fhirValidatorHealthUrl || new URL('/validator/version', `${abdmConfig.fhirValidatorUrl.replace(/\/+$/, '')}/`).toString();
+  try {
+    const url = await safeInternalUrl(rawHealth, 'FHIR validator health URL');
+    const response = await fetchFn(url, {
+      method: 'GET',
+      headers: internalServiceHeaders(),
+      signal: AbortSignal.timeout(Math.min(abdmConfig.fhirValidatorTimeoutMs, 5000)),
+      redirect: 'error'
+    });
+    const body = await readJsonResponse(response, 64 * 1024).catch(() => ({}));
+    const healthy = response.ok && body.package !== false && (!body.package || body.package === abdmConfig.fhirPackage);
+    return {
+      configured: true,
+      healthy,
+      package: body.package || abdmConfig.fhirPackage,
+      fhirVersion: body.fhirVersion || abdmConfig.fhirR4Version,
+      checkedAt: new Date().toISOString(),
+      errorCode: healthy ? undefined : 'ABDM_FHIR_VALIDATOR_UNHEALTHY'
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      healthy: false,
+      checkedAt: new Date().toISOString(),
+      errorCode: error.code || 'ABDM_FHIR_VALIDATOR_UNREACHABLE'
+    };
+  }
+}
+
+module.exports = {
+  DOCUMENT_BUNDLE_PROFILE,
+  PROFILE_REQUIREMENTS,
+  structuralValidation,
+  externalRequestBody,
+  normalizeExternalResult,
+  validateBundle,
+  assertValidBundle,
+  checkFhirValidatorHealth
+};

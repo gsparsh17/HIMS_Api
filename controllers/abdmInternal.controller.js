@@ -147,6 +147,32 @@ exports.health = async (req, res) => {
     hfrFacilityId: req.abdmFacility?.hfr?.facilityId || abdmConfig.hfrFacilityId,
     hipId: req.abdmFacility?.abdm?.hipId || req.abdmFacility?.facilityId || abdmConfig.hipId,
     facilityId: req.abdmFacility?.abdm?.hipId || req.abdmFacility?.facilityId || abdmConfig.hipId,
+    dependencyStatus: {
+      reportedAt: new Date().toISOString(),
+      productionTransferReady: false,
+      transferReadiness: {
+        cryptoMode: abdmConfig.cryptoMode,
+        cryptoAdapterConfigured: Boolean(abdmConfig.cryptoAdapterUrl),
+        cryptoIntegrityRequired: abdmConfig.requireCryptoIntegrity === true,
+        fhirValidatorConfigured: Boolean(abdmConfig.fhirValidatorUrl),
+        externalFhirValidationRequired: abdmConfig.requireExternalFhirValidation === true,
+        fhirPackage: abdmConfig.fhirPackage,
+        fhirVersion: abdmConfig.fhirR4Version,
+        consentValidatorConfigured: Boolean(abdmConfig.consentValidatorUrl),
+        consentValidationRequired: abdmConfig.requireConsentValidation === true,
+        dataPushAllowlistConfigured: abdmConfig.dataPushAllowedHosts.length > 0,
+        privateDataPushAllowed: abdmConfig.allowPrivateDataPushUrls === true
+      },
+      packetReadiness: {
+        enabled: abdmConfig.packetFeatureEnabled,
+        reviewPolicy: abdmConfig.packetDefaultReviewPolicy,
+        immutableVersions: true,
+        encryptedBundleStorage: abdmConfig.packetStorePlaintext !== true,
+        sourceSnapshotBinding: true,
+        consentScopeBinding: true,
+        approvalRequiredBeforeTransfer: abdmConfig.packetDefaultReviewPolicy !== 'PREVIEW_ONLY'
+      }
+    },
     timestamp: new Date().toISOString()
   });
 };

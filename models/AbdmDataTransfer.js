@@ -9,6 +9,13 @@ const schema = new mongoose.Schema(
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
     hiTypes: [String],
     careContextReferences: [String],
+    packetIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AbdmPacket' }],
+    packetVersionIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AbdmPacketVersion' }],
+    bundleHashes: [String],
+    sourceSnapshotHashes: [String],
+    consentScopeHash: { type: String, index: true },
+    validationEvidence: [mongoose.Schema.Types.Mixed],
+    approvalActorIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     status: {
       type: String,
       enum: [

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/abdmHospital.controller');
+const packetController = require('../controllers/abdmPacket.controller');
 const { protect, authorize } = require('../middlewares/auth');
 
 router.use(protect);
@@ -18,6 +19,19 @@ router.post('/linking/hip/sms/:patientId', clinician, controller.sendHipLinkSms)
 router.post('/running-token/status/:patientId', reader, controller.requestRunningTokenStatus);
 router.post('/fhir/generate', authorize('admin', 'doctor'), controller.generateFhir);
 router.post('/fhir/validate', authorize('admin', 'doctor'), controller.validateFhir);
+
+// Hospital-facing ABDM Packet Center. A packet version is immutable and binds
+// the exact care-context sources, consent scope, FHIR profile and reviewed hash.
+router.get('/patients/:patientId/packets', reader, packetController.listPatientPackets);
+router.post('/care-contexts/:contextId/packet/preview', clinician, packetController.preview);
+router.post('/care-contexts/:contextId/packet/prepare', clinician, packetController.prepare);
+router.get('/packets/:packetId/versions/:version/summary', reader, packetController.summary);
+router.get('/packets/:packetId/versions/:version/fhir', authorize('admin', 'doctor'), packetController.fhir);
+router.post('/packets/:packetId/versions/:version/validate', authorize('admin', 'doctor'), packetController.validate);
+router.post('/packets/:packetId/versions/:version/approve', authorize('admin', 'doctor'), packetController.approve);
+router.post('/packets/:packetId/rebuild', clinician, packetController.rebuild);
+router.get('/patients/:patientId/disclosures', reader, packetController.disclosures);
+
 router.get('/transfers', administrator, controller.listTransfers);
 router.get('/jobs', administrator, controller.listJobs);
 router.post('/jobs/:jobId/retry', administrator, controller.retryJob);

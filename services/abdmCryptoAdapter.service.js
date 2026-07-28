@@ -1,14 +1,9 @@
 const crypto = require('crypto');
 const abdmConfig = require('../config/abdm.config');
-const { assertSafeOutboundUrl } = require('../utils/safeOutboundUrl');
-
-const fetchFn = (...args) => {
-  if (typeof fetch === 'function') return fetch(...args);
-  return import('node-fetch').then(({ default: fetchImpl }) => fetchImpl(...args));
-};
+const { requestInternalJson, checkInternalHealth } = require('./abdmInternalServiceClient');
 
 function adapterHeaders() {
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = {};
   if (process.env.ABDM_CRYPTO_ADAPTER_TOKEN) {
     headers.Authorization = `Bearer ${process.env.ABDM_CRYPTO_ADAPTER_TOKEN}`;
   }
@@ -17,34 +12,27 @@ function adapterHeaders() {
 
 async function externalCall(path, body) {
   abdmConfig.assertCryptoConfiguration();
-  const base = await assertSafeOutboundUrl(abdmConfig.cryptoAdapterUrl, {
-    label: 'ABDM crypto adapter URL',
+  const url = new URL(
+    path.replace(/^\//, ''),
+    `${abdmConfig.cryptoAdapterUrl.replace(/\/+$/, '')}/`
+  ).toString();
+  return requestInternalJson({
+    url,
+    label: 'ABDM crypto adapter',
     allowedHosts: abdmConfig.cryptoAdapterAllowedHosts,
-    requireHttps: process.env.NODE_ENV === 'production',
-    allowPrivate:
-      process.env.NODE_ENV !== 'production' &&
-      abdmConfig.allowPrivateAdapterUrls
+    body,
+    timeoutMs: abdmConfig.cryptoAdapterTimeoutMs,
+    maxResponseBytes: Number(process.env.ABDM_CRYPTO_ADAPTER_MAX_RESPONSE_BYTES || 25 * 1024 * 1024),
+    headers: adapterHeaders()
   });
-  const url = new URL(path.replace(/^\//, ''), `${base.replace(/\/+$/, '')}/`).toString();
-  const response = await fetchFn(url, {
-    method: 'POST',
-    headers: adapterHeaders(),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(
-      Number(process.env.ABDM_CRYPTO_ADAPTER_TIMEOUT_MS || 30000)
-    ),
-    redirect: 'error'
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(
-      data.message || `ABDM crypto adapter failed with HTTP ${response.status}`
-    );
-    error.statusCode = response.status;
-    error.details = data;
-    throw error;
-  }
-  return data;
+}
+
+function cryptoError(message, code, statusCode = 502, details) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  if (details) error.details = details;
+  return error;
 }
 
 function mockKeyMaterial() {
@@ -109,8 +97,17 @@ function assertDecryptionIntegrity({ encryptedEntries = [], decrypted }) {
 async function generateReceiverKeyMaterial(input) {
   if (abdmConfig.cryptoMode === 'external') {
     const result = await externalCall('/v1/receiver-key-material', input);
-    if (!result.publicKeyMaterial || !result.privateMaterial) {
-      throw new Error('Crypto adapter returned incomplete receiver key material');
+    if (!result.publicKeyMaterial || (!result.keyHandle && !result.privateMaterial)) {
+      throw cryptoError(
+        'Crypto adapter returned incomplete receiver key material',
+        'ABDM_CRYPTO_KEY_MATERIAL_INVALID'
+      );
+    }
+    if (abdmConfig.isProduction && !result.keyHandle) {
+      throw cryptoError(
+        'Production crypto adapter must return an opaque keyHandle instead of private key material',
+        'ABDM_CRYPTO_KEY_HANDLE_REQUIRED'
+      );
     }
     return result;
   }
@@ -124,8 +121,19 @@ async function generateReceiverKeyMaterial(input) {
 async function encryptHealthInformation(input) {
   if (abdmConfig.cryptoMode === 'external') {
     const result = await externalCall('/v1/encrypt', input);
-    if (!Array.isArray(result.entries) || !result.keyMaterial) {
-      throw new Error('Crypto adapter returned an invalid encrypted package');
+    if (!Array.isArray(result.entries) || !result.entries.length || !result.keyMaterial) {
+      throw cryptoError(
+        'Crypto adapter returned an invalid encrypted package',
+        'ABDM_CRYPTO_ENCRYPT_RESPONSE_INVALID'
+      );
+    }
+    for (const [index, entry] of result.entries.entries()) {
+      if (!entry?.content || !entry?.checksum || !entry?.careContextReference) {
+        throw cryptoError(
+          `Crypto adapter encrypted entry ${index} is incomplete`,
+          'ABDM_CRYPTO_ENCRYPT_ENTRY_INVALID'
+        );
+      }
     }
     return result;
   }
@@ -159,7 +167,17 @@ async function decryptHealthInformation(input) {
   if (abdmConfig.cryptoMode === 'external') {
     const result = await externalCall('/v1/decrypt', input);
     if (!Array.isArray(result.records)) {
-      throw new Error('Crypto adapter returned no decrypted records');
+      throw cryptoError(
+        'Crypto adapter returned no decrypted records',
+        'ABDM_CRYPTO_DECRYPT_RESPONSE_INVALID'
+      );
+    }
+    if (abdmConfig.requireCryptoIntegrity && result.integrityVerified !== true) {
+      throw cryptoError(
+        'Crypto adapter did not confirm authenticated decryption integrity',
+        'ABDM_CRYPTO_INTEGRITY_UNVERIFIED',
+        422
+      );
     }
     return result;
   }
@@ -178,9 +196,24 @@ async function decryptHealthInformation(input) {
   throw new Error(`Unsupported ABDM_CRYPTO_MODE=${abdmConfig.cryptoMode}`);
 }
 
+async function checkCryptoAdapterHealth() {
+  const healthUrl = abdmConfig.cryptoAdapterHealthUrl || (
+    abdmConfig.cryptoAdapterUrl
+      ? new URL('/health', `${abdmConfig.cryptoAdapterUrl}/`).toString()
+      : ''
+  );
+  return checkInternalHealth({
+    url: healthUrl,
+    label: 'ABDM crypto adapter health',
+    allowedHosts: abdmConfig.cryptoAdapterAllowedHosts,
+    timeoutMs: Math.min(abdmConfig.cryptoAdapterTimeoutMs, 5000)
+  });
+}
+
 module.exports = {
   generateReceiverKeyMaterial,
   encryptHealthInformation,
   decryptHealthInformation,
-  assertDecryptionIntegrity
+  assertDecryptionIntegrity,
+  checkCryptoAdapterHealth
 };

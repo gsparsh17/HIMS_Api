@@ -1,0 +1,188 @@
+package ui.components.header
+
+import Polyglot
+import api.isPackagesServerUp
+import api.isTerminologyServerUp
+import context.AppScreenContext
+import context.LocalizationContext
+import css.const.HEADER_SHADOW
+import css.const.HIGHLIGHT_GRAY
+import css.const.WHITE
+import kotlinx.coroutines.launch
+import kotlinx.css.*
+import kotlinx.css.properties.BoxShadow
+import mainScope
+import model.AppScreen
+import react.*
+import styled.StyleSheet
+import styled.css
+import styled.styledDiv
+import styled.styledImg
+import ui.components.header.LanguageOption.languageSelect
+import ui.components.header.SiteStatus.SiteState
+import ui.components.header.SiteStatus.siteStatus
+import utils.Language
+import web.dom.document
+import web.window.window
+
+external interface HeaderProps : Props {}
+
+class HeaderState : State {
+    var currentScroll: Double = 0.0
+    var terminologyServerState = SiteState.IN_PROGESS
+    var packageServerState = SiteState.IN_PROGESS
+}
+
+class Header (props : HeaderProps): RComponent<HeaderProps, HeaderState>() {
+
+    init {
+        state = HeaderState()
+        window.onscroll = {
+            setState {
+                currentScroll = document.documentElement?.scrollTop ?: 0.0
+            }
+        }
+        mainScope.launch {
+            val terminologyServerUp = isTerminologyServerUp()
+            val packageServerUp = isPackagesServerUp()
+            setState {
+                terminologyServerState = when (terminologyServerUp) {
+                    true -> SiteState.UP
+                    false -> SiteState.DOWN
+                }
+                packageServerState = when (packageServerUp) {
+                    true -> SiteState.UP
+                    false -> SiteState.DOWN
+                }
+            }
+        }
+    }
+
+    override fun RBuilder.render() {
+        AppScreenContext.Consumer { screenContext ->
+            LocalizationContext.Consumer { localizationContext ->
+                context.ValidationContext.Consumer { validationContext ->
+                    // Extract values with null-safety defaults
+                    val appScreen = screenContext?.appScreen ?: AppScreen.VALIDATOR
+                    val polyglot = localizationContext?.polyglot ?: Polyglot()
+                    val selectedLanguage = localizationContext?.selectedLanguage ?: Language.ENGLISH
+
+                    styledDiv {
+                        css {
+                            +HeaderStyle.headerContainer
+                            if (state.currentScroll > 0) {
+                                boxShadow += BoxShadow(color = HEADER_SHADOW, offsetX = 0.px, offsetY = 10.px, blurRadius = 10.px)
+                            }
+                        }
+                        styledImg(src = "images/fhir-logo.png") {
+                            css {
+                                +HeaderStyle.headerImage
+                            }
+                        }
+                        styledDiv {
+                            css {
+                                +HeaderStyle.headerButtonsContainer
+                            }
+                            AppScreen.values().forEach { screen ->
+                                headerTabButton {
+                                    name = screen.name
+                                    label = polyglot.t(screen.polyglotKey)
+                                    selected = appScreen == screen
+                                    onSelected = { buttonName ->
+                                        AppScreen.fromDisplay(buttonName)?.let { screen ->
+                                            screenContext?.setAppScreen?.invoke(screen)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        styledDiv {
+                            css {
+                                +HeaderStyle.sideOptions
+                            }
+                            styledDiv {
+                                css {
+                                    +HeaderStyle.languageOptionDiv
+                                }
+                                languageSelect {
+                                    // No attrs needed - component consumes contexts directly
+                                }
+                            }
+                            styledDiv {
+                                css {
+                                    +HeaderStyle.siteStatusDiv
+                                }
+                                siteStatus {
+                                    label = "tx.fhir.org"
+                                    status = state.terminologyServerState
+                                }
+                                siteStatus {
+                                    label = "packages2.fhir.org"
+                                    status = state.packageServerState
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+/**
+ * Convenience method for instantiating the component.
+ */
+fun RBuilder.header(handler: HeaderProps.() -> Unit) {
+    return child(Header::class) {
+        this.attrs(handler)
+    }
+}
+
+/**
+ * CSS
+ */
+object HeaderStyle : StyleSheet("HeaderStyle", isStatic = true) {
+    val HEADER_HEIGHT = 96.px
+    val headerContainer by css {
+        display = Display.flex
+        flexDirection = FlexDirection.row
+        justifyContent = JustifyContent.start
+        width = 100.pct
+        height = HEADER_HEIGHT
+        zIndex = 7
+        top = 0.px
+        position = Position.fixed
+        backgroundColor = WHITE
+        borderBottom = Border(width = 2.px, style = BorderStyle.solid, color = HIGHLIGHT_GRAY)
+    }
+    val headerButtonsContainer by css {
+        display = Display.flex
+        flexDirection = FlexDirection.row
+        height = 100.pct
+    }
+    val headerImage by css {
+        height = 48.px
+        padding = Padding(horizontal = 48.px)
+        alignSelf = Align.center
+    }
+    val sideOptions by css {
+        display = Display.flex
+        flexDirection = FlexDirection.row
+        justifyContent = JustifyContent.flexEnd
+        padding = Padding(horizontal = 48.px)
+        flex = Flex(flexGrow = 1.0)
+    }
+    val siteStatusDiv by css {
+        display = Display.inlineFlex
+        flexDirection = FlexDirection.column
+        alignSelf = Align.center
+    }
+    val languageOptionDiv by css {
+        display = Display.inlineFlex
+        flexDirection = FlexDirection.column
+        alignSelf = Align.center
+        padding = Padding(horizontal = 12.px)
+    }
+}

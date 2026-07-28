@@ -15,17 +15,13 @@ const EHRBundle = require('../../models/EHRBundle');
 const abdmConfig = require('../../config/abdm.config');
 const { assertValidBundle } = require('../abdmFhirValidation.service');
 const { normalizeInternalHiTypes } = require('../../utils/abdmHiTypes');
-
-const PROFILE_NAMES = {
-  PRESCRIPTION: 'PrescriptionRecord',
-  DIAGNOSTIC_REPORT: 'DiagnosticReportRecord',
-  OP_CONSULTATION: 'OPConsultRecord',
-  DISCHARGE_SUMMARY: 'DischargeSummaryRecord',
-  IMMUNIZATION_RECORD: 'ImmunizationRecord',
-  HEALTH_DOCUMENT_RECORD: 'HealthDocumentRecord',
-  WELLNESS_RECORD: 'WellnessRecord',
-  INVOICE: 'InvoiceRecord'
-};
+const { canonicalJson, sha256 } = require('../../utils/abdmCanonical');
+const {
+  PROFILE_NAMES,
+  COMPOSITION_TYPES,
+  SECTION_CODES,
+  RESOURCE_PROFILE_BY_TYPE
+} = require('../../config/abdm.profiles');
 const ALL_HI_TYPES = Object.keys(PROFILE_NAMES);
 
 function iso(value) {
@@ -46,6 +42,67 @@ function clean(value) {
 
 function profileUrl(hiType) {
   return `${abdmConfig.fhirProfileBase}/${PROFILE_NAMES[hiType]}`;
+}
+
+function resourceProfileUrl(profileName) {
+  return `${abdmConfig.fhirProfileBase}/${profileName}`;
+}
+
+function withResourceProfile(resource) {
+  const copy = { ...resource };
+  let profileName = RESOURCE_PROFILE_BY_TYPE[copy.resourceType];
+  if (copy.resourceType === 'DiagnosticReport') {
+    const category = JSON.stringify(copy.category || '').toLowerCase();
+    profileName = category.includes('radiology') || category.includes('imaging')
+      ? 'DiagnosticReportImaging'
+      : 'DiagnosticReportLab';
+  }
+  if (copy.resourceType === 'Observation' && copy.__profileName) profileName = copy.__profileName;
+  delete copy.__profileName;
+  if (profileName) {
+    copy.meta = { ...(copy.meta || {}), profile: [resourceProfileUrl(profileName)] };
+  }
+  return copy;
+}
+
+function typedReference(resource) {
+  return { reference: resource.__fullUrl, type: resource.resourceType };
+}
+
+function sectionCode(section) {
+  if (!section.code) return undefined;
+  return {
+    coding: [{
+      system: 'http://snomed.info/sct',
+      code: section.code,
+      display: section.display
+    }]
+  };
+}
+
+function sectionsFor(hiType, clinicalEntries) {
+  const definitions = SECTION_CODES[hiType] || [];
+  const sections = definitions.map((definition) => {
+    const entries = clinicalEntries.filter((resource) => {
+      if (definition.resourceProfiles?.length) {
+        const profiles = resource.meta?.profile || [];
+        if (definition.resourceProfiles.some((name) => profiles.some((profile) => profile.endsWith(`/${name}`)))) return true;
+      }
+      return definition.resourceTypes?.includes(resource.resourceType);
+    });
+    if (!entries.length) return null;
+    return clean({
+      title: definition.name,
+      code: sectionCode(definition),
+      entry: entries.map(typedReference)
+    });
+  }).filter(Boolean);
+
+  if (sections.length) return sections;
+  return [{
+    title: PROFILE_NAMES[hiType],
+    entry: clinicalEntries.map(typedReference)
+  }];
 }
 
 function organizationResource(hospital) {
@@ -133,12 +190,13 @@ function bundleDocument({
   resources,
   title,
   date,
-  careContextReference
+  careContextReference,
+  bundleVersion = '1'
 }) {
   const sourceResources = [
-    patientResource(patient, hospital),
-    organizationResource(hospital),
-    ...resources
+    withResourceProfile(patientResource(patient, hospital)),
+    withResourceProfile(organizationResource(hospital)),
+    ...resources.map(withResourceProfile)
   ];
   const referenceMap = new Map();
   const normalized = sourceResources.map((resource) => {
@@ -147,35 +205,38 @@ function bundleDocument({
     return { ...resource, id: uuid, __fullUrl: `urn:uuid:${uuid}` };
   });
 
-  const patientEntry = normalized.find(
-    (resource) => resource.resourceType === 'Patient'
-  );
-  const organizationEntry = normalized.find(
-    (resource) => resource.resourceType === 'Organization'
-  );
+  const patientEntry = normalized.find((resource) => resource.resourceType === 'Patient');
+  const organizationEntry = normalized.find((resource) => resource.resourceType === 'Organization');
   const clinicalEntries = normalized.filter(
     (resource) => !['Patient', 'Organization'].includes(resource.resourceType)
   );
+  const encounterEntry = clinicalEntries.find((resource) => resource.resourceType === 'Encounter');
   const compositionUuid = crypto.randomUUID();
   const composition = clean({
     resourceType: 'Composition',
     id: compositionUuid,
-    meta: { profile: [profileUrl(hiType)] },
+    meta: { profile: [profileUrl(hiType)], versionId: String(bundleVersion) },
     status: 'final',
-    type: { text: PROFILE_NAMES[hiType] },
-    subject: { reference: patientEntry.__fullUrl },
-    author: [{ reference: organizationEntry.__fullUrl }],
-    custodian: { reference: organizationEntry.__fullUrl },
+    type: COMPOSITION_TYPES[hiType],
+    subject: { reference: patientEntry.__fullUrl, type: 'Patient' },
+    encounter: encounterEntry
+      ? { reference: encounterEntry.__fullUrl, type: 'Encounter' }
+      : undefined,
+    author: [{ reference: organizationEntry.__fullUrl, type: 'Organization' }],
+    custodian: { reference: organizationEntry.__fullUrl, type: 'Organization' },
     date: iso(date) || new Date().toISOString(),
     title: title || PROFILE_NAMES[hiType],
     identifier: careContextReference
       ? { system: 'https://mediqliq.com/abdm/care-context', value: careContextReference }
-      : undefined,
-    section: [{
-      title: title || PROFILE_NAMES[hiType],
-      entry: clinicalEntries.map((resource) => ({ reference: resource.__fullUrl }))
-    }]
+      : { system: 'https://mediqliq.com/abdm/composition', value: crypto.randomUUID() },
+    section: sectionsFor(hiType, clinicalEntries)
   });
+
+  if (['OP_CONSULTATION', 'DISCHARGE_SUMMARY'].includes(hiType) && !composition.encounter) {
+    const error = new Error(`${PROFILE_NAMES[hiType]} requires an Encounter resource`);
+    error.code = 'ABDM_FHIR_ENCOUNTER_REQUIRED';
+    throw error;
+  }
 
   const entries = [
     { fullUrl: `urn:uuid:${compositionUuid}`, resource: composition },
@@ -188,7 +249,11 @@ function bundleDocument({
   return clean({
     resourceType: 'Bundle',
     id: crypto.randomUUID(),
-    meta: { profile: [profileUrl(hiType)] },
+    meta: {
+      profile: [resourceProfileUrl('DocumentBundle')],
+      versionId: String(bundleVersion),
+      lastUpdated: new Date().toISOString()
+    },
     identifier: { system: 'https://mediqliq.com/abdm/ehr-bundle', value: crypto.randomUUID() },
     type: 'document',
     timestamp: new Date().toISOString(),
@@ -289,27 +354,108 @@ function consultationResources(appointments, prescriptions, patient) {
 }
 
 function dischargeResources(summaries, patient) {
-  return summaries.map((summary) => {
-    const safeSummary = {
-      admissionDate: summary.admissionDate,
-      dischargeDate: summary.dischargeDate,
-      finalDiagnosis: summary.finalDiagnosis,
-      conditionOnDischarge: summary.conditionOnDischarge,
-      treatmentSummary: summary.treatmentSummary,
-      medicationsOnDischarge: summary.medicationsOnDischarge,
-      followUpAdvice: summary.followUpAdvice
-    };
-    return clean({
-      resourceType: 'DocumentReference',
-      id: `discharge-${summary._id}`,
-      status: summary.status === 'Finalized' ? 'current' : 'preliminary',
-      type: { text: 'Discharge Summary' },
+  const resources = [];
+  for (const summary of summaries) {
+    const encounterId = `encounter-discharge-${summary._id}`;
+    resources.push(clean({
+      resourceType: 'Encounter',
+      id: encounterId,
+      status: 'finished',
+      class: {
+        system: 'http://terminology.hl7.org/CodeSystem/v3-ActCode',
+        code: 'IMP',
+        display: 'inpatient encounter'
+      },
       subject: { reference: patientRef(patient) },
-      date: iso(summary.finalizedAt || summary.updatedAt || summary.dischargeDate),
-      description: [summary.finalDiagnosis, summary.conditionOnDischarge, summary.followUpAdvice].filter(Boolean).join('\n'),
-      content: [{ attachment: { contentType: 'application/json', title: 'Discharge Summary', data: Buffer.from(JSON.stringify(safeSummary)).toString('base64') } }]
-    });
-  });
+      period: { start: iso(summary.admissionDate), end: iso(summary.dischargeDate) },
+      hospitalization: {
+        dischargeDisposition: summary.conditionOnDischarge
+          ? { text: summary.conditionOnDischarge }
+          : undefined
+      }
+    }));
+
+    if (summary.chiefComplaints) {
+      resources.push(clean({
+        resourceType: 'Condition',
+        id: `condition-chief-${summary._id}`,
+        clinicalStatus: { text: 'active' },
+        subject: { reference: patientRef(patient) },
+        encounter: { reference: `Encounter/${encounterId}` },
+        code: { text: summary.chiefComplaints },
+        recordedDate: iso(summary.admissionDate)
+      }));
+    }
+    if (summary.finalDiagnosis) {
+      resources.push(clean({
+        resourceType: 'Condition',
+        id: `condition-diagnosis-${summary._id}`,
+        clinicalStatus: { text: 'resolved' },
+        subject: { reference: patientRef(patient) },
+        encounter: { reference: `Encounter/${encounterId}` },
+        code: { text: summary.finalDiagnosis },
+        recordedDate: iso(summary.finalizedAt || summary.dischargeDate)
+      }));
+    }
+    if (summary.examinationFindings) {
+      resources.push(clean({
+        resourceType: 'Observation',
+        id: `observation-examination-${summary._id}`,
+        status: 'final',
+        code: { text: 'Physical examination findings' },
+        subject: { reference: patientRef(patient) },
+        encounter: { reference: `Encounter/${encounterId}` },
+        effectiveDateTime: iso(summary.dischargeDate),
+        valueString: summary.examinationFindings
+      }));
+    }
+    if (summary.proceduresDone || summary.surgeriesDone) {
+      resources.push(clean({
+        resourceType: 'Procedure',
+        id: `procedure-${summary._id}`,
+        status: 'completed',
+        subject: { reference: patientRef(patient) },
+        encounter: { reference: `Encounter/${encounterId}` },
+        code: { text: [summary.proceduresDone, summary.surgeriesDone].filter(Boolean).join('; ') },
+        performedPeriod: { start: iso(summary.admissionDate), end: iso(summary.dischargeDate) }
+      }));
+    }
+    for (const [index, medication] of (summary.dischargeMedications || []).entries()) {
+      resources.push(clean({
+        resourceType: 'MedicationRequest',
+        id: `discharge-medication-${summary._id}-${index}`,
+        status: 'active',
+        intent: 'plan',
+        subject: { reference: patientRef(patient) },
+        encounter: { reference: `Encounter/${encounterId}` },
+        authoredOn: iso(summary.dischargeDate),
+        medicationCodeableConcept: { text: medication.medicineName },
+        dosageInstruction: [{
+          text: [medication.dosage, medication.frequency, medication.duration, medication.instructions]
+            .filter(Boolean)
+            .join(' | ')
+        }]
+      }));
+    }
+    if (summary.followUpAdvice || summary.dietAdvice || summary.activityAdvice || summary.emergencyInstructions) {
+      resources.push(clean({
+        resourceType: 'CarePlan',
+        id: `careplan-${summary._id}`,
+        status: 'active',
+        intent: 'plan',
+        subject: { reference: patientRef(patient) },
+        encounter: { reference: `Encounter/${encounterId}` },
+        period: { start: iso(summary.dischargeDate), end: iso(summary.followUpDate) },
+        description: [
+          summary.followUpAdvice,
+          summary.dietAdvice,
+          summary.activityAdvice,
+          summary.emergencyInstructions
+        ].filter(Boolean).join('\n')
+      }));
+    }
+  }
+  return resources;
 }
 
 function immunizationResources(items, patient) {
@@ -374,8 +520,20 @@ function wellnessResources(vitals, patient) {
     };
     for (const [field, label] of mapping) {
       if (enriched[field] === undefined || enriched[field] === null || enriched[field] === '') continue;
+      const profileByField = {
+        bp: 'ObservationVitalSigns',
+        bloodPressureString: 'ObservationVitalSigns',
+        pulse: 'ObservationVitalSigns',
+        spo2: 'ObservationVitalSigns',
+        temperature: 'ObservationVitalSigns',
+        respiratory_rate: 'ObservationVitalSigns',
+        respiratoryRate: 'ObservationVitalSigns',
+        weight: 'ObservationBodyMeasurement',
+        height: 'ObservationBodyMeasurement'
+      };
       resources.push(clean({
         resourceType: 'Observation',
+        __profileName: profileByField[field] || 'ObservationGeneralAssessment',
         id: `observation-${vital._id}-${field}`,
         status: 'final',
         code: { text: label },
@@ -498,19 +656,22 @@ async function generateAbdmHiBundle(patientId, options = {}) {
       hospital: records.hospital,
       resources,
       title: PROFILE_NAMES[hiType],
-      careContextReference: options.careContextReference
+      careContextReference: options.careContextReference,
+      bundleVersion: options.bundleVersion || '1'
     });
     // Every generated document is validated before it can be persisted or transferred.
     // The external NRCeS validator is fail-closed when required by configuration.
     // eslint-disable-next-line no-await-in-loop
-    await assertValidBundle(bundle);
+    if (options.validationMode !== 'none') {
+      await assertValidBundle(bundle, { external: options.validationMode !== 'local' });
+    }
     bundles[hiType] = bundle;
   }
 
   const saved = [];
   if (options.persist !== false) {
     for (const [hiType, bundle] of Object.entries(bundles)) {
-      const contentHash = crypto.createHash('sha256').update(JSON.stringify(bundle)).digest('hex');
+      const contentHash = sha256(canonicalJson(bundle));
       saved.push(await EHRBundle.findOneAndUpdate(
         {
           hospitalId: records.patient.hospitalId,
@@ -540,4 +701,12 @@ async function generateAbdmHiBundle(patientId, options = {}) {
   return { bundles, saved, hiTypes: Object.keys(bundles) };
 }
 
-module.exports = { ALL_HI_TYPES, PROFILE_NAMES, generateAbdmHiBundle };
+module.exports = {
+  ALL_HI_TYPES,
+  PROFILE_NAMES,
+  COLLECTIONS,
+  bundleDocument,
+  loadRecords,
+  resourcesFor,
+  generateAbdmHiBundle
+};

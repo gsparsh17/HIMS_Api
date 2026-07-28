@@ -169,7 +169,9 @@ async function initiateHealthInformationRequest({ consent, user }) {
   });
 
   const privateBlob = encryptJson(
-    receiver.privateMaterial,
+    receiver.keyHandle
+      ? { keyHandle: receiver.keyHandle }
+      : receiver.privateMaterial,
     `abdm-hiu-private:${requestId}`
   );
   const request = await AbdmHiuRequest.create({
@@ -537,7 +539,9 @@ async function receiveEncryptedData(payload) {
     const privateMaterial = decryptJson(request.encryptedPrivateMaterial, `abdm-hiu-private:${request.requestId}`);
     const decrypted = await decryptHealthInformation({
       transactionId,
-      privateMaterial,
+      ...(privateMaterial?.keyHandle
+        ? { keyHandle: privateMaterial.keyHandle }
+        : { privateMaterial }),
       keyMaterial: assembled.keyMaterial,
       entries: assembled.entries
     });

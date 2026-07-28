@@ -1,0 +1,253 @@
+package ui.components.tabs.entrytab
+
+import Polyglot
+import api.sendValidationRequest
+import context.LocalizationContext
+import model.Preset
+
+import css.animation.FadeIn.fadeIn
+import css.const.BORDER_GRAY
+import css.text.TextStyle
+
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.css.*
+import mainScope
+import model.*
+import react.*
+
+
+import styled.*
+import ui.components.options.presetSelect
+import ui.components.tabs.heading
+
+import ui.components.validation.validationOutcomeContainer
+import utils.*
+
+//TODO make this an intelligent value
+private const val VALIDATION_TIME_LIMIT =  120000L
+
+external interface ManualEntryTabProps : Props {}
+
+class ManualEntryTabState : State {
+    var displayingError: Boolean = false
+    var errorMessage: String = ""
+}
+
+class ManualEntryTab : RComponent<ManualEntryTabProps, ManualEntryTabState>() {
+    init {
+        state = ManualEntryTabState()
+    }
+
+    override fun RBuilder.render() {
+        context.ValidationContext.Consumer { validationContext ->
+            LocalizationContext.Consumer { localizationContext ->
+                val polyglot = localizationContext?.polyglot ?: Polyglot()
+
+                styledDiv {
+                    css {
+                        +ManualEntryTabStyle.mainContainer
+                    }
+                    heading {
+                        text = polyglot.t("manual_entry_title")
+                    }
+
+                    manualEntryTextArea {
+                        currentText = validationContext?.currentManualEntryText ?: ""
+                        placeholderText = polyglot.t("manual_entry_place_holder")
+                        onTextUpdate = { str ->
+                            validationContext?.updateManualEntryText?.invoke(str)
+                            if (state.displayingError) {
+                                setState {
+                                    displayingError = false
+                                }
+                            }
+                        }
+                    }
+
+                    styledDiv {
+                        css {
+                            +ManualEntryTabStyle.buttonBar
+                        }
+                        manualEntryValidateButton {
+                            validateText = polyglot.t("validate_button")
+                            onValidateRequested = {
+                                val currentText = validationContext?.currentManualEntryText ?: ""
+                                if (currentText.isNotEmpty()) {
+                                    validateEnteredText(
+                                        currentText,
+                                        validationContext?.validationContext
+                                            ?: ValidationContext().setBaseEngine("DEFAULT"),
+                                        validationContext?.sessionId ?: "",
+                                        validationContext?.presets ?: emptyList(),
+                                        validationContext?.igPackageInfoSet ?: emptySet(),
+                                        validationContext?.profileSet ?: emptySet(),
+                                        validationContext?.extensionSet ?: emptySet(),
+                                        validationContext?.bundleValidationRuleSet ?: emptySet(),
+                                        { id -> validationContext?.setSessionId?.invoke(id) },
+                                        { outcome -> validationContext?.setManualValidationOutcome?.invoke(outcome) },
+                                        { inProgress -> validationContext?.toggleManualValidationInProgress?.invoke(inProgress) },
+                                        polyglot
+                                    )
+                                } else {
+                                    val newErrorMessage = polyglot.t("manual_entry_empty_request_error")
+                                    setState {
+                                        errorMessage = newErrorMessage
+                                        displayingError = true
+                                    }
+                                }
+                            }
+                            workInProgress = validationContext?.manualValidatingInProgress ?: false
+                        }
+                        styledDiv {
+                            css {
+                                +ManualEntryTabStyle.buttonBarDivider
+                            }
+                        }
+                        presetSelect {}
+                    }
+                    if (state.displayingError) {
+                        styledSpan {
+                            css {
+                                +TextStyle.manualEntryFailMessage
+                            }
+                            +state.errorMessage
+                        }
+                    }
+                    validationContext?.manualValidationOutcome?.let {
+                        styledDiv {
+                            css {
+                                +ManualEntryTabStyle.resultsContainer
+                            }
+                            validationOutcomeContainer {
+                                validationOutcome = it
+                                inPage = true
+                                onClose = { }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun validateEnteredText(
+        fileContent: String,
+        validationContext: ValidationContext,
+        sessionId: String,
+        presets: List<Preset>,
+        igPackageInfoSet: Set<PackageInfo>,
+        profileSet: Set<String>,
+        extensionSet: Set<String>,
+        bundleValidationRuleSet: Set<BundleValidationRule>,
+        setSessionId: (String) -> Unit,
+        setValidationOutcome: (ValidationOutcome) -> Unit,
+        toggleValidationInProgress: (Boolean) -> Unit,
+        polyglot: Polyglot
+    ) {
+        console.info("Attempting to validate with: " + validationContext.getBaseEngine())
+        val completeValidationContext: ValidationContext = buildValidationContextForRequest(
+            baseContext = validationContext,
+            igPackageInfoSet = igPackageInfoSet,
+            profileSet = profileSet,
+            extensionSet = extensionSet,
+            bundleValidationRuleSet = bundleValidationRuleSet,
+            presets = presets
+        )
+
+        toggleValidationInProgress(true)
+        console.info("validationContext :: sv == ${completeValidationContext.getSv()}, version == ${validationContext.getTargetVer()}, languageCode == ${validationContext.getLanguageCode()}")
+        val request = assembleRequest(
+            validationContext = completeValidationContext,
+            fileName = generateFileName(fileContent),
+            fileContent = fileContent,
+            fileType = null
+        ).setSessionId(sessionId)
+        mainScope.launch {
+            try {
+                withTimeout(VALIDATION_TIME_LIMIT) {
+                    val validationResponse = sendValidationRequest(request)
+                    setSessionId(validationResponse.getSessionId())
+                    val returnedOutcome = validationResponse.getOutcomes().map { it.setValidated(true) }
+                    console.info("File validated\n"
+                            + "filename -> " + returnedOutcome.first().getFileInfo().fileName
+                            + "content -> " + returnedOutcome.first().getFileInfo().fileContent
+                            + "type -> " + returnedOutcome.first().getFileInfo().fileType
+                            + "Issues ::\n" + returnedOutcome.first().getMessages()
+                        .joinToString { "\n" })
+                    setValidationOutcome(returnedOutcome.first())
+                    toggleValidationInProgress(false)
+                }
+            } catch (e: TimeoutCancellationException) {
+                setState {
+                    errorMessage = polyglot.t("manual_entry_timeout_exception")
+                    displayingError = true
+                }
+                toggleValidationInProgress(false)
+            } catch (e: ValidationResponseException) {
+                setState {
+                    errorMessage = polyglot.t(
+                        "manual_entry_validation_response_exception",
+                        getJS(arrayOf(Pair("httpResponseCode", e.httpStatusCode)))
+                    )
+                    displayingError = true
+                }
+                println("Exception ${e.message}")
+            } catch (e: Exception) {
+                setState {
+                    errorMessage = polyglot.t("manual_entry_cannot_parse_exception")
+                    displayingError = true
+                }
+                println("Exception ${e.message}")
+            } finally {
+                toggleValidationInProgress(false)
+            }
+        }
+
+    }
+
+    private fun generateFileName(fileContent: String): String {
+        return when {
+            isJson(fileContent) -> "manually_entered_file.json"
+            isXml(fileContent) -> "manually_entered_file.xml"
+            else -> /*TODO*/""
+        }
+    }
+}
+
+/**
+ * CSS
+ */
+object ManualEntryTabStyle : StyleSheet("ManualEntryTabStyle") {
+    val mainContainer by css {
+        display = Display.flex
+        flexDirection = FlexDirection.column
+        justifyContent = JustifyContent.start
+        overflowY = Overflow.auto
+        padding = Padding(horizontal = 32.px, vertical = 16.px)
+        fadeIn()
+    }
+    val buttonBar by css {
+        display = Display.inlineFlex
+        flexDirection = FlexDirection.row
+        alignItems = Align.center
+    }
+    val resultsContainer by css {
+        display = Display.flex
+        flexDirection = FlexDirection.column
+        minHeight = 600.px
+    }
+    val buttonBarDivider by css {
+        width = 16.px
+    }
+    val ken by css {
+        display = Display.flex
+        flexDirection = FlexDirection.column
+        justifyContent = JustifyContent.stretch
+        alignContent = Align.stretch
+        overflowY = Overflow.auto
+        minHeight = 600.px
+        border = Border(width = 1.px, color = BORDER_GRAY, style = BorderStyle.solid)
+    }
+}

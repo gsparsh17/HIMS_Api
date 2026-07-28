@@ -1,0 +1,80 @@
+trigger:
+- release
+
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  VERSION:
+
+steps: 
+# Checks if the release notes file is populated. Exits if it is not.
+- bash: |
+    if [ -s RELEASE_NOTES.md ]
+    then
+          echo "RELEASE_NOTES.md has data, proceeding to next step."
+    else
+          echo "Your RELEASE_NOTES.md file is empty. Please provide release notes before creating a release."
+          exit 1
+    fi
+
+- task: JavaToolInstaller@0
+  inputs:
+    versionSpec: '17'
+    jdkArchitectureOption: 'x64'
+    jdkSourceOption: 'PreInstalled'
+
+- task: Gradle@3
+  inputs:
+    gradleWrapperFile: 'gradlew'
+    tasks: 'build'
+    publishJUnitResults: false
+    javaHomeOption: 'JDKVersion'
+    sonarQubeRunAnalysis: false
+    jdkVersionOption: 1.17
+  displayName: 'gradle build'
+
+# We need the project version to tag the docker image correctly.
+# This is done through a helper function within the gradle.kts file.
+- bash: |
+   gradle wrapper --gradle-version=6.7
+   echo "##vso[task.setvariable variable=current_version]$(./gradlew -q printVersion)"
+   echo "$(current_version)"
+
+# Executes docker build and push to publish our build container image
+# to the docker registry
+- task: Docker@2
+  displayName: 'docker build'
+  inputs:
+    containerRegistry: 'dockerhub connection'
+    repository: 'markiantorno/validator-wrapper'
+    command: 'build'
+    Dockerfile: '**/Dockerfile'
+    arguments:  --build-arg PROJECT_VERSION=$(current_version)
+    tags: '$(current_version)'
+
+- task: Docker@2
+  inputs:
+    containerRegistry: 'dockerhub connection'
+    repository: 'markiantorno/validator-wrapper'
+    command: 'push'
+    tags: '$(current_version)'
+
+- task: Docker@2
+  displayName: 'docker build'
+  inputs:
+    containerRegistry: 'dockerhub connection'
+    repository: 'markiantorno/validator-wrapper'
+    command: 'build'
+    Dockerfile: '**/Dockerfile'
+    arguments:  --build-arg PROJECT_VERSION=$(current_version)
+    tags: 'latest'
+
+- task: Docker@2
+  inputs:
+    containerRegistry: 'dockerhub connection'
+    repository: 'markiantorno/validator-wrapper'
+    command: 'push'
+    tags: 'latest'

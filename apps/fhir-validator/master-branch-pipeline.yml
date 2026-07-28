@@ -1,0 +1,18 @@
+pr: none
+
+trigger:
+- master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps: 
+- task: Gradle@3
+  inputs:
+    gradleWrapperFile: 'gradlew'
+    tasks: 'build -d'
+    publishJUnitResults: false
+    javaHomeOption: 'JDKVersion'
+    sonarQubeRunAnalysis: false
+    jdkVersionOption: 1.17
+  displayName: 'gradlew build -d'

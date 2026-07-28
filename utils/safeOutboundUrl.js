@@ -1,6 +1,12 @@
 const dns = require('dns').promises;
 const net = require('net');
 
+const OUTBOUND_POLICIES = Object.freeze({
+  PUBLIC_DATA_PUSH: 'PUBLIC_DATA_PUSH',
+  TRUSTED_INTERNAL_SERVICE: 'TRUSTED_INTERNAL_SERVICE',
+  LEGACY: 'LEGACY'
+});
+
 function normalizeHosts(value) {
   if (Array.isArray(value)) return value.map((item) => String(item).trim().toLowerCase()).filter(Boolean);
   return String(value || '')
@@ -9,11 +15,19 @@ function normalizeHosts(value) {
     .filter(Boolean);
 }
 
-function hostAllowed(hostname, allowedHosts) {
+function normalizePorts(value) {
+  const values = Array.isArray(value) ? value : String(value || '').split(',');
+  return values
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item > 0 && item <= 65535);
+}
+
+function hostAllowed(hostname, allowedHosts, { allowWildcards = true } = {}) {
   if (!allowedHosts.length) return true;
   const host = String(hostname || '').toLowerCase();
   return allowedHosts.some((allowed) => {
     if (allowed.startsWith('*.')) {
+      if (!allowWildcards) return false;
       const suffix = allowed.slice(1);
       return host.endsWith(suffix) && host !== suffix.slice(1);
     }
@@ -58,12 +72,54 @@ function isPrivateAddress(address) {
   return true;
 }
 
-async function assertSafeOutboundUrl(rawUrl, options = {}) {
+function effectivePort(parsed) {
+  if (parsed.port) return Number(parsed.port);
+  return parsed.protocol === 'https:' ? 443 : 80;
+}
+
+function assertPort(parsed, allowedPorts, label) {
+  const ports = normalizePorts(allowedPorts);
+  if (ports.length && !ports.includes(effectivePort(parsed))) {
+    throw new Error(`${label} port is not approved`);
+  }
+}
+
+function policyOptions(options = {}) {
+  const policy = options.policy || OUTBOUND_POLICIES.LEGACY;
+  if (policy === OUTBOUND_POLICIES.PUBLIC_DATA_PUSH) {
+    return {
+      ...options,
+      policy,
+      requireHttps: true,
+      allowPrivate: false,
+      allowWildcards: false,
+      allowedPorts: options.allowedPorts?.length ? options.allowedPorts : [443],
+      requireAllowlist: true
+    };
+  }
+  if (policy === OUTBOUND_POLICIES.TRUSTED_INTERNAL_SERVICE) {
+    return {
+      ...options,
+      policy,
+      requireHttps: true,
+      allowPrivate: true,
+      allowWildcards: false,
+      requireAllowlist: true
+    };
+  }
+  return { ...options, policy, allowWildcards: options.allowWildcards !== false };
+}
+
+async function assertSafeOutboundUrl(rawUrl, rawOptions = {}) {
+  const options = policyOptions(rawOptions);
   const {
     label = 'Outbound URL',
     allowedHosts = [],
+    allowedPorts = [],
     requireHttps = true,
-    allowPrivate = false
+    allowPrivate = false,
+    allowWildcards = true,
+    requireAllowlist = false
   } = options;
 
   let parsed;
@@ -82,9 +138,21 @@ async function assertSafeOutboundUrl(rawUrl, options = {}) {
   if (parsed.username || parsed.password) {
     throw new Error(`${label} must not contain embedded credentials`);
   }
-  if (!hostAllowed(parsed.hostname, normalizeHosts(allowedHosts))) {
+  if (parsed.hash) {
+    throw new Error(`${label} must not contain a URL fragment`);
+  }
+
+  const normalizedAllowedHosts = normalizeHosts(allowedHosts);
+  if (requireAllowlist && normalizedAllowedHosts.length === 0) {
+    throw new Error(`${label} requires an explicit host allow-list`);
+  }
+  if (!hostAllowed(parsed.hostname, normalizedAllowedHosts, { allowWildcards })) {
     throw new Error(`${label} host is not in the configured allow-list`);
   }
+  if (!allowWildcards && normalizedAllowedHosts.some((host) => host.includes('*'))) {
+    throw new Error(`${label} allow-list must use exact host names`);
+  }
+  assertPort(parsed, allowedPorts, label);
 
   const resolved = await dns.lookup(parsed.hostname, { all: true, verbatim: true });
   if (!resolved.length) throw new Error(`${label} host did not resolve`);
@@ -95,4 +163,12 @@ async function assertSafeOutboundUrl(rawUrl, options = {}) {
   return parsed.toString();
 }
 
-module.exports = { assertSafeOutboundUrl, normalizeHosts, isPrivateAddress };
+module.exports = {
+  OUTBOUND_POLICIES,
+  assertSafeOutboundUrl,
+  normalizeHosts,
+  normalizePorts,
+  hostAllowed,
+  isPrivateAddress,
+  effectivePort
+};

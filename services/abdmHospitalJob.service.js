@@ -4,8 +4,8 @@ const abdmConfig = require('../config/abdm.config');
 const AbdmHospitalConsent = require('../models/AbdmHospitalConsent');
 const AbdmCareContext = require('../models/AbdmCareContext');
 const Patient = require('../models/Patient');
-const { generateAbdmHiBundle } = require('./fhir/abdmHiBundle.service');
 const { toAbdmHiType } = require('../utils/abdmHiTypes');
+const { approvedRecordsForTransfer } = require('./abdmPacket.service');
 const {
   assertConsentUsable,
   assertContextAllowed
@@ -141,24 +141,20 @@ async function processHipDataRequest(payload, hospitalId) {
   if (!patient) throw new Error('Consented patient was not found');
   assertAbdmExchangeEligible(patient);
 
-  const records = [];
-  for (const context of contexts) {
-    // eslint-disable-next-line no-await-in-loop
-    const generated = await generateAbdmHiBundle(patientIds[0], {
-      hiTypes: [context.hiType],
-      recordReferences: context.records || [],
-      careContextReference: context.referenceNumber,
-      persist: false,
-      hospitalId
-    });
-    const bundle = generated.bundles?.[context.hiType];
-    if (!bundle) throw new Error(`FHIR could not be generated for ${context.referenceNumber}`);
-    records.push({
-      hiType: toAbdmHiType(context.hiType),
-      careContextReference: context.referenceNumber,
-      content: JSON.stringify(bundle)
-    });
-  }
+  // Health information is never regenerated at send time. The exact immutable
+  // packet version reviewed by the hospital is loaded, source/consent bindings
+  // are rechecked, and that same validated bundle is encrypted for the HIU.
+  const approvedRecords = await approvedRecordsForTransfer({
+    hospitalId,
+    patientId: patientIds[0],
+    consent,
+    contexts
+  });
+  const records = approvedRecords.map((record) => ({
+    ...record,
+    hiType: toAbdmHiType(record.hiType),
+    content: JSON.stringify(record.content)
+  }));
 
   try {
     const result = await pushHealthInformation({
@@ -168,7 +164,8 @@ async function processHipDataRequest(payload, hospitalId) {
       transactionId,
       dataPushUrl: payload.hiRequest.dataPushUrl,
       peerKeyMaterial: payload.hiRequest.keyMaterial,
-      records
+      records,
+      consent
     });
     await masterRequest('/internal/abdm/m2/action', {
       method: 'POST',

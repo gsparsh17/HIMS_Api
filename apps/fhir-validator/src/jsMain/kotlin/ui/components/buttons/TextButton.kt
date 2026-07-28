@@ -1,0 +1,92 @@
+package ui.components.buttons
+
+import css.const.INACTIVE_GRAY
+import css.text.TextStyle
+import kotlinx.css.*
+import kotlinx.html.js.onClickFunction
+import react.*
+import react.dom.attrs
+import react.dom.events.MouseEvent
+import web.html.HTMLDivElement
+import styled.StyleSheet
+import styled.css
+import styled.styledDiv
+import styled.styledP
+
+external interface TextButtonProps : Props {
+    var textColor: Color
+    var label: String
+    var active: Boolean
+
+    // Callback function when clicked
+    var onSelected: () -> Unit
+}
+
+/**
+ * A text only button with the option to customize, color, label, and if it is currently active
+ */
+class TextButton : RComponent<TextButtonProps, State>() {
+    override fun RBuilder.render() {
+        // main button layout
+        styledDiv {
+            css {
+                +TextButtonStyle.button
+                border = Border(width = 1.px, style = BorderStyle.solid, color = Color.transparent)
+                borderRadius = 5.px
+                backgroundColor = Color.transparent
+                if (props.active) {
+                    cursor = Cursor.pointer
+                    hover {
+                        backgroundColor = props.textColor.changeAlpha(0.1)
+                    }
+                    active {
+                        backgroundColor = props.textColor
+                    }
+                } else {
+                    cursor = Cursor.default
+                }
+            }
+            attrs {
+                if (props.active) {
+                    onClickFunction = {
+                        // on click, we call the function passed in to the props
+                        props.onSelected()
+                    }
+                }
+            }
+            // button label
+            styledP {
+                css {
+                    +TextStyle.textButtonLabel
+                    color = if (props.active) {
+                        props.textColor
+                    } else {
+                        INACTIVE_GRAY
+                    }
+                }
+                +props.label
+            }
+        }
+    }
+}
+
+/**
+ * React Component Builder
+ */
+fun RBuilder.textButton(handler: TextButtonProps.() -> Unit) {
+    return child(TextButton::class) {
+        this.attrs(handler)
+    }
+}
+
+/**
+ * CSS
+ */
+object TextButtonStyle : StyleSheet("TextButtonStyle", isStatic = true) {
+    val button by TextButtonStyle.css {
+        display = Display.flex
+        alignItems = Align.flexStart
+        flexDirection = FlexDirection.row
+        padding = Padding(horizontal = 16.px, vertical = 8.px)
+    }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "mediqliq-abdm-crypto-adapter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Authenticated MediQliq contract facade around the Fidelius reference cryptography engine",
+  "main": "server.js",
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

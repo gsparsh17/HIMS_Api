@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mediqliq-abdm-internal-secrets
+type: Opaque
+stringData:
+  service-token: REPLACE_IN_SECRET_MANAGER
+  key-handle-secret-base64: REPLACE_WITH_32_BYTE_BASE64_KEY
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mediqliq-fhir-validator
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: mediqliq-fhir-validator }
+  template:
+    metadata:
+      labels: { app: mediqliq-fhir-validator, tier: abdm-internal }
+    spec:
+      containers:
+        - name: validator
+          image: mediqliq-fhir-validator:6.5.0
+          ports: [{ name: http, containerPort: 3500 }]
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { cpu: "2", memory: "3Gi" }
+          readinessProbe:
+            httpGet: { path: /validator/version, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /validator/version, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mediqliq-fhir-validator
+spec:
+  selector: { app: mediqliq-fhir-validator }
+  ports: [{ name: http, port: 3500, targetPort: http }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mediqliq-crypto-adapter
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: mediqliq-crypto-adapter }
+  template:
+    metadata:
+      labels: { app: mediqliq-crypto-adapter, tier: abdm-internal }
+    spec:
+      containers:
+        - name: crypto-adapter
+          image: mediqliq-abdm-crypto-adapter:1.0.0
+          ports: [{ name: http, containerPort: 8090 }]
+          env:
+            - name: MEDIQLIQ_SERVICE_TOKEN
+              valueFrom: { secretKeyRef: { name: mediqliq-abdm-internal-secrets, key: service-token } }
+            - name: KEY_HANDLE_SECRET_BASE64
+              valueFrom: { secretKeyRef: { name: mediqliq-abdm-internal-secrets, key: key-handle-secret-base64 } }
+          resources:
+            requests: { cpu: "250m", memory: "384Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 45
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mediqliq-crypto-adapter
+spec:
+  selector: { app: mediqliq-crypto-adapter }
+  ports: [{ name: http, port: 8090, targetPort: http }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: abdm-internal-services-only-from-hospital-api
+spec:
+  podSelector:
+    matchLabels: { tier: abdm-internal }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: mediqliq-hospital-api }
+      ports:
+        - { protocol: TCP, port: 3500 }
+        - { protocol: TCP, port: 8090 }
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

@@ -9,7 +9,12 @@ const {
 } = require('../services/abdmCareContext.service');
 const { generateAbdmHiBundle } = require('../services/fhir/abdmHiBundle.service');
 const { masterRequest } = require('../services/abdmMasterClient.service');
-const { validateBundle } = require('../services/abdmFhirValidation.service');
+const {
+  validateBundle,
+  checkFhirValidatorHealth
+} = require('../services/abdmFhirValidation.service');
+const { checkCryptoAdapterHealth } = require('../services/abdmCryptoAdapter.service');
+const { checkConsentValidatorHealth } = require('../services/abdmConsentValidation.service');
 const { toAbdmHiType } = require('../utils/abdmHiTypes');
 const {
   assertUserHospital,
@@ -178,6 +183,7 @@ exports.integrationStatus = async (_req, res) => {
   const configured = Boolean(
     abdmConfig.masterUrl &&
       abdmConfig.hipId &&
+      abdmConfig.hiuId &&
       abdmConfig.connectorKeyId &&
       abdmConfig.connectorSecret
   );
@@ -190,8 +196,72 @@ exports.integrationStatus = async (_req, res) => {
         method: 'GET'
       });
     } catch (error) {
-      masterError = error.message;
+      masterError = error.code || 'MASTER_UNREACHABLE';
     }
+  }
+
+  const [fhirValidator, cryptoAdapter, consentValidator] = await Promise.all([
+    checkFhirValidatorHealth(),
+    checkCryptoAdapterHealth(),
+    checkConsentValidatorHealth()
+  ]);
+
+  const transferReadiness = {
+    cryptoMode: abdmConfig.cryptoMode,
+    cryptoAdapterConfigured: Boolean(abdmConfig.cryptoAdapterUrl),
+    cryptoAdapterHealthy: cryptoAdapter.healthy === true,
+    cryptoIntegrityRequired: abdmConfig.requireCryptoIntegrity === true,
+    fhirValidatorConfigured: Boolean(abdmConfig.fhirValidatorUrl),
+    fhirValidatorHealthy: fhirValidator.healthy === true,
+    externalFhirValidationRequired: abdmConfig.requireExternalFhirValidation === true,
+    fhirPackage: abdmConfig.fhirPackage,
+    fhirVersion: abdmConfig.fhirR4Version,
+    consentValidatorConfigured: Boolean(abdmConfig.consentValidatorUrl),
+    consentValidatorHealthy: consentValidator.healthy === true,
+    consentValidationRequired: abdmConfig.requireConsentValidation === true,
+    dataPushAllowlistConfigured: abdmConfig.dataPushAllowedHosts.length > 0,
+    privateDataPushAllowed: abdmConfig.allowPrivateDataPushUrls === true
+  };
+  const packetReadiness = {
+    enabled: abdmConfig.packetFeatureEnabled,
+    reviewPolicy: abdmConfig.packetDefaultReviewPolicy,
+    immutableVersions: true,
+    encryptedBundleStorage: abdmConfig.packetStorePlaintext !== true,
+    sourceSnapshotBinding: true,
+    consentScopeBinding: true,
+    approvalRequiredBeforeTransfer:
+      abdmConfig.packetDefaultReviewPolicy !== 'PREVIEW_ONLY'
+  };
+  const productionTransferReady = Boolean(
+    configured &&
+      abdmConfig.cryptoMode === 'external' &&
+      transferReadiness.cryptoAdapterConfigured &&
+      transferReadiness.cryptoAdapterHealthy &&
+      transferReadiness.cryptoIntegrityRequired &&
+      transferReadiness.fhirValidatorConfigured &&
+      transferReadiness.fhirValidatorHealthy &&
+      transferReadiness.externalFhirValidationRequired &&
+      transferReadiness.consentValidatorConfigured &&
+      transferReadiness.consentValidatorHealthy &&
+      transferReadiness.consentValidationRequired &&
+      transferReadiness.dataPushAllowlistConfigured &&
+      !transferReadiness.privateDataPushAllowed &&
+      packetReadiness.enabled &&
+      packetReadiness.approvalRequiredBeforeTransfer
+  );
+
+  const dependencyStatus = {
+    reportedAt: new Date().toISOString(),
+    productionTransferReady,
+    transferReadiness,
+    packetReadiness,
+    dependencies: { fhirValidator, cryptoAdapter, consentValidator }
+  };
+  if (configured) {
+    masterRequest('/internal/abdm/dependency-status', {
+      method: 'POST',
+      body: dependencyStatus
+    }).catch(() => {});
   }
 
   return res.json({
@@ -203,7 +273,6 @@ exports.integrationStatus = async (_req, res) => {
     hipId: abdmConfig.hipId || null,
     hiuId: abdmConfig.hiuId || null,
     tenantCode: abdmConfig.tenantCode || null,
-    masterUrl: abdmConfig.masterUrl || null,
     masterConnected: Boolean(master?.success),
     masterReachable: Boolean(master?.success),
     masterError,
@@ -212,14 +281,13 @@ exports.integrationStatus = async (_req, res) => {
       m1: abdmConfig.featureM1,
       m2: abdmConfig.featureM2,
       m3: abdmConfig.featureM3,
-      subscriptions: abdmConfig.featureSubscriptions
+      subscriptions: abdmConfig.featureSubscriptions,
+      abdmPackets: abdmConfig.packetFeatureEnabled
     },
-    transferReadiness: {
-      cryptoMode: abdmConfig.cryptoMode,
-      cryptoAdapterConfigured: Boolean(abdmConfig.cryptoAdapterUrl),
-      fhirValidatorConfigured: Boolean(abdmConfig.fhirValidatorUrl),
-      dataPushAllowlistConfigured: abdmConfig.dataPushAllowedHosts.length > 0
-    }
+    productionTransferReady,
+    transferReadiness,
+    packetReadiness,
+    dependencies: dependencyStatus.dependencies
   });
 };
 
