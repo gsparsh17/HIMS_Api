@@ -218,6 +218,7 @@ exports.integrationStatus = async (_req, res) => {
     fhirVersion: abdmConfig.fhirR4Version,
     consentValidatorConfigured: Boolean(abdmConfig.consentValidatorUrl),
     consentValidatorHealthy: consentValidator.healthy === true,
+    consentValidatorProductionCapable: consentValidator.productionCapable === true,
     consentValidationRequired: abdmConfig.requireConsentValidation === true,
     dataPushAllowlistConfigured: abdmConfig.dataPushAllowedHosts.length > 0,
     privateDataPushAllowed: abdmConfig.allowPrivateDataPushUrls === true
@@ -243,6 +244,7 @@ exports.integrationStatus = async (_req, res) => {
       transferReadiness.externalFhirValidationRequired &&
       transferReadiness.consentValidatorConfigured &&
       transferReadiness.consentValidatorHealthy &&
+      transferReadiness.consentValidatorProductionCapable &&
       transferReadiness.consentValidationRequired &&
       transferReadiness.dataPushAllowlistConfigured &&
       !transferReadiness.privateDataPushAllowed &&

@@ -50,6 +50,20 @@ check(
     (!config.requireConsentValidation || Boolean(config.consentValidatorUrl)),
   config.consentValidatorUrl || 'missing'
 );
+
+check(
+  'Production consent validator service token',
+  config.environment !== 'production' ||
+    !config.requireConsentValidation ||
+    strongSecret(process.env.ABDM_CONSENT_VALIDATOR_TOKEN || config.internalServiceAuthToken, 32),
+  process.env.ABDM_CONSENT_VALIDATOR_TOKEN || config.internalServiceAuthToken ? 'configured' : 'missing'
+);
+check(
+  'Consent validator endpoint version',
+  !config.consentValidatorUrl || /\/v1\/validate\/?$/i.test(config.consentValidatorUrl),
+  config.consentValidatorUrl || 'missing'
+);
+
 check(
   'Production FHIR validator allow-list',
   config.environment !== 'production' ||

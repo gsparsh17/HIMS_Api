@@ -29,7 +29,8 @@ const { masterRequest } = require('../services/abdmMasterClient.service');
 const { configuredHospitalId } = require('../services/hospitalIdentity.service');
 const abdmConfig = require('../config/abdm.config');
 const {
-  validateConsentArtefact
+  validateConsentArtefact,
+  recordConsentStatusEvent
 } = require('../services/abdmConsentValidation.service');
 const { assessPatientIdentity } = require('../services/abdmIdentityMatch.service');
 
@@ -853,11 +854,22 @@ async function storeHipConsentEnvelope(envelope) {
   const central = envelope.consent || null;
   if (!central) {
     const validation = await validateConsentArtefact(body);
-    return upsertConsent(body, 'HIP', {
+    const stored = await upsertConsent(body, 'HIP', {
       hospitalId,
-      signatureValidated: validation.valid === true,
+      signatureValidated: validation.signatureVerified === true,
+      integrityValidated: validation.integrityVerified === true,
+      cryptographicallyValidated: validation.cryptographicallyValidated === true,
+      validationId: validation.validationId,
+      validatedAt: validation.validatedAt ? new Date(validation.validatedAt) : new Date(),
+      validFrom: validation.verifiedScope?.validFrom,
+      verifiedScope: validation.verifiedScope,
+      trustEvidence: validation.trust,
+      retentionUntil: validation.retentionUntil,
+      artefactHash: validation.artefactHash,
       metadata: { consentValidation: validation }
     });
+    await recordConsentStatusEvent(stored, { eventId: envelope.requestId || body.requestId });
+    return stored;
   }
 
   const consentId =
@@ -880,15 +892,23 @@ async function storeHipConsentEnvelope(envelope) {
     throw new Error('Consent care contexts map to multiple patients');
   }
 
-  const validation = central.signatureVerified
-    ? { valid: true, source: 'MEDIQLIQ_MASTER' }
-    : await validateConsentArtefact(body);
+  // Master validation metadata is useful evidence, but it is not a trust bypass.
+  // The Hospital Backend always obtains its own decision from the private validator.
+  const validation = await validateConsentArtefact(body, {
+    expected: {
+      consentId,
+      patientId: central.abhaAddress,
+      hipId: abdmConfig.hipId,
+      hiuId: central.hiuId || abdmConfig.hiuId,
+      hospitalId: String(hospitalId)
+    }
+  });
   const encryptedArtefact = encryptJson(
     body,
     `abdm-consent:${hospitalId}:HIP:${consentId}`
   );
 
-  return AbdmHospitalConsent.findOneAndUpdate(
+  const stored = await AbdmHospitalConsent.findOneAndUpdate(
     { hospitalId, role: 'HIP', consentId },
     {
       hospitalId,
@@ -904,19 +924,30 @@ async function storeHipConsentEnvelope(envelope) {
       careContextReferences: contextRefs,
       expiresAt: central.expiresAt,
       encryptedArtefact,
-      artefactHash: central.artefactHash || hashArtifact(body),
-      signatureValidated:
-        validation.valid === true ||
-        central.signatureValidated === true ||
-        central.signatureVerified === true,
+      artefactHash: validation.artefactHash,
+      sourceEnvelopeHash: hashArtifact(body),
+      signatureValidated: validation.signatureVerified === true,
+      integrityValidated: validation.integrityVerified === true,
+      cryptographicallyValidated: validation.cryptographicallyValidated === true,
+      validationId: validation.validationId,
+      validatedAt: validation.validatedAt ? new Date(validation.validatedAt) : new Date(),
+      validFrom: validation.verifiedScope?.validFrom,
+      verifiedScope: validation.verifiedScope,
+      trustEvidence: validation.trust,
+      retentionUntil: validation.retentionUntil,
       lastCallbackAt: new Date(),
       metadata: {
         centralConsentReference: central._id,
+        masterConsentValidation: central.consentValidation,
         consentValidation: validation
       }
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+  await recordConsentStatusEvent(stored, {
+    eventId: envelope.requestId || body.requestId || `${consentId}:${stored.status}:${stored.lastCallbackAt}`
+  });
+  return stored;
 }
 
 exports.consentNotify = async (req, res) => {

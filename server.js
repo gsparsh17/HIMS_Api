@@ -22,6 +22,32 @@ function validateProductionConfiguration() {
 const startServer = async () => {
   try {
     validateProductionConfiguration();
+    if (abdmConfig.isProduction && (abdmConfig.featureM2 || abdmConfig.featureM3)) {
+      abdmConfig.assertHospitalConnector();
+      abdmConfig.assertEncryptionKey();
+      abdmConfig.assertCryptoConfiguration();
+      abdmConfig.assertProfileConfiguration();
+      abdmConfig.assertPacketConfiguration();
+      abdmConfig.assertTrustedInternalServices();
+      if (abdmConfig.requireConsentValidation) {
+        if (!abdmConfig.consentValidatorUrl) {
+          throw new Error('ABDM_CONSENT_VALIDATOR_URL is required for production M2/M3');
+        }
+        let consentValidatorUrl;
+        try {
+          consentValidatorUrl = new URL(abdmConfig.consentValidatorUrl);
+        } catch (_error) {
+          throw new Error('ABDM_CONSENT_VALIDATOR_URL must be a valid URL');
+        }
+        if (!/\/v1\/validate\/?$/i.test(consentValidatorUrl.pathname)) {
+          throw new Error('ABDM_CONSENT_VALIDATOR_URL must use the versioned /v1/validate endpoint');
+        }
+        const consentToken = process.env.ABDM_CONSENT_VALIDATOR_TOKEN || abdmConfig.internalServiceAuthToken;
+        if (!consentToken || String(consentToken).length < 32) {
+          throw new Error('A strong consent-validator service token is required for production M2/M3');
+        }
+      }
+    }
     await connectDB();
     console.log('✅ MongoDB Connected');
 

@@ -159,6 +159,7 @@ exports.health = async (req, res) => {
         fhirPackage: abdmConfig.fhirPackage,
         fhirVersion: abdmConfig.fhirR4Version,
         consentValidatorConfigured: Boolean(abdmConfig.consentValidatorUrl),
+        consentValidatorProductionCapable: false,
         consentValidationRequired: abdmConfig.requireConsentValidation === true,
         dataPushAllowlistConfigured: abdmConfig.dataPushAllowedHosts.length > 0,
         privateDataPushAllowed: abdmConfig.allowPrivateDataPushUrls === true

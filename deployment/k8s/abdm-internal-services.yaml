@@ -6,6 +6,10 @@ type: Opaque
 stringData:
   service-token: REPLACE_IN_SECRET_MANAGER
   key-handle-secret-base64: REPLACE_WITH_32_BYTE_BASE64_KEY
+  consent-validator-token: REPLACE_WITH_32_PLUS_RANDOM_CHARACTERS
+  consent-validator-mongo-uri: REPLACE_WITH_SECRET_MANAGER_REFERENCE
+  consent-validator-identifier-pepper: REPLACE_WITH_RANDOM_HASH_PEPPER
+  consent-validator-pinned-jwks-json: '{"keys":[]}' # Replace with approved non-empty JWKS
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -83,6 +87,89 @@ metadata:
 spec:
   selector: { app: mediqliq-crypto-adapter }
   ports: [{ name: http, port: 8090, targetPort: http }]
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mediqliq-consent-validator-config
+data:
+  environment: production
+  # Prefer pinned keys until the exact approved remote trust endpoint and egress IPs are frozen.
+  jwks-url: ""
+  jwks-allowed-hosts: ""
+  expected-issuers: REPLACE_WITH_APPROVED_ISSUER
+  expected-audiences: REPLACE_WITH_MEDIQLIQ_AUDIENCE
+  allowed-algorithms: RS256,RS512,ES256
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mediqliq-consent-validator
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: mediqliq-consent-validator }
+  template:
+    metadata:
+      labels: { app: mediqliq-consent-validator, tier: abdm-internal }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: consent-validator
+          image: mediqliq-abdm-consent-validator:1.0.0
+          ports: [{ name: http, containerPort: 8180 }]
+          env:
+            - { name: NODE_ENV, value: production }
+            - name: CONSENT_VALIDATOR_ENV
+              valueFrom: { configMapKeyRef: { name: mediqliq-consent-validator-config, key: environment } }
+            - name: CONSENT_VALIDATOR_JWKS_URL
+              valueFrom: { configMapKeyRef: { name: mediqliq-consent-validator-config, key: jwks-url } }
+            - name: CONSENT_VALIDATOR_JWKS_ALLOWED_HOSTS
+              valueFrom: { configMapKeyRef: { name: mediqliq-consent-validator-config, key: jwks-allowed-hosts } }
+            - name: CONSENT_VALIDATOR_PINNED_JWKS_JSON
+              valueFrom: { secretKeyRef: { name: mediqliq-abdm-internal-secrets, key: consent-validator-pinned-jwks-json } }
+            - name: CONSENT_VALIDATOR_EXPECTED_ISSUERS
+              valueFrom: { configMapKeyRef: { name: mediqliq-consent-validator-config, key: expected-issuers } }
+            - name: CONSENT_VALIDATOR_EXPECTED_AUDIENCES
+              valueFrom: { configMapKeyRef: { name: mediqliq-consent-validator-config, key: expected-audiences } }
+            - name: CONSENT_VALIDATOR_ALLOWED_ALGORITHMS
+              valueFrom: { configMapKeyRef: { name: mediqliq-consent-validator-config, key: allowed-algorithms } }
+            - name: CONSENT_VALIDATOR_SERVICE_TOKEN
+              valueFrom: { secretKeyRef: { name: mediqliq-abdm-internal-secrets, key: consent-validator-token } }
+            - name: CONSENT_VALIDATOR_MONGO_URI
+              valueFrom: { secretKeyRef: { name: mediqliq-abdm-internal-secrets, key: consent-validator-mongo-uri } }
+            - name: CONSENT_VALIDATOR_IDENTIFIER_PEPPER
+              valueFrom: { secretKeyRef: { name: mediqliq-abdm-internal-secrets, key: consent-validator-identifier-pepper } }
+            - { name: CONSENT_VALIDATOR_REQUIRE_MONGO_TRANSACTIONS, value: "true" }
+            - { name: CONSENT_VALIDATOR_ALLOW_UNSIGNED_SANDBOX_ARTEFACTS, value: "false" }
+          resources:
+            requests: { cpu: "250m", memory: "384Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mediqliq-consent-validator
+spec:
+  selector: { app: mediqliq-consent-validator }
+  ports: [{ name: http, port: 8180, targetPort: http }]
+
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -99,10 +186,15 @@ spec:
       ports:
         - { protocol: TCP, port: 3500 }
         - { protocol: TCP, port: 8090 }
+        - { protocol: TCP, port: 8180 }
   egress:
     - to:
         - namespaceSelector: {}
       ports:
-        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 27017 }
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+
+# If CONSENT_VALIDATOR_JWKS_URL is enabled instead of pinned JWKS, add a separate
+# egress NetworkPolicy restricted to the current approved trust endpoint IP ranges.
+# Do not add unrestricted 0.0.0.0/0:443 egress to the internal-services policy.

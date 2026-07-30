@@ -21,6 +21,7 @@ function normalizedStatus(value) {
     'GRANTED',
     'DENIED',
     'REVOKED',
+    'PAUSED',
     'EXPIRED',
     'FAILED'
   ]);
@@ -62,8 +63,13 @@ function extractConsent(payload = {}, role = 'HIP') {
     careContextReferences: careContexts
       .map((item) => item.careContextReference || item.referenceNumber || item.id)
       .filter(Boolean),
-    hipIds: (detail.hip || detail.hips || payload.hips || [])
-      .map((item) => (typeof item === 'string' ? item : item.id))
+    hipIds: [
+      ...(Array.isArray(detail.hips) ? detail.hips : []),
+      ...(Array.isArray(payload.hips) ? payload.hips : []),
+      ...(detail.hip ? [detail.hip] : []),
+      ...(payload.hip ? [payload.hip] : [])
+    ]
+      .map((item) => (typeof item === 'string' ? item : item?.id))
       .filter(Boolean),
     hiuId: detail.hiu?.id || payload.hiu?.id,
     expiresAt:
@@ -76,7 +82,8 @@ function extractConsent(payload = {}, role = 'HIP') {
 
 async function upsertConsent(payload, role = 'HIP', extra = {}) {
   const value = extractConsent(payload, role);
-  if (!extra.hospitalId) {
+  const { storeArtefact = true, artefactHash: verifiedArtefactHash, ...persistedExtra } = extra;
+  if (!persistedExtra.hospitalId) {
     throw new Error('hospitalId is required when storing ABDM consent');
   }
   if (!value.consentId && !value.consentRequestId) {
@@ -89,7 +96,7 @@ async function upsertConsent(payload, role = 'HIP', extra = {}) {
       ? [{ consentRequestId: value.consentRequestId }]
       : [])
   ];
-  const query = { hospitalId: extra.hospitalId, role, $or: identifiers };
+  const query = { hospitalId: persistedExtra.hospitalId, role, $or: identifiers };
 
   const statusDates = {};
   if (value.status === 'GRANTED') statusDates.grantedAt = new Date();
@@ -98,19 +105,24 @@ async function upsertConsent(payload, role = 'HIP', extra = {}) {
   const artefactIdentity = value.consentId || value.consentRequestId;
   const encryptedArtefact = encryptJson(
     payload,
-    `abdm-consent:${extra.hospitalId}:${role}:${artefactIdentity}`
+    `abdm-consent:${persistedExtra.hospitalId}:${role}:${artefactIdentity}`
   );
+
+  const update = {
+    ...value,
+    ...persistedExtra,
+    sourceEnvelopeHash: hashArtifact(payload),
+    lastCallbackAt: new Date(),
+    ...statusDates
+  };
+  if (storeArtefact) {
+    update.encryptedArtefact = encryptedArtefact;
+    update.artefactHash = verifiedArtefactHash || hashArtifact(payload);
+  }
 
   return AbdmHospitalConsent.findOneAndUpdate(
     query,
-    {
-      ...value,
-      ...extra,
-      encryptedArtefact,
-      artefactHash: hashArtifact(payload),
-      lastCallbackAt: new Date(),
-      ...statusDates
-    },
+    update,
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 }
@@ -123,10 +135,15 @@ function assertConsentUsable(consent) {
   }
   if (
     abdmConfig.requireConsentValidation &&
-    consent.signatureValidated !== true
+    (consent.cryptographicallyValidated !== true ||
+      consent.signatureValidated !== true ||
+      consent.integrityValidated !== true ||
+      !consent.validationId ||
+      !consent.artefactHash)
   ) {
-    const error = new Error('Consent artefact signature/integrity has not been validated');
+    const error = new Error('Consent artefact has not passed production cryptographic validation');
     error.statusCode = 409;
+    error.code = 'ABDM_CONSENT_CRYPTOGRAPHIC_VALIDATION_REQUIRED';
     throw error;
   }
   if (consent.status !== 'GRANTED') {
@@ -134,9 +151,22 @@ function assertConsentUsable(consent) {
     error.statusCode = 409;
     throw error;
   }
+  if (consent.validFrom && new Date(consent.validFrom).getTime() > Date.now()) {
+    const error = new Error('Consent is not yet valid');
+    error.statusCode = 409;
+    error.code = 'ABDM_CONSENT_NOT_YET_VALID';
+    throw error;
+  }
+  if (abdmConfig.requireConsentValidation && !consent.expiresAt) {
+    const error = new Error('Consent expiry is missing');
+    error.statusCode = 409;
+    error.code = 'ABDM_CONSENT_EXPIRY_REQUIRED';
+    throw error;
+  }
   if (consent.expiresAt && new Date(consent.expiresAt).getTime() <= Date.now()) {
     const error = new Error('Consent has expired');
     error.statusCode = 410;
+    error.code = 'ABDM_CONSENT_EXPIRED';
     throw error;
   }
 }

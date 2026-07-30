@@ -19,7 +19,9 @@
     "hims:rollback:2026": "node scripts/rollback-hims-2026.js",
     "check:syntax": "node scripts/check-syntax.js",
     "abdm:test": "node --test tests/abdm-*.test.js",
-    "abdm:validate-fhir": "node scripts/validate-abdm-fhir.js"
+    "abdm:validate-fhir": "node scripts/validate-abdm-fhir.js",
+    "consent-validator:test": "node --test apps/consent-validator/tests/*.test.js",
+    "consent-validator:start": "node apps/consent-validator/server.js"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",

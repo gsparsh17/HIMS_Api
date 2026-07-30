@@ -143,6 +143,15 @@ async function checkInternalHealth({
       package: result.package || null,
       fhirVersion: result.fhirVersion || null,
       integrityCapable: result.integrityCapable,
+      trustReady: result.trustReady,
+      databaseReady: result.databaseReady,
+      capabilities: result.capabilities && typeof result.capabilities === 'object'
+        ? Object.fromEntries(
+            Object.entries(result.capabilities)
+              .filter(([, value]) => typeof value === 'boolean')
+              .slice(0, 50)
+          )
+        : undefined,
       checkedAt: new Date().toISOString()
     };
   } catch (error) {

@@ -183,6 +183,9 @@ function safeConsentScope(consent, context) {
     consentId: consent.consentId,
     status: consent.status,
     signatureValidated: consent.signatureValidated === true,
+    integrityValidated: consent.integrityValidated === true,
+    cryptographicallyValidated: consent.cryptographicallyValidated === true,
+    validationId: consent.validationId || null,
     hiTypes: [...(consent.hiTypes || [])].sort(),
     careContextReferences: [...(consent.careContextReferences || [])].sort(),
     purpose: consent.purpose || null,
@@ -640,6 +643,7 @@ async function approvedRecordsForTransfer({ hospitalId, patientId, consent, cont
     records.push({
       hiType: context.hiType,
       careContextReference: context.referenceNumber,
+      dateRange: { from: context.dateFrom, to: context.dateTo || context.dateFrom },
       content: bundle,
       bundleHash: version.bundleHash,
       sourceSnapshotHash: version.sourceSnapshotHash,

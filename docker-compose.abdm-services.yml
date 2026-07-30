@@ -29,6 +29,32 @@ services:
         limits:
           memory: 768M
 
+
+  mediqliq-consent-validator:
+    build:
+      context: .
+      dockerfile: apps/consent-validator/Dockerfile
+    image: mediqliq-abdm-consent-validator:1.0.0
+    restart: unless-stopped
+    env_file:
+      - ./apps/consent-validator/.env
+    expose:
+      - "8180"
+    networks: [abdm-internal]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8180/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
 networks:
+  # No service publishes a host port. This bridge permits only container-network
+  # access plus outbound connectivity to the configured MongoDB/JWKS endpoints.
+  # Enforce exact egress destinations in the host firewall for production.
   abdm-internal:
-    internal: true
+    driver: bridge

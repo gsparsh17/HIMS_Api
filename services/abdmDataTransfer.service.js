@@ -7,6 +7,11 @@ const { encryptHealthInformation } = require('./abdmCryptoAdapter.service');
 const { recordDisclosure } = require('./abdmPacket.service');
 const { canonicalJson, sha256 } = require('../utils/abdmCanonical');
 const { OUTBOUND_POLICIES } = require('../utils/safeOutboundUrl');
+const {
+  authorizeConsentOperation,
+  commitConsentUsage,
+  releaseConsentUsage
+} = require('./abdmConsentValidation.service');
 
 const fetchFn = (...args) => {
   if (typeof fetch === 'function') return fetch(...args);
@@ -79,6 +84,20 @@ async function pushHealthInformation({
   if (!hospitalId) throw new Error('hospitalId is required for ABDM transfer');
   const existing = await AbdmDataTransfer.findOne({ hospitalId, idempotencyKey });
   if (existing?.status === 'TRANSFERRED') {
+    const pendingReservationId = existing.metadata?.consentAuthorization?.usage?.reservationId;
+    if (pendingReservationId && existing.metadata?.consentAuthorization?.usageCommitPending) {
+      await commitConsentUsage(pendingReservationId);
+      existing.metadata = {
+        ...(existing.metadata || {}),
+        consentAuthorization: {
+          ...(existing.metadata?.consentAuthorization || {}),
+          usageCommitPending: false,
+          usageCommitted: true,
+          usageCommittedAt: new Date()
+        }
+      };
+      await existing.save();
+    }
     return {
       duplicate: true,
       transfer: existing,
@@ -124,6 +143,8 @@ async function pushHealthInformation({
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
+  let consentAuthorization = null;
+  let sentPageCount = 0;
   try {
     for (const record of records) {
       const bundle = typeof record.content === 'string'
@@ -150,6 +171,56 @@ async function pushHealthInformation({
       record.validation = await assertValidBundle(bundle);
     }
     transfer.status = 'VALIDATED';
+    await transfer.save();
+
+    const recordRanges = records
+      .map((item) => item.dateRange)
+      .filter((range) => range?.from || range?.to);
+    const rangeStarts = recordRanges
+      .map((range) => range.from && new Date(range.from).getTime())
+      .filter(Number.isFinite);
+    const rangeEnds = recordRanges
+      .map((range) => (range.to || range.from) && new Date(range.to || range.from).getTime())
+      .filter(Number.isFinite);
+    const requestedDateRange = rangeStarts.length && rangeEnds.length
+      ? {
+          from: new Date(Math.min(...rangeStarts)).toISOString(),
+          to: new Date(Math.max(...rangeEnds)).toISOString()
+        }
+      : consent?.dateRange;
+
+    consentAuthorization = await authorizeConsentOperation({
+      consent,
+      operation: {
+        type: 'HIP_DISCLOSURE',
+        operationId: transactionId,
+        transactionId,
+        hospitalId: String(hospitalId),
+        patientId: consent?.abhaAddress || String(patientId),
+        hipId: abdmConfig.hipId,
+        hiuId: consent?.hiuId,
+        purpose: consent?.purpose,
+        hiTypes: Array.from(new Set(records.map((item) => item.hiType))),
+        careContextIds: Array.from(new Set(records.map((item) => item.careContextReference))),
+        dateRange: requestedDateRange,
+        packetHash: sha256(canonicalJson(records.map((item) => ({
+          careContextReference: item.careContextReference,
+          hiType: item.hiType,
+          bundleHash: item.bundleHash,
+          sourceSnapshotHash: item.sourceSnapshotHash
+        })).sort((left, right) => left.careContextReference.localeCompare(right.careContextReference)))),
+        retentionUntil: consent?.expiresAt || consent?.permission?.dataEraseAt
+      }
+    });
+    transfer.metadata = {
+      ...(transfer.metadata || {}),
+      consentAuthorization: {
+        validationId: consentAuthorization.validationId,
+        authorizedOperationHash: consentAuthorization.authorizedOperationHash,
+        usage: consentAuthorization.usage,
+        retentionUntil: consentAuthorization.retentionUntil
+      }
+    };
     await transfer.save();
 
     const encrypted = await encryptHealthInformation({
@@ -183,12 +254,35 @@ async function pushHealthInformation({
         idempotencyKey
       });
       acknowledgements.push({ pageNumber, acknowledgement });
+      sentPageCount += 1;
     }
 
     transfer.status = 'TRANSFERRED';
     transfer.completedAt = new Date();
     transfer.acknowledgement = { pages: acknowledgements };
+    if (consentAuthorization?.usage?.reservationId) {
+      transfer.metadata = {
+        ...(transfer.metadata || {}),
+        consentAuthorization: {
+          ...(transfer.metadata?.consentAuthorization || {}),
+          usageCommitPending: true
+        }
+      };
+    }
     await transfer.save();
+    if (consentAuthorization?.usage?.reservationId) {
+      await commitConsentUsage(consentAuthorization.usage.reservationId);
+      transfer.metadata = {
+        ...(transfer.metadata || {}),
+        consentAuthorization: {
+          ...(transfer.metadata?.consentAuthorization || {}),
+          usageCommitPending: false,
+          usageCommitted: true,
+          usageCommittedAt: new Date()
+        }
+      };
+      await transfer.save();
+    }
     await recordDisclosure({
       hospitalId,
       patientId,
@@ -199,8 +293,14 @@ async function pushHealthInformation({
     });
     return { transfer, acknowledgement: transfer.acknowledgement };
   } catch (error) {
-    transfer.status = 'FAILED';
-    transfer.error = { message: error.message, details: error.details, at: new Date() };
+    const reservationId = consentAuthorization?.usage?.reservationId;
+    if (reservationId && sentPageCount === 0) {
+      await releaseConsentUsage(reservationId).catch(() => {});
+    } else if (reservationId && sentPageCount > 0) {
+      await commitConsentUsage(reservationId).catch(() => {});
+    }
+    if (transfer.status !== 'TRANSFERRED') transfer.status = 'FAILED';
+    transfer.error = { message: error.message, code: error.code, details: error.details, at: new Date() };
     await transfer.save();
     throw error;
   }
