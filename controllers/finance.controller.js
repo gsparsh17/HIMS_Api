@@ -89,6 +89,12 @@ exports.exportMISReport = async (req, res) => {
   } catch (error) { sendError(res, error); }
 };
 
+exports.listBillingAdmissions = async (req, res) => {
+  try {
+    res.json(await financial.listBillingAdmissions(req.user, req.query));
+  } catch (error) { sendError(res, error); }
+};
+
 exports.getRunningBill = async (req, res) => {
   try {
     res.json(await financial.getRunningBill(req.params.admissionId, req.user));

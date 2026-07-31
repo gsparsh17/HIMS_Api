@@ -9,6 +9,7 @@ router.get('/dashboard', finance.getDashboard);
 router.get('/mis/overview', finance.getMISOverview);
 router.get('/mis/reports/:reportKey', finance.getMISReport);
 router.get('/mis/reports/:reportKey/export', finance.exportMISReport);
+router.get('/ipd/admissions', finance.listBillingAdmissions);
 router.get('/ipd/:admissionId/running-bill', finance.getRunningBill);
 router.get('/ipd/:admissionId/ledger', finance.getFinancialLedger);
 router.get('/ipd/:admissionId/clearance', finance.getFinancialClearance);

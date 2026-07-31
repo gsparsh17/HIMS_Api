@@ -9,7 +9,7 @@ const { protect, authorize, isAdmin } = require('../middlewares/auth');
  * documents anonymously.
  */
 const billingUsers = [
-  'admin', 'accountant', 'staff', 'registrar', 'receptionist',
+  'admin', 'mediqliq_super_admin', 'accountant', 'insurance_desk', 'staff', 'registrar', 'receptionist',
   'pharmacy', 'pathology_staff', 'radiology_staff', 'ot_staff', 'demo'
 ];
 const billingApprovers = ['admin', 'accountant', 'demo'];
@@ -25,6 +25,7 @@ router.get('/deletion-requests/pending', isAdmin, billingController.getPendingDe
 router.get('/deleted', isAdmin, billingController.getDeletedBills);
 router.get('/appointment/:appointmentId', authorize(...billingUsers), billingController.getBillByAppointmentId);
 router.get('/admission/:admissionId', authorize(...billingUsers), billingController.getBillByAdmissionId);
+router.get('/:id/ledger', authorize(...billingUsers), billingController.getBillLedger);
 
 router.post('/', authorize(...billingUsers), billingController.createBill);
 router.get('/', authorize(...billingUsers), billingController.getAllBills);

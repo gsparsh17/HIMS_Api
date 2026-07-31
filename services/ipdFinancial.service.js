@@ -308,6 +308,49 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   };
 }
 
+async function listBillingAdmissions(user, query = {}) {
+  const hospitalId = userHospitalId(user);
+  if (!hospitalId) {
+    const error = new Error('Authenticated user is not assigned to a hospital');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const filter = { hospitalId };
+  const requestedStatus = String(query.status || '').trim();
+  if (requestedStatus) filter.status = requestedStatus;
+  else filter.status = { $nin: ['Cancelled'] };
+
+  const limit = Math.min(Math.max(Number(query.limit) || 150, 1), 300);
+  const admissions = await IPDAdmission.find(filter)
+    .populate('patientId', 'first_name last_name patientId phone age gender')
+    .populate('primaryDoctorId', 'firstName lastName specialization')
+    .populate('departmentId', 'name')
+    .populate('wardId', 'name wardName')
+    .populate('roomId', 'roomNumber name')
+    .populate('bedId', 'bedNumber bed_number')
+    .sort({ admissionDate: -1 })
+    .limit(limit)
+    .lean();
+
+  const search = String(query.search || '').trim().toLowerCase();
+  const filtered = search
+    ? admissions.filter((admission) => {
+        const patient = admission.patientId || {};
+        const haystack = [
+          patient.first_name,
+          patient.last_name,
+          patient.patientId,
+          admission.admissionNumber,
+          admission.shipNumber
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(search);
+      })
+    : admissions;
+
+  return { success: true, admissions: filtered };
+}
+
 async function getRunningBill(admissionId, user) {
   const snapshot = await calculateAdmissionFinancials(admissionId, { user });
 
@@ -317,7 +360,10 @@ async function getRunningBill(admissionId, user) {
   })
     .populate('patientId', 'first_name last_name patientId phone age gender')
     .populate('primaryDoctorId', 'firstName lastName specialization')
-    .populate('departmentId', 'name');
+    .populate('departmentId', 'name')
+    .populate('wardId', 'name wardName')
+    .populate('roomId', 'roomNumber name')
+    .populate('bedId', 'bedNumber bed_number');
 
   const receipts = await FinancialTransaction.find({
     hospitalId: admission.hospitalId,
@@ -373,7 +419,10 @@ async function getRunningBill(admissionId, user) {
       advanceRefundedAmount: snapshot.advanceRefunded,
       patientId: admission.patientId,
       primaryDoctorId: admission.primaryDoctorId,
-      departmentId: admission.departmentId
+      departmentId: admission.departmentId,
+      wardId: admission.wardId,
+      roomId: admission.roomId,
+      bedId: admission.bedId
     },
     patient: admission.patientId,
     unbilledCharges: snapshot.unbilledCharges,
@@ -1642,6 +1691,7 @@ async function finaliseFinancialClearance(admissionId, payload, user) {
 
 module.exports = {
   calculateAdmissionFinancials,
+  listBillingAdmissions,
   getRunningBill,
   addManualCharge,
   generateBedCharge,

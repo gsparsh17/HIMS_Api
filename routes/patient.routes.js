@@ -22,8 +22,8 @@ const upload = multer({
 });
 
 const canReadPatient = authorize(
-  'admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist',
-  'pharmacy', 'pathology_staff', 'radiology_staff', 'ot_staff'
+  'admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist',
+  'accountant', 'insurance_desk', 'pharmacy', 'pathology_staff', 'radiology_staff', 'ot_staff'
 );
 const canManagePatient = authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist');
 const canManagePharmacyPatient = authorize('admin', 'registrar', 'receptionist', 'pharmacy');

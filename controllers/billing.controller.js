@@ -12,6 +12,84 @@ const LabTest = require('../models/LabTest');
 const Procedure = require('../models/Procedure');
 const ipdFinancial = require('../services/ipdFinancial.service');
 const { syncLegacyInvoiceReceipt, makeChargeLineKey } = require('../services/legacyFinancialBridge.service');
+const { requestHospitalId } = require('../utils/hospitalScope');
+const { nextFinancialNumber, money } = require('../utils/financeNumbers');
+
+// ========== OPD billing scope + ledger helpers ==========
+function billScope(req, extra = {}) {
+  return { ...extra, hospital_id: requestHospitalId(req) };
+}
+
+function buildOpdLedgerEntries(bill, invoice) {
+  const documentTotal = money(invoice?.total ?? bill?.total_amount);
+  const documentDate = bill?.generated_at || bill?.createdAt || invoice?.issue_date || invoice?.createdAt;
+  const documentNumber = invoice?.invoice_number || bill?.bill_number || String(bill?._id || '');
+  const documentKind = invoice ? 'INVOICE' : 'BILL';
+
+  const entries = [{
+    date: documentDate,
+    kind: documentKind,
+    number: documentNumber,
+    description: invoice ? `${invoice.invoice_type || 'OPD'} invoice issued` : 'OPD bill generated',
+    debit: documentTotal,
+    credit: 0
+  }];
+
+  const payments = invoice?.payment_history?.length
+    ? invoice.payment_history
+    : (bill?.payments || []).map((entry) => ({
+        ...entry,
+        date: entry.date,
+        status: entry.status || 'Completed'
+      }));
+
+  for (const payment of payments || []) {
+    const amount = money(payment.amount);
+    if (!amount) continue;
+    const refunded = String(payment.status || '').toLowerCase() === 'refunded';
+    entries.push({
+      date: payment.date || payment.createdAt || bill?.paid_at || bill?.updatedAt,
+      kind: refunded ? 'REFUND' : 'PAYMENT',
+      number: payment.transaction_id || payment.reference || documentNumber,
+      description: `${payment.method || bill?.payment_method || 'Payment'}${payment.reference ? ` · ${payment.reference}` : ''}`,
+      debit: refunded ? amount : 0,
+      credit: refunded ? 0 : amount
+    });
+  }
+
+  const settlementDiscount = money(bill?.settlement_discount_amount);
+  if (settlementDiscount > 0) {
+    entries.push({
+      date: bill?.updatedAt || bill?.paid_at || bill?.generated_at,
+      kind: 'DISCOUNT',
+      number: documentNumber,
+      description: 'Settlement discount',
+      debit: 0,
+      credit: settlementDiscount
+    });
+  }
+
+  const creditNoteAmount = money(bill?.credit_note_amount);
+  if (creditNoteAmount > 0) {
+    entries.push({
+      date: bill?.updatedAt || bill?.paid_at || bill?.generated_at,
+      kind: 'CREDIT_NOTE',
+      number: documentNumber,
+      description: 'Credit note adjustment',
+      debit: 0,
+      credit: creditNoteAmount
+    });
+  }
+
+  let balance = 0;
+  return entries
+    .filter((entry) => entry.date)
+    .sort((left, right) => new Date(left.date) - new Date(right.date))
+    .map((entry) => {
+      balance = money(balance + money(entry.debit) - money(entry.credit));
+      return { ...entry, balance };
+    });
+}
 
 // ========== HELPERS: IPD charge + financial reconciliation ==========
 async function createOrUpdateIPDCharge({
@@ -166,7 +244,16 @@ exports.createBill = async (req, res) => {
       calculatedTotal = calculatedSubtotal + (tax_amount || 0) - (discount || 0);
     }
 
+    const hospitalId = requestHospitalId(req);
+    const billNumber = await nextFinancialNumber({
+      documentType: 'BILL',
+      hospitalId
+    });
+
     const bill = new Bill({
+      hospital_id: hospitalId,
+      bill_number: billNumber,
+      document_stage: status === 'Draft' ? 'DRAFT' : 'GENERATED',
       patient_id,
       appointment_id,
       admission_id,
@@ -177,6 +264,14 @@ exports.createBill = async (req, res) => {
       discount: discount || 0,
       payment_method,
       status,
+      paid_amount: status === 'Paid' ? money(calculatedTotal) : 0,
+      paid_at: status === 'Paid' ? new Date() : undefined,
+      payments: status === 'Paid' ? [{
+        method: payment_method,
+        amount: money(calculatedTotal),
+        reference: transaction_id,
+        date: new Date()
+      }] : [],
       items: items.map(item => ({
         description: item.description,
         amount: Number(item.amount || 0),
@@ -366,7 +461,14 @@ exports.createBill = async (req, res) => {
         }
       }
 
+      const invoiceNumber = await nextFinancialNumber({
+        documentType: 'INVOICE',
+        hospitalId
+      });
+
       invoice = new Invoice({
+        hospital_id: hospitalId,
+        invoice_number: invoiceNumber,
         invoice_type: invoiceType,
         document_stage: 'ISSUED',
         patient_id: patient_id,
@@ -393,6 +495,14 @@ exports.createBill = async (req, res) => {
         total: calculatedTotal,
         amount_paid: calculatedTotal,
         balance_due: 0,
+        payment_history: [{
+          amount: money(calculatedTotal),
+          method: payment_method,
+          reference: transaction_id,
+          status: 'Completed',
+          collected_by: req.user?._id,
+          date: new Date()
+        }],
         status: 'Paid',
         notes: appointment ? 
           `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}` :
@@ -417,6 +527,9 @@ exports.createBill = async (req, res) => {
       });
 
       bill.invoice_id = invoice._id;
+      bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
+      bill.document_stage = 'INVOICED';
+      bill.invoiced_at = new Date();
       await bill.save();
 
       // ========== MARK IPD CHARGES AS BILLED ==========
@@ -567,39 +680,79 @@ exports.createBill = async (req, res) => {
 
 exports.updateBillStatus = async (req, res) => {
   try {
-    const { status, paid_amount, payment_method, notes } = req.body;
+    const { status, paid_amount, payment_method, payment_reference, notes } = req.body;
 
-    const bill = await Bill.findById(req.params.id)
+    const bill = await Bill.findOne(billScope(req, { _id: req.params.id }))
       .populate('patient_id')
       .populate('appointment_id')
       .populate('admission_id');
-      
+
     if (!bill) return res.status(404).json({ error: 'Bill not found' });
 
-    const updateData = {};
     const oldStatus = bill.status;
-    
-    if (status) updateData.status = status;
+    const paymentAmount = paid_amount === undefined ? 0 : money(paid_amount);
 
-    if (paid_amount !== undefined) {
-      updateData.paid_amount = (bill.paid_amount || 0) + paid_amount;
-      
-      if (updateData.paid_amount >= bill.total_amount) {
-        updateData.status = 'Paid';
-        updateData.paid_at = new Date();
-      } else if (updateData.paid_amount > 0) {
-        updateData.status = 'Partially Paid';
-      }
+    if (paid_amount !== undefined && paymentAmount <= 0) {
+      return res.status(400).json({ error: 'Payment amount must be greater than zero' });
     }
 
-    if (payment_method) updateData.payment_method = payment_method;
+    const currentBalance = money(Math.max(
+      0,
+      money(bill.total_amount) - money(bill.paid_amount) -
+        money(bill.settlement_discount_amount) - money(bill.credit_note_amount)
+    ));
+
+    if (status === 'Paid' && paymentAmount <= 0 && currentBalance > 0) {
+      return res.status(400).json({
+        error: 'A payment amount is required before an outstanding bill can be marked as paid'
+      });
+    }
+
+    if (paymentAmount > currentBalance + 0.01) {
+      return res.status(400).json({
+        error: `Payment amount (${paymentAmount}) exceeds balance due (${currentBalance})`
+      });
+    }
+
+    if (paymentAmount > 0) {
+      bill.paid_amount = money(money(bill.paid_amount) + paymentAmount);
+      bill.payment_method = payment_method || bill.payment_method || 'Cash';
+      bill.payments = bill.payments || [];
+      bill.payments.push({
+        method: bill.payment_method,
+        amount: paymentAmount,
+        reference: payment_reference || undefined,
+        date: new Date()
+      });
+    } else if (payment_method) {
+      bill.payment_method = payment_method;
+    }
+
+    const projectedBalance = money(
+      Math.max(
+        0,
+        money(bill.total_amount) - money(bill.paid_amount) -
+          money(bill.settlement_discount_amount) - money(bill.credit_note_amount)
+      )
+    );
+
+    if (projectedBalance <= 0) {
+      bill.status = 'Paid';
+      bill.paid_at = bill.paid_at || new Date();
+    } else if (bill.paid_amount > 0) {
+      bill.status = 'Partially Paid';
+    } else if (status) {
+      bill.status = status;
+    }
+
     if (notes) {
-      updateData.notes = bill.notes 
+      bill.notes = bill.notes
         ? `${bill.notes}\n${new Date().toLocaleDateString()}: ${notes}`
         : `${new Date().toLocaleDateString()}: ${notes}`;
     }
 
-    const updatedBill = await Bill.findByIdAndUpdate(req.params.id, updateData, { new: true })
+    await bill.save();
+    const updatedBill = await Bill.findOne(billScope(req, { _id: bill._id }))
       .populate('patient_id appointment_id admission_id invoice_id');
 
     const newStatus = updatedBill.status;
@@ -707,7 +860,15 @@ exports.updateBillStatus = async (req, res) => {
         }
       }
 
+      const hospitalId = requestHospitalId(req);
+      const invoiceNumber = await nextFinancialNumber({
+        documentType: 'INVOICE',
+        hospitalId
+      });
+
       const invoice = new Invoice({
+        hospital_id: hospitalId,
+        invoice_number: invoiceNumber,
         invoice_type: invoiceType,
         document_stage: 'ISSUED',
         patient_id: updatedBill.patient_id._id,
@@ -732,6 +893,25 @@ exports.updateBillStatus = async (req, res) => {
         total: updatedBill.total_amount,
         amount_paid: updatedBill.total_amount,
         balance_due: 0,
+        payment_history: (updatedBill.payments || []).length
+          ? updatedBill.payments
+              .filter((entry) => money(entry.amount) > 0)
+              .map((entry) => ({
+                amount: money(entry.amount),
+                method: entry.method || updatedBill.payment_method || 'Cash',
+                reference: entry.reference,
+                status: 'Completed',
+                collected_by: req.user?._id,
+                date: entry.date || new Date()
+              }))
+          : [{
+              amount: money(updatedBill.total_amount),
+              method: payment_method || updatedBill.payment_method || 'Cash',
+              reference: payment_reference,
+              status: 'Completed',
+              collected_by: req.user?._id,
+              date: new Date()
+            }],
         status: 'Paid',
         notes: appointment ? 
           `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}` :
@@ -751,11 +931,14 @@ exports.updateBillStatus = async (req, res) => {
         bill: updatedBill,
         user: req.user,
         paymentMethod: payment_method,
-        reference: notes,
+        reference: payment_reference || notes,
         remarks: notes
       });
 
       updatedBill.invoice_id = invoice._id;
+      updatedBill.invoice_ids = Array.from(new Set([...(updatedBill.invoice_ids || []).map(String), String(invoice._id)]));
+      updatedBill.document_stage = 'INVOICED';
+      updatedBill.invoiced_at = new Date();
       await updatedBill.save();
 
       // Mark IPD charges as billed if admission exists
@@ -830,7 +1013,7 @@ exports.updateBillStatus = async (req, res) => {
             date: new Date(),
             status: 'Completed',
             collected_by: req.user?._id,
-            reference: notes || `Bulk payment from bill ${updatedBill._id}`
+            reference: payment_reference || notes || `Payment for bill ${updatedBill.bill_number || updatedBill._id}`
           });
           
           if (invoice.procedure_items?.length > 0) {
@@ -852,7 +1035,7 @@ exports.updateBillStatus = async (req, res) => {
           }
           
           await invoice.save();
-          await syncLegacyInvoiceReceipt({ invoice, bill: updatedBill, user: req.user, paymentMethod, reference: notes, remarks: notes });
+          await syncLegacyInvoiceReceipt({ invoice, bill: updatedBill, user: req.user, paymentMethod, reference: payment_reference || notes, remarks: notes });
         }
       }
     }
@@ -860,17 +1043,17 @@ exports.updateBillStatus = async (req, res) => {
       const invoice = await Invoice.findById(updatedBill.invoice_id);
       
       if (invoice) {
-        if (paid_amount !== undefined) {
-          invoice.amount_paid = (invoice.amount_paid || 0) + paid_amount;
-          invoice.balance_due = invoice.total - invoice.amount_paid;
+        if (paymentAmount > 0) {
+          invoice.amount_paid = money(money(invoice.amount_paid) + paymentAmount);
+          invoice.balance_due = money(Math.max(0, money(invoice.total) - invoice.amount_paid));
 
           invoice.payment_history.push({
-            amount: paid_amount,
+            amount: paymentAmount,
             method: payment_method || updatedBill.payment_method || 'Cash',
             date: new Date(),
             status: 'Completed',
             collected_by: req.user?._id,
-            reference: notes || `Payment from bill ${updatedBill._id}`
+            reference: payment_reference || notes || `Payment for bill ${updatedBill.bill_number || updatedBill._id}`
           });
 
           if (invoice.amount_paid >= invoice.total) {
@@ -898,7 +1081,7 @@ exports.updateBillStatus = async (req, res) => {
           }
 
           await invoice.save();
-          await syncLegacyInvoiceReceipt({ invoice, bill: updatedBill, user: req.user, paymentMethod, reference: notes, remarks: notes });
+          await syncLegacyInvoiceReceipt({ invoice, bill: updatedBill, user: req.user, paymentMethod, reference: payment_reference || notes, remarks: notes });
         } else if (status === 'Refunded' && invoice.status !== 'Refunded') {
           invoice.status = 'Refunded';
           invoice.notes = invoice.notes 
@@ -971,7 +1154,7 @@ exports.getAllBills = async (req, res) => {
       includeDeleted = false
     } = req.query;
 
-    const filter = {};
+    const filter = billScope(req);
     
     if (!includeDeleted) {
       filter.is_deleted = { $ne: true };
@@ -1057,12 +1240,89 @@ exports.getAllBills = async (req, res) => {
   }
 };
 
+exports.getBillLedger = async (req, res) => {
+  try {
+    const bill = await Bill.findOne(billScope(req, {
+      _id: req.params.id,
+      is_deleted: { $ne: true }
+    }))
+      .populate('patient_id', 'first_name last_name patientId phone address age gender')
+      .populate({
+        path: 'appointment_id',
+        select: 'appointment_date type doctor_id department_id',
+        populate: [
+          { path: 'doctor_id', select: 'firstName lastName name' },
+          { path: 'department_id', select: 'name' }
+        ]
+      })
+      .populate({
+        path: 'admission_id',
+        select: 'admissionNumber admissionDate status primaryDoctorId departmentId wardId roomId bedId',
+        populate: [
+          { path: 'primaryDoctorId', select: 'firstName lastName name' },
+          { path: 'departmentId', select: 'name' },
+          { path: 'wardId', select: 'name wardName' },
+          { path: 'roomId', select: 'roomNumber name' },
+          { path: 'bedId', select: 'bedNumber bed_number' }
+        ]
+      })
+      .populate('invoice_id');
+
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found in this hospital' });
+    }
+
+    const invoice = bill.invoice_id || null;
+    const entries = buildOpdLedgerEntries(bill, invoice);
+    const totalBilled = money(invoice?.total ?? bill.total_amount);
+    const totalPaid = money(invoice?.amount_paid ?? bill.paid_amount);
+    const totalAdjustments = money((bill.settlement_discount_amount || 0) + (bill.credit_note_amount || 0));
+    const balanceDue = money(invoice?.balance_due ?? bill.balance_due ?? Math.max(0, totalBilled - totalPaid - totalAdjustments));
+
+    return res.json({
+      success: true,
+      patient: bill.patient_id,
+      appointment: bill.appointment_id,
+      admission: bill.admission_id,
+      bill,
+      invoice,
+      entries,
+      totals: {
+        totalBilled,
+        totalPaid,
+        totalAdjustments,
+        balanceDue
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching OPD bill ledger:', err);
+    return res.status(err.statusCode || 500).json({ error: err.message });
+  }
+};
+
 exports.getBillById = async (req, res) => {
   try {
-    const bill = await Bill.findById(req.params.id)
-      .populate('patient_id', 'first_name last_name patientId phone address')
-      .populate('appointment_id', 'appointment_date type doctor_id department_id')
-      .populate('admission_id', 'admissionNumber admissionDate status')
+    const bill = await Bill.findOne(billScope(req, { _id: req.params.id }))
+      .populate('patient_id', 'first_name last_name patientId phone address age gender')
+      .populate({
+        path: 'appointment_id',
+        select: 'appointment_date type doctor_id department_id',
+        populate: [
+          { path: 'doctor_id', select: 'firstName lastName name' },
+          { path: 'department_id', select: 'name' }
+        ]
+      })
+      .populate({
+        path: 'admission_id',
+        select: 'admissionNumber admissionDate status primaryDoctorId departmentId wardId roomId bedId',
+        populate: [
+          { path: 'primaryDoctorId', select: 'firstName lastName name' },
+          { path: 'departmentId', select: 'name' },
+          { path: 'wardId', select: 'name wardName' },
+          { path: 'roomId', select: 'roomNumber name' },
+          { path: 'bedId', select: 'bedNumber bed_number' }
+        ]
+      })
       .populate('prescription_id', 'prescription_number diagnosis procedure_requests lab_test_requests radiology_test_requests')
       .populate('invoice_id')
       .populate('created_by', 'name')
@@ -1147,6 +1407,11 @@ exports.generateProcedureBill = async (req, res) => {
 
     const subtotal = allItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
     const total = subtotal;
+    const hospitalId = requestHospitalId(req);
+    const [billNumber, invoiceNumber] = await Promise.all([
+      nextFinancialNumber({ documentType: 'BILL', hospitalId }),
+      nextFinancialNumber({ documentType: 'INVOICE', hospitalId })
+    ]);
 
     // Create IPD charges first if admission exists
     const createdCharges = [];
@@ -1171,6 +1436,9 @@ exports.generateProcedureBill = async (req, res) => {
     }
 
     const bill = new Bill({
+      hospital_id: hospitalId,
+      bill_number: billNumber,
+      document_stage: 'GENERATED',
       patient_id: prescription.patient_id._id,
       appointment_id: prescription.appointment_id?._id,
       admission_id: finalAdmissionId,
@@ -1188,6 +1456,8 @@ exports.generateProcedureBill = async (req, res) => {
     await bill.save();
 
     const invoice = new Invoice({
+      hospital_id: hospitalId,
+      invoice_number: invoiceNumber,
       invoice_type: 'Procedure',
       document_stage: 'ISSUED',
       patient_id: prescription.patient_id._id,
@@ -1225,6 +1495,9 @@ exports.generateProcedureBill = async (req, res) => {
     await invoice.save();
 
     bill.invoice_id = invoice._id;
+    bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
+    bill.document_stage = 'INVOICED';
+    bill.invoiced_at = new Date();
     await bill.save();
 
     // Update prescription procedure requests
@@ -1314,6 +1587,11 @@ exports.generateLabTestBill = async (req, res) => {
 
     const subtotal = allItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
     const total = subtotal;
+    const hospitalId = requestHospitalId(req);
+    const [billNumber, invoiceNumber] = await Promise.all([
+      nextFinancialNumber({ documentType: 'BILL', hospitalId }),
+      nextFinancialNumber({ documentType: 'INVOICE', hospitalId })
+    ]);
 
     // Create IPD charges first if admission exists
     const createdCharges = [];
@@ -1338,6 +1616,9 @@ exports.generateLabTestBill = async (req, res) => {
     }
 
     const bill = new Bill({
+      hospital_id: hospitalId,
+      bill_number: billNumber,
+      document_stage: 'GENERATED',
       patient_id: prescription.patient_id._id,
       appointment_id: prescription.appointment_id?._id,
       admission_id: finalAdmissionId,
@@ -1355,6 +1636,8 @@ exports.generateLabTestBill = async (req, res) => {
     await bill.save();
 
     const invoice = new Invoice({
+      hospital_id: hospitalId,
+      invoice_number: invoiceNumber,
       invoice_type: 'Lab Test',
       document_stage: 'ISSUED',
       patient_id: prescription.patient_id._id,
@@ -1392,6 +1675,9 @@ exports.generateLabTestBill = async (req, res) => {
     await invoice.save();
 
     bill.invoice_id = invoice._id;
+    bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
+    bill.document_stage = 'INVOICED';
+    bill.invoiced_at = new Date();
     await bill.save();
 
     // Update prescription lab test requests
@@ -1481,6 +1767,11 @@ exports.generateRadiologyBill = async (req, res) => {
 
     const subtotal = allItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
     const total = subtotal;
+    const hospitalId = requestHospitalId(req);
+    const [billNumber, invoiceNumber] = await Promise.all([
+      nextFinancialNumber({ documentType: 'BILL', hospitalId }),
+      nextFinancialNumber({ documentType: 'INVOICE', hospitalId })
+    ]);
 
     // Create IPD charges first if admission exists
     const createdCharges = [];
@@ -1505,6 +1796,9 @@ exports.generateRadiologyBill = async (req, res) => {
     }
 
     const bill = new Bill({
+      hospital_id: hospitalId,
+      bill_number: billNumber,
+      document_stage: 'GENERATED',
       patient_id: prescription.patient_id._id,
       appointment_id: prescription.appointment_id?._id,
       admission_id: finalAdmissionId,
@@ -1522,6 +1816,8 @@ exports.generateRadiologyBill = async (req, res) => {
     await bill.save();
 
     const invoice = new Invoice({
+      hospital_id: hospitalId,
+      invoice_number: invoiceNumber,
       invoice_type: 'Radiology',
       document_stage: 'ISSUED',
       patient_id: prescription.patient_id._id,
@@ -1560,6 +1856,9 @@ exports.generateRadiologyBill = async (req, res) => {
     await invoice.save();
 
     bill.invoice_id = invoice._id;
+    bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
+    bill.document_stage = 'INVOICED';
+    bill.invoiced_at = new Date();
     await bill.save();
 
     // Update prescription radiology test requests
@@ -1609,7 +1908,7 @@ exports.getBillByAppointmentId = async (req, res) => {
   try {
     const { appointmentId } = req.params;
 
-    const bill = await Bill.findOne({ appointment_id: appointmentId })
+    const bill = await Bill.findOne(billScope(req, { appointment_id: appointmentId }))
       .populate('patient_id', 'first_name last_name patientId')
       .populate('appointment_id', 'appointment_date type doctor_id department_id')
       .populate('prescription_id', 'prescription_number diagnosis procedure_requests lab_test_requests radiology_test_requests')
@@ -1637,7 +1936,7 @@ exports.getBillByAdmissionId = async (req, res) => {
   try {
     const { admissionId } = req.params;
 
-    const bill = await Bill.findOne({ admission_id: admissionId })
+    const bill = await Bill.findOne(billScope(req, { admission_id: admissionId }))
       .populate('patient_id', 'first_name last_name patientId')
       .populate('admission_id', 'admissionNumber admissionDate status')
       .populate('prescription_id', 'prescription_number diagnosis')
@@ -1752,7 +2051,7 @@ exports.requestBillDeletion = async (req, res) => {
       return res.status(400).json({ error: 'Deletion reason is required' });
     }
 
-    const bill = await Bill.findById(id);
+    const bill = await Bill.findOne(billScope(req, { _id: id }));
 
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
