@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
  * be handled through a credit note / authorised adjustment, not deletion.
  */
 const ipdChargeSchema = new mongoose.Schema({
-  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', required: true, index: true },
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
   chargeType: {

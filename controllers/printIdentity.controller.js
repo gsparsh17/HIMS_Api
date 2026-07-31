@@ -14,6 +14,25 @@ function resolveAssetPath(storagePath) {
   return path.isAbsolute(storagePath) ? storagePath : fileStorage.absolutePath(storagePath);
 }
 
+function isExternalAssetUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function assetContentUrl(assetId) {
+  return `/api/print-identities/assets/${assetId}/content`;
+}
+
+
+function assetResponse(asset) {
+  const data = typeof asset?.toObject === 'function' ? asset.toObject() : { ...asset };
+  if (!isExternalAssetUrl(data.cloudinaryUrl)) delete data.cloudinaryUrl;
+  return {
+    ...data,
+    contentAvailable: true,
+    contentUrl: assetContentUrl(data._id)
+  };
+}
+
 function checksum(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
@@ -56,7 +75,7 @@ exports.getMyIdentity = async (req, res, next) => {
     // do not have a Cloudinary copy. Those assets cause repeated 404 requests
     // in every print dialog.
     const assets = allAssets.filter((asset) =>
-      Boolean(asset.cloudinaryUrl) ||
+      isExternalAssetUrl(asset.cloudinaryUrl) ||
       Boolean(asset.storagePath && fs.existsSync(resolveAssetPath(asset.storagePath)))
     );
 
@@ -99,10 +118,7 @@ exports.getMyIdentity = async (req, res, next) => {
       success: true,
       data: {
         identity,
-        assets: assets.map((asset) => ({
-          ...asset.toObject(),
-          contentAvailable: true
-        }))
+        assets: assets.map(assetResponse)
       }
     });
   } catch (error) { next(error); }
@@ -138,7 +154,13 @@ exports.uploadAsset = async (req, res, next) => {
       folder: 'print-identities',
       hospitalId: identity.hospitalId
     });
-    const cloudinaryUrl = stored.secure_url; // Legacy field retained for backward compatibility.
+    // fileStorage returns a private local API URL for the local driver. Do not
+    // store that relative route in the legacy cloudinaryUrl field: consumers
+    // may treat it as a directly renderable public URL. Keep cloudinaryUrl only
+    // for genuine external HTTP(S) assets.
+    const cloudinaryUrl = isExternalAssetUrl(stored.secure_url)
+      ? stored.secure_url
+      : undefined;
 
     const asset = await PrintIdentityAsset.create({
       hospitalId: identity.hospitalId,
@@ -164,7 +186,11 @@ exports.uploadAsset = async (req, res, next) => {
     identity.verificationStatus = 'verified';
     await identity.save();
     await appendDomainEvent({ req, eventType: 'print_identity.asset_uploaded', entityType: 'PrintIdentityAsset', entityId: asset._id, hospitalId: identity.hospitalId, afterSummary: { assetType, version, status: asset.status, cloudinaryUrl } });
-    res.status(201).json({ success: true, message: 'Asset uploaded and verified', data: asset });
+    res.status(201).json({
+      success: true,
+      message: 'Asset uploaded and verified',
+      data: assetResponse(asset)
+    });
   } catch (error) { next(error); }
 };
 
@@ -207,13 +233,30 @@ exports.streamAsset = async (req, res, next) => {
     if (!canReview) filter.userId = req.user._id;
     const asset = await PrintIdentityAsset.findOne(filter);
     if (!asset) return res.status(404).json({ error: 'Asset not found' });
-    if (asset.cloudinaryUrl) return res.redirect(asset.cloudinaryUrl);
+
+    // Only redirect genuine external/CDN URLs. Historical local assets contain
+    // values such as /api/files/<id> in cloudinaryUrl; redirecting to that path
+    // loses the Authorization header and produces a broken <img> preview.
+    if (isExternalAssetUrl(asset.cloudinaryUrl)) {
+      return res.redirect(asset.cloudinaryUrl);
+    }
+
     const assetPath = resolveAssetPath(asset.storagePath);
-    if (!assetPath || !fs.existsSync(assetPath)) return res.status(404).json({ error: 'Asset file not found' });
-    res.setHeader('Content-Type', asset.mimeType);
+    if (!assetPath || !fs.existsSync(assetPath)) {
+      return res.status(404).json({ error: 'Asset file not found' });
+    }
+
+    const stat = await fs.promises.stat(assetPath);
+    res.setHeader('Content-Type', asset.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    fs.createReadStream(assetPath).pipe(res);
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+
+    const stream = fs.createReadStream(assetPath);
+    stream.on('error', next);
+    stream.pipe(res);
   } catch (error) { next(error); }
 };
 

@@ -630,7 +630,10 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
   const finalTotal = sale.total_amount || invoiceTotal;
 
   const invoice = await Invoice.create({
+    hospital_id: sale.hospitalId,
     invoice_type: 'Pharmacy',
+    document_stage: 'ISSUED',
+    issued_at: new Date(),
     patient_id: sale.patient_id || undefined,
     admission_id: sale.admission_id || undefined,
     sale_id: sale._id,
@@ -781,6 +784,10 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
     : (sale.payment_method || 'Pending');
 
   const bill = await Bill.create({
+    hospital_id: sale.hospitalId,
+    document_stage: sale.invoice_id ? 'INVOICED' : 'GENERATED',
+    invoice_ids: sale.invoice_id ? [sale.invoice_id] : [],
+    invoiced_at: sale.invoice_id ? new Date() : undefined,
     patient_id: patientId,
     admission_id: admissionId,
     prescription_id: sale.prescription_id,
@@ -836,6 +843,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
 async function createIpdChargeForSale({ sale, total, createdBy, isDeferred = false }) {
   if (!sale.admission_id || !sale.patient_id) return null;
   return IPDCharge.create({
+    hospitalId: sale.hospitalId,
     admissionId: sale.admission_id,
     patientId: sale.patient_id,
     chargeType: 'Pharmacy',
@@ -851,6 +859,7 @@ async function createIpdChargeForSale({ sale, total, createdBy, isDeferred = fal
     status: isDeferred ? 'ACTIVE' : 'INVOICED',
     billedAt: isDeferred ? undefined : new Date(),
     invoiceId: sale.invoice_id,
+    billId: sale.bill_id,
     addedBy: createdBy,
     notes: isDeferred ? 'Deferred payment - pending settlement at discharge' : 'Auto-created and settled from pharmacy sale'
   });
@@ -1022,6 +1031,12 @@ async function markIpdMedicationSaleDispatched({ preparedIpdItems, sale, created
 async function createUnifiedSale(payload, req = {}) {
 
   const createdBy = getCreatedBy(req);
+  const hospitalId = getHospitalId(req, payload.hospitalId || payload.hospital_id);
+  if (!hospitalId) {
+    const error = new Error('Hospital context is required for a pharmacy transaction');
+    error.statusCode = 403;
+    throw error;
+  }
   const patientId = objectIdOrUndefined(payload.patient_id || payload.patientId);
   const admissionId = objectIdOrUndefined(payload.admission_id || payload.admissionId);
   const prescriptionId = objectIdOrUndefined(payload.prescription_id || payload.prescriptionId);
@@ -1214,6 +1229,7 @@ async function createUnifiedSale(payload, req = {}) {
     }
 
     const sale = await Sale.create({
+      hospitalId,
       transactionGroupId: payload.transactionGroupId,
       parentGroupId: payload.parentGroupId || payload.transactionGroupId,
       idempotencyKey: payload.idempotencyKey,
@@ -1589,6 +1605,7 @@ async function createUnifiedSale(payload, req = {}) {
   console.log(`💵 TOTAL COLLECTED: ${totalCollectedAmount} | Used for bill: ${amountPaidForBill} | Overpayment to advance: ${overpaymentAmount} | Balance due: ${balanceDue}`);
 
   const sale = await Sale.create({
+    hospitalId,
     transactionGroupId: payload.transactionGroupId,
     parentGroupId: payload.parentGroupId || payload.transactionGroupId,
     idempotencyKey: payload.idempotencyKey,

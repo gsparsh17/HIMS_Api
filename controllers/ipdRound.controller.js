@@ -1,13 +1,14 @@
 const IPDRound = require('../models/IPDRound');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
+const { requestHospitalId } = require('../utils/hospitalScope');
 
 // Helper function to update admission totals
-async function updateAdmissionTotals(admissionId) {
-  const charges = await IPDCharge.find({ admissionId });
+async function updateAdmissionTotals(admissionId, hospitalId) {
+  const charges = await IPDCharge.find({ admissionId, ...(hospitalId ? { hospitalId } : {}) });
   const totalBillAmount = charges.reduce((sum, c) => sum + c.netAmount, 0);
   
-  const admission = await IPDAdmission.findById(admissionId);
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requestHospitalId(req) });
   if (admission) {
     admission.totalBillAmount = totalBillAmount;
     admission.dueAmount = totalBillAmount - (admission.paidAmount || 0);
@@ -75,6 +76,7 @@ exports.createRound = async (req, res) => {
     
     // Create IPD charge for doctor visit with rate from frontend
     const doctorVisitCharge = new IPDCharge({
+      hospitalId: admission.hospitalId,
       admissionId,
       patientId,
       chargeType: 'Doctor Visit',
@@ -94,7 +96,7 @@ exports.createRound = async (req, res) => {
     await doctorVisitCharge.save();
     
     // Update admission totals
-    await updateAdmissionTotals(admissionId);
+    await updateAdmissionTotals(admissionId, admission.hospitalId);
     
     // Update admission status if discharge suggested
     if (dischargeSuggested && admission.canProceedToDischarge) {

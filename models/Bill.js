@@ -161,7 +161,7 @@ const billSchema = new mongoose.Schema({
   voided_at: Date,
   voided_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   void_reason: { type: String, trim: true },
-  hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
+  hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   patient_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Patient'
@@ -326,18 +326,49 @@ const billSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Calculate balance before save
+// Keep the editable Bill document financially consistent before every save.
 billSchema.pre('save', function (next) {
-  this.balance_due = Math.max(0, this.total_amount - this.paid_amount - (this.settlement_discount_amount || 0) - (this.credit_note_amount || 0));
+  const paymentTotal = (this.payments || []).reduce(
+    (sum, payment) => sum + Number(payment?.amount || 0),
+    0
+  );
+  this.paid_amount = Math.max(Number(this.paid_amount || 0), paymentTotal);
+  this.balance_due = Math.max(
+    0,
+    Number(this.total_amount || 0) -
+      this.paid_amount -
+      Number(this.settlement_discount_amount || 0) -
+      Number(this.credit_note_amount || 0)
+  );
 
-  // Update status based on all clearing instruments (actual payment, discount, credit note).
-  if (this.balance_due <= 0) {
+  const protectedStatuses = ['Draft', 'Cancelled', 'Refunded', 'Partially Returned', 'Fully Returned'];
+  if (this.balance_due <= 0 && !['Cancelled', 'Refunded'].includes(this.status)) {
     this.status = 'Paid';
     this.paid_at = this.paid_at || new Date();
-  } else if (this.paid_amount > 0 || this.settlement_discount_amount > 0 || this.credit_note_amount > 0) {
+  } else if (
+    this.paid_amount > 0 ||
+    Number(this.settlement_discount_amount || 0) > 0 ||
+    Number(this.credit_note_amount || 0) > 0
+  ) {
     this.status = 'Partially Paid';
-  } else if (this.status === 'Generated') {
+  } else if (!protectedStatuses.includes(this.status)) {
+    // Prevent an impossible Paid bill with zero collection and a positive balance.
     this.status = 'Pending';
+  }
+
+  const linkedInvoiceIds = [
+    ...(this.invoice_ids || []),
+    ...(this.invoice_id ? [this.invoice_id] : [])
+  ];
+  this.invoice_ids = Array.from(
+    new Map(linkedInvoiceIds.filter(Boolean).map((id) => [String(id), id])).values()
+  );
+
+  if (this.invoice_ids.length > 0) {
+    this.document_stage = 'INVOICED';
+    this.invoiced_at = this.invoiced_at || new Date();
+  } else if (this.document_stage === 'DRAFT' && this.status !== 'Draft') {
+    this.document_stage = 'GENERATED';
   }
 
   next();

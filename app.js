@@ -175,7 +175,10 @@ function mountHospitalRoutes() {
   const auditLogger = require('./middlewares/auditLogger');
   app.use(auditLogger({ apiPrefix: '/api' }));
   
-  // app.use('/api/files', require('./routes/file.routes'));
+  // Stored files are tenant-protected by file.routes/file.controller. Mount
+  // this before the global /api authentication middleware so public files can
+  // remain public and private files can use optional bearer/cookie auth.
+  app.use('/api/files', require('./routes/file.routes'));
   app.use('/api/auth', require('./routes/auth.routes'));
   // Public contact endpoint used by the marketing/demo-request form. It has its
   // own validation and rate limiting; all remaining hospital APIs require login.

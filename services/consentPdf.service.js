@@ -4,6 +4,9 @@ const http = require('http');
 const https = require('https');
 const { execFileSync } = require('child_process');
 const PDFDocument = require('pdfkit');
+const StoredFile = require('../models/StoredFile');
+const PrintIdentityAsset = require('../models/PrintIdentityAsset');
+const fileStorage = require('./fileStorage.service');
 
 const mm = (v) => v * 2.834645669;
 const PAGE = { width: mm(210), height: mm(297), margin: mm(7) };
@@ -78,15 +81,57 @@ function t(doc, text, x, y, opts = {}, bold = false, size = 8.2) { font(doc, bol
 function fitHeight(doc, text, width, size = 8.2, bold = false, lineGap = 1.5) { font(doc, bold); doc.fontSize(size); return doc.heightOfString(clean(text), { width, lineGap }); }
 function ensure(doc, h, redraw) { if (doc.y + h <= PAGE.height - PAGE.margin - mm(5)) return; doc.addPage(); redraw(false); }
 
-async function fetchImageBuffer(urlOrData) {
+async function readLocalFile(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return null;
+    return await fs.promises.readFile(filePath);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchImageBuffer(urlOrData, options = {}) {
   if (!urlOrData || typeof urlOrData !== 'string') return null;
   const trimmed = urlOrData.trim();
+  const hospitalId = options.hospitalId || null;
+
   if (trimmed.startsWith('data:image/png;base64,') || trimmed.startsWith('data:image/jpeg;base64,') || trimmed.startsWith('data:image/jpg;base64,')) {
     try {
       const b64 = trimmed.split(',')[1];
       return Buffer.from(b64, 'base64');
     } catch (_) { return null; }
   }
+
+  // Historical consent records may contain the private local file route. PDF
+  // generation runs inside the backend and cannot attach a browser bearer
+  // token, so resolve the StoredFile record directly instead of making HTTP.
+  const storedFileMatch = trimmed.match(/^\/?api\/files\/([a-fA-F0-9]{24})(?:[/?#]|$)/);
+  if (storedFileMatch) {
+    const filter = { _id: storedFileMatch[1], status: 'active' };
+    if (hospitalId) filter.hospitalId = hospitalId;
+    const record = await StoredFile.findOne(filter).lean();
+    if (!record) return null;
+    return readLocalFile(fileStorage.absolutePath(record.storageKey));
+  }
+
+  // Also support the authenticated print-identity content URL if a consent
+  // stored that URL instead of a data URL.
+  const printAssetMatch = trimmed.match(/^\/?api\/print-identities\/assets\/([a-fA-F0-9]{24})\/content(?:[/?#]|$)/);
+  if (printAssetMatch) {
+    const filter = { _id: printAssetMatch[1], status: { $ne: 'retired' } };
+    if (hospitalId) filter.hospitalId = hospitalId;
+    const asset = await PrintIdentityAsset.findOne(filter).lean();
+    if (!asset) return null;
+    if (/^https?:\/\//i.test(String(asset.cloudinaryUrl || ''))) {
+      return fetchImageBuffer(asset.cloudinaryUrl, options);
+    }
+    if (!asset.storagePath) return null;
+    const localPath = path.isAbsolute(asset.storagePath)
+      ? asset.storagePath
+      : fileStorage.absolutePath(asset.storagePath);
+    return readLocalFile(localPath);
+  }
+
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     return new Promise((resolve) => {
       const client = trimmed.startsWith('https://') ? https : http;
@@ -99,9 +144,13 @@ async function fetchImageBuffer(urlOrData) {
       }).on('error', () => resolve(null));
     });
   }
-  if (fs.existsSync(trimmed)) {
-    try { return fs.readFileSync(trimmed); } catch (_) { return null; }
+
+  // Local storage keys are relative to the configured upload root.
+  if (trimmed.startsWith('hospitals/')) {
+    return readLocalFile(fileStorage.absolutePath(trimmed));
   }
+
+  if (fs.existsSync(trimmed)) return readLocalFile(trimmed);
   return null;
 }
 
@@ -248,11 +297,14 @@ const BODY = {
 
 async function generateConsentPdf({ consent, template, admission, hospital, res }) {
   const responses = consent.responses || {};
+  const imageOptions = {
+    hospitalId: hospital?._id || admission?.hospitalId || admission?.hospital_id || null
+  };
   const [patientSig, doctorSig, doctorSeal, witnessSig] = await Promise.all([
-    fetchImageBuffer(responses.patientSignatureUrl || responses.patientSignature),
-    fetchImageBuffer(responses.doctorSignatureUrl || responses.doctorSignature),
-    fetchImageBuffer(responses.doctorSealUrl || responses.doctorSeal),
-    fetchImageBuffer(responses.witnessSignatureUrl || responses.witnessSignature)
+    fetchImageBuffer(responses.patientSignatureUrl || responses.patientSignature, imageOptions),
+    fetchImageBuffer(responses.doctorSignatureUrl || responses.doctorSignature, imageOptions),
+    fetchImageBuffer(responses.doctorSealUrl || responses.doctorSeal, imageOptions),
+    fetchImageBuffer(responses.witnessSignatureUrl || responses.witnessSignature, imageOptions)
   ]);
   const sigBuffers = { patient: patientSig, doctor: doctorSig, doctorSeal: doctorSeal, witness: witnessSig };
 

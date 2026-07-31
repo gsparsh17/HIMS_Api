@@ -307,6 +307,7 @@ exports.createPurchaseOrder = async (req, res) => {
     await purchaseOrder.save();
 
     const invoice = new Invoice({
+      hospital_id: userHospitalId(req.user),
       invoice_type: 'Purchase',
       customer_type: 'Supplier',
       customer_name: 'Supplier Purchase',

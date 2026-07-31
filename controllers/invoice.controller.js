@@ -16,6 +16,19 @@ const LabTest = require('../models/LabTest');
 const ImagingTest = require('../models/ImagingTest');
 const PDFDocument = require('pdfkit');
 const { default: mongoose } = require('mongoose');
+const { requestHospitalId } = require('../utils/hospitalScope');
+
+function invoiceScope(req, extra = {}) {
+  const rawHospitalId = requestHospitalId(req);
+  const hospitalId = rawHospitalId instanceof mongoose.Types.ObjectId
+    ? rawHospitalId
+    : new mongoose.Types.ObjectId(rawHospitalId);
+  return {
+    ...extra,
+    hospital_id: hospitalId,
+    is_deleted: { $ne: true }
+  };
+}
 
 // ============== PROCEDURE INVOICE FUNCTIONS ==============
 
@@ -101,6 +114,7 @@ exports.generateProcedureInvoice = async (req, res) => {
     }));
 
     const invoice = new Invoice({
+      hospital_id: requestHospitalId(req),
       invoice_type: 'Procedure',
       patient_id: patient_id || prescription.patient_id._id,
       customer_type: 'Patient',
@@ -178,7 +192,7 @@ exports.getProcedureInvoices = async (req, res) => {
       end_date
     } = req.query;
 
-    const filter = { invoice_type: 'Procedure' };
+    const filter = invoiceScope(req, { invoice_type: 'Procedure' });
 
     if (status) filter.status = status;
     if (patient_id) filter.patient_id = patient_id;
@@ -234,7 +248,7 @@ exports.updateInvoiceProcedureStatus = async (req, res) => {
     const { invoiceId, procedureIndex } = req.params;
     const { status, performed_by, completed_date, notes } = req.body;
 
-    const invoice = await Invoice.findById(invoiceId);
+    const invoice = await Invoice.findOne(invoiceScope(req, { _id: invoiceId }));
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
@@ -442,6 +456,7 @@ exports.generateLabTestInvoice = async (req, res) => {
     }));
 
     const invoice = new Invoice({
+      hospital_id: requestHospitalId(req),
       invoice_type: 'Lab Test',
       patient_id: patient_id || prescription.patient_id._id,
       customer_type: 'Patient',
@@ -515,7 +530,7 @@ exports.getLabTestInvoices = async (req, res) => {
       end_date
     } = req.query;
 
-    const filter = { invoice_type: 'Lab Test' };
+    const filter = invoiceScope(req, { invoice_type: 'Lab Test' });
 
     if (status) filter.status = status;
     if (patient_id) filter.patient_id = patient_id;
@@ -571,7 +586,7 @@ exports.updateInvoiceLabTestStatus = async (req, res) => {
     const { invoiceId, labTestIndex } = req.params;
     const { status, performed_by, completed_date, sample_collected_at, notes, report_url } = req.body;
 
-    const invoice = await Invoice.findById(invoiceId);
+    const invoice = await Invoice.findOne(invoiceScope(req, { _id: invoiceId }));
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
@@ -787,6 +802,7 @@ exports.generateRadiologyInvoice = async (req, res) => {
     }));
 
     const invoice = new Invoice({
+      hospital_id: requestHospitalId(req),
       invoice_type: 'Radiology',
       patient_id: patient_id || prescription.patient_id._id,
       customer_type: 'Patient',
@@ -862,7 +878,7 @@ exports.getRadiologyInvoices = async (req, res) => {
       end_date
     } = req.query;
 
-    const filter = { invoice_type: 'Radiology' };
+    const filter = invoiceScope(req, { invoice_type: 'Radiology' });
 
     if (status) filter.status = status;
     if (radiology_status) filter.radiology_status = radiology_status;
@@ -920,7 +936,7 @@ exports.updateInvoiceRadiologyStatus = async (req, res) => {
     const { invoiceId, radiologyIndex } = req.params;
     const { status, performed_by, reported_by, performed_at, reported_at, notes, report_url } = req.body;
 
-    const invoice = await Invoice.findById(invoiceId);
+    const invoice = await Invoice.findOne(invoiceScope(req, { _id: invoiceId }));
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
@@ -1071,6 +1087,7 @@ exports.generatePharmacyInvoice = async (req, res) => {
     const total = subtotal + tax - discount;
 
     const invoice = new Invoice({
+      hospital_id: requestHospitalId(req),
       invoice_type: 'Pharmacy',
       patient_id: patient_id,
       customer_type: 'Patient',
@@ -1121,7 +1138,7 @@ exports.getPharmacyInvoices = async (req, res) => {
   try {
     const { page = 1, limit = 10, status } = req.query;
 
-    const filter = { invoice_type: 'Pharmacy' };
+    const filter = invoiceScope(req, { invoice_type: 'Pharmacy' });
     if (status) filter.status = status;
 
     const invoices = await Invoice.find(filter)
@@ -1232,7 +1249,7 @@ exports.generateAppointmentInvoice = async (req, res) => {
   try {
     const { appointment_id, payment_method, items, discount = 0, notes } = req.body;
 
-    const appointment = await Appointment.findById(appointment_id)
+    const appointment = await Appointment.findOne({ _id: appointment_id, hospital_id: requestHospitalId(req) })
       .populate('patient_id')
       .populate('doctor_id');
 
@@ -1249,6 +1266,7 @@ exports.generateAppointmentInvoice = async (req, res) => {
     const total = subtotal + tax - discount;
 
     const invoice = new Invoice({
+      hospital_id: requestHospitalId(req),
       invoice_type: 'Appointment',
       patient_id: appointment.patient_id._id,
       customer_type: 'Patient',
@@ -1301,6 +1319,7 @@ exports.generatePurchaseInvoice = async (req, res) => {
     const total = subtotal + tax;
 
     const invoice = new Invoice({
+      hospital_id: requestHospitalId(req),
       invoice_type: 'Purchase',
       customer_type: 'Supplier',
       customer_name: supplier.name,
@@ -1373,7 +1392,7 @@ exports.getAllInvoices = async (req, res) => {
       endDate
     } = req.query;
 
-    const filter = {};
+    const filter = invoiceScope(req);
 
     if (status) filter.status = status;
     if (invoice_type) filter.invoice_type = invoice_type;
@@ -1398,8 +1417,18 @@ exports.getAllInvoices = async (req, res) => {
       };
     }
 
-    const pipeline = [];
-    pipeline.push({ $match: filter });
+    const pipeline = [
+      { $match: filter },
+      {
+        $lookup: {
+          from: 'patients',
+          localField: 'patient_id',
+          foreignField: '_id',
+          as: 'patient_info'
+        }
+      },
+      { $unwind: { path: '$patient_info', preserveNullAndEmptyArrays: true } }
+    ];
 
     if (doctor_id || department_id) {
       pipeline.push(
@@ -1441,18 +1470,7 @@ exports.getAllInvoices = async (req, res) => {
     }
 
     if (patient_type) {
-      pipeline.push(
-        {
-          $lookup: {
-            from: 'patients',
-            localField: 'patient_id',
-            foreignField: '_id',
-            as: 'patient_info'
-          }
-        },
-        { $unwind: { path: '$patient_info', preserveNullAndEmptyArrays: true } },
-        { $match: { 'patient_info.patient_type': patient_type } }
-      );
+      pipeline.push({ $match: { 'patient_info.patient_type': patient_type } });
     }
 
     const countPipeline = [...pipeline, { $count: 'total' }];
@@ -1483,12 +1501,15 @@ exports.getAllInvoices = async (req, res) => {
           lab_test_items: { $size: { $ifNull: ['$lab_test_items', []] } },
           radiology_items: { $size: { $ifNull: ['$radiology_items', []] } },
           patient_id: {
-            _id: 1,
-            first_name: 1,
-            last_name: 1,
-            patientId: 1,
-            patient_type: 1
+            _id: '$patient_info._id',
+            first_name: '$patient_info.first_name',
+            last_name: '$patient_info.last_name',
+            patientId: '$patient_info.patientId',
+            patient_type: '$patient_info.patient_type'
           },
+          admission_id: 1,
+          bill_id: 1,
+          document_stage: 1,
           customer_name: 1,
           customer_phone: 1,
           appointment_id: 1
@@ -1513,9 +1534,11 @@ exports.getAllInvoices = async (req, res) => {
 // Get invoice by ID
 exports.getInvoiceById = async (req, res) => {
   try {
-    const invoice = await Invoice.findById(req.params.id)
+    const invoice = await Invoice.findOne(invoiceScope(req, { _id: req.params.id }))
       .populate('patient_id')
       .populate('appointment_id')
+      .populate('admission_id')
+      .populate('bill_id')
       .populate('sale_id')
       .populate('prescription_id');
 
@@ -1542,7 +1565,7 @@ exports.updateInvoicePayment = async (req, res) => {
       return res.status(400).json({ error: 'Invalid payment amount' });
     }
 
-    const invoice = await Invoice.findById(invoiceId);
+    const invoice = await Invoice.findOne(invoiceScope(req, { _id: invoiceId }));
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
@@ -1864,7 +1887,7 @@ exports.getInvoicesByType = async (req, res) => {
     const { type } = req.params;
     const { status, page = 1, limit = 10 } = req.query;
 
-    const filter = { invoice_type: type };
+    const filter = invoiceScope(req, { invoice_type: type });
     if (status) filter.status = status;
 
     const invoices = await Invoice.find(filter)
@@ -1894,7 +1917,7 @@ exports.getInvoiceStatistics = async (req, res) => {
   try {
     const { startDate, endDate, type, payment_method } = req.query;
 
-    const filter = {};
+    const filter = invoiceScope(req);
     if (startDate && endDate) {
       filter.issue_date = {
         $gte: new Date(startDate),
@@ -2029,7 +2052,7 @@ exports.exportInvoices = async (req, res) => {
   try {
     const { startDate, endDate, type, status } = req.query;
 
-    const filter = {};
+    const filter = invoiceScope(req);
     if (startDate && endDate) {
       filter.issue_date = {
         $gte: new Date(startDate),
@@ -2068,7 +2091,7 @@ exports.downloadInvoicePDF = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const invoice = await Invoice.findById(id)
+    const invoice = await Invoice.findOne(invoiceScope(req, { _id: id }))
       .populate('patient_id', 'first_name last_name phone address')
       .populate('appointment_id', 'appointment_date type')
       .populate('prescription_id', 'prescription_number diagnosis')

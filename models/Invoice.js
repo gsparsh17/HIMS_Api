@@ -472,6 +472,7 @@ const invoiceSchema = new mongoose.Schema({
   hospital_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Hospital',
+    required: true,
     index: true
   },
   patient_id: {
@@ -793,29 +794,48 @@ invoiceSchema.pre('save', function (next) {
     this.created_at = new Date();
   }
 
-  // Calculate balance due
-  this.balance_due = Math.max(0, this.total - this.amount_paid - (this.settlement_discount_amount || 0) - (this.credit_note_total || 0));
+  // Legacy controllers may set an issued status without the lifecycle field.
+  // Promote the document before calculating payment status so it cannot fall
+  // back to Draft merely because a balance remains outstanding.
+  if (this.document_stage === 'DRAFT' && ['Issued', 'Pending', 'Paid', 'Partial', 'Overdue'].includes(this.status)) {
+    this.document_stage = 'ISSUED';
+    if (!this.issued_at) this.issued_at = this.issue_date || new Date();
+  }
+
+  const completedPaymentTotal = (this.payment_history || [])
+    .filter((payment) => !payment.status || payment.status === 'Completed')
+    .reduce((sum, payment) => sum + Number(payment?.amount || 0), 0);
+  this.amount_paid = Math.max(Number(this.amount_paid || 0), completedPaymentTotal);
+
+  // Calculate balance due from the authoritative totals.
+  this.balance_due = Math.max(
+    0,
+    Number(this.total || 0) -
+      this.amount_paid -
+      Number(this.settlement_discount_amount || 0) -
+      Number(this.credit_note_total || 0)
+  );
 
   // Validate dates
   if (this.due_date < this.issue_date) {
     return next(new Error('Due date cannot be before issue date'));
   }
 
-  // Auto-update status based on payment
-  if (this.balance_due <= 0 && this.document_stage !== 'VOID') {
+  // Auto-update status based on payment. Never retain Paid with a positive balance.
+  if (this.document_stage !== 'VOID' && this.balance_due <= 0) {
     this.status = 'Paid';
-  } else if (this.amount_paid > 0 || this.settlement_discount_amount > 0 || this.credit_note_total > 0) {
+  } else if (
+    this.amount_paid > 0 ||
+    Number(this.settlement_discount_amount || 0) > 0 ||
+    Number(this.credit_note_total || 0) > 0
+  ) {
     this.status = 'Partial';
-  } else if (new Date() > this.due_date && !['Paid', 'Cancelled', 'Refunded'].includes(this.status)) {
+  } else if (this.document_stage === 'DRAFT') {
+    this.status = 'Draft';
+  } else if (new Date() > this.due_date) {
     this.status = 'Overdue';
-  }
-
-  // Legacy controllers may set status/amount but not the new document stage.
-  // Treat any financially issued status as an issued invoice; bills remain the
-  // editable pre-invoice document.
-  if (this.document_stage === 'DRAFT' && ['Issued', 'Pending', 'Paid', 'Partial', 'Overdue'].includes(this.status)) {
-    this.document_stage = 'ISSUED';
-    if (!this.issued_at) this.issued_at = this.issue_date || new Date();
+  } else if (!['Cancelled', 'Refunded'].includes(this.status)) {
+    this.status = 'Pending';
   }
 
   // Update procedures related fields

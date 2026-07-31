@@ -89,7 +89,7 @@ const saleSchema = new mongoose.Schema({
   invoice_number: { type: String },
   invoice_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
 
-  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   pharmacy_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Pharmacy' },
 
   customer_type: {
@@ -257,5 +257,14 @@ saleSchema.index({ patient_id: 1, admission_id: 1, sale_date: -1 });
 saleSchema.index({ doctor_id: 1, sale_date: -1 });
 saleSchema.index({ payment_deferred: 1, include_in_discharge_clearance: 1, status: 1 });
 
-saleSchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
+saleSchema.index(
+  { hospitalId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      hospitalId: { $type: 'objectId' },
+      idempotencyKey: { $type: 'string' }
+    }
+  }
+);
 module.exports = mongoose.model('Sale', saleSchema);

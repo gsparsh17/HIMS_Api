@@ -93,6 +93,7 @@ function buildOpdLedgerEntries(bill, invoice) {
 
 // ========== HELPERS: IPD charge + financial reconciliation ==========
 async function createOrUpdateIPDCharge({
+  hospitalId,
   admissionId,
   patientId,
   chargeType,
@@ -108,12 +109,27 @@ async function createOrUpdateIPDCharge({
 }) {
   if (!admissionId) return null;
 
+  const admission = await IPDAdmission.findById(admissionId).select('hospitalId patientId').lean();
+  const scopedHospitalId = hospitalId || admission?.hospitalId;
+  if (!scopedHospitalId) {
+    const error = new Error('Hospital context is required to create an IPD charge');
+    error.statusCode = 400;
+    throw error;
+  }
+
   const lookup = {
     admissionId,
     sourceModule,
     sourceId,
     isBilled: false,
-    $or: [{ status: { $exists: false } }, { status: 'ACTIVE' }]
+    $and: [
+      { $or: [{ status: { $exists: false } }, { status: 'ACTIVE' }] },
+      { $or: [
+        { hospitalId: scopedHospitalId },
+        { hospitalId: { $exists: false } },
+        { hospitalId: null }
+      ] }
+    ]
   };
   // A prescription can contain several medicines/rows with the same source.
   // The stable bill-line key prevents one item overwriting another.
@@ -123,6 +139,8 @@ async function createOrUpdateIPDCharge({
   const netAmount = Number(((Number(quantity || 1) * Number(rate || 0))).toFixed(2));
 
   if (existingCharge) {
+    existingCharge.hospitalId = scopedHospitalId;
+    existingCharge.patientId = patientId || existingCharge.patientId || admission?.patientId;
     existingCharge.description = description;
     existingCharge.quantity = Number(quantity || 1);
     existingCharge.rate = Number(rate || 0);
@@ -143,8 +161,9 @@ async function createOrUpdateIPDCharge({
   }
 
   const charge = new IPDCharge({
+    hospitalId: scopedHospitalId,
     admissionId,
-    patientId,
+    patientId: patientId || admission?.patientId,
     chargeType,
     description,
     quantity: Number(quantity || 1),
@@ -172,18 +191,29 @@ async function createOrUpdateIPDCharge({
 async function markIPDChargeAsBilled(admissionId, sourceModule, sourceId, invoiceId, invoiceNumber, sourceLineKey, billId) {
   if (!admissionId) return null;
 
+  const admission = await IPDAdmission.findById(admissionId).select('hospitalId').lean();
+  if (!admission?.hospitalId) return null;
+
   const lookup = {
     admissionId,
     sourceModule,
     sourceId,
     isBilled: false,
-    $or: [{ status: { $exists: false } }, { status: 'ACTIVE' }]
+    $and: [
+      { $or: [{ status: { $exists: false } }, { status: 'ACTIVE' }] },
+      { $or: [
+        { hospitalId: admission.hospitalId },
+        { hospitalId: { $exists: false } },
+        { hospitalId: null }
+      ] }
+    ]
   };
   if (sourceLineKey) lookup['sourceReference.lineKey'] = sourceLineKey;
 
   const ipdCharge = await IPDCharge.findOne(lookup);
   if (!ipdCharge) return null;
 
+  ipdCharge.hospitalId = admission.hospitalId;
   ipdCharge.isBilled = true;
   ipdCharge.status = 'INVOICED';
   ipdCharge.invoiceId = invoiceId;
