@@ -313,6 +313,17 @@ exports.printConsent = async (req, res, next) => {
     const consent = await IPDConsent.findOne({ hospitalId: admission.hospitalId, admissionId: admission._id, templateId: template.id, scopeKey: scopeKey({}, req.query) });
     if (!consent) return res.status(404).json({ error: 'Consent form has not been saved' });
     const hospital = await Hospital.findById(admission.hospitalId);
-    generateConsentPdf({ consent, template, admission, hospital, res });
+    let documentSignature = null;
+    if (req.query.signatureId) {
+      documentSignature = await DocumentSignature.findOne({
+        _id: req.query.signatureId,
+        hospitalId: admission.hospitalId,
+        sourceModel: 'IPDConsent',
+        sourceId: consent._id,
+        status: 'signed'
+      }).lean();
+      if (!documentSignature) return res.status(404).json({ error: 'Signed consent placement record not found' });
+    }
+    await generateConsentPdf({ consent, template, admission, hospital, documentSignature, res });
   } catch (error) { if (!res.headersSent) next(error); }
 };

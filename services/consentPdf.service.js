@@ -295,7 +295,49 @@ const BODY = {
   ]
 };
 
-async function generateConsentPdf({ consent, template, admission, hospital, res }) {
+async function placementImageBuffers(documentSignature, imageOptions) {
+  if (!documentSignature?.placements?.length) return new Map();
+  const snapshots = new Map((documentSignature.assetSnapshots || []).map((snapshot) => [String(snapshot.assetId), snapshot]));
+  const uniqueIds = [...new Set(documentSignature.placements.map((placement) => String(placement.assetId || '')).filter(Boolean))];
+  const entries = await Promise.all(uniqueIds.map(async (assetId) => {
+    const snapshot = snapshots.get(assetId);
+    if (!snapshot) return [assetId, null];
+    const buffer = await fetchImageBuffer(snapshot.storagePath || snapshot.cloudinaryUrl, imageOptions);
+    return [assetId, buffer];
+  }));
+  return new Map(entries.filter(([, buffer]) => buffer));
+}
+
+function drawPlacementOverlays(doc, documentSignature, buffers, pageRange) {
+  if (!documentSignature?.placements?.length || !buffers?.size) return;
+  const firstPage = pageRange.start;
+  const pageCount = pageRange.count;
+
+  documentSignature.placements.forEach((placement) => {
+    const pageNumber = Math.max(1, Number(placement.page || 1));
+    if (pageNumber > pageCount) return;
+    const image = buffers.get(String(placement.assetId || ''));
+    if (!image) return;
+
+    const width = Math.max(mm(2), Math.min(PAGE.width, Number(placement.width || 0.2) * PAGE.width));
+    const height = Math.max(mm(2), Math.min(PAGE.height, Number(placement.height || 0.1) * PAGE.height));
+    const x = Math.max(0, Math.min(PAGE.width - width, Number(placement.x || 0) * PAGE.width));
+    const y = Math.max(0, Math.min(PAGE.height - height, Number(placement.y || 0) * PAGE.height));
+    const rotation = Number(placement.rotation || 0);
+
+    doc.switchToPage(firstPage + pageNumber - 1);
+    doc.save();
+    if (rotation) doc.rotate(rotation, { origin: [x + (width / 2), y + (height / 2)] });
+    try {
+      doc.image(image, x, y, { fit: [width, height], align: 'center', valign: 'center' });
+    } catch (error) {
+      console.error('Consent placement render error:', error);
+    }
+    doc.restore();
+  });
+}
+
+async function generateConsentPdf({ consent, template, admission, hospital, documentSignature = null, res }) {
   const responses = consent.responses || {};
   const imageOptions = {
     hospitalId: hospital?._id || admission?.hospitalId || admission?.hospital_id || null
@@ -307,6 +349,7 @@ async function generateConsentPdf({ consent, template, admission, hospital, res 
     fetchImageBuffer(responses.witnessSignatureUrl || responses.witnessSignature, imageOptions)
   ]);
   const sigBuffers = { patient: patientSig, doctor: doctorSig, doctorSeal: doctorSeal, witness: witnessSig };
+  const overlayBuffers = await placementImageBuffers(documentSignature, imageOptions);
 
   const doc = new PDFDocument({ size: 'A4', margins: { top: PAGE.margin, right: PAGE.margin, bottom: PAGE.margin, left: PAGE.margin }, bufferPages: true, info: { Creator: 'MediQliq HIMS' } });
   setupFonts(doc);
@@ -337,6 +380,7 @@ async function generateConsentPdf({ consent, template, admission, hospital, res 
       { width: PAGE.width - 2 * PAGE.margin, height: mm(3), align: 'right', lineBreak: false }
     );
   }
+  drawPlacementOverlays(doc, documentSignature, overlayBuffers, range);
   doc.end();
 }
 
