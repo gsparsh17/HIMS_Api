@@ -244,6 +244,7 @@ function mountHospitalRoutes() {
   app.use('/api/icd11', require('./routes/icd11.routes.js'));
   app.use('/api/ot', require('./routes/ot.routes.js'));
   app.use('/api/print-identities', require('./routes/printIdentity.routes.js'));
+  app.use('/api/patient-identities', require('./routes/patientIdentity.routes.js'));
   app.use('/api/documents', require('./routes/document.routes.js'));
   app.use('/api/mis', require('./routes/mis.routes.js'));
   app.use('/api/approvals', require('./routes/approval.routes.js'));

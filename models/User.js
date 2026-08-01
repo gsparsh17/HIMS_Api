@@ -6,7 +6,7 @@ const { MAIN_FEATURE_KEYS, normalizeFeaturePermissions } = require('../utils/mai
 const featurePermissionSchema = new mongoose.Schema({
   moduleKey: { type: String, required: true, trim: true, enum: Array.from(MAIN_FEATURE_KEYS) },
   access: { type: String, enum: ['none', 'view', 'manage', 'edit'], default: 'none' },
-  actions: [{ type: String, enum: ['approve', 'discount_override', 'refund', 'settlement', 'final_clearance', 'bulk_import_commit', 'user_access_manage', 'ot_approve', 'ot_emergency_bypass', 'stock_adjustment', 'document_sign', 'print_identity_verify', 'mis_export', 'claim_submit', 'preauth_decide', 'transfer_reserve', 'transfer_approve', 'transfer_complete', 'payroll_publish', 'biometric_manage', 'rate_card_approve', 'pricing_override'] }],
+  actions: [{ type: String, enum: ['approve', 'discount_override', 'refund', 'settlement', 'final_clearance', 'bulk_import_commit', 'user_access_manage', 'ot_approve', 'ot_emergency_bypass', 'stock_adjustment', 'document_sign', 'print_identity_verify', 'mis_export', 'claim_submit', 'preauth_decide', 'transfer_reserve', 'transfer_approve', 'transfer_complete', 'payroll_publish', 'biometric_manage', 'rate_card_approve', 'pricing_override', 'billing_create', 'billing_edit', 'billing_delete_charge', 'billing_apply_discount', 'billing_finalize'] }],
   grantedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   grantedAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

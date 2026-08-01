@@ -97,7 +97,7 @@ const ROLE_PRESET = Object.freeze({
     dashboard: 'manage',
     registration_opd: 'manage',
     ipd: 'manage',
-    billing_finance: 'manage',
+    billing_finance: 'none',
     laboratory: 'view',
     radiology: 'view',
     operation_theatre: 'view',
@@ -114,7 +114,7 @@ const ROLE_PRESET = Object.freeze({
     dashboard: 'manage',
     registration_opd: 'manage',
     ipd: 'view',
-    billing_finance: 'view',
+    billing_finance: 'manage',
     reports: 'view'
   },
   pharmacy: {
@@ -210,8 +210,32 @@ const ROLE_PRESET = Object.freeze({
 const ROLE_ACTION_PRESET = Object.freeze({
   nurse: { ipd: ['transfer_complete'] },
   staff: { ipd: ['transfer_reserve'] },
-  registrar: { ipd: ['transfer_reserve'] },
-  receptionist: { ipd: ['transfer_reserve'] },
+  registrar: {
+    ipd: ['transfer_reserve'],
+    billing_finance: [
+      'pricing_override',
+      'settlement',
+      'final_clearance',
+      'billing_create',
+      'billing_edit',
+      'billing_delete_charge',
+      'billing_apply_discount',
+      'billing_finalize'
+    ]
+  },
+  receptionist: {
+    ipd: ['transfer_reserve'],
+    billing_finance: [
+      'pricing_override',
+      'settlement',
+      'final_clearance',
+      'billing_create',
+      'billing_edit',
+      'billing_delete_charge',
+      'billing_apply_discount',
+      'billing_finalize'
+    ]
+  },
   bed_manager: { ipd: ['transfer_reserve', 'transfer_approve'] },
   doctor: { ipd: [] },
   ot_staff: { ipd: ['transfer_complete'] },
@@ -224,7 +248,12 @@ const ROLE_ACTION_PRESET = Object.freeze({
       'rate_card_approve',
       'pricing_override',
       'settlement',
-      'final_clearance'
+      'final_clearance',
+      'billing_create',
+      'billing_edit',
+      'billing_delete_charge',
+      'billing_apply_discount',
+      'billing_finalize'
     ]
   },
   insurance_desk: {
@@ -234,7 +263,12 @@ const ROLE_ACTION_PRESET = Object.freeze({
       'rate_card_approve',
       'pricing_override',
       'settlement',
-      'final_clearance'
+      'final_clearance',
+      'billing_create',
+      'billing_edit',
+      'billing_delete_charge',
+      'billing_apply_discount',
+      'billing_finalize'
     ]
   }
 });
@@ -427,12 +461,30 @@ function mainFeaturePermission(user, moduleKey) {
 }
 
 function effectiveMainFeaturePermissions(user) {
-  return MAIN_FEATURES.map(({ key, label, description }) => ({
-    moduleKey: key,
-    label,
-    description,
-    access: mainFeaturePermission(user, key).access
-  }));
+  const role = normalizeRole(user?.role);
+  const normalized = normalizeFeaturePermissions(user?.modulePermissions, role);
+  const permissionByModule = new Map(
+    normalized.map((permission) => [permission.moduleKey, permission])
+  );
+
+  return MAIN_FEATURES.map(({ key, label, description }) => {
+    const permission = permissionByModule.get(key) || {
+      moduleKey: key,
+      access: roleDefaultAccess(role, key),
+      actions: roleDefaultActions(role, key)
+    };
+
+    return {
+      moduleKey: key,
+      label,
+      description,
+      access: normalizeAccess(permission.access),
+      actions: Array.from(new Set(permission.actions || [])),
+      ...(permission.grantedBy ? { grantedBy: permission.grantedBy } : {}),
+      ...(permission.grantedAt ? { grantedAt: permission.grantedAt } : {}),
+      ...(permission.updatedAt ? { updatedAt: permission.updatedAt } : {})
+    };
+  });
 }
 
 function hasFeatureAccess(user, moduleKey, minimumAccess = 'view') {

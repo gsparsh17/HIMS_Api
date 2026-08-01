@@ -14,6 +14,7 @@ const ipdFinancial = require('../services/ipdFinancial.service');
 const { syncLegacyInvoiceReceipt, makeChargeLineKey } = require('../services/legacyFinancialBridge.service');
 const { requestHospitalId } = require('../utils/hospitalScope');
 const { nextFinancialNumber, money } = require('../utils/financeNumbers');
+const billingPatientService = require('../services/billingPatient.service');
 
 // ========== OPD billing scope + ledger helpers ==========
 function billScope(req, extra = {}) {
@@ -1990,7 +1991,7 @@ exports.adminDeleteBill = async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body;
 
-    const bill = await Bill.findById(id).populate('patient_id').populate('invoice_id');
+    const bill = await Bill.findOne(billScope(req, { _id: id })).populate('patient_id').populate('invoice_id');
 
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
@@ -2009,7 +2010,7 @@ exports.adminDeleteBill = async (req, res) => {
     };
 
     if (bill.invoice_id) {
-      await Invoice.findByIdAndDelete(bill.invoice_id);
+      await Invoice.findOneAndDelete({ _id: bill.invoice_id, hospital_id: requestHospitalId(req) });
     }
 
     if (bill.prescription_id) {
@@ -2058,7 +2059,7 @@ exports.adminDeleteBill = async (req, res) => {
       }
     }
 
-    await Bill.findByIdAndDelete(id);
+    await Bill.findOneAndDelete(billScope(req, { _id: id }));
 
     res.json({
       success: true,
@@ -2129,10 +2130,10 @@ exports.requestBillDeletion = async (req, res) => {
 // Get pending deletion requests (admin)
 exports.getPendingDeletionRequests = async (req, res) => {
   try {
-    const bills = await Bill.find({
+    const bills = await Bill.find(billScope(req, {
       'deletion_request.status': 'pending',
       is_deleted: false
-    })
+    }))
       .populate('patient_id', 'first_name last_name patientId')
       .populate('appointment_id', 'appointment_date')
       .populate('admission_id', 'admissionNumber')
@@ -2161,7 +2162,7 @@ exports.reviewDeletionRequest = async (req, res) => {
       return res.status(400).json({ error: 'Invalid action. Use "approve" or "reject"' });
     }
 
-    const bill = await Bill.findById(id).populate('invoice_id');
+    const bill = await Bill.findOne(billScope(req, { _id: id })).populate('invoice_id');
 
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
@@ -2258,7 +2259,7 @@ exports.getDeletedBills = async (req, res) => {
   try {
     const { page = 1, limit = 10, start_date, end_date } = req.query;
 
-    const filter = { is_deleted: true };
+    const filter = billScope(req, { is_deleted: true });
 
     if (start_date && end_date) {
       filter.deleted_at = {
@@ -2313,7 +2314,144 @@ exports.deleteBill = async (req, res) => {
   }
 };
 
+
+
+// Patient-first billing dashboard summaries and encounter details.
+exports.getPatientBillingSummaries = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const data = await billingPatientService.listPatientBillingSummaries({
+      hospitalId,
+      type: req.query.type || 'all',
+      search: req.query.search || '',
+      limit: req.query.limit || 250
+    });
+    res.json({ success: true, ...data });
+  } catch (error) {
+    if (next) return next(error);
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+exports.getPatientBillingDetails = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const data = await billingPatientService.getPatientBillingDetails({
+      hospitalId,
+      patientId: req.params.patientId,
+      admissionId: req.query.admissionId || null
+    });
+    res.json({ success: true, data });
+  } catch (error) {
+    if (next) return next(error);
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
 // Export helpers for use in other modules
 exports.createOrUpdateIPDCharge = createOrUpdateIPDCharge;
 exports.markIPDChargeAsBilled = markIPDChargeAsBilled;
 exports.updateAdmissionTotals = updateAdmissionTotals;
+/**
+ * Issue an invoice from an existing generated bill without forcing payment.
+ * This supports the patient billing workspace where creation, preview, issue
+ * and print are intentionally kept on one screen.
+ */
+exports.generateInvoiceFromBill = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const bill = await Bill.findOne({
+      _id: req.params.id,
+      hospital_id: hospitalId,
+      is_deleted: { $ne: true }
+    }).populate('patient_id').populate('admission_id').populate('appointment_id');
+
+    if (!bill) return res.status(404).json({ error: 'Bill not found' });
+    if (bill.invoice_id) {
+      const existing = await Invoice.findOne({ _id: bill.invoice_id, hospital_id: hospitalId, is_deleted: { $ne: true } });
+      if (existing) return res.json({ success: true, message: 'Invoice already issued', invoice: existing, bill });
+    }
+
+    const now = new Date();
+    const dueDate = new Date(now.getTime() + (Number(req.body?.dueInDays ?? 7) * 86400000));
+    const amountPaid = money(bill.paid_amount || 0);
+    const total = money(bill.total_amount || 0);
+    const balanceDue = money(Math.max(0, total - amountPaid - money(bill.settlement_discount_amount) - money(bill.credit_note_amount)));
+    const invoiceStatus = balanceDue <= 0 ? 'Paid' : amountPaid > 0 ? 'Partial' : 'Pending';
+    const invoiceNumber = await nextFinancialNumber({ documentType: 'INVOICE', hospitalId });
+    const patient = bill.patient_id || {};
+    const patientName = [patient.first_name, patient.middle_name, patient.last_name].filter(Boolean).join(' ') || patient.name || 'Patient';
+    const hasAdmission = Boolean(bill.admission_id);
+
+    const invoice = await Invoice.create({
+      hospital_id: hospitalId,
+      invoice_number: invoiceNumber,
+      patient_id: patient._id || patient,
+      customer_type: 'Patient',
+      customer_name: patientName,
+      customer_phone: patient.phone || patient.mobile || '',
+      appointment_id: bill.appointment_id?._id || bill.appointment_id,
+      admission_id: bill.admission_id?._id || bill.admission_id,
+      bill_id: bill._id,
+      invoice_type: hasAdmission ? 'IPD Interim' : 'Appointment',
+      document_stage: 'ISSUED',
+      issued_at: now,
+      issue_date: now,
+      due_date: dueDate,
+      service_items: (bill.items || []).map((item) => {
+        const quantity = Number(item.quantity || 1);
+        const lineTotal = money(item.amount || 0);
+        const rawType = String(item.item_type || 'Other');
+        const serviceType = ['Consultation', 'Procedure', 'Lab Test', 'Radiology', 'Purchase'].includes(rawType) ? rawType : 'Other';
+        return {
+          description: item.description || 'Billing item',
+          quantity,
+          unit_price: quantity ? money(lineTotal / quantity) : money(lineTotal),
+          total_price: money(lineTotal),
+          tax_rate: Number(item.tax_rate || 0),
+          tax_amount: money(item.tax_amount || 0),
+          service_type: serviceType,
+          procedure_code: item.procedure_code,
+          lab_test_code: item.lab_test_code,
+          radiology_test_code: item.radiology_test_code,
+          prescription_id: item.prescription_id,
+          bill_id: bill._id
+        };
+      }),
+      subtotal: money(bill.subtotal || total + money(bill.discount) - money(bill.tax_amount)),
+      discount: money(bill.discount || 0),
+      tax: money(bill.tax_amount || 0),
+      total,
+      amount_paid: amountPaid,
+      balance_due: balanceDue,
+      status: invoiceStatus,
+      notes: bill.notes,
+      created_by: req.user?._id,
+      payment_history: (bill.payments || []).filter((payment) => Number(payment.amount) > 0).map((payment) => ({
+        date: payment.date || now,
+        amount: money(payment.amount),
+        method: payment.method || bill.payment_method || 'Cash',
+        reference: payment.reference,
+        status: 'Completed',
+        collected_by: req.user?._id
+      }))
+    });
+
+    bill.invoice_id = invoice._id;
+    bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
+    bill.document_stage = 'INVOICED';
+    bill.invoiced_at = now;
+    await bill.save();
+
+    if (hasAdmission) {
+      await IPDCharge.updateMany(
+        { hospitalId, admissionId: bill.admission_id?._id || bill.admission_id, billId: bill._id, status: { $ne: 'VOIDED' } },
+        { $set: { isBilled: true, status: 'INVOICED', invoiceId: invoice._id, billedAt: now } }
+      );
+    }
+
+    return res.status(201).json({ success: true, message: 'Invoice issued successfully', invoice, bill });
+  } catch (error) {
+    next(error);
+  }
+};

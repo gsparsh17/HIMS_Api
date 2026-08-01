@@ -10,7 +10,7 @@ function plain(value) {
 }
 
 function canSeeFullFinance(user) {
-  return FULL_FINANCE_ROLES.has(user?.role) || hasFeatureAccess(user, 'billing_finance', 'manage');
+  return FULL_FINANCE_ROLES.has(user?.role) || hasFeatureAccess(user, 'billing_finance', 'view');
 }
 
 function coverageOperationalView(coverage) {

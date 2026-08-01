@@ -4,6 +4,7 @@ const {
   protect,
   authorize,
   requireModuleAccess,
+  requireAnyActionPermission,
 } = require('../middlewares/auth');
 const {
   validateIndent,
@@ -180,6 +181,12 @@ router.get(
   // requireModuleAccess('ipd.patient_file', 'view'),
   admissions.getDashboardStats
 );
+
+// Keep concrete analytics routes above /admissions/:id so they can never be
+// interpreted as an admission identifier and so the dashboard has stable APIs.
+router.get('/admissions/stats/by-doctor', admissions.getAdmissionStatsByDoctor);
+router.get('/admissions/stats/by-ward', admissions.getAdmissionStatsByWard);
+router.get('/admissions/today-schedule', admissions.getAdmissionTodaySchedule);
 
 router.get(
   '/admissions/:id',
@@ -549,6 +556,8 @@ router.post(
   '/billing/charges',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_create', 'billing_edit']),
   billing.addManualCharge
 );
 
@@ -556,6 +565,7 @@ router.get(
   '/billing/admission/:admissionId/charges',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),
+  requireModuleAccess('billing_finance', 'view'),
   billing.getChargesByAdmission
 );
 
@@ -563,6 +573,7 @@ router.get(
   '/billing/admission/:admissionId/running-bill',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),
+  requireModuleAccess('billing_finance', 'view'),
   billing.getRunningBill
 );
 
@@ -570,6 +581,8 @@ router.post(
   '/billing/admission/:admissionId/bed-charges',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_create', 'billing_edit']),
   billing.generateBedCharges
 );
 
@@ -578,6 +591,8 @@ router.post(
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
   // requireActionPermission('discount_override'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_apply_discount', 'discount_override', 'pricing_override']),
   billing.applyDiscount
 );
 
@@ -585,6 +600,8 @@ router.post(
   '/billing/admission/:admissionId/payment',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_edit', 'settlement']),
   billing.recordPayment
 );
 
@@ -592,6 +609,8 @@ router.post(
   '/billing/admission/:admissionId/finalize',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_finalize', 'final_clearance']),
   billing.finalizeBill
 );
 
@@ -599,6 +618,8 @@ router.post(
   '/billing/admission/:admissionId/advance',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_edit', 'settlement']),
   billing.recordAdvance
 );
 
@@ -607,6 +628,8 @@ router.post(
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
   // requireActionPermission('refund'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_delete_charge', 'refund']),
   billing.refundAdvance
 );
 
@@ -614,6 +637,7 @@ router.get(
   '/billing/admission/:admissionId/ledger',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),
+  requireModuleAccess('billing_finance', 'view'),
   billing.getLedger
 );
 
@@ -621,6 +645,7 @@ router.get(
   '/billing/admission/:admissionId/financial-clearance',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),
+  requireModuleAccess('billing_finance', 'view'),
   billing.getFinancialClearance
 );
 
@@ -629,6 +654,8 @@ router.post(
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
   // requireActionPermission('final_clearance'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_finalize', 'final_clearance']),
   billing.finaliseFinancialClearance
 );
 
@@ -636,6 +663,8 @@ router.patch(
   '/billing/admission/:admissionId/charges/:chargeId/void',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_delete_charge', 'pricing_override', 'refund']),
   billing.voidCharge
 );
 

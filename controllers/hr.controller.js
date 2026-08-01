@@ -14,7 +14,7 @@ const HRPayroll = require('../models/HRPayroll');
 const Invoice = require('../models/Invoice');
 const Appointment = require('../models/Appointment');
 const { syncAllExistingHRProfiles } = require('../services/hrProfileSync.service');
-const { resolveHospitalId } = require('../utils/hospitalScope');
+const { requestHospitalId: resolveHospitalId } = require('../utils/hospitalScope');
 const {
   normalizeFeaturePermissions,
   defaultFeaturePermissions,

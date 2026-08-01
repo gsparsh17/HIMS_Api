@@ -13,10 +13,12 @@ const Invoice = require('../models/Invoice');
 const Bill = require('../models/Bill');
 const Doctor = require('../models/Doctor');
 const Department = require('../models/Department');
+const ProcedureRequest = require('../models/ProcedureRequest');
 const User = require('../models/User');
 const Hospital = require('../models/Hospital');
 const moment = require('moment');
 const mongoose = require('mongoose');
+const { checkModuleAccess } = require('../middlewares/auth');
 
 // Consolidated implementation support
 const { requireHospitalId: requireAdmissionHospitalId } = require('../services/tenantScope.service');
@@ -763,6 +765,7 @@ exports.getAdmissionById = async (req, res) => {
       return res.status(404).json({ error: 'Admission not found' });
     }
 
+    const canViewFinancial = checkModuleAccess(req.user, 'billing_finance', 'view');
     const [coverage, transfers, accommodationSegments, rounds, nursingNotes, vitals, charges, dischargeSummary, invoices, bills] = await Promise.all([
       activeAdmissionCoverage2026(hospitalId, admission._id),
       IPDBedTransfer2026.find({ hospitalId, admissionId: admission._id })
@@ -785,10 +788,10 @@ exports.getAdmissionById = async (req, res) => {
         .populate('recordedBy', 'first_name last_name')
         .sort({ recordedAt: -1 })
         .limit(50),
-      IPDCharge.find({ hospitalId, admissionId: admission._id }).sort({ chargeDate: -1 }),
+      canViewFinancial ? IPDCharge.find({ hospitalId, admissionId: admission._id }).sort({ chargeDate: -1 }) : Promise.resolve([]),
       DischargeSummary.findOne({ admissionId: admission._id }),
-      Invoice.find({ hospital_id: hospitalId, admission_id: admission._id }).sort({ issue_date: -1 }),
-      Bill.find({ hospital_id: hospitalId, admission_id: admission._id }).sort({ generated_at: -1 })
+      canViewFinancial ? Invoice.find({ hospital_id: hospitalId, admission_id: admission._id }).sort({ issue_date: -1 }) : Promise.resolve([]),
+      canViewFinancial ? Bill.find({ hospital_id: hospitalId, admission_id: admission._id }).sort({ generated_at: -1 }) : Promise.resolve([])
     ]);
 
     return res.json(buildPatientFileDto2026({
@@ -1325,6 +1328,185 @@ exports.getDashboardStats = async (req, res) => {
         cleaningBeds
       }
     });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+
+// Dashboard analytics must be declared as concrete routes before /admissions/:id.
+// These endpoints are tenant-scoped and intentionally return a small, stable DTO
+// consumed by the staff IPD dashboard.
+exports.getAdmissionStatsByDoctor = async (req, res) => {
+  try {
+    const hospitalId = requireAdmissionHospitalId(req);
+    const grouped = await IPDAdmission.aggregate([
+      {
+        $match: {
+          hospitalId: new mongoose.Types.ObjectId(String(hospitalId)),
+          status: activeAdmissionFilter2026()
+        }
+      },
+      {
+        $group: {
+          _id: '$primaryDoctorId',
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]);
+
+    const doctorIds = grouped.map((row) => row._id).filter(Boolean);
+    const doctors = doctorIds.length
+      ? await Doctor.find({
+        _id: { $in: doctorIds },
+        hospitalId
+      }).select('firstName lastName doctorId specialization').lean()
+      : [];
+
+    const doctorMap = new Map(doctors.map((doctor) => [String(doctor._id), doctor]));
+    const data = grouped.map((row) => {
+      const doctor = row._id ? doctorMap.get(String(row._id)) : null;
+      return {
+        doctorId: row._id || null,
+        doctorCode: doctor?.doctorId || null,
+        doctorName: doctor
+          ? `${doctor.firstName || ''} ${doctor.lastName || ''}`.trim()
+          : 'Unassigned',
+        specialization: doctor?.specialization || '',
+        count: Number(row.count || 0)
+      };
+    });
+
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+exports.getAdmissionStatsByWard = async (req, res) => {
+  try {
+    const hospitalId = requireAdmissionHospitalId(req);
+    const grouped = await IPDAdmission.aggregate([
+      {
+        $match: {
+          hospitalId: new mongoose.Types.ObjectId(String(hospitalId)),
+          status: activeAdmissionFilter2026()
+        }
+      },
+      {
+        $group: {
+          _id: '$wardId',
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]);
+
+    const wardIds = grouped.map((row) => row._id).filter(Boolean);
+    const wards = wardIds.length
+      ? await Ward.find({
+        _id: { $in: wardIds },
+        hospitalId
+      }).select('name code floor type').lean()
+      : [];
+
+    const wardMap = new Map(wards.map((ward) => [String(ward._id), ward]));
+    const data = grouped.map((row) => {
+      const ward = row._id ? wardMap.get(String(row._id)) : null;
+      return {
+        wardId: row._id || null,
+        wardName: ward?.name || 'Unassigned',
+        wardCode: ward?.code || null,
+        floor: ward?.floor || '',
+        wardType: ward?.type || '',
+        count: Number(row.count || 0)
+      };
+    });
+
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+exports.getAdmissionTodaySchedule = async (req, res) => {
+  try {
+    const hospitalId = requireAdmissionHospitalId(req);
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+
+    const [activeAdmissions, dischargedAdmissions] = await Promise.all([
+      IPDAdmission.find({
+        hospitalId,
+        status: activeAdmissionFilter2026()
+      })
+        .select('_id admissionNumber patientId')
+        .populate('patientId', 'first_name last_name patientId uhid')
+        .lean(),
+      IPDAdmission.find({
+        hospitalId,
+        dischargeDate: { $gte: start, $lt: end },
+        status: { $in: ['Discharged', 'LAMA', 'DAMA', 'Expired'] }
+      })
+        .select('_id admissionNumber patientId dischargeDate status')
+        .populate('patientId', 'first_name last_name patientId uhid')
+        .lean()
+    ]);
+
+    const admissionMap = new Map(
+      [...activeAdmissions, ...dischargedAdmissions].map((admission) => [String(admission._id), admission])
+    );
+    const activeAdmissionIds = activeAdmissions.map((admission) => admission._id);
+
+    const procedures = activeAdmissionIds.length
+      ? await ProcedureRequest.find({
+        admissionId: { $in: activeAdmissionIds },
+        sourceType: 'IPD',
+        scheduledDate: { $gte: start, $lt: end },
+        status: { $nin: ['Cancelled', 'Completed'] }
+      })
+        .select('admissionId procedureName scheduledDate status priority')
+        .sort({ scheduledDate: 1 })
+        .lean()
+      : [];
+
+    const patientName = (admission) => {
+      const patient = admission?.patientId;
+      if (!patient) return 'Unknown patient';
+      return `${patient.first_name || ''} ${patient.last_name || ''}`.trim() || patient.patientId || patient.uhid || 'Unknown patient';
+    };
+
+    const procedureEvents = procedures.map((procedure) => {
+      const admission = admissionMap.get(String(procedure.admissionId));
+      return {
+        id: procedure._id,
+        type: 'Procedure',
+        title: procedure.procedureName || 'Scheduled procedure',
+        patientName: patientName(admission),
+        admissionNumber: admission?.admissionNumber || '',
+        scheduledAt: procedure.scheduledDate,
+        status: procedure.status,
+        priority: procedure.priority
+      };
+    });
+
+    const dischargeEvents = dischargedAdmissions.map((admission) => ({
+      id: admission._id,
+      type: 'Discharge',
+      title: `${admission.status || 'Discharge'}${admission.admissionNumber ? ` - ${admission.admissionNumber}` : ''}`,
+      patientName: patientName(admission),
+      admissionNumber: admission.admissionNumber || '',
+      scheduledAt: admission.dischargeDate,
+      status: admission.status
+    }));
+
+    const data = [...procedureEvents, ...dischargeEvents]
+      .sort((left, right) => new Date(left.scheduledAt || 0) - new Date(right.scheduledAt || 0));
+
+    return res.json({ success: true, data });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }

@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const DocumentSignature = require('../models/DocumentSignature');
 const PrintIdentityAsset = require('../models/PrintIdentityAsset');
+const PatientIdentityAsset = require('../models/PatientIdentityAsset');
 const UserPrintIdentity = require('../models/UserPrintIdentity');
 const EncounterDocument = require('../models/EncounterDocument');
 const { appendDomainEvent } = require('./auditEvent.service');
@@ -26,6 +27,17 @@ function verificationCode() {
 }
 
 function validatePlacement(placement) {
+  if (!placement?.assetId) {
+    const error = new Error('A signature/seal asset is required for every placement');
+    error.statusCode = 400;
+    throw error;
+  }
+  const assetModel = placement.assetModel || 'PrintIdentityAsset';
+  if (!['PrintIdentityAsset', 'PatientIdentityAsset'].includes(assetModel)) {
+    const error = new Error('Unsupported signature/seal asset model');
+    error.statusCode = 400;
+    throw error;
+  }
   for (const field of ['x', 'y', 'width', 'height']) {
     const value = Number(placement[field]);
     if (!Number.isFinite(value) || value < 0 || value > 1) {
@@ -46,31 +58,63 @@ async function signDocument({ req, hospitalId, patientId, admissionId, encounter
   const normalizedSourceId = sourceId || new (require('mongoose').Types.ObjectId)();
   const normalizedDocumentType = documentType || 'HIMS Document';
   if (!Array.isArray(placements) || placements.length === 0) {
-    const error = new Error('At least one signature or seal placement is required');
+    const error = new Error('At least one signature, seal or patient acknowledgement placement is required');
     error.statusCode = 400;
     throw error;
   }
   placements.forEach(validatePlacement);
 
-  const identity = await UserPrintIdentity.findOne({ hospitalId, userId: req.user._id, isActive: true });
-  if (!identity) {
-    const error = new Error('Print identity is not configured for this user');
-    error.statusCode = 409;
-    throw error;
+  const staffPlacements = placements.filter((placement) => (placement.assetModel || 'PrintIdentityAsset') === 'PrintIdentityAsset');
+  const patientPlacements = placements.filter((placement) => placement.assetModel === 'PatientIdentityAsset');
+
+  let identity = null;
+  let staffAssets = [];
+  if (staffPlacements.length) {
+    identity = await UserPrintIdentity.findOne({ hospitalId, userId: req.user._id, isActive: true });
+    if (!identity) {
+      const error = new Error('Print identity is not configured for this user');
+      error.statusCode = 409;
+      throw error;
+    }
+    const staffAssetIds = [...new Set(staffPlacements.map((placement) => String(placement.assetId)))];
+    staffAssets = await PrintIdentityAsset.find({ _id: { $in: staffAssetIds }, hospitalId, userId: req.user._id, status: 'verified' });
+    if (staffAssets.length !== staffAssetIds.length) {
+      const error = new Error('All selected staff signature/seal assets must be verified and belong to the logged-in user');
+      error.statusCode = 409;
+      throw error;
+    }
   }
-  const assetIds = [...new Set(placements.map((placement) => String(placement.assetId)))];
-  const assets = await PrintIdentityAsset.find({ _id: { $in: assetIds }, hospitalId, userId: req.user._id, status: 'verified' });
-  if (assets.length !== assetIds.length) {
-    const error = new Error('All selected signature/seal assets must be verified and belong to the logged-in user');
-    error.statusCode = 409;
-    throw error;
+
+  let patientAssets = [];
+  if (patientPlacements.length) {
+    if (!patientId) {
+      const error = new Error('Patient context is required when placing a patient signature or thumb impression');
+      error.statusCode = 400;
+      throw error;
+    }
+    const patientAssetIds = [...new Set(patientPlacements.map((placement) => String(placement.assetId)))];
+    patientAssets = await PatientIdentityAsset.find({ _id: { $in: patientAssetIds }, hospitalId, patientId, status: 'active' });
+    if (patientAssets.length !== patientAssetIds.length) {
+      const error = new Error('All selected patient signature/thumb assets must belong to this patient and hospital');
+      error.statusCode = 409;
+      throw error;
+    }
   }
-  const assetMap = new Map(assets.map((asset) => [String(asset._id), asset]));
-  const normalizedPlacements = placements.map((placement) => ({
-    ...placement,
-    assetType: assetMap.get(String(placement.assetId)).assetType,
-    page: Math.max(1, Number(placement.page || 1))
-  }));
+
+  const assetMap = new Map();
+  staffAssets.forEach((asset) => assetMap.set(`PrintIdentityAsset:${asset._id}`, asset));
+  patientAssets.forEach((asset) => assetMap.set(`PatientIdentityAsset:${asset._id}`, asset));
+  const normalizedPlacements = placements.map((placement) => {
+    const assetModel = placement.assetModel || 'PrintIdentityAsset';
+    const asset = assetMap.get(`${assetModel}:${placement.assetId}`);
+    return {
+      ...placement,
+      assetModel,
+      assetType: asset.assetType,
+      page: Math.max(1, Number(placement.page || 1))
+    };
+  });
+  const allAssets = [...staffAssets, ...patientAssets];
   const sourceHash = sha256({ sourceModel: normalizedSourceModel, sourceId: String(normalizedSourceId), sourceRevision, templateId, templateVersion, sourceSnapshot });
   const signedAt = new Date();
   const signatureHash = sha256({
@@ -78,12 +122,10 @@ async function signDocument({ req, hospitalId, patientId, admissionId, encounter
     signer: String(req.user._id),
     signedAt: signedAt.toISOString(),
     placements: normalizedPlacements,
-    assets: assets.map((asset) => ({ id: String(asset._id), version: asset.version, sha256: asset.sha256 }))
+    assets: allAssets.map((asset) => ({ id: String(asset._id), model: asset.constructor.modelName, version: asset.version, sha256: asset.sha256 }))
   });
 
   const normalizedSignatoryRole = String(signatoryRole || metadata?.signatoryRole || req.user.role || 'signer').trim().toLowerCase();
-  // Supersede only the previous signature for the same signatory slot. Other required
-  // participants (surgeon, anaesthetist, nurses, witness) remain active.
   await DocumentSignature.updateMany(
     { hospitalId, sourceModel: normalizedSourceModel, sourceId: normalizedSourceId, status: 'signed', signatoryRole: normalizedSignatoryRole },
     { $set: { status: 'superseded' } }
@@ -101,18 +143,19 @@ async function signDocument({ req, hospitalId, patientId, admissionId, encounter
     templateId,
     templateVersion,
     signerUserId: req.user._id,
-    signerName: identity.printedName || req.user.name,
+    signerName: identity?.printedName || req.user.name,
     signerRole: req.user.role,
     signatoryRole: normalizedSignatoryRole,
-    signerDesignation: identity.designation,
-    signerRegistrationNumber: identity.registrationNumber,
-    assetSnapshots: assets.map((asset) => ({
+    signerDesignation: identity?.designation,
+    signerRegistrationNumber: identity?.registrationNumber,
+    assetSnapshots: allAssets.map((asset) => ({
       assetId: asset._id,
+      assetModel: asset.constructor.modelName,
       assetType: asset.assetType,
       version: asset.version,
       sha256: asset.sha256,
       storagePath: asset.storagePath,
-      cloudinaryUrl: asset.cloudinaryUrl,
+      cloudinaryUrl: asset.cloudinaryUrl || asset.externalUrl,
       mimeType: asset.mimeType,
       originalName: asset.originalName
     })),
@@ -121,7 +164,11 @@ async function signDocument({ req, hospitalId, patientId, admissionId, encounter
     signatureHash,
     verificationCode: verificationCode(),
     signedAt,
-    metadata
+    metadata: {
+      ...(metadata || {}),
+      includesPatientAcknowledgement: patientPlacements.length > 0,
+      patientAssetCount: patientPlacements.length
+    }
   });
 
   if (encounterDocumentId) {
@@ -138,7 +185,7 @@ async function signDocument({ req, hospitalId, patientId, admissionId, encounter
     hospitalId,
     patientId,
     encounterId: admissionId,
-    afterSummary: { documentType: normalizedDocumentType, sourceModel: normalizedSourceModel, sourceId: normalizedSourceId, sourceRevision, verificationCode: signature.verificationCode }
+    afterSummary: { documentType: normalizedDocumentType, sourceModel: normalizedSourceModel, sourceId: normalizedSourceId, sourceRevision, verificationCode: signature.verificationCode, patientAssetCount: patientPlacements.length }
   });
   return signature;
 }

@@ -193,7 +193,7 @@ function section(doc, title, txt, redraw, lineGap = 1.2, bodySize = 7.8) {
 function responseValue(spec, responses) { if (typeof spec === 'string' && spec.startsWith('response:')) return clean(responses[spec.slice(9)], '-'); return spec; }
 
 function responseTable(doc, template, responses, redraw) {
-  const fields = (template.fields || []).filter(f => !['patientOrRepresentativeName', 'relationship', 'patientSignature', 'patientSignatureUrl', 'doctorName', 'doctorSignature', 'doctorSignatureUrl', 'doctorSealUrl', 'witnessName', 'witnessSignature', 'witnessSignatureUrl', 'interpreterName', 'signedDate', 'signedTime'].includes(f.key));
+  const fields = (template.fields || []).filter(f => !['patientOrRepresentativeName', 'relationship', 'patientSignature', 'patientSignatureUrl', 'doctorId', 'doctorName', 'doctorRegistrationNumber', 'doctorSpecialization', 'doctorUserId', 'doctorSelectionSource', 'patientSignatureAssetId', 'patientSignatureAssetModel', 'patientSignatureMethod', 'patientSignedAt', 'doctorSignature', 'doctorSignatureUrl', 'doctorSealUrl', 'witnessName', 'witnessSignature', 'witnessSignatureUrl', 'interpreterName', 'signedDate', 'signedTime'].includes(f.key));
   if (!fields.length) return;
   section(doc, 'Recorded Form Responses / दर्ज किए गए उत्तर', 'The following values were recorded in the electronic consent form. / इलेक्ट्रॉनिक सहमति प्रपत्र में निम्न जानकारी दर्ज की गई है।', redraw);
   const x = PAGE.margin, w = PAGE.width - 2 * x, lw = mm(78);

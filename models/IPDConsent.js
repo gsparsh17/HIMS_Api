@@ -7,7 +7,8 @@ const signatureSchema = new mongoose.Schema({
   signedAt: Date,
   method: { type: String, enum: ['typed', 'drawn', 'uploaded', 'digital-profile', 'biometric', 'other'], default: 'typed' },
   signerUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  assetId: { type: mongoose.Schema.Types.ObjectId, ref: 'PrintIdentityAsset' },
+  assetId: { type: mongoose.Schema.Types.ObjectId },
+  assetModel: { type: String, enum: ['PrintIdentityAsset', 'PatientIdentityAsset'] },
   capturedData: { type: String, select: false },
   witnessName: String,
   witnessUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }

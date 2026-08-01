@@ -1,8 +1,9 @@
 const mongoose = require('mongoose');
 
 const placementSchema = new mongoose.Schema({
-  assetId: { type: mongoose.Schema.Types.ObjectId, ref: 'PrintIdentityAsset', required: true },
-  assetType: { type: String, enum: ['signature', 'seal', 'initials'], required: true },
+  assetId: { type: mongoose.Schema.Types.ObjectId, required: true },
+  assetModel: { type: String, enum: ['PrintIdentityAsset', 'PatientIdentityAsset'], default: 'PrintIdentityAsset', required: true },
+  assetType: { type: String, enum: ['signature', 'seal', 'initials', 'patient_signature', 'thumb_impression'], required: true },
   page: { type: Number, default: 1, min: 1 },
   x: { type: Number, required: true, min: 0, max: 1 },
   y: { type: Number, required: true, min: 0, max: 1 },
@@ -14,6 +15,7 @@ const placementSchema = new mongoose.Schema({
 
 const assetSnapshotSchema = new mongoose.Schema({
   assetId: mongoose.Schema.Types.ObjectId,
+  assetModel: String,
   assetType: String,
   version: Number,
   sha256: String,

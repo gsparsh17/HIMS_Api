@@ -295,6 +295,26 @@ exports.requireActionPermission = (action) => {
 };
 
 /**
+ * Require at least one sensitive action permission. This is useful while
+ * migrating legacy permissions (for example final_clearance) to a clearer
+ * billing-specific action (billing_finalize).
+ */
+exports.requireAnyActionPermission = (actions = []) => {
+  const expected = Array.isArray(actions) ? actions.filter(Boolean) : [actions].filter(Boolean);
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' });
+    }
+    if (isPermissionCheckDisabled() || isAdminRole(req.user)) return next();
+    if (expected.some((action) => hasActionPermission(req.user, action))) return next();
+    return res.status(403).json({
+      success: false,
+      error: `One of these actions is required: ${expected.join(', ')}`
+    });
+  };
+};
+
+/**
  * Get user's effective module permissions with actions
  * Returns the full modulePermissions array with all details
  */
@@ -321,8 +341,9 @@ exports.hasModuleAccess = (user, moduleKey, minimumAccess = 'view') => {
 
   if (!permission) return false;
   
-  const accessLevels = { none: 0, view: 1, edit: 2 };
-  return accessLevels[permission.access] >= accessLevels[minimumAccess];
+  const accessLevels = { none: 0, view: 1, edit: 2, manage: 2 };
+  const required = minimumAccess === 'edit' ? 'manage' : minimumAccess;
+  return (accessLevels[permission.access] || 0) >= (accessLevels[required] || 0);
 };
 
 /**
@@ -356,7 +377,12 @@ exports.getUserActions = (user) => {
       'payroll_publish',
       'biometric_manage',
       'rate_card_approve',
-      'pricing_override'
+      'pricing_override',
+      'billing_create',
+      'billing_edit',
+      'billing_delete_charge',
+      'billing_apply_discount',
+      'billing_finalize'
     ];
   }
 

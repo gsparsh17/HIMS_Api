@@ -104,20 +104,20 @@ exports.getBundlePlan = async (req, res, next) => {
   try {
     const manifest = await patientFileManifest.buildManifest(req, req.params.admissionId, req.query);
     const packetType = req.query.packetType || 'clinical';
-    const categories = patientFileManifest.packetCategories(packetType);
-    const documents = manifest.documents.filter((document) => categories.includes(document.category) && (req.query.includeDrafts === 'true' || ['Completed/Unsigned', 'Final/Signed'].includes(document.status)));
-    res.json({ success: true, data: { ...manifest, packetType, documents, generatedAt: new Date().toISOString() } });
+    const packetDefinition = patientFileManifest.packetDefinition(packetType);
+    const packetCandidates = patientFileManifest.packetDocuments(packetType, manifest.documents);
+    const documents = packetCandidates.filter((document) => req.query.includeDrafts === 'true' || ['Completed/Unsigned', 'Final/Signed'].includes(document.status));
+    res.json({ success: true, data: { ...manifest, packetType, packetDefinition: { label: packetDefinition.label, description: packetDefinition.description || '' }, documents, generatedAt: new Date().toISOString() } });
   } catch (error) { next(error); }
 };
 
 
 function selectedBundleDocuments(manifest, body = {}, query = {}) {
   const packetType = body.packetType || query.packetType || 'clinical';
-  const categories = patientFileManifest.packetCategories(packetType);
+  const packetCandidates = patientFileManifest.packetDocuments(packetType, manifest.documents);
   const selectedKeys = new Set(body.documentKeys || []);
   const includeDrafts = body.includeDrafts === true || query.includeDrafts === 'true';
-  const documents = manifest.documents.filter((document) => {
-    if (!categories.includes(document.category)) return false;
+  const documents = packetCandidates.filter((document) => {
     if (selectedKeys.size && !selectedKeys.has(document.key)) return false;
     return includeDrafts || ['Completed/Unsigned', 'Final/Signed'].includes(document.status);
   });

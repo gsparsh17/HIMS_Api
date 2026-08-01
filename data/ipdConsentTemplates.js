@@ -1,18 +1,18 @@
 const commonSignatureFields = [
   { key: 'patientOrRepresentativeName', label: 'Patient / Authorized Representative Name', type: 'text', required: true },
   { key: 'relationship', label: 'Relationship with Patient', type: 'text' },
-  { key: 'patientSignature', label: 'Patient / Representative Signature Confirmation', type: 'text', helpText: 'Signatory full name or confirmation note.' },
-  { key: 'patientSignatureUrl', label: 'Patient / Representative Signature / Thumb Impression Photo', type: 'image-upload', helpText: 'Upload photo of signature or thumb impression.' },
-  { key: 'doctorName', label: 'Doctor Name', type: 'text', required: true },
-  { key: 'doctorSignature', label: 'Doctor Signature Confirmation', type: 'text' },
-  { key: 'doctorSignatureUrl', label: 'Doctor Digital Signature Image / Cloudinary Link', type: 'image-upload', helpText: 'Upload signature image or apply verified doctor signature.' },
-  { key: 'doctorSealUrl', label: 'Hospital Official Seal Image / Cloudinary Link', type: 'image-upload', helpText: 'Upload seal image or apply verified hospital seal.' },
+  {
+    key: 'doctorId',
+    label: 'Responsible Doctor',
+    type: 'doctor-selector',
+    required: true,
+    helpText: 'Doctor logins are locked to their own profile. Other authorized users can select the responsible doctor; that doctor must apply their own verified profile signature.'
+  },
   { key: 'witnessName', label: 'Witness Name', type: 'text' },
   { key: 'witnessSignature', label: 'Witness Signature Confirmation', type: 'text' },
-  { key: 'witnessSignatureUrl', label: 'Witness Signature Photo', type: 'image-upload', helpText: 'Upload photo of witness signature.' },
   { key: 'interpreterName', label: 'Interpreter Name (if applicable)', type: 'text' },
-  { key: 'signedDate', label: 'Date of Consent', type: 'date', required: true },
-  { key: 'signedTime', label: 'Time of Consent', type: 'time', required: true }
+  { key: 'signedDate', label: 'Date of Consent', type: 'auto-date', required: true },
+  { key: 'signedTime', label: 'Time of Consent', type: 'auto-time', required: true }
 ];
 
 const templates = [

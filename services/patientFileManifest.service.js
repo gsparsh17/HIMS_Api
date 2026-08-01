@@ -35,17 +35,56 @@ const CATEGORY_ORDER = [
   'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'transfusion', 'discharge', 'attachment', 'financial'
 ];
 
-const PACKETS = {
-  clinical: CATEGORY_ORDER.filter((category) => category !== 'financial'),
-  ot: ['admission', 'consent', 'assessment', 'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'medication', 'attachment'],
-  nursing: ['admission', 'assessment', 'nursing', 'vitals', 'medication', 'progress', 'recovery'],
-  investigation: ['investigation', 'attachment'],
-  discharge: ['admission', 'assessment', 'progress', 'nursing', 'vitals', 'medication', 'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'discharge'],
-  financial: ['financial']
-};
+const PACKET_DEFINITIONS = Object.freeze({
+  patient_file: {
+    label: 'Patient File',
+    description: 'Admission, outcome summary, investigation reports and implant papers.',
+    categories: ['admission', 'discharge', 'investigation', 'attachment'],
+    match: (document) => /admission|discharge|lama|death|pathology|lab|radiology|implant/i.test(`${document.documentType} ${document.title}`)
+  },
+  mrd_file: {
+    label: 'MRD File',
+    description: 'Complete clinical patient file for Medical Records.',
+    categories: CATEGORY_ORDER.filter((category) => category !== 'financial'),
+    match: () => true
+  },
+  ot_packet: {
+    label: 'OT Packet',
+    description: 'Consents, checklists, anaesthesia records, OT notes, instructions and implant papers.',
+    categories: ['consent', 'assessment', 'procedure', 'ot', 'anesthesia', 'recovery', 'transfusion', 'attachment'],
+    match: (document) => /an(a|ae)esthesia|surgery consent|surgical consent|high risk|blood transfusion|pre.?operative|pre.?an(a|ae)esthesia|pac|surgical safety|intra.?operative|post.?operative|operative note|ot note|implant/i.test(`${document.documentType} ${document.title} ${document.rendererKey}`)
+  },
+  mlc_tpa_ayushman_file: {
+    label: 'MLC / TPA Insurance / Ayushman File',
+    description: 'Admission-to-discharge clinical packet including applicable consents, OT and investigation reports.',
+    categories: CATEGORY_ORDER.filter((category) => category !== 'financial'),
+    match: (document) => /admission|discharge|lama|death|mlc|initial assessment|progress|nursing|vital|medication|transfusion|consent|ot|operative|an(a|ae)esthesia|pathology|lab|radiology|implant/i.test(`${document.documentType} ${document.title} ${document.category}`)
+  },
+  // Backward-compatible packet keys retained for existing links.
+  clinical: { label: 'Clinical File', categories: CATEGORY_ORDER.filter((category) => category !== 'financial'), match: () => true },
+  ot: { label: 'OT Packet', categories: ['admission', 'consent', 'assessment', 'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'medication', 'attachment'], match: () => true },
+  nursing: { label: 'Nursing Packet', categories: ['admission', 'assessment', 'nursing', 'vitals', 'medication', 'progress', 'recovery'], match: () => true },
+  investigation: { label: 'Investigation Packet', categories: ['investigation', 'attachment'], match: () => true },
+  discharge: { label: 'Discharge Packet', categories: ['admission', 'assessment', 'progress', 'nursing', 'vitals', 'medication', 'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'discharge'], match: () => true },
+  financial: { label: 'Financial Packet', categories: ['financial'], match: () => true }
+});
+
+const PACKETS = Object.freeze(Object.fromEntries(
+  Object.entries(PACKET_DEFINITIONS).map(([key, definition]) => [key, definition.categories])
+));
+
+
+function packetDefinition(packetType) {
+  return PACKET_DEFINITIONS[packetType] || PACKET_DEFINITIONS.mrd_file;
+}
 
 function packetCategories(packetType) {
-  return PACKETS[packetType] || PACKETS.clinical;
+  return packetDefinition(packetType).categories;
+}
+
+function packetDocuments(packetType, documents = []) {
+  const definition = packetDefinition(packetType);
+  return documents.filter((document) => definition.categories.includes(document.category) && definition.match(document));
 }
 
 function statusOf(value, { final = [], complete = [] } = {}) {
@@ -438,9 +477,9 @@ async function buildManifest(req, admissionId, options = {}) {
     },
     counts,
     categories: CATEGORY_ORDER,
-    packets: Object.keys(PACKETS),
+    packets: Object.entries(PACKET_DEFINITIONS).map(([key, definition]) => ({ key, label: definition.label, description: definition.description || '' })),
     documents: filtered
   };
 }
 
-module.exports = { buildManifest, packetCategories, CATEGORY_ORDER, PACKETS };
+module.exports = { buildManifest, packetCategories, packetDefinition, packetDocuments, CATEGORY_ORDER, PACKETS, PACKET_DEFINITIONS };

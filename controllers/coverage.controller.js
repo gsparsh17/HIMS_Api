@@ -56,13 +56,30 @@ exports.get = async (req, res) => {
       .populate('rateCardId');
 
     if (!data) {
-      return res.status(404).json({
-        success: false,
-        error: 'Coverage not found'
+      // A valid self-pay admission normally has no AdmissionCoverage document.
+      // Confirm the admission belongs to this hospital so an invalid/cross-tenant
+      // identifier still returns 404, then represent "no active coverage" as a
+      // successful empty result instead of a failed network request.
+      await coverageService.tenantAdmission(hospitalId, req.params.id);
+
+      return res.json({
+        success: true,
+        data: null,
+        meta: {
+          hasActiveCoverage: false,
+          caseType: 'self_pay'
+        }
       });
     }
 
-    res.json({ success: true, data });
+    return res.json({
+      success: true,
+      data,
+      meta: {
+        hasActiveCoverage: true,
+        caseType: 'sponsored'
+      }
+    });
   } catch (e) {
     fail(res, e);
   }
