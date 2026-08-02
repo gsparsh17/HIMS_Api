@@ -9,6 +9,13 @@ router.get('/dashboard', finance.getDashboard);
 router.get('/mis/overview', finance.getMISOverview);
 router.get('/mis/reports/:reportKey', finance.getMISReport);
 router.get('/mis/reports/:reportKey/export', finance.exportMISReport);
+router.get('/patients/:patientId/workspace', finance.getPatientWorkspace);
+router.post('/patients/:patientId/charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.addOPDCharge);
+router.post('/patients/:patientId/invoices', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_finalize'), finance.issueOPDInvoice);
+router.post('/patients/:patientId/payments', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordOPDPayment);
+router.post('/patients/:patientId/advances', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordOPDAdvance);
+router.post('/patients/:patientId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.refundOPDAdvance);
+
 router.get('/ipd/admissions', finance.listBillingAdmissions);
 router.get('/ipd/:admissionId/running-bill', finance.getRunningBill);
 router.get('/ipd/:admissionId/ledger', finance.getFinancialLedger);

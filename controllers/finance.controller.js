@@ -1,6 +1,7 @@
 const ExcelJS = require('exceljs');
 const financial = require('../services/ipdFinancial.service');
 const mis = require('../services/misReporting.service');
+const patientFinancial = require('../services/patientFinancial.service');
 
 function sendError(res, error) {
   console.error('Finance module error:', error);
@@ -189,3 +190,66 @@ exports.finaliseIPDClearance = async (req, res) => {
     res.json({ success: true, message: result.clearance.ready ? 'Financial clearance completed' : 'Financial exception recorded', ...result });
   } catch (error) { sendError(res, error); }
 };
+
+exports.getPatientWorkspace = async (req, res) => {
+  try {
+    const data = await patientFinancial.getPatientWorkspace(req.params.patientId, req.user);
+    res.json({ success: true, data });
+  } catch (error) { sendError(res, error); }
+};
+
+exports.addOPDCharge = async (req, res) => {
+  try {
+    const result = await patientFinancial.addOPDCharge(req.params.patientId, req.body, req.user);
+    res.status(result.alreadyExists ? 200 : 201).json({
+      success: true,
+      message: result.alreadyExists ? 'Existing OPD charge returned' : 'OPD charge added successfully',
+      ...result
+    });
+  } catch (error) { sendError(res, error); }
+};
+
+exports.issueOPDInvoice = async (req, res) => {
+  try {
+    const result = await patientFinancial.issueOPDInvoice(req.params.patientId, req.body, req.user);
+    res.status(result.alreadyExists ? 200 : 201).json({
+      success: true,
+      message: result.alreadyExists ? 'Existing OPD invoice returned' : 'Consolidated OPD invoice issued successfully',
+      ...result
+    });
+  } catch (error) { sendError(res, error); }
+};
+
+exports.recordOPDPayment = async (req, res) => {
+  try {
+    const result = await patientFinancial.recordOPDPayment(req.params.patientId, req.body, req.user);
+    res.status(result.alreadyExists ? 200 : 201).json({
+      success: true,
+      message: result.alreadyExists ? 'Existing receipt returned' : 'OPD payment posted successfully',
+      ...result
+    });
+  } catch (error) { sendError(res, error); }
+};
+
+exports.recordOPDAdvance = async (req, res) => {
+  try {
+    const result = await patientFinancial.recordOPDAdvance(req.params.patientId, req.body, req.user);
+    res.status(result.alreadyExists ? 200 : 201).json({
+      success: true,
+      message: result.alreadyExists ? 'Existing advance receipt returned' : 'OPD advance received successfully',
+      ...result
+    });
+  } catch (error) { sendError(res, error); }
+};
+
+exports.refundOPDAdvance = async (req, res) => {
+  try {
+    const result = await patientFinancial.refundOPDAdvance(req.params.patientId, req.body, req.user);
+    res.status(result.alreadyExists ? 200 : 201).json({
+      success: true,
+      message: result.alreadyExists ? 'Existing OPD advance refund returned' : 'OPD advance refund posted successfully',
+      ...result
+    });
+  } catch (error) { sendError(res, error); }
+};
+

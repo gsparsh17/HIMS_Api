@@ -6,7 +6,7 @@ const yesNo = ['Yes', 'No'];
 
 module.exports = [
   {
-    id: 'pre_op_safety_checklist', version: 2, title: 'Pre OP Safety Checklist', shortTitle: 'Pre OP Safety',
+    id: 'pre_op_safety_checklist', version: 3, title: 'Pre OP Safety Checklist', shortTitle: 'Pre OP Safety',
     category: 'ot', stage: 'preop', required: true, implementation: 'structured', rendererId: 'pre-op-safety-checklist', pageCount: 1,
     sourceReference: 'Pre OP and Surgical Safety Checklist.pdf - page 1', referencePages: ['Pre OP Checklist p1'],
     description: 'Role-wise pre-operative ward safety checklist completed by surgeon, staff nurse and anaesthetist.',
@@ -19,11 +19,10 @@ module.exports = [
       ]),
       section('To be done by Surgeon', [
         field('surgeonItems', 'Surgeon safety items', 'checklist', { required: true, options: [
-          'History, examination and investigations completed', 'Pre-op orders written', 'PAC findings checked and reconfirmed',
-          'Co-morbid conditions assessed and documented', 'Drug allergy prominently recorded on case sheet',
-          'Grouping and cross-match sample sent where required', 'Blood availability / donation checked where required',
-          'Transfusion risk explained to patient / relatives', 'Written informed consent countersigned by surgeon',
-          'OT in-charge informed regarding special equipment'
+          'History, examination and investigations', 'Pre-op orders', 'Check and reconfirm PAC findings',
+          'Assess and mention any co-morbid condition', 'Record boldly on 1st page of case sheet - History of drug allergies',
+          'Blood transfusion', 'Written well informed consent from patient (Counter sign by surgeon)',
+          'Sister in charge of O.T. informed regarding special equipment'
         ] }),
         field('surgeonRemarks', 'Surgeon remarks', 'textarea'),
         field('surgeonName', 'Surgeon name', 'text', { required: true }),
@@ -32,8 +31,8 @@ module.exports = [
       section('To be done by Staff Nurse', [
         field('staffNurseItems', 'Staff nurse safety items', 'checklist', { required: true, options: [
           'Patient consent obtained and countersigned by surgeon', 'Part preparation completed as ordered',
-          'Identification tag on wrist with name/age/sex/UHID/unit/diagnosis', 'Pre-op orders followed',
-          'Antibiotic sensitivity test completed where ordered'
+          'Identification tag on patient wrist with name/age/sex/UHID/unit/diagnosis', 'Follow pre-op orders',
+          'Antibiotic sensitivity test done'
         ] }),
         field('staffNurseRemarks', 'Staff nurse remarks', 'textarea'),
         field('staffNurseName', 'Staff nurse name', 'text', { required: true }),
@@ -41,7 +40,7 @@ module.exports = [
       ]),
       section('To be done by Anaesthetist', [
         field('anaesthetistItems', 'Anaesthetist safety items', 'checklist', { required: true, options: [
-          'PAC findings checked', 'Co-morbid conditions assessed', 'History of drug allergy reviewed', 'Consent checked'
+          'Check PAC findings', 'Assess co-morbid conditions', 'History of drug allergy', 'Check consent'
         ] }),
         field('anaesthetistRemarks', 'Anaesthetist remarks', 'textarea'),
         field('anaesthetistName', 'Anaesthetist name', 'text', { required: true }),
@@ -50,7 +49,7 @@ module.exports = [
     ],
   },
   {
-    id: 'surgical_safety_checklist', version: 2, title: 'Surgical Safety Checklist', shortTitle: 'Surgical Safety',
+    id: 'surgical_safety_checklist', version: 3, title: 'Surgical Safety Checklist', shortTitle: 'Surgical Safety',
     category: 'ot', stage: 'intraop', required: true, implementation: 'structured', rendererId: 'surgical-safety-checklist', pageCount: 1,
     sourceReference: 'Pre OP and Surgical Safety Checklist.pdf - page 2', referencePages: ['Surgical Safety p2'],
     description: 'WHO-style sign-in, time-out and sign-out checklist before induction, incision and leaving the operating room.',
@@ -93,7 +92,7 @@ module.exports = [
     ],
   },
   {
-    id: 'checklist_verification_pre_post_op', version: 2, title: 'Checklist Verification (Pre and Post OP)', shortTitle: 'Pre/Post OP Verification',
+    id: 'checklist_verification_pre_post_op', version: 3, title: 'Checklist Verification (Pre and Post OP)', shortTitle: 'Pre/Post OP Verification',
     category: 'ot', stage: 'preop', required: true, implementation: 'structured', rendererId: 'pre-post-op-verification', pageCount: 2,
     sourceReference: 'Checklist Pre and Post OP.pdf - pages 1-2', referencePages: ['Pre/Post Verification p1-2'],
     description: 'Two-page ward pre-op verification and OT post-op verification/handover checklist.',
@@ -131,7 +130,7 @@ module.exports = [
     ],
   },
   {
-    id: 'intra_post_anaesthesia_record', version: 2, title: 'Intra and Post Operative Anaesthesia Record', shortTitle: 'Intra/Post Anaesthesia',
+    id: 'intra_post_anaesthesia_record', version: 3, title: 'Intra and Post Operative Anaesthesia Record', shortTitle: 'Intra/Post Anaesthesia',
     category: 'anesthesia', stage: 'intraop', required: true, implementation: 'structured', rendererId: 'intra-post-anesthesia-record', pageCount: 2, printOrientation: 'landscape-page-2',
     sourceReference: 'Intra Operative Anaesthesia Notes.pdf - pages 1-2', referencePages: ['Intra Anaesthesia p1-2'],
     description: 'Immediate pre-operative re-evaluation, anaesthesia technique, induction, regional blocks, drug timeline and graphical monitoring.',
@@ -167,7 +166,7 @@ module.exports = [
     ],
   },
   {
-    id: 'operation_notes', version: 2, title: 'Operation Record / OT Notes', shortTitle: 'Operation Record',
+    id: 'operation_notes', version: 3, title: 'Operation Record / OT Notes', shortTitle: 'Operation Record',
     category: 'ot', stage: 'intraop', required: true, implementation: 'structured', rendererId: 'operation-record', pageCount: 2,
     sourceReference: 'OT Notes.pdf - pages 1-2', referencePages: ['OT Notes p1-2'],
     description: 'Operation record with surgical team, diagnosis, timing, surgical notes, HPE sample and critical events.',
@@ -176,19 +175,18 @@ module.exports = [
       section('Operation record', [
         field('operationDate', 'Date', 'date', { required: true }), field('surgeon', 'Surgeon', 'text', { required: true }), field('assistantSurgeon', 'Assistant surgeon'),
         field('anaesthesiologist', 'Anaesthesiologist', 'text', { required: true }), field('scrubNurse', 'Scrub nurse'),
-        field('preOpDiagnosis', 'Pre-op diagnosis', 'textarea', { required: true }), field('postOpDiagnosis', 'Post-op diagnosis', 'textarea'),
+        field('preOpDiagnosis', 'Pre-op diagnosis', 'textarea', { required: true }),
         field('surgery', 'Surgery / procedure performed', 'textarea', { required: true }), field('startTime', 'Start time', 'time', { required: true }), field('stopTime', 'Stop time', 'time', { required: true }),
         field('surgicalNotes', 'Surgical notes', 'textarea', { required: true }), field('sampleForHPE', 'Sample for HPE', 'textarea'),
-        field('findings', 'Operative findings', 'textarea'), field('estimatedBloodLoss', 'Estimated blood loss'), field('drainsImplants', 'Drains / implants / prosthesis', 'textarea'), field('countsStatus', 'Instrument / swab / needle counts'),
         field('surgeonNameDesignation', 'Surgeon name and designation', 'text', { required: true }),
       ]),
       section('Critical events and post-operative plan', [
-        field('criticalEvents', 'Critical events', 'textarea'), field('complications', 'Complications', 'textarea'), field('postOpPlan', 'Post-operative plan / orders', 'textarea'), field('diagramNotes', 'Diagram / additional notes', 'textarea'),
+        field('postOpPlan', 'Post OP Orders', 'textarea'), field('criticalEvents', 'Critical Events', 'textarea'), field('surgeonSignedAt', 'Date / Time', 'datetime-local'),
       ]),
     ],
   },
   {
-    id: 'pre_anaesthesia_assessment', version: 2, title: 'Preoperative Anaesthesia Record (PAC)', shortTitle: 'PAC',
+    id: 'pre_anaesthesia_assessment', version: 3, title: 'Preoperative Anaesthesia Record (PAC)', shortTitle: 'PAC',
     category: 'anesthesia', stage: 'preop', required: true, implementation: 'structured', rendererId: 'pac-record', pageCount: 2,
     sourceReference: 'PAC.pdf - pages 1-2', referencePages: ['PAC p1-2'],
     description: 'Comprehensive pre-anaesthetic assessment, examination, airway, investigations, plan, advice and fitness.',
@@ -224,7 +222,7 @@ module.exports = [
     ],
   },
   {
-    id: 'post_anaesthesia_recovery_record', version: 2, title: 'Post Operative Anaesthesia Instructions', shortTitle: 'Post Anaesthesia',
+    id: 'post_anaesthesia_recovery_record', version: 3, title: 'Post Operative Anaesthesia Instructions', shortTitle: 'Post Anaesthesia',
     category: 'recovery', stage: 'postop', required: true, implementation: 'structured', rendererId: 'post-anesthesia-instructions', pageCount: 1,
     sourceReference: 'Post Anaesthesia Notes.pdf - page 1', referencePages: ['Post Anaesthesia p1'],
     description: 'Post-operative transfer instructions, monitoring, analgesia, critical events, vitals and Modified Aldrete score.',
@@ -240,7 +238,7 @@ module.exports = [
         field('specialInstructions', 'Special instructions', 'textarea'), field('criticalEvents', 'Critical events', 'textarea'),
       ]),
       section('Modified Aldrete score and shifting vitals', [
-        field('aldrete', 'Modified Aldrete Score', 'table', { required: true, defaultRows: [{ criterion: 'Activity' }, { criterion: 'Respiration' }, { criterion: 'Circulation' }, { criterion: 'Consciousness' }, { criterion: 'Oxygen saturation' }], columns: [field('criterion', 'Criterion'), field('assessment', 'Selected characteristic'), field('points', 'Points', 'number')] }),
+        field('aldrete', 'Modified Aldrete Score', 'table', { required: true, defaultRows: [{ criterion: 'Activity' }, { criterion: 'Respiration' }, { criterion: 'Circulation' }, { criterion: 'Consciousness' }, { criterion: 'Oxygen saturation' }], columns: [field('criterion', 'Criterion'), field('assessment', 'Selected characteristic', 'select', { options: ['Able to move 4 extremities', 'Able to move 2 extremities', 'Unable to move extremities', 'Able to breathe deeply and cough freely', 'Dyspnea or limited breathing', 'Apneic', 'BP +/- 20% of pre-anesthetic level', 'BP +/- 20-49% of pre-anesthetic level', 'BP +/- 50% of pre-anesthetic level', 'Fully awake', 'Arousable on calling', 'Not responding', 'Able to maintain O2 saturation >92% on room air', 'Needs oxygen to maintain O2 saturation >90%', 'O2 saturation <90% even with supplemental oxygen'] }), field('points', 'Points', 'number')] }),
         field('aldreteTotal', 'Aldrete total /10', 'number', { required: true }),
         field('shiftingVitals', 'Post-op monitoring and shifting vitals', 'table', { columns: [field('time', 'Time', 'time'), field('bp', 'BP'), field('pulse', 'Pulse', 'number'), field('rr', 'RR', 'number'), field('spo2', 'SpO2', 'number')] }),
         field('anaesthetistName', 'Anaesthetist name', 'text', { required: true }), field('signedAt', 'Date/time', 'datetime-local'),

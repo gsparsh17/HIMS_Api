@@ -12,7 +12,7 @@ const paymentSchema = new mongoose.Schema({
   },
   method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'Bank', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment'],
+    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'Bank', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment', 'Split'],
     required: true
   },
   reference: {
@@ -29,7 +29,20 @@ const paymentSchema = new mongoose.Schema({
   },
   transaction_id: {
     type: String
-  }
+  },
+  receipt_number: { type: String, trim: true },
+  receipt_type: { type: String, enum: ['Payment', 'Advance', 'Final Settlement', 'Refund', 'Adjustment'], default: 'Payment' },
+  amount_before_settlement: { type: Number, default: 0 },
+  settlement_discount_amount: { type: Number, default: 0, min: 0 },
+  settlement_discount_reason: { type: String, trim: true },
+  settlement_discount_approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  advance_applied: { type: Number, default: 0, min: 0 },
+  balance_after: { type: Number, default: 0, min: 0 },
+  payment_breakdown: [{
+    method: { type: String, enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'Bank', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment'] },
+    amount: { type: Number, min: 0 },
+    reference: String
+  }]
 }, {
   timestamps: true
 });
@@ -39,6 +52,21 @@ const serviceItemSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  charge_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDCharge' },
+  charge_type: { type: String, trim: true },
+  charge_head: { type: String, trim: true },
+  charge_date: Date,
+  gross_amount: { type: Number, default: 0 },
+  discount_type: { type: String, enum: ['fixed', 'percentage'], default: 'fixed' },
+  discount_rate: { type: Number, default: 0 },
+  discount_amount: { type: Number, default: 0, min: 0 },
+  discount_reason: { type: String, trim: true },
+  taxable_amount: { type: Number, default: 0 },
+  tax_mode: { type: String, enum: ['exclusive', 'inclusive', 'exempt'], default: 'exclusive' },
+  tax_name: { type: String, trim: true },
+  tax_code: { type: String, trim: true },
+  net_amount: { type: Number, default: 0 },
+  source_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   quantity: {
     type: Number,
     default: 1,
@@ -515,6 +543,11 @@ const invoiceSchema = new mongoose.Schema({
     ref: 'Bill',
     index: true
   },
+  bill_ids: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Bill',
+    index: true
+  }],
   sale_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Sale',
@@ -549,6 +582,11 @@ const invoiceSchema = new mongoose.Schema({
   voided_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   void_reason: { type: String, trim: true },
   gross_amount: { type: Number, min: 0 },
+  line_discount_total: { type: Number, default: 0, min: 0 },
+  bill_discount_total: { type: Number, default: 0, min: 0 },
+  taxable_amount: { type: Number, default: 0 },
+  rounding_adjustment: { type: Number, default: 0 },
+  advance_applied: { type: Number, default: 0, min: 0 },
   // A credit note changes an issued invoice retrospectively. A final settlement
   // concession is separate so historical item/bill discounts and tax are preserved.
   credit_note_total: { type: Number, default: 0, min: 0 },
@@ -618,11 +656,11 @@ const invoiceSchema = new mongoose.Schema({
     validate: {
       validator: function (v) {
         // Calculate expected total: subtotal - discount + tax
-        const expectedTotal = this.subtotal - (this.discount || 0) + (this.tax || 0);
+        const expectedTotal = this.subtotal - (this.discount || 0) + (this.tax || 0) + (this.rounding_adjustment || 0);
         // Allow small floating point differences
         return Math.abs(v - expectedTotal) < 0.01;
       },
-      message: 'Total must equal subtotal - discount + tax'
+      message: 'Total must equal subtotal - discount + tax + rounding adjustment'
     }
   },
   discount: {
@@ -681,6 +719,10 @@ const invoiceSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  patient_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  admission_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  hospital_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  print_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   // Pharmacy specific
   is_pharmacy_sale: {
@@ -913,7 +955,7 @@ invoiceSchema.pre('validate', function (next) {
     }
 
     if (!this.total || this.total === 0) {
-      this.total = this.subtotal - (this.discount || 0) + (this.tax || 0);
+      this.total = this.subtotal - (this.discount || 0) + (this.tax || 0) + (this.rounding_adjustment || 0);
     }
   }
 

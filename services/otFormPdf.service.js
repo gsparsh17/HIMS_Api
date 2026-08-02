@@ -361,7 +361,7 @@ async function renderOtFormPdf({ template, record, otCase, signatures = [], hosp
       'intra-post-anesthesia-record':renderAnesthesiaRecord,'operation-record':renderOperationRecord,'pac-record':renderPac,'post-anesthesia-instructions':renderPostAnaesthesia,
     };
     const startPageIndex = doc.bufferedPageRange().count;
-    (renderers[template.rendererId]||renderGeneric)(doc,ctx,template,data,signatures);
+    (renderers[template.rendererId] || renderGeneric)(doc, ctx, template, data, signatures);
     const endPageCount = doc.bufferedPageRange().count;
     applySignaturePlacements(doc, signatures, startPageIndex, endPageCount - startPageIndex);
   });
@@ -375,7 +375,7 @@ async function renderOtPacketPdf({ forms, otCase, hospital }) {
       const ctx={hospital,patient:otCase.patientId||{},admission:otCase.admissionId||{},caseInfo:otCase};const data=record?.formData||record||{};
       const renderers={'pre-op-safety-checklist':renderPreOpSafety,'surgical-safety-checklist':renderSurgicalSafety,'pre-post-op-verification':renderPrePostVerification,'intra-post-anesthesia-record':renderAnesthesiaRecord,'operation-record':renderOperationRecord,'pac-record':renderPac,'post-anesthesia-instructions':renderPostAnaesthesia};
       const startPageIndex = doc.bufferedPageRange().count;
-      (renderers[template.rendererId]||renderGeneric)(doc,ctx,template,data,signatures);
+      (renderers[template.rendererId] || renderGeneric)(doc, ctx, template, data, signatures);
       const endPageCount = doc.bufferedPageRange().count;
       applySignaturePlacements(doc, signatures, startPageIndex, endPageCount - startPageIndex);
     }

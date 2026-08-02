@@ -5,6 +5,19 @@ const billItemSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  charge_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDCharge' },
+  charge_type: { type: String, trim: true },
+  charge_head: { type: String, trim: true },
+  charge_date: Date,
+  gross_amount: { type: Number, default: 0 },
+  discount_type: { type: String, enum: ['fixed', 'percentage'], default: 'fixed' },
+  discount_rate: { type: Number, default: 0 },
+  discount_reason: { type: String, trim: true },
+  tax_mode: { type: String, enum: ['exclusive', 'inclusive', 'exempt'], default: 'exclusive' },
+  tax_name: { type: String, trim: true },
+  tax_code: { type: String, trim: true },
+  net_amount: { type: Number, default: 0 },
+  source_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   amount: {
     type: Number,
     required: true
@@ -193,6 +206,13 @@ const billSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  gross_amount: { type: Number, default: 0 },
+  line_discount_total: { type: Number, default: 0, min: 0 },
+  bill_discount_total: { type: Number, default: 0, min: 0 },
+  taxable_amount: { type: Number, default: 0 },
+  rounding_adjustment: { type: Number, default: 0 },
+  advance_applied: { type: Number, default: 0, min: 0 },
+  refund_amount: { type: Number, default: 0, min: 0 },
   subtotal: {
     type: Number,
     required: true
@@ -216,7 +236,7 @@ const billSchema = new mongoose.Schema({
 
   payment_method: {
     type: String,
-    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'NoPayment', 'Adjustment'],
+    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Bank', 'Government Scheme', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Split', 'NoPayment', 'Adjustment'],
     required: true,
     default: 'Pending'
   },
@@ -225,7 +245,7 @@ const billSchema = new mongoose.Schema({
   payments: [{
     method: {
       type: String,
-      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment']
+      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Bank', 'Insurance', 'Government Scheme', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment']
     },
     amount: Number,
     reference: String,
@@ -279,6 +299,11 @@ const billSchema = new mongoose.Schema({
   notes: {
     type: String
   },
+  patient_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  admission_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  hospital_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  print_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  idempotency_key: { type: String, trim: true },
 
   // Pharmacy specific fields
   is_pharmacy_bill: {
@@ -332,6 +357,8 @@ billSchema.pre('save', function (next) {
     (sum, payment) => sum + Number(payment?.amount || 0),
     0
   );
+  this.gross_amount = Number(this.gross_amount || this.subtotal || 0);
+  this.taxable_amount = Number(this.taxable_amount || Math.max(0, this.gross_amount - Number(this.line_discount_total || 0) - Number(this.bill_discount_total || 0)));
   this.paid_amount = Math.max(Number(this.paid_amount || 0), paymentTotal);
   this.balance_due = Math.max(
     0,
@@ -399,6 +426,7 @@ billSchema.index({ is_deleted: 1 });
 billSchema.index({ is_pharmacy_bill: 1 });
 billSchema.index({ 'deletion_request.status': 1 });
 billSchema.index({ bill_number: 1 }, { unique: true, sparse: true });
+billSchema.index({ idempotency_key: 1 }, { unique: true, sparse: true });
 billSchema.index({ hospital_id: 1, document_stage: 1, generated_at: -1 });
 
 module.exports = mongoose.model('Bill', billSchema);

@@ -21,6 +21,7 @@ const ipdConsentSchema = new mongoose.Schema({
   templateId: { type: String, required: true, trim: true, index: true },
   templateName: { type: String, required: true, trim: true },
   templateVersion: { type: String, trim: true },
+  rendererId: { type: String, trim: true },
   formRevision: { type: Number, default: 1 },
   scopeKey: { type: String, required: true, default: 'admission' },
   relatedProcedureId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProcedureRequest' },
@@ -28,10 +29,43 @@ const ipdConsentSchema = new mongoose.Schema({
   status: { type: String, enum: ['Draft', 'Completed', 'Signed', 'Amended', 'Revoked'], default: 'Draft', index: true },
   responses: { type: mongoose.Schema.Types.Mixed, default: {} },
   signatures: [signatureSchema],
+
+  patientSnapshot: {
+    name: String,
+    uhid: String,
+    age: mongoose.Schema.Types.Mixed,
+    gender: String,
+    guardianName: String,
+    address: String,
+    phone: String
+  },
+  admissionSnapshot: {
+    admissionNumber: String,
+    admissionDate: Date,
+    ward: String,
+    room: String,
+    bed: String,
+    department: String,
+    diagnosis: String,
+    consultantName: String
+  },
+  hospitalSnapshot: {
+    hospitalName: String,
+    registryNo: String,
+    address: String,
+    city: String,
+    state: String,
+    phone: String,
+    email: String
+  },
+  printSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
+
   finalDocumentSignatureId: { type: mongoose.Schema.Types.ObjectId, ref: 'DocumentSignature' },
   notes: { type: String, trim: true },
   completedAt: Date,
   completedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  finalizedAt: Date,
+  finalizedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });

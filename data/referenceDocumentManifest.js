@@ -1,0 +1,21 @@
+module.exports = [
+  { id: 'final-bill-summary', source: 'Bill Summary.pdf', kind: 'billing', implementation: 'native-text', frontend: 'FinalBillPrintDocuments.jsx' },
+  { id: 'final-bill-detailed', source: 'Final Bill.pdf', kind: 'billing', implementation: 'native-text', frontend: 'FinalBillPrintDocuments.jsx' },
+  { id: 'discharge-summary', source: 'Discharge Summary.pdf', kind: 'discharge', implementation: 'native-text', frontend: 'ReferenceDischargeSummaryPrint.jsx' },
+  { id: 'intra-post-anesthesia-record', source: 'Intra Operative Anaesthesia Notes.pdf', kind: 'ot', implementation: 'structured-native-text', rendererId: 'intra-post-anesthesia-record' },
+  { id: 'blood-transfusion-record', source: 'Blood Transfusion Flow Sheet.pdf', kind: 'ot', implementation: 'structured-native-text', rendererId: 'blood-transfusion-record' },
+  { id: 'pre-post-op-verification', source: 'Checklist Pre and Post OP.pdf', kind: 'ot', implementation: 'structured-native-text', rendererId: 'pre-post-op-verification' },
+  { id: 'anaesthesia-consent', source: 'Consent Anaesthesia Simple.pdf', kind: 'consent', implementation: 'native-text', pages: 2 },
+  { id: 'blood-transfusion-consent', source: 'Consent Blood Transfusion Simple.pdf', kind: 'consent', implementation: 'native-text', pages: 2 },
+  { id: 'high-risk-consent', source: 'Consent High Risk Procedure.pdf', kind: 'consent', implementation: 'native-text', pages: 2 },
+  { id: 'lama-dor-consent', source: 'Consent LAMA DOR.pdf', kind: 'consent', implementation: 'native-text', pages: 2 },
+  { id: 'mlc-refusal-consent', source: 'Consent Refusal for MLC.pdf', kind: 'consent', implementation: 'native-text', pages: 2 },
+  { id: 'restraint-consent', source: 'Consent Restrain.pdf', kind: 'consent', implementation: 'native-text', pages: 2 },
+  { id: 'infectious-disease-screening-consent', source: 'Consent Serology HIV.pdf', kind: 'consent', implementation: 'native-text', pages: 2 },
+  { id: 'surgery-consent', source: 'Consent Surgery Simple.pdf', kind: 'consent', implementation: 'native-text', pages: 2 },
+  { id: 'operation-record', source: 'OT Notes.pdf', kind: 'ot', implementation: 'structured-native-text', rendererId: 'operation-record' },
+  { id: 'pac-record', source: 'PAC.pdf', kind: 'ot', implementation: 'structured-native-text', rendererId: 'pac-record' },
+  { id: 'post-anesthesia-instructions', source: 'Post Anaesthesia Notes.pdf', kind: 'ot', implementation: 'structured-native-text', rendererId: 'post-anesthesia-instructions' },
+  { id: 'pre-op-safety-checklist', source: 'Pre OP and Surgical Safety Checklist.pdf', kind: 'ot', implementation: 'structured-native-text', rendererId: 'pre-op-safety-checklist' },
+  { id: 'surgical-safety-checklist', source: 'Pre OP and Surgical Safety Checklist.pdf', kind: 'ot', implementation: 'structured-native-text', rendererId: 'surgical-safety-checklist' }
+];

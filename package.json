@@ -25,7 +25,9 @@
     "finance:audit": "node scripts/audit-financial-integrity.js",
     "finance:prepare-indexes": "node scripts/prepare-financial-indexes.js",
     "finance:repair": "node scripts/repair-financial-integrity.js",
-    "finance:verify": "node scripts/verify-financial-integrity.js"
+    "finance:verify": "node scripts/verify-financial-integrity.js",
+    "hims:migrate:reference-documents": "node scripts/migrate-reference-documents-2026.js",
+    "reference-documents:validate": "node scripts/validate-reference-document-templates.js"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",

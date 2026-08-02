@@ -9,7 +9,7 @@ const patientAdvanceLedgerSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
   admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', index: true },
-  walletType: { type: String, enum: ['IPD_SHARED', 'PHARMACY_IPD'], default: 'IPD_SHARED' },
+  walletType: { type: String, enum: ['IPD_SHARED', 'OPD_SHARED', 'PHARMACY_IPD'], default: 'IPD_SHARED' },
   transactionType: {
     type: String,
     enum: [
@@ -33,13 +33,13 @@ const patientAdvanceLedgerSchema = new mongoose.Schema({
   openingBalance: { type: Number, default: 0 },
   paymentMethod: {
     type: String,
-    enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'Wallet', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment'],
+    enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'Wallet', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment'],
     default: 'Cash'
   },
   referenceNumber: { type: String, trim: true },
   documentType: { type: String, enum: ['Receipt', 'Invoice', 'Refund', 'Adjustment', 'PharmacySale'], default: 'Receipt' },
   documentId: { type: mongoose.Schema.Types.ObjectId },
-  sourceModule: { type: String, enum: ['IPD', 'Pharmacy', 'Billing', 'Manual', 'Discharge'], default: 'IPD' },
+  sourceModule: { type: String, enum: ['IPD', 'OPD', 'Pharmacy', 'Billing', 'Manual', 'Discharge'], default: 'IPD' },
   sourceId: { type: mongoose.Schema.Types.ObjectId },
   balanceAfter: { type: Number, required: true },
   status: { type: String, enum: ['POSTED', 'REVERSED', 'VOID'], default: 'POSTED' },

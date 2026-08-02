@@ -5,6 +5,7 @@ const Bed = require('../models/Bed');
 const IPDCharge = require('../models/IPDCharge');
 const Invoice = require('../models/Invoice');
 const Patient = require('../models/Patient');
+const Hospital = require('../models/Hospital');
 const LabReport = require('../models/LabReport');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDRound = require('../models/IPDRound');
@@ -37,12 +38,20 @@ exports.saveDischargeSummary = async (req, res) => {
       proceduresDone,
       surgeriesDone,
       conditionOnDischarge,
+      conditionAtDischargeText,
+      operativeNotes,
+      dischargeType,
       dischargeMedications,
       followUpAdvice,
+      followUpAfterDays,
       followUpDate,
+      followUpDetails,
       emergencyInstructions,
+      emergencyContactNumber,
       dietAdvice,
       activityAdvice,
+      adviceAtDischarge,
+      patientAcknowledgement,
       templateId
     } = req.body;
 
@@ -69,12 +78,20 @@ exports.saveDischargeSummary = async (req, res) => {
         proceduresDone,
         surgeriesDone,
         conditionOnDischarge,
+        conditionAtDischargeText,
+        operativeNotes,
+        dischargeType,
         dischargeMedications,
         followUpAdvice,
+        followUpAfterDays,
         followUpDate,
+        followUpDetails,
         emergencyInstructions,
+        emergencyContactNumber,
         dietAdvice,
         activityAdvice,
+        adviceAtDischarge,
+        patientAcknowledgement,
         templateId: templateId || dischargeSummary.templateId,
         updatedBy: req.user?._id
       });
@@ -97,12 +114,20 @@ exports.saveDischargeSummary = async (req, res) => {
         proceduresDone,
         surgeriesDone,
         conditionOnDischarge,
+        conditionAtDischargeText,
+        operativeNotes,
+        dischargeType,
         dischargeMedications,
         followUpAdvice,
+        followUpAfterDays,
         followUpDate,
+        followUpDetails,
         emergencyInstructions,
+        emergencyContactNumber,
         dietAdvice,
         activityAdvice,
+        adviceAtDischarge,
+        patientAcknowledgement,
         templateId: templateId || null,
         status: 'Draft',
         createdBy: req.user?._id
@@ -157,6 +182,7 @@ exports.getDischargeRecords = async (req, res) => {
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found' });
     }
+    const hospital = await Hospital.findById(requireHospitalId(req)).select('contact phone email').lean();
 
     // Fetch all clinical records in parallel
     const [
@@ -230,7 +256,8 @@ exports.getDischargeRecords = async (req, res) => {
       lastPrescription.items?.forEach(item => { dischargeMeds.push({ medicineName: item.medicine_name, dosage: item.dosage || '', frequency: item.frequency || '', duration: item.duration || '', instructions: item.instructions || item.timing || '' }); });
     }
     autoFill.dischargeMedications = dischargeMeds;
-    autoFill.emergencyInstructions = 'If you experience any of the following, visit the emergency department immediately:\n• High fever (>101°F) or chills\n• Severe pain unresponsive to prescribed medications\n• Difficulty breathing or chest pain\n• Excessive bleeding or wound discharge\n• Sudden dizziness, confusion, or loss of consciousness';
+    autoFill.emergencyInstructions = 'BLOOD IN URINE/STOOL/SPUTUM, SWELLING AT SURGICAL SITE, BLEEDING FROM SURGICAL SITE, PUS DISCHARGE FROM SURGICAL SITE';
+    autoFill.emergencyContactNumber = hospital?.contact || hospital?.phone || '';
 
     res.json({ success: true, admission, autoFill, records: { rounds, vitals, nursingNotes, medications, labRequests, radiologyRequests, procedureRequests, otRequests, prescriptions } });
   } catch (err) {
@@ -246,9 +273,22 @@ exports.finalizeDischargeSummary = async (req, res) => {
     const { admissionId } = req.params;
     const { reviewedBy } = req.body;
 
-    const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
+    const hospitalId = requireHospitalId(req);
+    const [dischargeSummary, admission] = await Promise.all([
+      DischargeSummary.findOne({ admissionId, hospitalId }),
+      IPDAdmission.findOne({ _id: admissionId, hospitalId })
+        .populate('primaryDoctorId', 'firstName lastName')
+        .populate('wardId', 'name wardName')
+        .populate('roomId', 'roomNumber roomName name')
+        .populate('bedId', 'bedNumber bedName name')
+        .populate('departmentId', 'name departmentName')
+        .lean()
+    ]);
     if (!dischargeSummary) {
       return res.status(404).json({ error: 'Discharge summary not found' });
+    }
+    if (!admission) {
+      return res.status(404).json({ error: 'Admission not found' });
     }
 
     if (dischargeSummary.status === 'Finalized') {
@@ -268,6 +308,57 @@ exports.finalizeDischargeSummary = async (req, res) => {
     dischargeSummary.reviewedBy = reviewerDoctorId;
     dischargeSummary.reviewedAt = new Date();
     dischargeSummary.finalizedAt = new Date();
+
+    const [patientSnapshotSource, hospitalSnapshotSource] = await Promise.all([
+      Patient.findById(admission.patientId).lean(),
+      Hospital.findById(admission.hospitalId).lean()
+    ]);
+    if (patientSnapshotSource) {
+      dischargeSummary.patientSnapshot = {
+        id: patientSnapshotSource._id,
+        uhid: patientSnapshotSource.uhid || patientSnapshotSource.patientId,
+        name: [patientSnapshotSource.salutation, patientSnapshotSource.first_name, patientSnapshotSource.middle_name, patientSnapshotSource.last_name].filter(Boolean).join(' '),
+        dob: patientSnapshotSource.dob,
+        age: patientSnapshotSource.age,
+        gender: patientSnapshotSource.gender,
+        phone: patientSnapshotSource.phone,
+        address: patientSnapshotSource.address,
+        city: patientSnapshotSource.city,
+        state: patientSnapshotSource.state,
+        guardianName: patientSnapshotSource.guardianName || patientSnapshotSource.father_name || patientSnapshotSource.husband_name
+      };
+    }
+    const primaryDoctor = admission.primaryDoctorId;
+    const displayName = (record, fields) => fields.map((field) => record?.[field]).find(Boolean) || '';
+    dischargeSummary.admissionSnapshot = {
+      id: admission._id,
+      admissionNumber: admission.admissionNumber,
+      admissionDate: admission.admissionDate,
+      dischargeDate: admission.dischargeDate || dischargeSummary.dischargeDate,
+      dischargeType: dischargeSummary.dischargeType || admission.status,
+      consultantName: primaryDoctor
+        ? `Dr. ${[primaryDoctor.firstName, primaryDoctor.lastName].filter(Boolean).join(' ')}`.trim()
+        : '',
+      ward: displayName(admission.wardId, ['wardName', 'name']),
+      room: displayName(admission.roomId, ['roomNumber', 'roomName', 'name']),
+      bed: displayName(admission.bedId, ['bedNumber', 'bedName', 'name']),
+      department: displayName(admission.departmentId, ['departmentName', 'name'])
+    };
+    if (hospitalSnapshotSource) {
+      dischargeSummary.hospitalSnapshot = {
+        id: hospitalSnapshotSource._id,
+        hospitalName: hospitalSnapshotSource.hospitalName || hospitalSnapshotSource.name,
+        address: hospitalSnapshotSource.address,
+        city: hospitalSnapshotSource.city,
+        state: hospitalSnapshotSource.state,
+        pinCode: hospitalSnapshotSource.pinCode,
+        phone: hospitalSnapshotSource.contact || hospitalSnapshotSource.phone,
+        email: hospitalSnapshotSource.email,
+        website: hospitalSnapshotSource.website,
+        logo: hospitalSnapshotSource.logo
+      };
+    }
+    dischargeSummary.printSnapshot = { templateVersion: 'reference-discharge-2026-08', finalizedAt: new Date() };
     await dischargeSummary.save();
 
     await IPDAdmission.findOneAndUpdate({ _id: admissionId, hospitalId: requireHospitalId(req) }, {
@@ -287,7 +378,21 @@ exports.finalizeDischargeSummary = async (req, res) => {
 exports.staffCompleteDischargeSummary = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const { dischargeMedications, followUpAdvice, followUpDate, emergencyInstructions, dietAdvice, activityAdvice } = req.body;
+    const {
+      dischargeMedications,
+      followUpAdvice,
+      followUpAfterDays,
+      followUpDate,
+      followUpDetails,
+      emergencyInstructions,
+      emergencyContactNumber,
+      dietAdvice,
+      activityAdvice,
+      adviceAtDischarge,
+      patientAcknowledgement,
+      conditionAtDischargeText,
+      dischargeType
+    } = req.body;
 
     const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
     if (!dischargeSummary) {
@@ -301,10 +406,17 @@ exports.staffCompleteDischargeSummary = async (req, res) => {
     // Update with staff-entered data
     if (dischargeMedications !== undefined) dischargeSummary.dischargeMedications = dischargeMedications;
     if (followUpAdvice !== undefined) dischargeSummary.followUpAdvice = followUpAdvice;
+    if (followUpAfterDays !== undefined) dischargeSummary.followUpAfterDays = followUpAfterDays;
+    if (followUpDetails !== undefined) dischargeSummary.followUpDetails = followUpDetails;
     if (followUpDate) dischargeSummary.followUpDate = new Date(followUpDate);
     if (emergencyInstructions !== undefined) dischargeSummary.emergencyInstructions = emergencyInstructions;
+    if (emergencyContactNumber !== undefined) dischargeSummary.emergencyContactNumber = emergencyContactNumber;
     if (dietAdvice !== undefined) dischargeSummary.dietAdvice = dietAdvice;
     if (activityAdvice !== undefined) dischargeSummary.activityAdvice = activityAdvice;
+    if (adviceAtDischarge !== undefined) dischargeSummary.adviceAtDischarge = adviceAtDischarge;
+    if (patientAcknowledgement !== undefined) dischargeSummary.patientAcknowledgement = patientAcknowledgement;
+    if (conditionAtDischargeText !== undefined) dischargeSummary.conditionAtDischargeText = conditionAtDischargeText;
+    if (dischargeType !== undefined) dischargeSummary.dischargeType = dischargeType;
     
     dischargeSummary.status = 'StaffCompleted';
     await dischargeSummary.save();

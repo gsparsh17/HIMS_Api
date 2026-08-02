@@ -123,9 +123,49 @@ async function consentContext(req, admission) {
       uhid: admission.patientId.uhid || admission.patientId.patient_id || admission.patientId.patientId,
       age: admission.patientId.age,
       gender: admission.patientId.gender,
-      phone: admission.patientId.phone || admission.patientId.mobile
+      phone: admission.patientId.phone || admission.patientId.mobile,
+      address: admission.patientId.address || admission.patientId.address_line || admission.patientId.full_address || '',
+      guardianName: admission.patientId.guardianName || admission.patientId.father_name || admission.patientId.husband_name || '',
+      dob: admission.patientId.dob
     } : null,
     hospital
+  };
+}
+
+
+function consentSnapshots(context = {}, responses = {}) {
+  const patient = context.patient || {};
+  const admission = context.admission || {};
+  const hospital = context.hospital || {};
+  return {
+    patientSnapshot: {
+      name: patient.name,
+      uhid: patient.uhid,
+      age: patient.age,
+      gender: patient.gender,
+      guardianName: responses.guardianName || responses.requestingPersonParentSpouse || patient.guardianName || '',
+      address: responses.address || patient.address || '',
+      phone: patient.phone || ''
+    },
+    admissionSnapshot: {
+      admissionNumber: admission.admissionNumber || admission.shipNumber,
+      admissionDate: admission.admissionDate,
+      ward: admission.ward?.name || '',
+      room: admission.room?.name || '',
+      bed: admission.bed?.name || '',
+      department: admission.department?.name || '',
+      diagnosis: responses.diagnosis || responses.clinicalReason || '',
+      consultantName: admission.primaryDoctor?.name || responses.doctorName || ''
+    },
+    hospitalSnapshot: {
+      hospitalName: hospital.hospitalName,
+      registryNo: hospital.registryNo || hospital.hospitalID,
+      address: hospital.address,
+      city: hospital.city,
+      state: hospital.state,
+      phone: hospital.phone,
+      email: hospital.email
+    }
   };
 }
 
@@ -163,6 +203,8 @@ async function normalizedResponses(req, admission, rawResponses = {}) {
   responses.doctorSelectionSource = role === 'doctor' ? 'logged_in_doctor' : 'selected_responsible_doctor';
   responses.signedDate = responses.signedDate || dateTime.date;
   responses.signedTime = responses.signedTime || dateTime.time;
+  responses.doctorSignedDate = responses.doctorSignedDate || dateTime.date;
+  responses.doctorSignedTime = responses.doctorSignedTime || dateTime.time;
 
   // Signature and seal images are stored as controlled profile/patient assets and
   // placed through the signed-print editor. Never accept arbitrary URL/data-image
@@ -220,6 +262,8 @@ exports.saveConsent = async (req, res, next) => {
     const admission = await admissionFor(req);
     const responses = await normalizedResponses(req, admission, req.body.responses);
     const requestedStatus = ['Completed', 'Signed'].includes(req.body.status) ? req.body.status : 'Draft';
+    const snapshotContext = await consentContext(req, admission);
+    const snapshots = consentSnapshots(snapshotContext, responses);
 
     if (requestedStatus !== 'Draft') {
       const missing = (template.fields || []).filter((field) => field.required).filter((field) => {
@@ -268,6 +312,7 @@ exports.saveConsent = async (req, res, next) => {
       templateId: template.id,
       templateName: template.name,
       templateVersion: template.version,
+      rendererId: template.rendererId || 'reference-consent',
       formRevision: Number(existing?.formRevision || 0) + 1,
       scopeKey: key,
       relatedOTCaseId: req.body.relatedOTCaseId,
@@ -279,8 +324,23 @@ exports.saveConsent = async (req, res, next) => {
         : (responseSignatures.length ? responseSignatures : existing?.signatures || []),
       notes: req.body.notes || '',
       finalDocumentSignatureId,
+      ...snapshots,
+      printSnapshot: requestedStatus === 'Draft' ? existing?.printSnapshot || null : {
+        templateId: template.id,
+        templateName: template.name,
+        templateVersion: template.version,
+        rendererId: template.rendererId || 'reference-consent',
+        responses,
+        ...snapshots,
+        finalizedAt: new Date()
+      },
       updatedBy: req.user._id,
-      ...(requestedStatus !== 'Draft' ? { completedAt: new Date(), completedBy: req.user._id } : {})
+      ...(requestedStatus !== 'Draft' ? {
+        completedAt: new Date(),
+        completedBy: req.user._id,
+        finalizedAt: new Date(),
+        finalizedBy: req.user._id
+      } : {})
     };
 
     const consent = await IPDConsent.findOneAndUpdate(
