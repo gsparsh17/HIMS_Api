@@ -11,6 +11,7 @@ const { quotePricing } = require('./pricingEngine.service');
 const SponsorLedgerEntry = require('../models/SponsorLedgerEntry');
 const Hospital = require('../models/Hospital');
 const { userHospitalId } = require('../utils/hospitalScope');
+const { syncChargesInvoiced } = require('./sourceBillingSync.service');
 
 const ACTIVE_CHARGE_FILTER = {
   $or: [
@@ -945,6 +946,22 @@ async function voidCharge(admissionId, chargeId, payload, user) {
   return charge;
 }
 
+async function previewIPDInvoice(admissionId, payload = {}, user) {
+  const admission = await findAdmission(admissionId, null, user);
+  const requested = Array.isArray(payload.chargeIds) ? [...new Set(payload.chargeIds.map(String))] : [];
+  const filter = { hospitalId: admission.hospitalId, admissionId, ...UNBILLED_CHARGE_FILTER };
+  if (requested.length) filter._id = { $in: requested };
+  const charges = await IPDCharge.find(filter).sort({ chargeDate: 1, createdAt: 1 }).lean();
+  if (requested.length && charges.length !== requested.length) {
+    const error = new Error('One or more selected charges are no longer eligible'); error.statusCode = 409; error.code = 'INVALID_SELECTED_CHARGES'; throw error;
+  }
+  const gross = money(charges.reduce((a,c)=>a+Number(c.grossAmount||c.amount||0),0));
+  const discount = money(charges.reduce((a,c)=>a+Number(c.discountAmount||c.discount||0),0));
+  const tax = money(charges.reduce((a,c)=>a+Number(c.taxAmount||c.tax||0),0));
+  const net = money(charges.reduce((a,c)=>a+Number(c.patientLiability ?? c.netAmount ?? 0),0));
+  return { admissionId, invoiceKind: payload.invoiceKind === 'final' ? 'final' : 'interim', billingMode: requested.length ? 'IMMEDIATE_SELECTED' : 'ALL_UNBILLED', chargeCount: charges.length, chargeIds: charges.map(c=>c._id), charges, totals: { gross, discount, tax, net } };
+}
+
 async function issueIPDInvoice(admissionId, payload = {}, user) {
   const invoiceKind = payload.invoiceKind === 'final' ? 'IPD Final' : 'IPD Interim';
 
@@ -958,8 +975,17 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
       }
     }
 
-    const charges = await IPDCharge.find({ hospitalId: admission.hospitalId, admissionId, ...UNBILLED_CHARGE_FILTER }, null, sessionOptions(session))
-      .sort({ chargeDate: 1, createdAt: 1 });
+    const requestedChargeIds = Array.isArray(payload.chargeIds) ? payload.chargeIds.filter(Boolean) : [];
+    if (payload.invoiceKind === 'final' && requestedChargeIds.length) {
+      const error = new Error('Final invoice cannot be limited to selected charges'); error.statusCode = 400; throw error;
+    }
+    const chargeFilter = { hospitalId: admission.hospitalId, admissionId, ...UNBILLED_CHARGE_FILTER };
+    if (requestedChargeIds.length) chargeFilter._id = { $in: requestedChargeIds };
+    const charges = await IPDCharge.find(chargeFilter, null, sessionOptions(session)).sort({ chargeDate: 1, createdAt: 1 });
+    if (requestedChargeIds.length && charges.length !== [...new Set(requestedChargeIds.map(String))].length) {
+      const error = new Error('One or more selected charges are invalid, already invoiced, voided, or belong to another admission');
+      error.statusCode = 409; error.code = 'INVALID_SELECTED_CHARGES'; throw error;
+    }
     if (!charges.length) {
       const error = new Error('There are no unbilled active charges for this admission');
       error.statusCode = 409;
@@ -1137,6 +1163,8 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
       error.statusCode = 409;
       throw error;
     }
+
+    await syncChargesInvoiced(charges, bill, invoice, user?._id, session);
 
     if (sponsorLiability > 0 && coverage?.payerId) {
       const current = await SponsorLedgerEntry.findOne({ hospitalId, admissionId }).sort({ occurredAt: -1 }).session(session);
@@ -2031,6 +2059,7 @@ module.exports = {
   generateBedCharge,
   applyDiscount,
   voidCharge,
+  previewIPDInvoice,
   issueIPDInvoice,
   recordIPDPayment,
   recordAdvance,

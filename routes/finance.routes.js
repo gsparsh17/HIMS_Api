@@ -1,11 +1,22 @@
 const express = require('express');
 const { protect, authorize, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
 const finance = require('../controllers/finance.controller');
+const reconciliation = require('../controllers/reconciliation.controller');
 
 const router = express.Router();
 router.use(protect, requireModuleAccess('billing_finance'));
 
 router.get('/dashboard', finance.getDashboard);
+router.get('/kpis', finance.getCanonicalKpis);
+router.get('/kpis/daily', finance.getCanonicalKpis);
+router.get('/reports/:reportKey', finance.getCanonicalFinanceReport);
+router.get('/pharmacy/projection', finance.getPharmacyFinanceProjection);
+router.get('/pharmacy/integration-audit', requireActionPermission('billing_finalize'), finance.getPharmacyIntegrationAudit);
+router.get('/reconciliation/issues', requireActionPermission('billing_finalize'), reconciliation.list);
+router.post('/reconciliation/run', requireActionPermission('billing_finalize'), reconciliation.run);
+router.patch('/reconciliation/issues/:issueId', requireActionPermission('billing_finalize'), reconciliation.update);
+router.get('/feature-flags', requireActionPermission('billing_finalize'), reconciliation.getFlags);
+router.put('/feature-flags', requireActionPermission('billing_finalize'), reconciliation.updateFlags);
 router.get('/mis/overview', finance.getMISOverview);
 router.get('/mis/reports/:reportKey', finance.getMISReport);
 router.get('/mis/reports/:reportKey/export', finance.exportMISReport);

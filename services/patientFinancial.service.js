@@ -18,9 +18,11 @@ const sessionOptions = (session) => (session ? { session } : {});
 const id = (value) => String(value?._id || value || '');
 const amount = (value) => money(Number(value || 0));
 
-function financialError(message, statusCode = 400) {
+function financialError(message, statusCode = 400, code = 'FINANCIAL_VALIDATION_ERROR', details) {
   const error = new Error(message);
   error.statusCode = statusCode;
+  error.code = code;
+  error.details = details;
   return error;
 }
 
@@ -359,10 +361,74 @@ async function applyToBill(bill, paymentAmount, discountAmount, taxAdjustment, p
   await bill.save(sessionOptions(session));
 }
 
+async function previewOPDPayment(patientId, payload, user) {
+  const { patient, hospitalId } = await findPatient(patientId, user);
+  const discountRequested = amount(payload.settlementDiscountAmount);
+  const taxAdjustment = amount(payload.taxAdjustmentAmount);
+  const amountTendered = amount(payload.amountTendered ?? payload.amount);
+  const amountAppliedRequested = amount(payload.amountApplied ?? payload.amount);
+
+  const invoiceFilter = {
+    hospital_id: hospitalId, patient_id: patient._id, is_deleted: { $ne: true },
+    status: { $nin: ['Cancelled', 'Refunded'] }, document_stage: { $ne: 'VOID' }, balance_due: { $gt: 0 },
+    $or: [{ admission_id: { $exists: false } }, { admission_id: null }]
+  };
+  const billFilter = {
+    hospital_id: hospitalId, patient_id: patient._id, is_deleted: { $ne: true }, balance_due: { $gt: 0 },
+    $and: [
+      { $or: [{ admission_id: { $exists: false } }, { admission_id: null }] },
+      { $or: [{ invoice_id: { $exists: false } }, { invoice_id: null }] },
+      { $or: [{ invoice_ids: { $exists: false } }, { invoice_ids: { $size: 0 } }] }
+    ]
+  };
+  if (payload.invoiceId) invoiceFilter._id = payload.invoiceId;
+  if (payload.billId) billFilter._id = payload.billId;
+  const invoices = payload.billId ? [] : await Invoice.find(invoiceFilter).sort({ issue_date: 1 });
+  const bills = payload.invoiceId ? [] : await Bill.find(billFilter).sort({ generated_at: 1 });
+  if (!invoices.length && !bills.length) throw financialError('No outstanding OPD bill or invoice was found', 409, 'NO_OUTSTANDING_DOCUMENT');
+
+  const outstandingBefore = amount(
+    invoices.reduce((sum, row) => sum + Number(row.balance_due || 0), 0) +
+    bills.reduce((sum, row) => sum + Number(row.balance_due || 0), 0)
+  );
+  const effectiveOutstanding = amount(outstandingBefore + taxAdjustment);
+  if (effectiveOutstanding < 0) throw financialError('Tax adjustment cannot reduce outstanding below zero', 400, 'INVALID_TAX_ADJUSTMENT');
+  if (discountRequested > effectiveOutstanding + 0.01) {
+    throw financialError('Settlement discount cannot exceed outstanding amount', 400, 'DISCOUNT_EXCEEDS_OUTSTANDING', { maximumAllowed: effectiveOutstanding });
+  }
+  const netPayable = amount(Math.max(0, effectiveOutstanding - discountRequested));
+  const amountApplied = amount(Math.min(netPayable, Math.max(0, amountAppliedRequested)));
+  const overpayment = amount(Math.max(0, amountAppliedRequested - netPayable));
+  const changeReturned = payload.overpaymentDisposition === 'RETURN_CHANGE' ? overpayment : 0;
+  const advanceCreated = payload.overpaymentDisposition === 'CREATE_ADVANCE' ? overpayment : 0;
+  const warnings = [];
+  if (overpayment > 0 && !payload.overpaymentDisposition) warnings.push({ code: 'OVERPAYMENT_DISPOSITION_REQUIRED', message: 'Choose return change or credit excess to patient advance.' });
+
+  return {
+    patientId: patient._id,
+    outstandingBefore,
+    taxAdjustment,
+    settlementDiscount: discountRequested,
+    netPayable,
+    amountTendered,
+    requestedAmountApplied: amountAppliedRequested,
+    amountApplied,
+    overpayment,
+    changeReturned,
+    advanceCreated,
+    balanceAfter: amount(Math.max(0, netPayable - amountApplied)),
+    maximumAllowed: netPayable,
+    suggestedAmount: netPayable,
+    canSubmit: overpayment <= 0 || Boolean(payload.overpaymentDisposition),
+    warnings
+  };
+}
+
 async function recordOPDPayment(patientId, payload, user) {
   return runTransaction(async (session) => {
     const { patient, hospitalId } = await findPatient(patientId, user, session);
-    const requestedAmount = amount(payload.amount);
+    const settlementPreview = await previewOPDPayment(patientId, payload, user);
+    const requestedAmount = amount(payload.amountApplied ?? payload.amount);
     const discountRequested = amount(payload.settlementDiscountAmount);
     const taxAdjustment = amount(payload.taxAdjustmentAmount);
     if (requestedAmount < 0 || discountRequested < 0) throw financialError('Amounts cannot be negative');
@@ -421,7 +487,10 @@ async function recordOPDPayment(patientId, payload, user) {
     const effectiveOutstanding = amount(outstandingBefore + taxAdjustment);
     if (effectiveOutstanding < 0) throw financialError('Tax adjustment cannot reduce the outstanding amount below zero');
     if (discountRequested > effectiveOutstanding + 0.01) throw financialError('Settlement discount cannot exceed outstanding amount');
-    if (requestedAmount > effectiveOutstanding - discountRequested + 0.01) throw financialError('Payment cannot exceed outstanding amount after discount');
+    if (requestedAmount > effectiveOutstanding - discountRequested + 0.01) throw financialError(
+      'Payment cannot exceed outstanding amount after discount', 409, 'PAYMENT_EXCEEDS_NET_PAYABLE',
+      { maximumAllowed: settlementPreview.maximumAllowed, effectiveOutstanding: settlementPreview.netPayable, suggestedAmount: settlementPreview.suggestedAmount }
+    );
 
     const receiptNumber = await nextFinancialNumber({ documentType: 'RECEIPT', hospitalId, session });
     let remainingDiscount = discountRequested;
@@ -564,7 +633,33 @@ async function recordOPDPayment(patientId, payload, user) {
     if (remainingPayment > 0.01 || remainingDiscount > 0.01 || Math.abs(remainingTax) > 0.01) {
       throw financialError('The requested settlement could not be fully allocated. Refresh the workspace and try again.', 409);
     }
-    return { receiptNumber, transactions, alreadyExists: false };
+
+    let changeReturned = settlementPreview.changeReturned || 0;
+    let advanceCreated = 0;
+    if (settlementPreview.advanceCreated > 0) {
+      advanceCreated = amount(settlementPreview.advanceCreated);
+      const openingAdvance = await getOPDAdvanceBalance({ hospitalId, patientId: patient._id, session });
+      const balanceAfterAdvance = amount(openingAdvance + advanceCreated);
+      await PatientAdvanceLedger.create([{
+        hospitalId, patientId: patient._id, walletType: 'OPD_SHARED', transactionType: 'ADVANCE_DEPOSIT',
+        direction: 'CREDIT', amount: advanceCreated, openingBalance: openingAdvance, paymentMethod,
+        referenceNumber: receiptNumber, documentType: 'Receipt', sourceModule: 'OPD', sourceId: patient._id,
+        balanceAfter: balanceAfterAdvance, notes: payload.notes || 'Excess payment credited to OPD advance',
+        createdBy: user?._id, idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:excess-advance-ledger` : undefined
+      }], sessionOptions(session));
+      const advanceTransaction = new FinancialTransaction({
+        hospitalId, patientId: patient._id, transactionNumber: receiptNumber,
+        transactionType: 'ADVANCE_DEPOSIT', direction: 'CREDIT', amount: advanceCreated,
+        paymentMethod, paymentReference: payload.reference, receiptType: 'Advance', amountReceived: advanceCreated,
+        balanceAfter: balanceAfterAdvance, sourceModule: 'OPD', sourceId: patient._id, status: 'POSTED',
+        remarks: 'Excess settlement amount credited to OPD advance', createdBy: user?._id,
+        idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:excess-advance` : undefined,
+        metadata: { linkedReceiptNumber: receiptNumber, overpaymentDisposition: 'CREATE_ADVANCE' }
+      });
+      await advanceTransaction.save(sessionOptions(session));
+      transactions.push(advanceTransaction);
+    }
+    return { receiptNumber, transactions, amountApplied: requestedAmount, amountTendered: settlementPreview.amountTendered, changeReturned, advanceCreated, alreadyExists: false };
   });
 }
 
@@ -638,6 +733,7 @@ module.exports = {
   getPatientWorkspace,
   addOPDCharge,
   issueOPDInvoice,
+  previewOPDPayment,
   recordOPDPayment,
   recordOPDAdvance,
   refundOPDAdvance

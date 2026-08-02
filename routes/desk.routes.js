@@ -1,0 +1,11 @@
+const express = require('express');
+const { protect, authorize } = require('../middlewares/auth');
+const controller = require('../controllers/desk.controller');
+const router = express.Router();
+router.use(protect, authorize('admin', 'staff', 'registrar', 'receptionist', 'accountant'));
+router.get('/patients/search', controller.searchPatients);
+router.get('/services/search', controller.searchServices);
+router.get('/patients/:patientId/admissions', controller.getPatientAdmissions);
+router.post('/checkout/preview', controller.preview);
+router.post('/checkout/commit', controller.commit);
+module.exports = router;

@@ -2,6 +2,8 @@ const ExcelJS = require('exceljs');
 const financial = require('../services/ipdFinancial.service');
 const mis = require('../services/misReporting.service');
 const patientFinancial = require('../services/patientFinancial.service');
+const financialProjection = require('../services/financialProjection.service');
+const pharmacyFinanceProjection = require('../services/pharmacyFinanceProjection.service');
 
 function sendError(res, error) {
   console.error('Finance module error:', error);
@@ -55,6 +57,36 @@ async function exportReport(res, report, format) {
   await workbook.xlsx.write(res);
   res.end();
 }
+
+
+exports.getCanonicalKpis = async (req, res) => {
+  try {
+    const data = await financialProjection.getKpis(req.query, req.user);
+    res.json({ success: true, ...data });
+  } catch (error) { sendError(res, error); }
+};
+
+exports.getCanonicalFinanceReport = async (req, res) => {
+  try {
+    const data = await financialProjection.getReport(req.params.reportKey, req.query, req.user);
+    res.json({ success: true, ...data });
+  } catch (error) { sendError(res, error); }
+};
+
+
+exports.getPharmacyFinanceProjection = async (req, res) => {
+  try {
+    const data = await pharmacyFinanceProjection.getProjection(req.query, req.user);
+    res.json({ success: true, ...data });
+  } catch (error) { sendError(res, error); }
+};
+
+exports.getPharmacyIntegrationAudit = async (req, res) => {
+  try {
+    const data = await pharmacyFinanceProjection.getIntegrationAudit(req.query, req.user);
+    res.json({ success: true, ...data });
+  } catch (error) { sendError(res, error); }
+};
 
 exports.getDashboard = async (req, res) => {
   try {

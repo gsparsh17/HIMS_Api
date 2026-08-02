@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { sourceBillingFields } = require('../utils/billingLifecycle');
 
 const labObservationSchema = new mongoose.Schema({
   analyteCode: { type: String, trim: true },
@@ -235,6 +236,7 @@ const labRequestSchema = new mongoose.Schema({
   },
   
   // Billing
+  ...sourceBillingFields(mongoose),
   cost: {
     type: Number,
     default: 0

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { sourceBillingFields } = require('../utils/billingLifecycle');
 
 const procedureRequestSchema = new mongoose.Schema({
   requestNumber: {
@@ -191,6 +192,7 @@ const procedureRequestSchema = new mongoose.Schema({
   }],
   
   // Billing
+  ...sourceBillingFields(mongoose),
   cost: {
     type: Number,
     default: 0

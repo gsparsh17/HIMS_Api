@@ -227,6 +227,7 @@ function mountHospitalRoutes() {
   app.use('/api/salaries', require('./routes/salary.routes'));
   app.use('/api/revenue', require('./routes/revenue.routes'));
   app.use('/api/finance', require('./routes/finance.routes.js'));
+  app.use('/api/desk', require('./routes/desk.routes.js'));
   app.use('/api/medicines', require('./routes/medicine.routes'));
   app.use('/api/batches', require('./routes/batch.routes'));
   app.use('/api/stock-adjustments', require('./routes/stockAdjustment.routes'));

@@ -2,6 +2,8 @@ const Patient = require('../models/Patient');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
+const { normalizePatientDemographics } = require('../utils/patientDemographics');
+const { requireHospitalId } = require('../services/tenantScope.service');
 
 
 // ========== IMAGE UPLOAD ==========
@@ -489,7 +491,10 @@ exports.createOrUpdateWalkinPatient = async (req, res) => {
 // ========== CREATE SINGLE PATIENT ==========
 exports.createPatient = async (req, res) => {
   try {
-    const existingPatient = await Patient.findOne({ phone: req.body.phone });
+    const normalizedPayload = normalizePatientDemographics(req.body);
+    const hospitalId = normalizedPayload.hospitalId || requireHospitalId(req);
+    normalizedPayload.hospitalId = hospitalId;
+    const existingPatient = await Patient.findOne({ hospitalId, normalizedPhone: normalizedPayload.normalizedPhone });
     if (existingPatient && !req.body.force_create) {
       return res.status(409).json({
         error: 'DUPLICATE_PATIENT',
@@ -504,7 +509,7 @@ exports.createPatient = async (req, res) => {
       });
     }
 
-    const patient = new Patient(req.body);
+    const patient = new Patient(normalizedPayload);
     await patient.save();
 
     if (req.body.localId) {
@@ -513,7 +518,7 @@ exports.createPatient = async (req, res) => {
         localId: req.body.localId,
         entityType: 'PATIENT',
         operationType: 'CREATE',
-        data: req.body,
+        data: normalizedPayload,
         status: 'SYNCED',
         serverId: patient._id,
         syncedAt: new Date()
@@ -528,7 +533,7 @@ exports.createPatient = async (req, res) => {
         message: 'Patient with this phone or Aadhaar already exists'
       });
     }
-    res.status(400).json({ error: err.message });
+    res.status(err.statusCode || 400).json({ error: err.code || err.message, message: err.message, code: err.code, details: err.details });
   }
 };
 

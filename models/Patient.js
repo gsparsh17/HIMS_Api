@@ -30,8 +30,10 @@ const patientSchema = new mongoose.Schema({
   },
   phone: {
     type: String,
-    required: true
+    required: true,
+    trim: true
   },
+  normalizedPhone: { type: String, trim: true, index: true },
   gender: {
     type: String,
     enum: ['male', 'female', 'other'],
@@ -41,6 +43,12 @@ const patientSchema = new mongoose.Schema({
     type: Date,
     required: true
   },
+  dobPrecision: { type: String, enum: ['EXACT', 'ESTIMATED'], default: 'EXACT' },
+  ageEntrySource: { type: String, enum: ['DOB', 'AGE'], default: 'DOB' },
+  enteredAgeYears: { type: Number, min: 0, max: 130 },
+  enteredAgeMonths: { type: Number, min: 0, max: 11 },
+  enteredAgeDays: { type: Number, min: 0, max: 30 },
+  ageAsOf: Date,
   age: {
     type: Number,
     computed: function () {
@@ -370,5 +378,7 @@ patientSchema.pre('save', async function (next) {
     next(err);
   }
 });
+
+patientSchema.index({ hospitalId: 1, normalizedPhone: 1 });
 
 module.exports = mongoose.model('Patient', patientSchema);

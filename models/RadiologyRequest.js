@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { sourceBillingFields } = require('../utils/billingLifecycle');
 
 const radiologySectionSchema = new mongoose.Schema({
   key: { type: String, trim: true },
@@ -188,6 +189,7 @@ const radiologyRequestSchema = new mongoose.Schema({
   },
   
   // Billing
+  ...sourceBillingFields(mongoose),
   cost: {
     type: Number,
     default: 0

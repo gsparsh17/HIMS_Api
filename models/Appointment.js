@@ -65,6 +65,12 @@ const appointmentSchema = new mongoose.Schema({
   duration: Number,        // Actual duration in minutes
   token: { type: String, unique: false }, // OPD-YYYYMMDD-001 or IPD-YYYYMMDD-001
 
+  idempotencyKey: { type: String, trim: true },
+  bookingFingerprint: { type: String, trim: true, index: true },
+  submissionSource: { type: String, trim: true, default: 'APPOINTMENT_MODAL' },
+  bookedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  deskCheckoutId: { type: mongoose.Schema.Types.ObjectId, index: true },
+
   abdmRecordLink: {
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
     abhaNumber: { type: String, index: true },
@@ -76,34 +82,7 @@ const appointmentSchema = new mongoose.Schema({
   },
 });
 
-appointmentSchema.pre('save', async function(next) {
-  if (this.isNew && !this.token) {
-    try {
-      const Patient = mongoose.model('Patient');
-      const patient = await Patient.findById(this.patient_id);
-      
-      const prefix = patient && patient.patient_type === 'ipd' ? 'IPD' : 'OPD';
-      const dateTarget = this.appointment_date || new Date();
-      
-      // format YYYYMMDD
-      const year = dateTarget.getFullYear();
-      const month = String(dateTarget.getMonth() + 1).padStart(2, '0');
-      const day = String(dateTarget.getDate()).padStart(2, '0');
-      const dateStr = `${year}${month}${day}`;
-      
-      const count = await mongoose.model('Appointment').countDocuments({
-        token: new RegExp(`^${prefix}-${dateStr}-`)
-      });
-
-      const sequence = (count + 1).toString().padStart(3, '0');
-      this.token = `${prefix}-${dateStr}-${sequence}`;
-      next();
-    } catch (error) {
-      next(error);
-    }
-  } else {
-    next();
-  }
-});
+appointmentSchema.index({ hospital_id: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
+appointmentSchema.index({ hospital_id: 1, bookingFingerprint: 1, created_at: -1 });
 
 module.exports = mongoose.model('Appointment', appointmentSchema);

@@ -8,6 +8,7 @@ const {
   requireActionPermission,
   requireAnyActionPermission
 } = require('../middlewares/auth');
+const { blockLegacyIpdDirectBilling } = require('../middlewares/legacyFinanceGuard');
 
 const viewBilling = requireModuleAccess('billing_finance', 'view');
 const manageBilling = requireModuleAccess('billing_finance', 'manage');
@@ -20,9 +21,9 @@ router.get('/patients/:patientId/details', viewBilling, billingController.getPat
 
 // Direct financial document creation is restricted to finance managers. Clinical
 // modules should create operational requests/charges through their own services.
-router.post('/procedure', manageBilling, billingController.generateProcedureBill);
-router.post('/labtest', manageBilling, billingController.generateLabTestBill);
-router.post('/radiology', manageBilling, billingController.generateRadiologyBill);
+router.post('/procedure', manageBilling, blockLegacyIpdDirectBilling, billingController.generateProcedureBill);
+router.post('/labtest', manageBilling, blockLegacyIpdDirectBilling, billingController.generateLabTestBill);
+router.post('/radiology', manageBilling, blockLegacyIpdDirectBilling, billingController.generateRadiologyBill);
 
 router.get('/deletion-requests/pending', viewBilling, isAdmin, billingController.getPendingDeletionRequests);
 router.get('/deleted', viewBilling, isAdmin, billingController.getDeletedBills);
@@ -30,7 +31,7 @@ router.get('/appointment/:appointmentId', viewBilling, billingController.getBill
 router.get('/admission/:admissionId', viewBilling, billingController.getBillByAdmissionId);
 router.get('/:id/ledger', viewBilling, billingController.getBillLedger);
 
-router.post('/', manageBilling, requireAnyActionPermission(['billing_create', 'billing_edit']), billingController.createBill);
+router.post('/', manageBilling, requireAnyActionPermission(['billing_create', 'billing_edit']), blockLegacyIpdDirectBilling, billingController.createBill);
 router.get('/', viewBilling, billingController.getAllBills);
 router.get('/:id', viewBilling, billingController.getBillById);
 router.put('/:id', manageBilling, requireAnyActionPermission(['billing_edit', 'settlement']), billingController.updateBillStatus);

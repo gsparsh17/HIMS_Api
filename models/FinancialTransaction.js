@@ -31,6 +31,14 @@ const financialTransactionSchema = new mongoose.Schema({
   },
   direction: { type: String, enum: ['CREDIT', 'DEBIT'], required: true },
   amount: { type: Number, required: true, min: 0 },
+  postedAt: { type: Date, default: Date.now, index: true },
+  reversedAt: Date,
+  externalMoneyMovement: { type: Boolean, default: true, index: true },
+  cashFlowClass: { type: String, enum: ['EXTERNAL_COLLECTION', 'ADVANCE_RECEIPT', 'WALLET_UTILISATION', 'REFUND', 'NON_CASH_ADJUSTMENT'], default: 'EXTERNAL_COLLECTION', index: true },
+  amountTendered: { type: Number, default: 0, min: 0 },
+  amountApplied: { type: Number, default: 0, min: 0 },
+  changeReturned: { type: Number, default: 0, min: 0 },
+  advanceCreated: { type: Number, default: 0, min: 0 },
   paymentMethod: {
     type: String,
     enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'Bank', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment', 'Split'],
@@ -57,6 +65,12 @@ const financialTransactionSchema = new mongoose.Schema({
   remarks: { type: String, trim: true },
   idempotencyKey: { type: String, trim: true, sparse: true },
   reversalOf: { type: mongoose.Schema.Types.ObjectId, ref: 'FinancialTransaction' },
+  reversalOfTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'FinancialTransaction' },
+  documentAllocations: [{
+    documentType: { type: String, enum: ['Bill', 'Invoice'] },
+    documentId: { type: mongoose.Schema.Types.ObjectId },
+    amount: { type: Number, min: 0 }
+  }],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
@@ -65,6 +79,7 @@ financialTransactionSchema.index({ admissionId: 1, createdAt: -1 });
 financialTransactionSchema.index({ invoiceId: 1, transactionType: 1, status: 1 });
 financialTransactionSchema.index({ patientId: 1, createdAt: -1 });
 financialTransactionSchema.index({ hospitalId: 1, transactionType: 1, createdAt: -1 });
+financialTransactionSchema.index({ hospitalId: 1, postedAt: -1, externalMoneyMovement: 1 });
 financialTransactionSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('FinancialTransaction', financialTransactionSchema);

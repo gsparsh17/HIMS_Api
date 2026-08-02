@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Appointment = require('../models/Appointment');
 const Calendar = require('../models/Calendar');
 const Prescription = require('../models/Prescription');
@@ -9,6 +10,7 @@ const Hospital = require('../models/Hospital');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 const { requireHospitalId } = require('../services/tenantScope.service');
+const { nextAppointmentToken } = require('../utils/appointmentNumber');
 // Add this function to handle episode linking during appointment creation
 exports.linkAppointmentToEpisodeSuggestion = async (req, res) => {
   try {
@@ -622,87 +624,102 @@ exports.getAppointmentsByPatientId = async (req, res) => {
   }
 };
 
-// Create single appointment
+// Create single appointment with hospital-scoped idempotency and atomic calendar reservation
 exports.createAppointment = async (req, res) => {
+  const idempotencyKey = String(req.get('Idempotency-Key') || req.body.idempotencyKey || '').trim();
+  const { type, doctor_id, hospital_id, department_id, appointment_date, duration = 10 } = req.body;
+  if (!type || !doctor_id || !hospital_id || !department_id || !appointment_date || !req.body.patient_id) {
+    return res.status(400).json({ error: 'Missing required fields', code: 'VALIDATION_ERROR' });
+  }
+  if (!idempotencyKey) {
+    return res.status(400).json({ error: 'Idempotency-Key is required', code: 'IDEMPOTENCY_KEY_REQUIRED' });
+  }
+
+  const existing = await Appointment.findOne({ hospital_id, idempotencyKey });
+  if (existing) return res.status(200).json({ ...existing.toObject(), idempotent: true });
+
+  const session = await mongoose.startSession();
   try {
-    const { type, doctor_id, hospital_id, department_id, appointment_date, duration = 10 } = req.body;
+    let savedAppointment;
+    await session.withTransaction(async () => {
+      const repeated = await Appointment.findOne({ hospital_id, idempotencyKey }).session(session);
+      if (repeated) { savedAppointment = repeated; return; }
 
-    if (!type || !doctor_id || !hospital_id || !department_id || !appointment_date) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
+      const patient = await Patient.findOne({ _id: req.body.patient_id, hospitalId: hospital_id }).session(session);
+      if (!patient) {
+        const error = new Error('Patient not found for this hospital');
+        error.statusCode = 404;
+        throw error;
+      }
 
-    const appointment = new Appointment({
-      ...req.body,
-      status: 'Scheduled',
-      type: type === 'time-based' ? 'time-based' : 'number-based'
+      const dateKey = new Date(appointment_date).toISOString().slice(0, 10);
+      const fingerprintParts = [hospital_id, req.body.patient_id, doctor_id, dateKey, type];
+      if (type === 'time-based') fingerprintParts.push(String(req.body.start_time || ''));
+      const bookingFingerprint = fingerprintParts.join('|');
+
+      const appointment = new Appointment({
+        ...req.body,
+        status: 'Scheduled',
+        type: type === 'time-based' ? 'time-based' : 'number-based',
+        idempotencyKey,
+        bookingFingerprint,
+        submissionSource: req.body.submissionSource || 'APPOINTMENT_MODAL',
+        bookedBy: req.user?._id
+      });
+      appointment.token = await nextAppointmentToken({
+        hospitalId: hospital_id,
+        patientType: patient.patient_type,
+        appointmentDate: appointment_date,
+        session
+      });
+
+      const calendar = await Calendar.findOne({ hospitalId: hospital_id }).session(session);
+      if (!calendar) { const error = new Error('Calendar not found'); error.statusCode = 404; throw error; }
+      const day = calendar.days.find((row) => row.date.toISOString().split('T')[0] === dateKey);
+      if (!day) { const error = new Error('Date not found in calendar'); error.statusCode = 404; throw error; }
+      const doctor = day.doctors.find((row) => row.doctorId.toString() === doctor_id.toString());
+      if (!doctor) { const error = new Error('Doctor not found on this date'); error.statusCode = 404; throw error; }
+
+      if (appointment.type === 'time-based') {
+        if (!req.body.start_time) { const error = new Error('Start time is required for time-based appointments'); error.statusCode = 400; throw error; }
+        const startTime = new Date(req.body.start_time);
+        const endTime = new Date(startTime.getTime() + Number(duration) * 60000);
+        if (hasTimeConflict(doctor.bookedAppointments, startTime, endTime, doctor.breaks)) {
+          const error = new Error('Time slot not available (conflict with appointment or break)');
+          error.statusCode = 409;
+          error.code = 'SLOT_CONFLICT';
+          throw error;
+        }
+        appointment.start_time = startTime;
+        appointment.end_time = endTime;
+        doctor.bookedAppointments.push({ startTime, endTime, duration: Number(duration), appointmentId: appointment._id, status: 'Scheduled' });
+      } else {
+        const serialNumber = doctor.bookedPatients.reduce((max, row) => Math.max(max, Number(row.serialNumber || 0)), 0) + 1;
+        appointment.serial_number = serialNumber;
+        doctor.bookedPatients.push({ patientId: appointment.patient_id, serialNumber, appointmentId: appointment._id });
+      }
+
+      await appointment.save({ session });
+      await calendar.save({ session });
+      savedAppointment = appointment;
     });
 
-    const calendar = await Calendar.findOne({ hospitalId: hospital_id });
-    if (!calendar) return res.status(404).json({ error: 'Calendar not found' });
-
-    const dateStr = new Date(appointment_date).toISOString().split('T')[0];
-    const day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
-    if (!day) return res.status(404).json({ error: 'Date not found in calendar' });
-
-    const doctor = day.doctors.find(d => d.doctorId.toString() === doctor_id.toString());
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found on this date' });
-
-    if (appointment.type === 'time-based') {
-      const { start_time } = req.body;
-      if (!start_time) {
-        return res.status(400).json({ error: 'Start time is required for time-based appointments' });
-      }
-
-      const startTime = new Date(start_time);
-      const endTime = new Date(startTime.getTime() + duration * 60000);
-
-      if (hasTimeConflict(doctor.bookedAppointments, startTime, endTime, doctor.breaks)) {
-        return res.status(409).json({
-          error: 'SLOT_CONFLICT',
-          message: 'Time slot not available (conflict with appointment or break)'
-        });
-      }
-
-      appointment.start_time = startTime;
-      appointment.end_time = endTime;
-
-      doctor.bookedAppointments.push({
-        startTime,
-        endTime,
-        duration,
-        appointmentId: appointment._id,
-        status: 'Scheduled'
-      });
-    } else {
-      const lastPatient = doctor.bookedPatients.sort((a, b) => b.serialNumber - a.serialNumber)[0];
-      const serialNumber = lastPatient ? lastPatient.serialNumber + 1 : 1;
-      appointment.serial_number = serialNumber;
-      doctor.bookedPatients.push({
-        patientId: appointment.patient_id,
-        serialNumber,
-        appointmentId: appointment._id
-      });
+    if (req.body.localId && savedAppointment) {
+      await OfflineSyncLog.updateOne(
+        { localId: req.body.localId, entityType: 'APPOINTMENT' },
+        { $setOnInsert: { operationType: 'CREATE', data: req.body }, $set: { status: 'SYNCED', serverId: savedAppointment._id, syncedAt: new Date(), tempAppointmentId: req.body.localId } },
+        { upsert: true }
+      );
     }
-
-    await Promise.all([appointment.save(), calendar.save()]);
-
-    // Log sync if from offline
-    if (req.body.localId) {
-      await OfflineSyncLog.create({
-        localId: req.body.localId,
-        entityType: 'APPOINTMENT',
-        operationType: 'CREATE',
-        data: req.body,
-        status: 'SYNCED',
-        serverId: appointment._id,
-        syncedAt: new Date(),
-        tempAppointmentId: req.body.localId
-      });
-    }
-
-    res.status(201).json(appointment);
+    return res.status(savedAppointment?.idempotencyKey === idempotencyKey ? 201 : 200).json(savedAppointment);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    if (err?.code === 11000) {
+      const repeated = await Appointment.findOne({ hospital_id, idempotencyKey });
+      if (repeated) return res.status(200).json({ ...repeated.toObject(), idempotent: true });
+    }
+    return res.status(err.statusCode || 400).json({ error: err.code || err.message, message: err.message, code: err.code });
+  } finally {
+    await session.endSession();
   }
 };
 
