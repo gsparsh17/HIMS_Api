@@ -9,8 +9,29 @@ const PrintIdentityAsset = require('../models/PrintIdentityAsset');
 const fileStorage = require('./fileStorage.service');
 
 const mm = (value) => value * 2.834645669;
-const PAGE = { width: mm(210), height: mm(297), margin: mm(8) };
-const COLORS = { ink: '#111111', border: '#222222', muted: '#555555', fill: '#F5F5F5' };
+const PAGE = { width: mm(210), height: mm(297), margin: mm(5.5) };
+const TYPO = {
+  body: 8.9, bodyGap: 2.0, emphasis: 9.1, emphasisGap: 1.8,
+  heading: 8.8, headingGap: 1.2, list: 8.2, table: 7.8, small: 7.2
+};
+// Lowest usable Y coordinate inside the fixed A4 print frame.
+// ensureSpace() uses this boundary before adding continuation pages.
+const CONTENT_BOTTOM = PAGE.height - PAGE.margin;
+const COLORS = { ink: '#111111', border: '#111111', muted: '#333333', fill: '#F2F2F2' };
+
+const LAYOUT_PROFILES = {
+  default: { body: 8.9, bodyGap: 2.0, list: 8.2, table: 7.8, signatureHeader: 38, signatureRow: 60, signatureAnchor: true, signatureBottomReserve: 76 },
+  'infectious-disease-screening-consent': { body: 9.05, bodyGap: 2.15, list: 8.25, table: 7.85, signatureHeader: 40, signatureRow: 68, signatureAnchor: false, signatureBottomReserve: 74 },
+  'anaesthesia-consent': { body: 8.7, bodyGap: 1.8, list: 8.0, table: 7.7, choiceTitle: 9.1, choiceBody: 8.05, signatureHeader: 38, signatureRow: 55, signatureAnchor: true, signatureBottomReserve: 70 },
+  'blood-transfusion-consent': { body: 8.85, bodyGap: 1.95, list: 8.1, table: 7.75, signatureHeader: 40, signatureRow: 64, signatureAnchor: true, signatureBottomReserve: 78 },
+  'high-risk-consent': { body: 9.0, bodyGap: 2.2, list: 8.45, table: 7.9, signatureHeader: 40, signatureRow: 58, signatureAnchor: true, signatureBottomReserve: 76 },
+  'lama-dor-consent': { body: 9.0, bodyGap: 2.1, list: 8.2, table: 7.6, signatureHeader: 34, signatureRow: 45, signatureAnchor: false, signatureBottomReserve: 58 },
+  'mlc-refusal-consent': { body: 9.2, bodyGap: 2.35, list: 8.7, table: 8.0, signatureHeader: 42, signatureRow: 72, signatureAnchor: false, signatureBottomReserve: 58 },
+  'restraint-consent': { body: 8.75, bodyGap: 1.9, list: 8.0, table: 7.65, signatureHeader: 38, signatureRow: 52, signatureAnchor: true, signatureBottomReserve: 70 },
+  'surgery-consent': { body: 8.75, bodyGap: 1.9, list: 8.0, table: 7.7, signatureHeader: 38, signatureRow: 55, signatureAnchor: true, signatureBottomReserve: 70 }
+};
+function layoutProfile(template) { return { ...LAYOUT_PROFILES.default, ...(LAYOUT_PROFILES[template?.id] || {}) }; }
+
 
 function firstExisting(paths) {
   return paths.filter(Boolean).find((candidate) => {
@@ -71,7 +92,7 @@ function text(doc, value, x, y, options = {}, bold = false, size = 8) {
   useFont(doc, bold);
   doc.fillColor(options.color || COLORS.ink).fontSize(size).text(clean(value), x, y, options);
 }
-function textHeight(doc, value, width, bold = false, size = 8, lineGap = 1.3) {
+function textHeight(doc, value, width, bold = false, size = 8, lineGap = 1.8) {
   useFont(doc, bold); doc.fontSize(size);
   return doc.heightOfString(clean(value), { width, lineGap });
 }
@@ -152,72 +173,95 @@ function isSelected(value, option) {
   return String(value || '').toLowerCase() === String(option || '').toLowerCase();
 }
 
-function drawDocumentHeader(doc, template, context, pageNumber, totalPages) {
+function drawDocumentHeader(doc, template, context, pageNumber, totalPages, profile = LAYOUT_PROFILES.default) {
   const x = PAGE.margin; const width = PAGE.width - PAGE.margin * 2; const top = PAGE.margin;
-  box(doc, x, top, width, mm(24));
-  text(doc, context.hospital.name, x + 6, top + 5, { width: width * 0.62, align: 'center' }, true, 11.5);
-  text(doc, context.hospital.address, x + 6, top + 21, { width: width * 0.62, align: 'center' }, false, 6.5);
+  box(doc, x, top, width, mm(26));
+  text(doc, context.hospital.name, x + 6, top + 5, { width: width * 0.62, align: 'center' }, true, 12);
+  text(doc, context.hospital.address, x + 6, top + 21, { width: width * 0.62, align: 'center' }, false, profile.table);
   const contact = [context.hospital.phone, context.hospital.email].filter(Boolean).join(' | ');
-  if (contact) text(doc, contact, x + 6, top + 33, { width: width * 0.62, align: 'center' }, false, 6.2);
-  line(doc, x + width * 0.64, top, x + width * 0.64, top + mm(24));
-  text(doc, template.name, x + width * 0.65, top + 8, { width: width * 0.34, align: 'center' }, true, 11);
-  if (template.bilingualName) text(doc, template.bilingualName, x + width * 0.65, top + 25, { width: width * 0.34, align: 'center' }, true, 9.5);
-  text(doc, `Page ${pageNumber} of ${totalPages}`, x + width * 0.65, top + 45, { width: width * 0.34, align: 'center', color: COLORS.muted }, false, 5.8);
-  return top + mm(25.5);
+  if (contact) text(doc, contact, x + 6, top + 33, { width: width * 0.62, align: 'center' }, false, profile.table);
+  line(doc, x + width * 0.64, top, x + width * 0.64, top + mm(26));
+  text(doc, template.name, x + width * 0.65, top + 8, { width: width * 0.34, align: 'center' }, true, 11.8);
+  if (template.bilingualName) text(doc, template.bilingualName, x + width * 0.65, top + 25, { width: width * 0.34, align: 'center' }, true, 10);
+  text(doc, `Page ${pageNumber} of ${totalPages}`, x + width * 0.65, top + 45, { width: width * 0.34, align: 'center', color: COLORS.muted }, false, 6.8);
+  return top + mm(27.5);
 }
 function drawPatientHeader(doc, context, y) {
-  const x = PAGE.margin; const width = PAGE.width - PAGE.margin * 2; const row = 17;
+  const x = PAGE.margin; const width = PAGE.width - PAGE.margin * 2;
+  const row = 22; const labelSize = 6.5; const valueSize = 8.1;
   box(doc, x, y, width, row * 3);
   line(doc, x, y + row, x + width, y + row);
   line(doc, x, y + row * 2, x + width, y + row * 2);
-  const columns = [0, 0.34, 0.55, 0.75, 1].map((ratio) => x + width * ratio);
-  for (let index = 1; index < columns.length - 1; index += 1) line(doc, columns[index], y, columns[index], y + row * 2);
-  const fields = [
-    ['Patient Name / रोगी का नाम', context.patient.name, columns[0], columns[1] - columns[0]],
-    ['Age / Gender / आयु / लिंग', context.patient.ageGender, columns[1], columns[2] - columns[1]],
-    ['UHID', context.patient.uhid, columns[0], columns[1] - columns[0]],
-    ['IPD', context.admission.number, columns[1], columns[2] - columns[1]],
-    ['Ward / Bed No.', context.admission.wardBed, columns[2], columns[4] - columns[2]]
-  ];
-  fields.forEach(([label, value, left, cellWidth], index) => {
-    const top = y + (index < 2 ? 0 : row);
-    text(doc, `${label}:`, left + 4, top + 4, { width: cellWidth * 0.43 }, true, 6.5);
-    text(doc, value, left + cellWidth * 0.43, top + 4, { width: cellWidth * 0.55, ellipsis: true }, false, 6.8);
-  });
-  text(doc, 'Diagnosis / डायग्नोसिस:', x + 4, y + row * 2 + 4, { width: width * 0.2 }, true, 6.5);
-  text(doc, context.response.diagnosis || context.admission.diagnosis, x + width * 0.2, y + row * 2 + 4, { width: width * 0.79, ellipsis: true }, false, 6.8);
-  return y + row * 3 + 7;
+
+  // Reference forms use stable, roomy cells. Labels sit above values so bilingual
+  // labels can wrap without colliding with patient data.
+  const row1 = [0, 0.50, 0.74, 1].map((ratio) => x + width * ratio);
+  const row2 = [0, 0.34, 0.56, 1].map((ratio) => x + width * ratio);
+  row1.slice(1, -1).forEach((cx) => line(doc, cx, y, cx, y + row));
+  row2.slice(1, -1).forEach((cx) => line(doc, cx, y + row, cx, y + row * 2));
+
+  const cell = (left, top, cellWidth, label, value) => {
+    text(doc, label, left + 4, top + 2.5, { width: cellWidth - 8, height: 9, ellipsis: true }, true, labelSize);
+    text(doc, value, left + 4, top + 11.5, { width: cellWidth - 8, height: 10, ellipsis: true }, false, valueSize);
+  };
+  cell(row1[0], y, row1[1] - row1[0], 'Patient Name / रोगी का नाम', context.patient.name);
+  cell(row1[1], y, row1[2] - row1[1], 'Age / Gender / आयु / लिंग', context.patient.ageGender);
+  cell(row1[2], y, row1[3] - row1[2], 'UHID', context.patient.uhid);
+  cell(row2[0], y + row, row2[1] - row2[0], 'IPD', context.admission.number);
+  cell(row2[1], y + row, row2[2] - row2[1], 'Department', context.admission.department);
+  cell(row2[2], y + row, row2[3] - row2[2], 'Ward / Bed No.', context.admission.wardBed);
+
+  text(doc, 'Diagnosis / डायग्नोसिस', x + 4, y + row * 2 + 2.5, { width: width - 8, height: 9, ellipsis: true }, true, labelSize);
+  text(doc, context.response.diagnosis || context.admission.diagnosis, x + 4, y + row * 2 + 11.5, { width: width - 8, height: 10, ellipsis: true }, false, valueSize);
+  return y + row * 3 + 5;
 }
 function addNativePage(doc, template, context, state, pageIndex, totalPages, includePatientHeader = true) {
   doc.addPage({ size: 'A4', margin: 0 });
   state.currentPage += 1;
-  let y = drawDocumentHeader(doc, template, context, pageIndex + 1, totalPages);
+  let y = drawDocumentHeader(doc, template, context, pageIndex + 1, totalPages, state.profile);
   if (includePatientHeader) y = drawPatientHeader(doc, context, y);
   state.y = y;
 }
 function ensureSpace(doc, template, context, state, required, totalPages) {
-  if (state.y + required <= PAGE.height - PAGE.margin - 18) return;
+  if (state.y + required <= CONTENT_BOTTOM) return;
   addNativePage(doc, template, context, state, state.currentPage, totalPages, false);
-  text(doc, `${template.name} - Continued`, PAGE.margin, state.y, { width: PAGE.width - PAGE.margin * 2, align: 'center' }, true, 8);
-  state.y += 16;
+  text(doc, `${template.name} - Continued`, PAGE.margin, state.y, { width: PAGE.width - PAGE.margin * 2, align: 'center' }, true, 8.2);
+  state.y += 17;
+}
+function headingMetrics(doc, heading, headingHi, width) {
+  const title = [clean(heading), clean(headingHi)].filter(Boolean).join(' / ');
+  if (!title) return { title: '', height: 0 };
+  const bodyHeight = textHeight(doc, title, width - 10, true, TYPO.heading, TYPO.headingGap);
+  return { title, height: Math.max(21, bodyHeight + 8) };
 }
 function sectionHeading(doc, state, heading, headingHi, width) {
-  const title = [clean(heading), clean(headingHi)].filter(Boolean).join(' / ');
-  if (!title) return;
-  box(doc, PAGE.margin, state.y, width, 18, COLORS.fill);
-  text(doc, title, PAGE.margin + 5, state.y + 4, { width: width - 10 }, true, 7.8);
-  state.y += 21;
+  const metrics = headingMetrics(doc, heading, headingHi, width);
+  if (!metrics.title) return 0;
+  box(doc, PAGE.margin, state.y, width, metrics.height, COLORS.fill);
+  text(doc, metrics.title, PAGE.margin + 5, state.y + 3.5, { width: width - 10, lineGap: TYPO.headingGap }, true, TYPO.heading);
+  state.y += metrics.height + 3;
+  return metrics.height + 3;
 }
 function renderParagraph(doc, section, context, state, template, totalPages) {
   const width = PAGE.width - PAGE.margin * 2;
   const heading = interpolate(section.heading, context); const headingHi = interpolate(section.headingHi, context);
   const en = interpolate(section.en, context); const hi = interpolate(section.hi, context);
-  const headingHeight = (heading || headingHi) ? 20 : 0;
-  const bodyHeight = [en, hi].filter(Boolean).reduce((sum, value) => sum + textHeight(doc, value, width - 10, false, section.emphasis ? 7.4 : 7, 1.2) + 4, 0);
-  ensureSpace(doc, template, context, state, headingHeight + bodyHeight + 8, totalPages);
-  if (heading || headingHi) sectionHeading(doc, state, heading, headingHi, width);
-  if (en) { text(doc, en, PAGE.margin + 5, state.y, { width: width - 10, lineGap: 1.2 }, Boolean(section.emphasis), section.emphasis ? 7.4 : 7); state.y += textHeight(doc, en, width - 10, Boolean(section.emphasis), section.emphasis ? 7.4 : 7, 1.2) + 4; }
-  if (hi) { text(doc, hi, PAGE.margin + 5, state.y, { width: width - 10, lineGap: 1.2 }, Boolean(section.emphasis), section.emphasis ? 7.4 : 7); state.y += textHeight(doc, hi, width - 10, Boolean(section.emphasis), section.emphasis ? 7.4 : 7, 1.2) + 5; }
+  const profile = state.profile || LAYOUT_PROFILES.default;
+  const fontSize = section.emphasis ? Math.max(profile.body, TYPO.emphasis) : profile.body;
+  const lineGap = section.emphasis ? Math.max(profile.bodyGap, TYPO.emphasisGap) : profile.bodyGap;
+  const hm = headingMetrics(doc, heading, headingHi, width);
+  const enHeight = en ? textHeight(doc, en, width - 10, Boolean(section.emphasis), fontSize, lineGap) : 0;
+  const hiHeight = hi ? textHeight(doc, hi, width - 10, Boolean(section.emphasis), fontSize, lineGap) : 0;
+  ensureSpace(doc, template, context, state, hm.height + enHeight + hiHeight + 20, totalPages);
+  if (hm.title) sectionHeading(doc, state, heading, headingHi, width);
+  if (en) {
+    text(doc, en, PAGE.margin + 5, state.y, { width: width - 10, lineGap }, Boolean(section.emphasis), fontSize);
+    state.y += enHeight + 6;
+  }
+  if (hi) {
+    text(doc, hi, PAGE.margin + 5, state.y, { width: width - 10, lineGap }, Boolean(section.emphasis), fontSize);
+    state.y += hiHeight + 7;
+  }
 }
 function renderList(doc, section, context, state, template, totalPages) {
   const width = PAGE.width - PAGE.margin * 2;
@@ -227,10 +271,11 @@ function renderList(doc, section, context, state, template, totalPages) {
     const prefix = section.ordered ? `${Number(section.start || 1) + index}.` : '•';
     const en = interpolate(item.en, context); const hi = interpolate(item.hi, context);
     const body = [en, hi].filter(Boolean).join('\n');
-    const height = textHeight(doc, body, width - 28, false, 6.8, 1) + 5;
+    const listSize = (state.profile || LAYOUT_PROFILES.default).list;
+    const height = textHeight(doc, body, width - 28, false, listSize, 1.9) + 6;
     ensureSpace(doc, template, context, state, height, totalPages);
-    text(doc, prefix, PAGE.margin + 6, state.y, { width: 18 }, true, 6.8);
-    text(doc, body, PAGE.margin + 24, state.y, { width: width - 30, lineGap: 1 }, false, 6.8);
+    text(doc, prefix, PAGE.margin + 6, state.y, { width: 18 }, true, listSize);
+    text(doc, body, PAGE.margin + 24, state.y, { width: width - 30, lineGap: 1.9 }, false, listSize);
     state.y += height;
   });
   state.y += 3;
@@ -238,7 +283,7 @@ function renderList(doc, section, context, state, template, totalPages) {
 function renderTwoColumnList(doc, section, context, state, template, totalPages) {
   const width = PAGE.width - PAGE.margin * 2; const half = width / 2;
   const rows = section.items || [];
-  const rowHeights = rows.map((item) => Math.max(textHeight(doc, interpolate(item.en, context), half - 22, false, 6.5, 1), textHeight(doc, interpolate(item.hi, context), half - 22, false, 6.5, 1)) + 8);
+  const rowHeights = rows.map((item) => Math.max(textHeight(doc, interpolate(item.en, context), half - 22, false, 7.8, 1.45), textHeight(doc, interpolate(item.hi, context), half - 22, false, 7.8, 1.45)) + 8);
   const totalHeight = 22 + rowHeights.reduce((sum, value) => sum + value, 0);
   ensureSpace(doc, template, context, state, Math.min(totalHeight, PAGE.height / 2), totalPages);
   sectionHeading(doc, state, section.heading, section.headingHi, width);
@@ -247,14 +292,17 @@ function renderTwoColumnList(doc, section, context, state, template, totalPages)
     ensureSpace(doc, template, context, state, h, totalPages);
     box(doc, PAGE.margin, state.y, width, h);
     line(doc, PAGE.margin + half, state.y, PAGE.margin + half, state.y + h);
-    text(doc, `${index + 1}. ${interpolate(item.en, context)}`, PAGE.margin + 5, state.y + 4, { width: half - 10, lineGap: 1 }, false, 6.5);
-    text(doc, `${index + 1}. ${interpolate(item.hi, context)}`, PAGE.margin + half + 5, state.y + 4, { width: half - 10, lineGap: 1 }, false, 6.5);
+    text(doc, `${index + 1}. ${interpolate(item.en, context)}`, PAGE.margin + 5, state.y + 4, { width: half - 10, lineGap: 1.45 }, false, 7.8);
+    text(doc, `${index + 1}. ${interpolate(item.hi, context)}`, PAGE.margin + half + 5, state.y + 4, { width: half - 10, lineGap: 1.45 }, false, 7.8);
     state.y += h;
   });
   state.y += 5;
 }
 function renderChoiceCards(doc, section, context, state, template, totalPages) {
   const width = PAGE.width - PAGE.margin * 2;
+  const profile = state.profile || LAYOUT_PROFILES.default;
+  const choiceBody = profile.choiceBody || 7.8;
+  const choiceTitle = profile.choiceTitle || 9;
   (section.choices || []).forEach((choice) => {
     const selected = isSelected(context.response[section.responseKey], choice.value);
     const bodyLines = [
@@ -262,15 +310,15 @@ function renderChoiceCards(doc, section, context, state, template, totalPages) {
       `Benefits / लाभ: ${(choice.benefits || []).map((item) => `${item.en} / ${item.hi}`).join('; ')}`,
       `Risks / जोखिम: ${(choice.risks || []).map((item) => `${item.en} / ${item.hi}`).join('; ')}`
     ];
-    const h = 28 + bodyLines.reduce((sum, value) => sum + textHeight(doc, value, width - 32, false, 6.4, 1), 0) + 10;
+    const h = 28 + bodyLines.reduce((sum, value) => sum + textHeight(doc, value, width - 32, false, choiceBody, 1.8), 0) + 10;
     ensureSpace(doc, template, context, state, h, totalPages);
     box(doc, PAGE.margin, state.y, width, h);
     check(doc, PAGE.margin + 7, state.y + 7, selected);
-    text(doc, `${choice.title} / ${choice.titleHi}`, PAGE.margin + 20, state.y + 5, { width: width - 25 }, true, 7.5);
+    text(doc, `${choice.title} / ${choice.titleHi}`, PAGE.margin + 20, state.y + 5, { width: width - 25 }, true, choiceTitle);
     let y = state.y + 24;
     bodyLines.forEach((lineValue, index) => {
-      text(doc, lineValue, PAGE.margin + 8, y, { width: width - 16, lineGap: 1 }, index > 0, 6.4);
-      y += textHeight(doc, lineValue, width - 16, index > 0, 6.4, 1) + 3;
+      text(doc, lineValue, PAGE.margin + 8, y, { width: width - 16, lineGap: 1.8 }, index > 0, choiceBody);
+      y += textHeight(doc, lineValue, width - 16, index > 0, choiceBody, 1.8) + 3;
     });
     state.y += h + 4;
   });
@@ -284,25 +332,25 @@ function renderComponentChoices(doc, section, context, state, template, totalPag
     const column = index % 3; const row = Math.floor(index / 3);
     const cellWidth = width / 3;
     const x = PAGE.margin + column * cellWidth;
-    const y = state.y + row * 20;
-    check(doc, x + 5, y + 3, isSelected(context.response[section.responseKey], choice.value));
+    const y = state.y + row * 25;
+    check(doc, x + 5, y + 5, isSelected(context.response[section.responseKey], choice.value));
     const suffix = choice.value === 'Other' && context.response[section.otherKey] ? `: ${context.response[section.otherKey]}` : '';
-    text(doc, `${choice.en} / ${choice.hi}${suffix}`, x + 17, y + 1, { width: cellWidth - 20 }, false, 6.4);
+    text(doc, `${choice.en} / ${choice.hi}${suffix}`, x + 19, y + 2, { width: cellWidth - 22 }, false, 7.6);
   });
-  state.y += 43;
-  text(doc, `Blood Group / रक्त समूह: ${clean(context.response[section.groupKey], '________')}`, PAGE.margin + 5, state.y, { width: width / 2 }, true, 6.8);
-  text(doc, `Rh Type: ${clean(context.response[section.rhKey], '________')}`, PAGE.margin + width / 2, state.y, { width: width / 2 - 5 }, true, 6.8);
-  state.y += 20;
+  state.y += 54;
+  text(doc, `Blood Group / रक्त समूह: ${clean(context.response[section.groupKey], '________')}`, PAGE.margin + 5, state.y, { width: width / 2 }, true, 7.8);
+  text(doc, `Rh Type: ${clean(context.response[section.rhKey], '________')}`, PAGE.margin + width / 2, state.y, { width: width / 2 - 5 }, true, 7.8);
+  state.y += 24;
 }
 function renderResponseLine(doc, section, context, state, template, totalPages) {
   const width = PAGE.width - PAGE.margin * 2;
   ensureSpace(doc, template, context, state, 35, totalPages);
-  text(doc, `${section.label} / ${section.labelHi}`, PAGE.margin + 3, state.y, { width }, true, 7.2);
-  state.y += 13;
+  text(doc, `${section.label} / ${section.labelHi}`, PAGE.margin + 3, state.y, { width }, true, 8.7);
+  state.y += 16;
   const value = clean(valueFor(section.key, context), '');
-  text(doc, value, PAGE.margin + 7, state.y, { width: width - 14, height: 28, ellipsis: true }, false, 7);
-  line(doc, PAGE.margin + 5, state.y + 20, PAGE.margin + width - 5, state.y + 20);
-  state.y += 28;
+  text(doc, value, PAGE.margin + 7, state.y, { width: width - 14, height: 28, ellipsis: true }, false, 8.4);
+  line(doc, PAGE.margin + 5, state.y + 24, PAGE.margin + width - 5, state.y + 24);
+  state.y += 33;
 }
 function renderClinicalDetails(doc, section, context, state, template, totalPages) {
   const width = PAGE.width - PAGE.margin * 2;
@@ -311,12 +359,12 @@ function renderClinicalDetails(doc, section, context, state, template, totalPage
   const cellWidth = width / 2;
   fields.forEach((field, index) => {
     const row = Math.floor(index / 2); const column = index % 2;
-    const x = PAGE.margin + column * cellWidth; const y = state.y + row * 23;
-    text(doc, `${field.label}:`, x + 4, y + 3, { width: cellWidth * 0.35 }, true, 6.4);
-    text(doc, valueFor(field.key, context, field.source), x + cellWidth * 0.35, y + 3, { width: cellWidth * 0.62, ellipsis: true }, false, 6.5);
-    line(doc, x + cellWidth * 0.35, y + 17, x + cellWidth - 5, y + 17, 0.4);
+    const x = PAGE.margin + column * cellWidth; const y = state.y + row * 29;
+    text(doc, `${field.label}:`, x + 4, y + 3, { width: cellWidth * 0.35 }, true, 7.7);
+    text(doc, valueFor(field.key, context, field.source), x + cellWidth * 0.35, y + 3, { width: cellWidth * 0.62, ellipsis: true }, false, 7.9);
+    line(doc, x + cellWidth * 0.35, y + 22, x + cellWidth - 5, y + 22, 0.4);
   });
-  state.y += Math.ceil(fields.length / 2) * 23 + 4;
+  state.y += Math.ceil(fields.length / 2) * 29 + 6;
 }
 function roleLabel(role) {
   const labels = {
@@ -346,22 +394,29 @@ function roleValues(role, context) {
 function renderSignatureTable(doc, section, context, state, template, totalPages) {
   const width = PAGE.width - PAGE.margin * 2;
   const columns = [0, 0.24, 0.52, 0.78, 1].map((ratio) => PAGE.margin + width * ratio);
-  const headerHeight = 28; const rowHeight = 45; const rows = section.roles || [];
+  const profile = state.profile || LAYOUT_PROFILES.default;
+  const headerHeight = profile.signatureHeader; const rowHeight = profile.signatureRow; const rows = section.roles || [];
   const totalHeight = headerHeight + rows.length * rowHeight;
   ensureSpace(doc, template, context, state, totalHeight + 5, totalPages);
+  // Reference forms place acknowledgement tables near the lower page region.
+  // Anchoring avoids a visually compressed upper half while preserving fixed A4 geometry.
+  if (profile.signatureAnchor) {
+    const anchoredY = CONTENT_BOTTOM - totalHeight - profile.signatureBottomReserve;
+    if (anchoredY > state.y && anchoredY - state.y < mm(72)) state.y = anchoredY;
+  }
   box(doc, PAGE.margin, state.y, width, totalHeight);
   columns.slice(1, -1).forEach((x) => line(doc, x, state.y, x, state.y + totalHeight));
   line(doc, PAGE.margin, state.y + headerHeight, PAGE.margin + width, state.y + headerHeight);
   const headers = ['Details Required\nआवश्यक विवरण', 'Name & Relation\nनाम एवं संबंध', 'Signature / thumb Impression (left)\nहस्ताक्षर / अंगूठे का निशान (बाएं)', 'Date & Time\nदिनांक एवं समय'];
-  headers.forEach((header, index) => text(doc, header, columns[index] + 4, state.y + 4, { width: columns[index + 1] - columns[index] - 8, align: 'center' }, true, 6.1));
+  headers.forEach((header, index) => text(doc, header, columns[index] + 4, state.y + 4, { width: columns[index + 1] - columns[index] - 8, align: 'center' }, true, Math.max(7.1, profile.table - 0.5)));
   rows.forEach((role, index) => {
     const top = state.y + headerHeight + index * rowHeight;
     if (index) line(doc, PAGE.margin, top, PAGE.margin + width, top);
     const labels = roleLabel(role); const values = roleValues(role, context);
-    text(doc, labels.filter(Boolean).join('\n'), columns[0] + 4, top + 4, { width: columns[1] - columns[0] - 8 }, true, 6.1);
-    text(doc, [values[0], values[1] ? `Relation: ${values[1]}` : ''].filter(Boolean).join('\n'), columns[1] + 4, top + 4, { width: columns[2] - columns[1] - 8 }, false, 6.2);
-    text(doc, '', columns[2] + 4, top + 4, { width: columns[3] - columns[2] - 8 }, false, 6.2);
-    text(doc, [values[2], values[3]].filter(Boolean).join(' '), columns[3] + 4, top + 4, { width: columns[4] - columns[3] - 8, align: 'center' }, false, 6.2);
+    text(doc, labels.filter(Boolean).join('\n'), columns[0] + 4, top + 4, { width: columns[1] - columns[0] - 8 }, true, Math.max(7.4, profile.table - 0.2));
+    text(doc, [values[0], values[1] ? `Relation: ${values[1]}` : ''].filter(Boolean).join('\n'), columns[1] + 4, top + 4, { width: columns[2] - columns[1] - 8 }, false, 7.8);
+    text(doc, '', columns[2] + 4, top + 4, { width: columns[3] - columns[2] - 8 }, false, 7.8);
+    text(doc, [values[2], values[3]].filter(Boolean).join(' '), columns[3] + 4, top + 4, { width: columns[4] - columns[3] - 8, align: 'center' }, false, 7.8);
   });
   state.y += totalHeight + 6;
 }
@@ -378,20 +433,20 @@ function renderBenefitRiskColumns(doc, section, context, state, template, totalP
     const left = section.benefits?.[index]; const right = section.risks?.[index];
     const leftText = left ? `${index + 1}. ${left.en}\n${left.hi}` : '';
     const rightText = right ? `${index + 1}. ${right.en}\n${right.hi}` : '';
-    const h = Math.max(textHeight(doc, leftText, half - 12, false, 6.3, 1), textHeight(doc, rightText, half - 12, false, 6.3, 1)) + 8;
+    const h = Math.max(textHeight(doc, leftText, half - 12, false, 7.8, 1.5), textHeight(doc, rightText, half - 12, false, 7.8, 1.5)) + 8;
     rows.push([leftText, rightText, h]);
   }
   box(doc, PAGE.margin, state.y, width, 20, COLORS.fill);
-  line(doc, PAGE.margin + half, state.y, PAGE.margin + half, state.y + 20);
-  text(doc, 'Benefits / लाभ', PAGE.margin + 4, state.y + 5, { width: half - 8, align: 'center' }, true, 6.8);
-  text(doc, 'Risks / जोखिम', PAGE.margin + half + 4, state.y + 5, { width: half - 8, align: 'center' }, true, 6.8);
-  state.y += 20;
+  line(doc, PAGE.margin + half, state.y, PAGE.margin + half, state.y + 24);
+  text(doc, 'Benefits / लाभ', PAGE.margin + 4, state.y + 5, { width: half - 8, align: 'center' }, true, 7.8);
+  text(doc, 'Risks / जोखिम', PAGE.margin + half + 4, state.y + 5, { width: half - 8, align: 'center' }, true, 7.8);
+  state.y += 24;
   rows.forEach(([leftText, rightText, h]) => {
     ensureSpace(doc, template, context, state, h, totalPages);
     box(doc, PAGE.margin, state.y, width, h);
     line(doc, PAGE.margin + half, state.y, PAGE.margin + half, state.y + h);
-    text(doc, leftText, PAGE.margin + 5, state.y + 4, { width: half - 10, lineGap: 1 }, false, 6.3);
-    text(doc, rightText, PAGE.margin + half + 5, state.y + 4, { width: half - 10, lineGap: 1 }, false, 6.3);
+    text(doc, leftText, PAGE.margin + 5, state.y + 4, { width: half - 10, lineGap: 1.5 }, false, 7.8);
+    text(doc, rightText, PAGE.margin + half + 5, state.y + 4, { width: half - 10, lineGap: 1.5 }, false, 7.8);
     state.y += h;
   });
   state.y += 5;
@@ -413,7 +468,7 @@ function renderSection(doc, section, context, state, template, totalPages) {
   switch (section.type) {
     case 'documentSubTitle':
       ensureSpace(doc, template, context, state, 18, totalPages);
-      text(doc, section.en, PAGE.margin, state.y, { width: PAGE.width - PAGE.margin * 2, align: 'center' }, true, 6.5); state.y += 17; break;
+      text(doc, section.en, PAGE.margin, state.y, { width: PAGE.width - PAGE.margin * 2, align: 'center' }, true, 7.8); state.y += 17; break;
     case 'clinicalDetails': renderClinicalDetails(doc, section, context, state, template, totalPages); break;
     case 'paragraph': renderParagraph(doc, section, context, state, template, totalPages); break;
     case 'list': renderList(doc, section, context, state, template, totalPages); break;
@@ -504,7 +559,7 @@ async function generateConsentPdf({ consent, template, admission, hospital, docu
 
   const context = buildContext(consent, admission, hospital);
   const pages = Array.isArray(template.contentPages) && template.contentPages.length ? template.contentPages : [{ sections: template.printSections || [] }];
-  const state = { y: 0, currentPage: 0 };
+  const state = { y: 0, currentPage: 0, profile: layoutProfile(template) };
   pages.forEach((page, pageIndex) => {
     addNativePage(doc, template, context, state, pageIndex, pages.length, pageIndex === 0 || page.repeatPatientHeader === true);
     (page.sections || []).forEach((section) => renderSection(doc, section, context, state, template, pages.length));

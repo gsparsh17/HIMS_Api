@@ -4,7 +4,8 @@ const path = require('path');
 const crypto = require('crypto');
 const Hospital = require('../models/Hospital');
 
-const A4 = { width: 595.28, height: 841.89, margin: 28 };
+const A4 = { width: 595.28, height: 841.89, margin: 16 };
+const DOC_MARGIN = A4.margin;
 const COLORS = { ink: '#111827', light: '#F3F4F6', muted: '#6B7280', line: '#111827', accent: '#0F766E' };
 const fileStorage = require('./fileStorage.service');
 
@@ -40,8 +41,8 @@ function rect(doc, x, y, w, h, opts = {}) {
   doc.restore();
 }
 function text(doc, txt, x, y, w, opts = {}) {
-  doc.fillColor(opts.color || COLORS.ink).font(opts.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(opts.size || 8)
-    .text(value(txt, opts.fallback || ''), x, y, { width: w, height: opts.height, align: opts.align || 'left', lineGap: opts.lineGap || 1, ellipsis: Boolean(opts.ellipsis) });
+  doc.fillColor(opts.color || COLORS.ink).font(opts.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(opts.size || 8.6)
+    .text(value(txt, opts.fallback || ''), x, y, { width: w, height: opts.height, align: opts.align || 'left', lineGap: opts.lineGap || 1.25, ellipsis: Boolean(opts.ellipsis) });
 }
 function line(doc, x1, y1, x2, y2, width = 0.6) { doc.save().lineWidth(width).strokeColor(COLORS.line).moveTo(x1, y1).lineTo(x2, y2).stroke().restore(); }
 function checkbox(doc, x, y, checked, label, width = 150, opts = {}) {
@@ -52,7 +53,7 @@ function checkbox(doc, x, y, checked, label, width = 150, opts = {}) {
 function selected(data, key, option) { const v = data?.[key]; return Array.isArray(v) ? v.includes(option) : String(v || '').toLowerCase() === String(option).toLowerCase(); }
 function header(doc, ctx, title, pageLabel = '') {
   const { width } = doc.page;
-  const m = 28; const top = 24; const h = 86;
+  const m = DOC_MARGIN; const top = 14; const h = 96;
   rect(doc, m, top, width - m * 2, h, { lineWidth: 1.1 });
   rect(doc, m, top, 76, 48); text(doc, '✚', m + 22, top + 8, 32, { size: 24, bold: true, align: 'center' });
   const hospital = ctx.hospital || {};
@@ -70,14 +71,14 @@ function header(doc, ctx, title, pageLabel = '') {
   return top + h + 10;
 }
 function footer(doc, template, signatures = [], pageNo = 1, pageCount = 1) {
-  const y = doc.page.height - 24; line(doc, 28, y - 6, doc.page.width - 28, y - 6, 0.5);
-  text(doc, `${template.id} · Template v${template.version}`, 28, y, 220, { size: 5.5, color: COLORS.muted });
+  const y = doc.page.height - 17; line(doc, DOC_MARGIN, y - 6, doc.page.width - DOC_MARGIN, y - 6, 0.5);
+  text(doc, `${template.id} · Template v${template.version}`, DOC_MARGIN, y, 220, { size: 5.5, color: COLORS.muted });
   text(doc, `Page ${pageNo} of ${pageCount}`, doc.page.width / 2 - 50, y, 100, { size: 5.5, align: 'center', color: COLORS.muted });
   const codes = signatures.map((s) => s.verificationCode).filter(Boolean).join(', ');
   text(doc, codes ? `Verify: ${codes}` : 'Unsigned preview', doc.page.width - 250, y, 222, { size: 5.5, align: 'right', color: COLORS.muted });
 }
 function signatureBlock(doc, x, y, w, label, signature) {
-  rect(doc, x, y, w, 58);
+  rect(doc, x, y, w, 64);
   text(doc, label, x + 4, y + 4, w - 8, { size: 7, bold: true, align: 'center' });
   if (signature) {
     const sigAsset = signature.assetSnapshots?.find((a) => a.assetType === 'signature');
@@ -90,8 +91,8 @@ function signatureBlock(doc, x, y, w, label, signature) {
       if (sigAsset?.storagePath && fs.existsSync(sigAsset.storagePath)) { try { doc.image(sigAsset.storagePath, x + 8, y + 17, { fit: [w * 0.52, 22], align: 'left', valign: 'center' }); } catch {} }
       if (sealAsset?.storagePath && fs.existsSync(sealAsset.storagePath)) { try { doc.image(sealAsset.storagePath, x + w - 48, y + 13, { fit: [40, 34] }); } catch {} }
     }
-    text(doc, `${signature.signerName || ''}${signature.signerDesignation ? ` · ${signature.signerDesignation}` : ''}`, x + 4, y + 41, w - 8, { size: 5.8, align: 'center' });
-    text(doc, formatDate(signature.signedAt, true), x + 4, y + 49, w - 8, { size: 5, align: 'center', color: COLORS.muted });
+    text(doc, `${signature.signerName || ''}${signature.signerDesignation ? ` · ${signature.signerDesignation}` : ''}`, x + 4, y + 45, w - 8, { size: 5.8, align: 'center' });
+    text(doc, formatDate(signature.signedAt, true), x + 4, y + 55, w - 8, { size: 5, align: 'center', color: COLORS.muted });
   } else text(doc, 'Signature / seal', x + 4, y + 38, w - 8, { size: 6, align: 'center', color: COLORS.muted });
 }
 function sigFor(signatures, role) { return signatures.find((s) => String(s.signatoryRole || s.metadata?.signatoryRole || '').toLowerCase() === String(role).toLowerCase()) || signatures[0]; }
@@ -143,7 +144,7 @@ function applySignaturePlacements(doc, signatures = [], startPageIndex = 0, rend
   const finalPage = startPageIndex + count - 1;
   if (finalPage >= range.start && finalPage < range.start + range.count) doc.switchToPage(finalPage);
 }
-function sectionTitle(doc, titleText, x, y, w) { rect(doc, x, y, w, 20, { fill: COLORS.light }); text(doc, titleText, x + 5, y + 5, w - 10, { size: 8.5, bold: true }); return y + 20; }
+function sectionTitle(doc, titleText, x, y, w) { rect(doc, x, y, w, 22, { fill: COLORS.light }); text(doc, titleText, x + 6, y + 5.5, w - 10, { size: 8.5, bold: true }); return y + 20; }
 function kv(doc, label, val, x, y, w, h = 22) { rect(doc, x, y, w, h); text(doc, label, x + 4, y + 4, w * 0.34, { size: 6.5, bold: true }); text(doc, val, x + w * 0.34, y + 4, w * 0.64 - 4, { size: 6.5 }); }
 function table(doc, x, y, widths, headers, rows, rowHeight = 18, opts = {}) {
   const total = widths.reduce((a, b) => a + b, 0); rect(doc, x, y, total, rowHeight, { fill: opts.headerFill || COLORS.light });
@@ -174,7 +175,7 @@ function table(doc, x, y, widths, headers, rows, rowHeight = 18, opts = {}) {
 }
 
 function renderPreOpSafety(doc, ctx, template, data, signatures) {
-  addPage(doc); let y = header(doc, ctx, template.title, template.sourceReference); const x = 28; const w = doc.page.width - 56;
+  addPage(doc); let y = header(doc, ctx, template.title, template.sourceReference); const x = DOC_MARGIN; const w = doc.page.width - DOC_MARGIN * 2;
   kv(doc, 'Date of Surgery', formatDate(data.dateOfSurgery), x, y, w / 3); kv(doc, 'Diagnosis', data.diagnosis, x + w / 3, y, w / 3); kv(doc, 'Surgery', data.surgery, x + 2 * w / 3, y, w / 3); y += 28;
   const colGap = 8; const colW = (w - colGap * 2) / 3; const sections = [
     ['To be done by Surgeon', 'surgeonItems', 'surgeonRemarks'], ['To be done by Staff Nurse', 'staffNurseItems', 'staffNurseRemarks'], ['To be done by Anaesthetist', 'anaesthetistItems', 'anaesthetistRemarks']
@@ -189,7 +190,7 @@ function renderPreOpSafety(doc, ctx, template, data, signatures) {
   footer(doc, template, signatures, 1, 1);
 }
 function renderSurgicalSafety(doc, ctx, template, data, signatures) {
-  addPage(doc); let y = header(doc, ctx, template.title, template.sourceReference); const x = 28; const w = doc.page.width - 56; const gap = 8; const cw = (w - gap * 2) / 3;
+  addPage(doc); let y = header(doc, ctx, template.title, template.sourceReference); const x = DOC_MARGIN; const w = doc.page.width - DOC_MARGIN * 2; const gap = 8; const cw = (w - gap * 2) / 3;
   const cols = [
     ['Before induction of anaesthesia', [
       ['identitySiteProcedureConsent', 'Identity, site, procedure and consent confirmed'], ['siteMarked', 'Site marked'], ['anaesthesiaMachineMedicationCheck', 'Anaesthesia machine and medication check'], ['pulseOximeterFunctioning', 'Pulse oximeter functioning'], ['knownAllergy', 'Known allergy'], ['difficultAirwayAspirationRisk', 'Difficult airway / aspiration risk'], ['bloodLossRisk', 'Risk of major blood loss']
@@ -205,7 +206,7 @@ function renderSurgicalSafety(doc, ctx, template, data, signatures) {
   footer(doc, template, signatures, 1, 1);
 }
 function renderPrePostVerification(doc, ctx, template, data, signatures) {
-  addPage(doc); let y = header(doc, ctx, template.title, 'Page 1 - Pre OP verification'); const x = 28; const w = doc.page.width - 56;
+  addPage(doc); let y = header(doc, ctx, template.title, 'Page 1 - Pre OP verification'); const x = DOC_MARGIN; const w = doc.page.width - DOC_MARGIN * 2;
   y = sectionTitle(doc, 'Pre OP verification - To be filled by ward staff', x, y, w);
   kv(doc, 'Proposed Operation', data.proposedOperation, x, y, w); y += 22; kv(doc, 'NPO status', data.npoStatus, x, y, w / 2); kv(doc, 'Blood Group / Height / Weight', `${value(data.bloodGroup)} / ${value(data.height)} / ${value(data.weight)}`, x + w / 2, y, w / 2); y += 26;
   const premedRows = (data.premedications || []).slice(0, 4).map((r) => [r.drug, r.dose, r.route, formatDate(r.dateTime, true), r.givenBy, r.checkedBy]);
@@ -224,7 +225,7 @@ function renderPrePostVerification(doc, ctx, template, data, signatures) {
   signatureBlock(doc,x,doc.page.height-100,w/2-4,'Handover given by - Operation Theatre',sigFor(signatures,'ot_staff')); signatureBlock(doc,x+w/2+4,doc.page.height-100,w/2-4,'Handover taken by - Post-operative ward',sigFor(signatures,'receiving_nurse')); footer(doc,template,signatures,2,2);
 }
 function renderAnesthesiaRecord(doc, ctx, template, data, signatures) {
-  addPage(doc); let y = header(doc, ctx, template.title, 'Page 1 - Re-evaluation, induction and regional techniques'); const x=28,w=doc.page.width-56;
+  addPage(doc); let y = header(doc, ctx, template.title, 'Page 1 - Re-evaluation, induction and regional techniques'); const x=DOC_MARGIN,w=doc.page.width-DOC_MARGIN*2;
   y=sectionTitle(doc,'Immediate Pre-Operative Re-Evaluation',x,y,w);
   const re = [['Patient identified',data.patientIdentified],['NPO duration',data.npoDurationHours],['Dentures/contact lens',data.denturesContactLens],['Hearing aids/ornaments removed',data.hearingAidsOrnamentsRemoved],['Anaesthesia consent checked',data.anaesthesiaConsentChecked],['Surgery consent checked',data.surgeryConsentChecked],['Recent investigations checked',data.recentInvestigationsChecked],['Pre-anaesthetic state',data.preAnaestheticState],['Anaesthesia machine checked',data.anaesthesiaMachineChecked],['Pressure points checked',data.pressurePointsChecked],['Eye care',data.eyeCare]];
   re.forEach(([l,v],i)=>{const cx=x+(i%2)*w/2,cy=y+Math.floor(i/2)*22;kv(doc,l,v,cx,cy,w/2);}); y+=132;
@@ -261,14 +262,14 @@ function renderAnesthesiaRecord(doc, ctx, template, data, signatures) {
   text(doc,'Pulse',graphX,graphY+graphH+4,45,{size:5.5});text(doc,'SpO2',graphX+48,graphY+graphH+4,45,{size:5.5,color:'#0F766E'});text(doc,'RR',graphX+96,graphY+graphH+4,45,{size:5.5,color:'#7C3AED'});
 
   const fluids=(data.fluidBalance||[]).slice(0,5).map(r=>[r.time,r.rl,r.ns,r.dns,r.blood,r.ffp,r.platelet,r.albumin,r.colloid,r.bloodLoss,r.urineOutput]);
-  table(doc,28,405,[48,48,48,48,48,48,48,48,48,62,68],['Time','RL','NS','DNS','Blood','FFP','Platelet','Albumin','Colloid','Blood loss','Urine output'],fluids.length?fluids:Array.from({length:5},()=>['','','','','','','','','','','']),14,{size:4.9});
-  text(doc,'Critical events / complications:',28,500,130,{size:6.3,bold:true});
+  table(doc,DOC_MARGIN,405,[48,48,48,48,48,48,48,48,48,62,68],['Time','RL','NS','DNS','Blood','FFP','Platelet','Albumin','Colloid','Blood loss','Urine output'],fluids.length?fluids:Array.from({length:5},()=>['','','','','','','','','','','']),14,{size:4.9});
+  text(doc,'Critical events / complications:',DOC_MARGIN,500,130,{size:6.3,bold:true});
   rect(doc,155,494,430,52);text(doc,data.criticalEvents,160,500,420,{size:5.8,height:42});
   signatureBlock(doc,pageW-220,488,192,'Anaesthetist',sigFor(signatures,'anaesthetist'));
   footer(doc,template,signatures,2,2);
 }
 function renderOperationRecord(doc,ctx,template,data,signatures){
-  addPage(doc);let y=header(doc,ctx,template.title,'Page 1 - Operation Record');const x=28,w=doc.page.width-56;
+  addPage(doc);let y=header(doc,ctx,template.title,'Page 1 - Operation Record');const x=DOC_MARGIN,w=doc.page.width-DOC_MARGIN*2;
   const details=[['Date',formatDate(data.operationDate)],['Surgeon',data.surgeon],['Assistant Surgeon',data.assistantSurgeon],['Anaesthesiologist',data.anaesthesiologist],['Scrub Nurse',data.scrubNurse],['Pre-op Diagnosis',data.preOpDiagnosis],['Post-op Diagnosis',data.postOpDiagnosis],['Surgery',data.surgery],['Start / Stop',`${value(data.startTime)} / ${value(data.stopTime)}`]];
   details.forEach(([l,v],i)=>{const full=i>=5;const cx=full?x:x+(i%2)*w/2;const cy=y+(full?(Math.floor((i-5))*32+66):Math.floor(i/2)*22);kv(doc,l,v,cx,cy,full?w:w/2,full?30:22);});y+=170;
   y=sectionTitle(doc,'Surgical Notes',x,y,w);rect(doc,x,y,w,430);text(doc,data.surgicalNotes,x+8,y+8,w-16,{size:8,height:405});
@@ -276,7 +277,7 @@ function renderOperationRecord(doc,ctx,template,data,signatures){
   addPage(doc);y=header(doc,ctx,template.title,'Page 2 - Critical Events / Findings / Plan');y=sectionTitle(doc,'Critical Events',x,y,w);rect(doc,x,y,w,190);text(doc,data.criticalEvents,x+8,y+8,w-16,{size:8,height:174});y+=200;y=sectionTitle(doc,'Operative Findings and Complications',x,y,w);rect(doc,x,y,w,170);text(doc,`Findings:\n${value(data.findings)}\n\nComplications:\n${value(data.complications)}`,x+8,y+8,w-16,{size:8,height:150});y+=180;y=sectionTitle(doc,'Post-Operative Plan / Diagram / Additional Notes',x,y,w);rect(doc,x,y,w,190);text(doc,`${value(data.postOpPlan)}\n\n${value(data.diagramNotes)}`,x+8,y+8,w-16,{size:8,height:170});signatureBlock(doc,x+w-190,doc.page.height-100,190,'Signature of Surgeon',sigFor(signatures,'surgeon'));footer(doc,template,signatures,2,2);
 }
 function renderPac(doc,ctx,template,data,signatures){
-  addPage(doc);let y=header(doc,ctx,template.title,'Page 1 - Clinical assessment and examination');const x=28,w=doc.page.width-56;
+  addPage(doc);let y=header(doc,ctx,template.title,'Page 1 - Clinical assessment and examination');const x=DOC_MARGIN,w=doc.page.width-DOC_MARGIN*2;
   const details=[['Anesthesiologist',data.anesthesiologist],['Surgeon',data.surgeon],['Pre-op Diagnosis',data.preOpDiagnosis],['Anaesthesia Plan',data.anesthesiaPlan],['Surgery',data.surgery],['Elective/Emergency',data.electiveEmergency],['Co-morbidities',value(data.coMorbidities)],['Addiction',data.addiction],['Past anaesthesia/surgery',data.pastAnaesthesiaSurgery],['Current medications',data.currentMedications],['Drug allergies',data.drugAllergies],['IV access/site',`${value(data.ivAccess)} / ${value(data.ivAccessSite)}`]];
   details.forEach(([l,v],i)=>{const cy=y+i*24;kv(doc,l,v,x,cy,w,i>=2?24:22);});y+=300;
   const phys=(data.physicalExamination||[]).map(r=>[r.item,r.status]);const gen=(data.generalExamination||[]).map(r=>[r.item,r.value,r.unit]); table(doc,x,y,[115,150],['Physical Examination','Status / remarks'],phys.length?phys:[['','']],22);table(doc,x+275,y,[95,100,69],['General Examination','Value','Unit'],gen.length?gen:[['','','']],22);y+=170;
@@ -290,7 +291,7 @@ function renderPac(doc,ctx,template,data,signatures){
   signatureBlock(doc,x+w-200,doc.page.height-100,200,'Signature Anaesthetist',sigFor(signatures,'anaesthetist'));footer(doc,template,signatures,2,2);
 }
 function renderPostAnaesthesia(doc,ctx,template,data,signatures){
-  addPage(doc);let y=header(doc,ctx,template.title,template.sourceReference);const x=28,w=doc.page.width-56;const left=w*0.52,right=w-left;
+  addPage(doc);let y=header(doc,ctx,template.title,template.sourceReference);const x=DOC_MARGIN,w=doc.page.width-DOC_MARGIN*2;const left=w*0.52,right=w-left;
   y=sectionTitle(doc,'Post Operative Anaesthesia Instructions',x,y,w);
   kv(doc,'Transfer to',data.transferTo,x,y,left);kv(doc,'Monitoring',value(data.monitoring),x+left,y,right);y+=24;kv(doc,'NBM for',data.nbmHours,x,y,left);kv(doc,'Position',data.position,x+left,y,right);y+=24;kv(doc,'IVF / O2',`${value(data.ivFluids)} / O2: ${data.oxygenInhalation?'Yes':'No'}`,x,y,left);kv(doc,'Antibiotics / Orders',data.antibiotics,x+left,y,right,48);y+=52;
   text(doc,'Analgesics',x,y,80,{size:7,bold:true});const meds=(data.analgesics||[]).slice(0,6).map(r=>[r.medicine,r.dose,r.route,r.frequency]);table(doc,x,y+14,[100,55,55,75],['Medicine','Dose mg','Route','Frequency'],meds.length?meds:[['','','','']],20);
@@ -300,7 +301,7 @@ function renderPostAnaesthesia(doc,ctx,template,data,signatures){
   signatureBlock(doc,x+w-200,doc.page.height-100,200,'Signature Anaesthetist',sigFor(signatures,'anaesthetist'));footer(doc,template,signatures,1,1);
 }
 function renderGeneric(doc,ctx,template,data,signatures){
-  addPage(doc);let y=header(doc,ctx,template.title,template.sourceReference);const x=28,w=doc.page.width-56;
+  addPage(doc);let y=header(doc,ctx,template.title,template.sourceReference);const x=DOC_MARGIN,w=doc.page.width-DOC_MARGIN*2;
   (template.sections||[]).forEach((section)=>{if(y>720){footer(doc,template,signatures,doc.bufferedPageRange().count,template.pageCount||1);addPage(doc);y=header(doc,ctx,template.title);};y=sectionTitle(doc,section.title,x,y,w);(section.fields||[]).forEach((f)=>{const v=data[f.key];if(f.type==='table'){const rows=(Array.isArray(v)?v:[]).slice(0,12);const widths=(f.columns||[]).map(()=>w/Math.max(1,(f.columns||[]).length));y=table(doc,x,y,widths,(f.columns||[]).map(c=>c.label),rows.map(r=>(f.columns||[]).map(c=>value(r[c.key]))),20);y+=4;}else{kv(doc,f.label,Array.isArray(v)?v.join(', '):value(v),x,y,w,f.type==='textarea'?48:22);y+=f.type==='textarea'?48:22;}});y+=8;});
 
   const pdfStickers = [];
