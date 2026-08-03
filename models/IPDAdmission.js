@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const DailySequence = require('./DailySequence');
 
 const ipdAdmissionSchema = new mongoose.Schema({
   admissionNumber: {
@@ -253,27 +254,104 @@ const ipdAdmissionSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Generate SHIP number and admission number
+// Generate collision-safe SHIP and admission numbers.
+// countDocuments() cannot be used for numbering because deleted/imported rows and
+// concurrent requests can both produce the same "count + 1" value.
+async function nextDailySequence({ hospitalId, key, seedValue = 0, session }) {
+  const options = { new: true, upsert: true, setDefaultsOnInsert: true };
+  if (session) options.session = session;
+
+  try {
+    const normalizedSeed = Math.max(0, Number(seedValue) || 0);
+    const counter = await DailySequence.findOneAndUpdate(
+      { hospitalId, key },
+      [
+        {
+          $set: {
+            hospitalId: { $ifNull: ['$hospitalId', hospitalId] },
+            key: { $ifNull: ['$key', key] },
+            value: {
+              $add: [
+                { $max: [{ $ifNull: ['$value', 0] }, normalizedSeed] },
+                1
+              ]
+            }
+          }
+        }
+      ],
+      options
+    );
+    return counter.value;
+  } catch (error) {
+    // Two first requests can race while creating the counter document. The
+    // unique index chooses one winner; the loser simply increments it.
+    if (error?.code !== 11000) throw error;
+
+    const retryOptions = { new: true };
+    if (session) retryOptions.session = session;
+    const counter = await DailySequence.findOneAndUpdate(
+      { hospitalId, key },
+      { $inc: { value: 1 } },
+      retryOptions
+    );
+    if (!counter) throw error;
+    return counter.value;
+  }
+}
+
+function sequenceFromValue(value, prefix) {
+  const match = String(value || '').match(new RegExp(`^${prefix}(\\d+)$`));
+  return match ? Number(match[1]) : 0;
+}
+
 ipdAdmissionSchema.pre('validate', async function(next) {
   try {
     const IPDAdmission = mongoose.model('IPDAdmission');
-    const now = new Date();
+    const session = typeof this.$session === 'function' ? this.$session() : null;
+    const now = this.admissionDate ? new Date(this.admissionDate) : new Date();
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
     const dateStr = `${year}${month}${day}`;
-    
+    const dayStart = new Date(year, now.getMonth(), now.getDate());
+    const dayEnd = new Date(year, now.getMonth(), now.getDate() + 1);
+
     if (!this.admissionNumber) {
-      const count = await IPDAdmission.countDocuments({ hospitalId: this.hospitalId, admissionDate: { $gte: new Date(year, now.getMonth(), now.getDate()), $lt: new Date(year, now.getMonth(), now.getDate() + 1) } });
-      const sequence = String(count + 1).padStart(4, '0');
-      this.admissionNumber = `IPD-${dateStr}-${sequence}`;
+      const query = IPDAdmission.findOne({
+        hospitalId: this.hospitalId,
+        admissionNumber: { $regex: `^IPD-${dateStr}-\\d+$` }
+      }).sort({ admissionNumber: -1 }).select('admissionNumber');
+      if (session) query.session(session);
+      const latest = await query.lean();
+      const seedValue = sequenceFromValue(latest?.admissionNumber, `IPD-${dateStr}-`);
+      const sequence = await nextDailySequence({
+        hospitalId: this.hospitalId,
+        key: `ipd-admission:${dateStr}`,
+        seedValue,
+        session
+      });
+      this.admissionNumber = `IPD-${dateStr}-${String(sequence).padStart(4, '0')}`;
     }
-    
+
     if (!this.shipNumber) {
-      // Generate SHIP number: SHIP-{date}-{patientId last 6 chars}
       const patientIdStr = this.patientId.toString().slice(-6);
-      const sameDayPatientCount = await IPDAdmission.countDocuments({ hospitalId: this.hospitalId, patientId: this.patientId, admissionDate: { $gte: new Date(year, now.getMonth(), now.getDate()), $lt: new Date(year, now.getMonth(), now.getDate() + 1) } });
-      this.shipNumber = `SHIP-${dateStr}-${patientIdStr}-${String(sameDayPatientCount + 1).padStart(2, '0')}`;
+      const shipPrefix = `SHIP-${dateStr}-${patientIdStr}-`;
+      const query = IPDAdmission.findOne({
+        hospitalId: this.hospitalId,
+        patientId: this.patientId,
+        admissionDate: { $gte: dayStart, $lt: dayEnd },
+        shipNumber: { $regex: `^${shipPrefix}\\d+$` }
+      }).sort({ shipNumber: -1 }).select('shipNumber');
+      if (session) query.session(session);
+      const latest = await query.lean();
+      const seedValue = sequenceFromValue(latest?.shipNumber, shipPrefix);
+      const sequence = await nextDailySequence({
+        hospitalId: this.hospitalId,
+        key: `ipd-ship:${dateStr}:${this.patientId}`,
+        seedValue,
+        session
+      });
+      this.shipNumber = `${shipPrefix}${String(sequence).padStart(2, '0')}`;
     }
     next();
   } catch (error) {
