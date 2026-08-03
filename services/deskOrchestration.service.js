@@ -159,18 +159,49 @@ function previewTotals(rows) {
 function previewPayment(totals, payment, encounterType) {
   if (!payment?.collectNow) return null;
 
-  if (encounterType !== 'OPD') {
-    throw checkoutError(
-      'Desk payment collection is currently available for OPD checkout only',
-      400,
-      'DESK_IPD_PAYMENT_NOT_SUPPORTED'
-    );
-  }
-
   const taxAdjustment = round(payment.taxAdjustmentAmount);
   const discount = round(payment.settlementDiscountAmount);
   const outstandingBefore = totals.payableNow;
   const netPayable = round(Math.max(0, outstandingBefore + taxAdjustment - discount));
+  const warnings = [];
+
+  if (discount > 0 && !String(payment.settlementDiscountReason || '').trim()) {
+    warnings.push({ code: 'DISCOUNT_REASON_REQUIRED', message: 'Settlement discount reason is required.' });
+  }
+
+  if (taxAdjustment !== 0 && !String(payment.taxAdjustmentReason || '').trim()) {
+    warnings.push({ code: 'TAX_REASON_REQUIRED', message: 'Tax adjustment reason is required.' });
+  }
+
+  if (encounterType === 'IPD') {
+    const advanceAmount = round(payment.advanceAmount ?? payment.amountApplied ?? payment.amountTendered ?? 0);
+
+    if (advanceAmount <= 0) {
+      warnings.push({ code: 'IPD_ADVANCE_AMOUNT_REQUIRED', message: 'Enter an advance amount greater than zero.' });
+    }
+
+    if (payment.paymentMethod !== 'Cash' && !String(payment.reference || '').trim()) {
+      warnings.push({ code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Transaction reference is required for non-cash advance payment.' });
+    }
+
+    return {
+      mode: 'IPD_ADVANCE',
+      outstandingBefore,
+      taxAdjustment: 0,
+      settlementDiscount: 0,
+      netPayable,
+      amountApplied: 0,
+      amountTendered: advanceAmount,
+      overpayment: 0,
+      changeReturned: 0,
+      advanceCreated: advanceAmount,
+      balanceAfter: netPayable,
+      canSubmit: warnings.length === 0,
+      warnings,
+      suggestedPayment: { advanceAmount, amountTendered: advanceAmount }
+    };
+  }
+
   const amountApplied = round(payment.amountApplied ?? netPayable);
   const amountTendered = round(payment.amountTendered ?? amountApplied);
   const overpayment = round(Math.max(0, amountApplied - netPayable));
@@ -179,30 +210,12 @@ function previewPayment(totals, payment, encounterType) {
     : 0;
   const advanceCreated = payment.overpaymentDisposition === 'CREATE_ADVANCE' ? overpayment : 0;
 
-  const warnings = [];
-
-  if (discount > 0 && !String(payment.settlementDiscountReason || '').trim()) {
-    warnings.push({
-      code: 'DISCOUNT_REASON_REQUIRED',
-      message: 'Settlement discount reason is required.'
-    });
-  }
-
-  if (taxAdjustment !== 0 && !String(payment.taxAdjustmentReason || '').trim()) {
-    warnings.push({
-      code: 'TAX_REASON_REQUIRED',
-      message: 'Tax adjustment reason is required.'
-    });
-  }
-
   if (overpayment > 0 && !payment.overpaymentDisposition) {
-    warnings.push({
-      code: 'OVERPAYMENT_DISPOSITION_REQUIRED',
-      message: 'Choose return change or credit excess to patient advance.'
-    });
+    warnings.push({ code: 'OVERPAYMENT_DISPOSITION_REQUIRED', message: 'Choose return change or credit excess to patient advance.' });
   }
 
   return {
+    mode: 'OPD_PAYMENT',
     outstandingBefore,
     taxAdjustment,
     settlementDiscount: discount,
@@ -215,10 +228,7 @@ function previewPayment(totals, payment, encounterType) {
     balanceAfter: round(Math.max(0, netPayable - Math.min(amountApplied, netPayable))),
     canSubmit: warnings.length === 0,
     warnings,
-    suggestedPayment: {
-      amountApplied: netPayable,
-      amountTendered: netPayable
-    }
+    suggestedPayment: { amountApplied: netPayable, amountTendered: netPayable }
   };
 }
 
@@ -235,6 +245,35 @@ function clinicalActionFor(row) {
   };
 
   return labels[row.serviceType] || 'Create service item';
+}
+
+function canonicalPaymentForPreview(inputPayment, previewedPayment) {
+  if (!previewedPayment) return null;
+
+  const source = inputPayment || {};
+
+  if (previewedPayment.mode === 'IPD_ADVANCE') {
+    return {
+      collectNow: true,
+      paymentMethod: source.paymentMethod || 'Cash',
+      reference: String(source.reference || '').trim(),
+      advanceAmount: round(previewedPayment.advanceCreated),
+      amountTendered: round(previewedPayment.amountTendered)
+    };
+  }
+
+  return {
+    collectNow: true,
+    paymentMethod: source.paymentMethod || 'Cash',
+    reference: String(source.reference || '').trim(),
+    settlementDiscountAmount: round(previewedPayment.settlementDiscount),
+    settlementDiscountReason: String(source.settlementDiscountReason || '').trim(),
+    taxAdjustmentAmount: round(previewedPayment.taxAdjustment),
+    taxAdjustmentReason: String(source.taxAdjustmentReason || '').trim(),
+    amountApplied: round(previewedPayment.amountApplied),
+    amountTendered: round(previewedPayment.amountTendered),
+    overpaymentDisposition: source.overpaymentDisposition || null
+  };
 }
 
 function financialActionFor(row, encounterType) {
@@ -289,7 +328,7 @@ async function previewDeskCheckout(payload, user) {
     admissionId: payload.admissionId || null,
     serviceCart: decoratedRows.map(({ pricingDifference, clinicalAction, financialAction, gross, ...row }) => row),
     issueInvoice: payload.issueInvoice !== false,
-    payment: payload.payment || null
+    payment: canonicalPaymentForPreview(payload.payment, payment)
   };
 
   return {
@@ -316,7 +355,12 @@ async function commitDeskCheckout(payload, user) {
     throw checkoutError('Idempotency key is required');
   }
 
-  const requestHash = stableHash({ ...payload, idempotencyKey: undefined });
+  // Idempotency must represent the business request only. previewToken is a
+  // validation artifact and may legitimately change after a fresh preview.
+  // Including it makes a retry with the same checkout data look like a
+  // different payload and causes a false IDEMPOTENCY_CONFLICT.
+  const { idempotencyKey: _ignoredKey, previewToken: _ignoredPreviewToken, ...businessPayload } = payload;
+  const requestHash = stableHash(businessPayload);
 
   let workflow = await DeskCheckout.findOne({ hospitalId, idempotencyKey });
 
@@ -514,6 +558,24 @@ async function commitDeskCheckout(payload, user) {
       paymentResults.push(await patientFinancial.recordOPDPayment(patient._id, paymentPayload, user));
     }
 
+    if (preview.encounterType === 'IPD' && payload.payment?.collectNow && preview.payment?.advanceCreated > 0) {
+      const advance = await ipdFinancial.recordAdvance(admission._id, {
+        amount: preview.payment.advanceCreated,
+        paymentMethod: payload.payment.paymentMethod || 'Cash',
+        reference: payload.payment.reference || '',
+        notes: payload.payment.notes || `Advance received during Desk admission checkout ${idempotencyKey}`,
+        idempotencyKey: `${idempotencyKey}:IPD_ADVANCE`
+      }, user);
+
+      paymentResults.push({
+        ...advance,
+        paymentKind: 'IPD_ADVANCE',
+        amount: preview.payment.advanceCreated,
+        paymentMethod: payload.payment.paymentMethod || 'Cash',
+        reference: payload.payment.reference || ''
+      });
+    }
+
     const documents = [
       ...invoiceIds.map(id => ({
         type: 'INVOICE',
@@ -532,7 +594,11 @@ async function commitDeskCheckout(payload, user) {
         .map(item => ({
           type: 'RECEIPT',
           id: item.receiptNumber,
-          label: 'Receipt',
+          label: item.paymentKind === 'IPD_ADVANCE' ? 'Admission receipt' : 'Receipt',
+          receiptType: item.paymentKind === 'IPD_ADVANCE' ? 'IPD_ADVANCE' : 'PAYMENT',
+          amount: item.amount,
+          paymentMethod: item.paymentMethod,
+          reference: item.reference || '',
           url: null
         }))
     ];
@@ -553,6 +619,20 @@ async function commitDeskCheckout(payload, user) {
         ? (preview.rows.find(row => row.sourceModule === 'Appointment')?.sourceId || null)
         : (admission?._id || null),
       admissionId: admission?._id || null,
+      admissionSummary: admission ? {
+        id: admission._id,
+        admissionNumber: admission.admissionNumber,
+        shipNumber: admission.shipNumber,
+        admissionDate: admission.admissionDate,
+        admissionType: admission.admissionType,
+        departmentId: admission.departmentId,
+        primaryDoctorId: admission.primaryDoctorId,
+        wardId: admission.wardId,
+        roomId: admission.roomId,
+        bedId: admission.bedId,
+        attendant: admission.attendant || {},
+        paymentType: admission.paymentType
+      } : null,
       billIds,
       invoiceIds,
       chargeIds,
