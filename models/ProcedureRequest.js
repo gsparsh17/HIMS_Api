@@ -2,9 +2,14 @@ const mongoose = require('mongoose');
 const { sourceBillingFields } = require('../utils/billingLifecycle');
 
 const procedureRequestSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   requestNumber: {
     type: String,
     unique: true
+  },
+  deskCheckoutKey: {
+    type: String,
+    trim: true
   },
   
   // Source context (OPD or IPD)
@@ -256,6 +261,7 @@ procedureRequestSchema.index({ patientId: 1, requestedDate: -1 });
 procedureRequestSchema.index({ doctorId: 1, status: 1 });
 procedureRequestSchema.index({ status: 1, scheduledDate: 1 });
 procedureRequestSchema.index({ requestNumber: 1 });
+procedureRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, { unique: true, sparse: true });
 procedureRequestSchema.index({ admissionId: 1, sourceType: 1 });
 procedureRequestSchema.index({ appointmentId: 1, sourceType: 1 });
 procedureRequestSchema.index({ procedureCode: 1 });

@@ -23,6 +23,7 @@ router.get('/mis/reports/:reportKey/export', finance.exportMISReport);
 router.get('/patients/:patientId/workspace', finance.getPatientWorkspace);
 router.post('/patients/:patientId/charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.addOPDCharge);
 router.post('/patients/:patientId/invoices', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_finalize'), finance.issueOPDInvoice);
+router.post('/patients/:patientId/payments/preview', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.previewOPDPayment);
 router.post('/patients/:patientId/payments', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordOPDPayment);
 router.post('/patients/:patientId/advances', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordOPDAdvance);
 router.post('/patients/:patientId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.refundOPDAdvance);

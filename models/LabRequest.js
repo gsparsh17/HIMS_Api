@@ -49,6 +49,10 @@ const labRequestSchema = new mongoose.Schema({
   requestNumber: {
     type: String,
   },
+  deskCheckoutKey: {
+    type: String,
+    trim: true
+  },
   
   // Source context (OPD or IPD)
   sourceType: {
@@ -368,6 +372,7 @@ labRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
 labRequestSchema.index({ doctorId: 1, status: 1 });
 labRequestSchema.index({ status: 1, scheduledDate: 1 });
 labRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });
+labRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, { unique: true, sparse: true });
 labRequestSchema.index({ admissionId: 1, sourceType: 1 });
 labRequestSchema.index({ appointmentId: 1, sourceType: 1 });
 

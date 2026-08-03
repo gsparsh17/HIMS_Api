@@ -252,6 +252,13 @@ exports.issueOPDInvoice = async (req, res) => {
   } catch (error) { sendError(res, error); }
 };
 
+exports.previewOPDPayment = async (req, res) => {
+  try {
+    const result = await patientFinancial.previewOPDPayment(req.params.patientId, req.body, req.user);
+    res.json({ success: true, ...result });
+  } catch (error) { sendError(res, error); }
+};
+
 exports.recordOPDPayment = async (req, res) => {
   try {
     const result = await patientFinancial.recordOPDPayment(req.params.patientId, req.body, req.user);

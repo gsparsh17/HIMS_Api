@@ -387,6 +387,34 @@ async function previewOPDPayment(patientId, payload, user) {
   const bills = payload.invoiceId ? [] : await Bill.find(billFilter).sort({ generated_at: 1 });
   if (!invoices.length && !bills.length) throw financialError('No outstanding OPD bill or invoice was found', 409, 'NO_OUTSTANDING_DOCUMENT');
 
+  if (taxAdjustment !== 0 && invoices.length + bills.length !== 1) {
+    throw financialError(
+      'Select one bill or invoice for a tax adjustment',
+      400,
+      'TAX_ADJUSTMENT_DOCUMENT_REQUIRED'
+    );
+  }
+
+  if (taxAdjustment !== 0) {
+    const taxTarget = invoices[0] || bills[0];
+    const currentTax = amount(invoices.length ? taxTarget.tax : taxTarget.tax_amount);
+    if (taxAdjustment < 0 && Math.abs(taxAdjustment) > currentTax + 0.01) {
+      throw financialError(
+        `Tax reduction cannot exceed the current tax amount of ₹${currentTax.toFixed(2)}`,
+        400,
+        'TAX_REDUCTION_EXCEEDS_DOCUMENT_TAX',
+        { maximumReduction: currentTax }
+      );
+    }
+    if (amount(Number(taxTarget.total || taxTarget.total_amount || 0) + taxAdjustment) < 0) {
+      throw financialError(
+        'Tax adjustment cannot make the document total negative',
+        400,
+        'INVALID_TAX_ADJUSTMENT'
+      );
+    }
+  }
+
   const outstandingBefore = amount(
     invoices.reduce((sum, row) => sum + Number(row.balance_due || 0), 0) +
     bills.reduce((sum, row) => sum + Number(row.balance_due || 0), 0)

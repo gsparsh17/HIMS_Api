@@ -36,6 +36,10 @@ const radiologyRequestSchema = new mongoose.Schema({
   requestNumber: {
     type: String,
   },
+  deskCheckoutKey: {
+    type: String,
+    trim: true
+  },
   
   // Source context
   sourceType: {
@@ -314,6 +318,7 @@ radiologyRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 })
 radiologyRequestSchema.index({ doctorId: 1, status: 1 });
 radiologyRequestSchema.index({ status: 1, scheduledDate: 1 });
 radiologyRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });
+radiologyRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, { unique: true, sparse: true });
 radiologyRequestSchema.index({ admissionId: 1, sourceType: 'IPD' });
 radiologyRequestSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 radiologyRequestSchema.index({ 'abdmRecordLink.abhaAddress': 1 });

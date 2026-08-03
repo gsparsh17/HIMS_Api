@@ -1,10 +1,18 @@
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Patient = require('../models/Patient');
+const Doctor = require('../models/Doctor');
 const IPDAdmission = require('../models/IPDAdmission');
 const DeskCheckout = require('../models/DeskCheckout');
+const LabRequest = require('../models/LabRequest');
+const LabTest = require('../models/LabTest');
+const RadiologyRequest = require('../models/RadiologyRequest');
+const ImagingTest = require('../models/ImagingTest');
+const ProcedureRequest = require('../models/ProcedureRequest');
+const Procedure = require('../models/Procedure');
 const patientFinancial = require('./patientFinancial.service');
 const ipdFinancial = require('./ipdFinancial.service');
+const { getTemplate, matchTemplate } = require('./labReportTemplate.service');
 const { searchServiceCatalog } = require('./serviceCatalog.service');
 const { normalizeIndianPhone, demographicsFromInput } = require('../utils/patientDemographics');
 const { userHospitalId } = require('../utils/hospitalScope');
@@ -202,8 +210,8 @@ function previewPayment(totals, payment, encounterType) {
     return {
       mode: amountApplied > 0 ? 'IPD_PAYMENT' : 'IPD_ADVANCE',
       outstandingBefore,
-      taxAdjustment: 0,
-      settlementDiscount: 0,
+      taxAdjustment,
+      settlementDiscount: discount,
       netPayable,
       collectionAmount,
       amountApplied,
@@ -248,6 +256,248 @@ function previewPayment(totals, payment, encounterType) {
   };
 }
 
+
+const clinicalRequestTypes = new Set(['LAB', 'RADIOLOGY', 'PROCEDURE']);
+
+const idOf = value => value?._id || value?.id || value || null;
+
+function normalizeEncounterContext(context = {}) {
+  return {
+    appointmentId: idOf(context.appointmentId || context.appointment_id),
+    doctorId: idOf(context.doctorId || context.doctor_id || context.primaryDoctorId),
+    departmentId: idOf(context.departmentId || context.department_id)
+  };
+}
+
+function isClinicalRequestRow(row) {
+  return clinicalRequestTypes.has(row.serviceType)
+    && row.billingIntent !== 'EXTERNAL_REFERRAL';
+}
+
+async function resolveClinicalContext({ payload, user, encounterType, rows, admission }) {
+  const context = normalizeEncounterContext(payload.encounterContext);
+  const requestRows = (rows || []).filter(isClinicalRequestRow);
+
+  if (!requestRows.length) {
+    return {
+      ...context,
+      admissionId: encounterType === 'IPD' ? idOf(payload.admissionId) : null
+    };
+  }
+
+  if (requestRows.some(row => !row.masterId)) {
+    throw checkoutError('Lab, imaging and procedure requests require a catalogue service');
+  }
+
+  if (encounterType === 'IPD') {
+    const hospitalId = userHospitalId(user);
+    const admissionRecord = admission || await IPDAdmission.findOne({
+      _id: payload.admissionId,
+      hospitalId,
+      status: { $nin: ['Discharged', 'Cancelled'] }
+    }).select('primaryDoctorId');
+
+    const doctorId = idOf(admissionRecord?.primaryDoctorId || context.doctorId);
+
+    if (!doctorId) {
+      throw checkoutError('Assign a primary doctor before creating IPD service requests');
+    }
+
+    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId });
+    if (!doctorExists) {
+      throw checkoutError('The admission primary doctor is not available for this hospital', 409);
+    }
+
+    return {
+      ...context,
+      doctorId,
+      admissionId: idOf(payload.admissionId),
+      appointmentId: null
+    };
+  }
+
+  if (!context.doctorId) {
+    throw checkoutError('Select the ordering doctor before checking out lab, imaging or procedure services');
+  }
+
+  const hospitalId = userHospitalId(user);
+  const doctorExists = await Doctor.exists({ _id: context.doctorId, hospitalId });
+  if (!doctorExists) {
+    throw checkoutError('Selected ordering doctor is not available for this hospital', 409);
+  }
+
+  return {
+    ...context,
+    admissionId: null
+  };
+}
+
+function requestBillingState(row, refs) {
+  if (['NO_CHARGE', 'PACKAGE_INCLUDED'].includes(row.billingIntent)) {
+    return 'NOT_APPLICABLE';
+  }
+  if ((refs.invoiceIds || []).length) return 'INVOICED';
+  if ((refs.chargeIds || []).length || (refs.billIds || []).length) return 'CHARGE_POSTED';
+  return 'PENDING_CHARGE';
+}
+
+async function createIdempotentRequest(Model, query, values) {
+  const existing = await Model.findOne(query);
+  if (existing) return { request: existing, created: false };
+
+  try {
+    const request = await Model.create(values);
+    return { request, created: true };
+  } catch (error) {
+    if (error?.code === 11000) {
+      const duplicate = await Model.findOne(query);
+      if (duplicate) return { request: duplicate, created: false };
+    }
+    throw error;
+  }
+}
+
+async function createClinicalRequest({
+  row,
+  rowIndex,
+  patient,
+  hospitalId,
+  context,
+  refs,
+  idempotencyKey,
+  user
+}) {
+  if (!isClinicalRequestRow(row)) return null;
+
+  const deskCheckoutKey = `${idempotencyKey}:CLINICAL:${rowIndex}`;
+  const invoiceId = idOf(refs.invoiceIds?.[0]);
+  const billingState = requestBillingState(row, refs);
+  const common = {
+    hospitalId,
+    deskCheckoutKey,
+    sourceType: context.admissionId ? 'IPD' : 'OPD',
+    admissionId: context.admissionId || null,
+    appointmentId: context.appointmentId || null,
+    patientId: patient._id,
+    doctorId: context.doctorId,
+    priority: 'Routine',
+    requestedDate: new Date(),
+    patient_notes: `Created from Desk checkout ${idempotencyKey}`,
+    billingIntent: row.billingIntent,
+    billingState,
+    chargeIds: refs.chargeIds || [],
+    billIds: refs.billIds || [],
+    invoiceIds: refs.invoiceIds || [],
+    pricingSnapshot: {
+      source: 'Desk',
+      serviceCode: row.code,
+      quantity: row.quantity,
+      rate: row.rate,
+      gross: row.gross
+    },
+    billingHistory: [{
+      from: 'PENDING_CHARGE',
+      to: billingState,
+      action: 'DESK_CHECKOUT',
+      documentId: invoiceId || idOf(refs.billIds?.[0]) || idOf(refs.chargeIds?.[0]),
+      by: user?._id,
+      reason: `Desk checkout ${idempotencyKey}`
+    }],
+    cost: row.gross,
+    is_billed: Boolean(invoiceId),
+    invoiceId: invoiceId || null,
+    createdBy: user?._id
+  };
+
+  let result;
+  let master;
+
+  if (row.serviceType === 'LAB') {
+    master = await LabTest.findOne({
+      _id: row.masterId,
+      hospitalId,
+      is_active: { $ne: false }
+    });
+    if (!master) throw checkoutError(`Lab test is no longer available: ${row.name}`, 409);
+
+    const reportTemplate = getTemplate(master.report_template_id)
+      || matchTemplate(master.name, master.code, master.report_template_id);
+
+    result = await createIdempotentRequest(
+      LabRequest,
+      { hospitalId, deskCheckoutKey },
+      {
+        ...common,
+        labTestId: master._id,
+        testCode: master.code,
+        testName: master.name,
+        category: master.category || 'General',
+        reportTemplateId: reportTemplate?.id || '',
+        reportTemplateName: reportTemplate?.name || ''
+      }
+    );
+  } else if (row.serviceType === 'RADIOLOGY') {
+    master = await ImagingTest.findOne({
+      _id: row.masterId,
+      hospitalId,
+      is_active: { $ne: false }
+    });
+    if (!master) throw checkoutError(`Imaging test is no longer available: ${row.name}`, 409);
+
+    result = await createIdempotentRequest(
+      RadiologyRequest,
+      { hospitalId, deskCheckoutKey },
+      {
+        ...common,
+        imagingTestId: master._id,
+        testCode: master.code,
+        testName: master.name,
+        category: master.category || 'General',
+        reportTemplateId: master.report_template_id || '',
+        reportTemplateName: master.report_template_name || ''
+      }
+    );
+  } else {
+    master = await Procedure.findOne({
+      _id: row.masterId,
+      is_active: { $ne: false }
+    });
+    if (!master) throw checkoutError(`Procedure is no longer available: ${row.name}`, 409);
+
+    result = await createIdempotentRequest(
+      ProcedureRequest,
+      { hospitalId, deskCheckoutKey },
+      {
+        ...common,
+        procedureId: master._id,
+        procedureCode: master.code,
+        procedureName: master.name,
+        category: master.category || 'General',
+        subcategory: master.subcategory || '',
+        estimated_duration_minutes: master.duration_minutes || 30,
+        anesthesia_type: 'Local',
+        pre_procedure_instructions: master.pre_procedure_instructions || ''
+      }
+    );
+  }
+
+  if (result.created && typeof master?.incrementUsage === 'function') {
+    try {
+      await master.incrementUsage();
+    } catch (error) {
+      console.warn('Desk clinical request usage counter could not be updated', error.message);
+    }
+  }
+
+  return {
+    type: row.serviceType,
+    id: result.request._id,
+    requestNumber: result.request.requestNumber,
+    serviceName: row.name,
+    created: result.created
+  };
+}
+
 function clinicalActionFor(row) {
   const labels = {
     LAB: 'Create lab request',
@@ -276,6 +526,10 @@ function canonicalPaymentForPreview(inputPayment, previewedPayment) {
       // Keep the legacy field in the canonical payload so existing clients do
       // not need a request-contract migration.
       advanceAmount: round(previewedPayment.collectionAmount),
+      settlementDiscountAmount: round(previewedPayment.settlementDiscount),
+      settlementDiscountReason: String(source.settlementDiscountReason || '').trim(),
+      taxAdjustmentAmount: round(previewedPayment.taxAdjustment),
+      taxAdjustmentReason: String(source.taxAdjustmentReason || '').trim(),
       amountApplied: round(previewedPayment.amountApplied),
       amountTendered: round(previewedPayment.amountTendered)
     };
@@ -326,6 +580,12 @@ async function previewDeskCheckout(payload, user) {
 
   const totals = previewTotals(decoratedRows);
   const payment = previewPayment(totals, payload.payment, encounterType);
+  const clinicalContext = await resolveClinicalContext({
+    payload,
+    user,
+    encounterType,
+    rows: decoratedRows
+  });
 
   const warnings = [
     ...decoratedRows
@@ -345,6 +605,7 @@ async function previewDeskCheckout(payload, user) {
     encounterAction: payload.encounterAction || null,
     estimateOnly: Boolean(payload.estimateOnly),
     admissionId: payload.admissionId || null,
+    encounterContext: normalizeEncounterContext(payload.encounterContext),
     serviceCart: decoratedRows.map(({ pricingDifference, clinicalAction, financialAction, gross, ...row }) => row),
     issueInvoice: payload.issueInvoice !== false,
     payment: canonicalPaymentForPreview(payload.payment, payment)
@@ -355,6 +616,7 @@ async function previewDeskCheckout(payload, user) {
     rows: decoratedRows,
     totals,
     payment,
+    clinicalContext,
     warnings,
     previewToken: stableHash(canonicalPayload),
     canCommit: !payment || payment.canSubmit
@@ -472,6 +734,7 @@ async function commitDeskCheckout(payload, user) {
     const chargeIds = [];
     const invoiceIds = [];
     const billNowChargeIds = [];
+    const rowFinancialRefs = preview.rows.map(() => ({ billIds: [], chargeIds: [], invoiceIds: [] }));
     let issuedIPDInvoice = null;
 
     for (let index = 0; index < preview.rows.length; index += 1) {
@@ -502,6 +765,7 @@ async function commitDeskCheckout(payload, user) {
         }, user);
 
         billIds.push(result.bill._id);
+        rowFinancialRefs[index].billIds.push(result.bill._id);
       } else {
         const typeMap = {
           LAB: 'Lab Test',
@@ -535,6 +799,7 @@ async function commitDeskCheckout(payload, user) {
 
         const chargeDoc = charge.charge || charge;
         chargeIds.push(chargeDoc._id);
+        rowFinancialRefs[index].chargeIds.push(chargeDoc._id);
 
         if (row.billingIntent === 'BILL_NOW') {
           billNowChargeIds.push(chargeDoc._id);
@@ -549,6 +814,9 @@ async function commitDeskCheckout(payload, user) {
       }, user);
 
       invoiceIds.push(issued.invoice._id);
+      rowFinancialRefs.forEach(refs => {
+        if (refs.billIds.length) refs.invoiceIds.push(issued.invoice._id);
+      });
     }
 
     if (preview.encounterType === 'IPD' && billNowChargeIds.length) {
@@ -562,6 +830,11 @@ async function commitDeskCheckout(payload, user) {
       issuedIPDInvoice = issued.invoice || null;
       if (issuedIPDInvoice?._id) invoiceIds.push(issuedIPDInvoice._id);
       if (issued.bill?._id) billIds.push(issued.bill._id);
+      preview.rows.forEach((row, index) => {
+        if (row.billingIntent !== 'BILL_NOW') return;
+        if (issued.bill?._id) rowFinancialRefs[index].billIds.push(issued.bill._id);
+        if (issuedIPDInvoice?._id) rowFinancialRefs[index].invoiceIds.push(issuedIPDInvoice._id);
+      });
     }
 
     const paymentResults = [];
@@ -585,9 +858,17 @@ async function commitDeskCheckout(payload, user) {
       const reference = payload.payment.reference || '';
       const collectionAmount = round(preview.payment?.collectionAmount || 0);
       // Use the issued document as the final authority because coverage pricing
-      // can make patient liability lower than the cart's gross estimate.
+      // can make patient liability lower than the cart's gross estimate. Apply
+      // payment-time tax first and settlement discount second, matching the
+      // finance service's accounting order.
       const issuedOutstanding = round(issuedIPDInvoice?.balance_due || 0);
-      const amountApplied = round(Math.min(collectionAmount, issuedOutstanding));
+      const taxAdjustmentAmount = round(preview.payment?.taxAdjustment || 0);
+      const settlementDiscountAmount = round(preview.payment?.settlementDiscount || 0);
+      const adjustedOutstanding = round(Math.max(
+        0,
+        issuedOutstanding + taxAdjustmentAmount - settlementDiscountAmount
+      ));
+      const amountApplied = round(Math.min(collectionAmount, adjustedOutstanding));
       const advanceCreated = round(Math.max(0, collectionAmount - amountApplied));
 
       committedPayment = {
@@ -595,16 +876,24 @@ async function commitDeskCheckout(payload, user) {
         amountApplied,
         advanceCreated,
         overpayment: advanceCreated,
-        balanceAfter: round(Math.max(0, issuedOutstanding - amountApplied))
+        netPayable: adjustedOutstanding,
+        balanceAfter: round(Math.max(0, adjustedOutstanding - amountApplied))
       };
 
       // BILL_NOW means issue an invoice now and apply the checkout collection
       // to that invoice. Previously the entire collection was posted as an
       // advance, leaving the new invoice unpaid and due.
-      if (amountApplied > 0 && issuedIPDInvoice?._id) {
+      if (
+        issuedIPDInvoice?._id &&
+        (amountApplied > 0 || settlementDiscountAmount > 0 || taxAdjustmentAmount !== 0)
+      ) {
         const settlement = await ipdFinancial.recordIPDPayment(admission._id, {
           invoiceId: issuedIPDInvoice._id,
           amount: amountApplied,
+          settlementDiscountAmount,
+          settlementDiscountReason: payload.payment.settlementDiscountReason || '',
+          taxAdjustmentAmount,
+          adjustmentReason: payload.payment.taxAdjustmentReason || payload.payment.settlementDiscountReason || '',
           paymentMethod,
           reference,
           sourceModule: 'IPD',
@@ -641,6 +930,29 @@ async function commitDeskCheckout(payload, user) {
           reference
         });
       }
+    }
+
+    const clinicalContext = await resolveClinicalContext({
+      payload,
+      user,
+      encounterType: preview.encounterType,
+      rows: preview.rows,
+      admission
+    });
+    const clinicalRequests = [];
+
+    for (let index = 0; index < preview.rows.length; index += 1) {
+      const request = await createClinicalRequest({
+        row: preview.rows[index],
+        rowIndex: index,
+        patient,
+        hospitalId,
+        context: clinicalContext,
+        refs: rowFinancialRefs[index],
+        idempotencyKey,
+        user
+      });
+      if (request) clinicalRequests.push(request);
     }
 
     const documents = [
@@ -703,6 +1015,7 @@ async function commitDeskCheckout(payload, user) {
       billIds,
       invoiceIds,
       chargeIds,
+      clinicalRequests,
       paymentResults,
       documents,
       totals: preview.totals,
