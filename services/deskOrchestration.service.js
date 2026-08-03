@@ -519,13 +519,13 @@ async function commitDeskCheckout(payload, user) {
         type: 'INVOICE',
         id,
         label: 'Open invoice',
-        url: `/api/invoices/${id}/print`
+        url: `/api/invoices/${id}/download`
       })),
       ...billIds.map(id => ({
         type: 'BILL',
         id,
         label: 'Open bill',
-        url: `/api/bills/${id}/print`
+        url: null
       })),
       ...paymentResults
         .filter(item => item?.receiptNumber)
@@ -548,6 +548,10 @@ async function commitDeskCheckout(payload, user) {
         duplicateMatched: Boolean(duplicateMatched)
       },
       encounterType: preview.encounterType,
+      encounterAction: String(payload.encounterAction || 'SERVICES').toUpperCase(),
+      encounterId: payload.encounterAction === 'APPOINTMENT'
+        ? (preview.rows.find(row => row.sourceModule === 'Appointment')?.sourceId || null)
+        : (admission?._id || null),
       admissionId: admission?._id || null,
       billIds,
       invoiceIds,
