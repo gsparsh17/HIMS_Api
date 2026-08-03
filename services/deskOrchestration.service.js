@@ -174,31 +174,47 @@ function previewPayment(totals, payment, encounterType) {
   }
 
   if (encounterType === 'IPD') {
-    const advanceAmount = round(payment.advanceAmount ?? payment.amountApplied ?? payment.amountTendered ?? 0);
+    // For IPD checkout, money collected must first settle services marked
+    // BILL_NOW. Only the amount above the issued invoice liability becomes an
+    // IPD advance. The legacy `advanceAmount` request field is retained for
+    // frontend compatibility, but it now represents the total amount being
+    // collected at checkout.
+    const collectionAmount = round(payment.advanceAmount ?? payment.amountApplied ?? payment.amountTendered ?? 0);
+    const amountTendered = payment.paymentMethod === 'Cash'
+      ? round(payment.amountTendered ?? collectionAmount)
+      : collectionAmount;
+    const amountApplied = round(Math.min(collectionAmount, netPayable));
+    const advanceCreated = round(Math.max(0, collectionAmount - amountApplied));
+    const changeReturned = round(Math.max(0, amountTendered - collectionAmount));
 
-    if (advanceAmount <= 0) {
-      warnings.push({ code: 'IPD_ADVANCE_AMOUNT_REQUIRED', message: 'Enter an advance amount greater than zero.' });
+    if (collectionAmount <= 0) {
+      warnings.push({ code: 'IPD_COLLECTION_AMOUNT_REQUIRED', message: 'Enter an amount greater than zero.' });
+    }
+
+    if (payment.paymentMethod === 'Cash' && amountTendered + 0.01 < collectionAmount) {
+      warnings.push({ code: 'CASH_TENDERED_TOO_LOW', message: 'Cash received cannot be less than the amount being collected.' });
     }
 
     if (payment.paymentMethod !== 'Cash' && !String(payment.reference || '').trim()) {
-      warnings.push({ code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Transaction reference is required for non-cash advance payment.' });
+      warnings.push({ code: 'PAYMENT_REFERENCE_REQUIRED', message: 'Transaction reference is required for non-cash payment.' });
     }
 
     return {
-      mode: 'IPD_ADVANCE',
+      mode: amountApplied > 0 ? 'IPD_PAYMENT' : 'IPD_ADVANCE',
       outstandingBefore,
       taxAdjustment: 0,
       settlementDiscount: 0,
       netPayable,
-      amountApplied: 0,
-      amountTendered: advanceAmount,
-      overpayment: 0,
-      changeReturned: 0,
-      advanceCreated: advanceAmount,
-      balanceAfter: netPayable,
+      collectionAmount,
+      amountApplied,
+      amountTendered,
+      overpayment: advanceCreated,
+      changeReturned,
+      advanceCreated,
+      balanceAfter: round(Math.max(0, netPayable - amountApplied)),
       canSubmit: warnings.length === 0,
       warnings,
-      suggestedPayment: { advanceAmount, amountTendered: advanceAmount }
+      suggestedPayment: { advanceAmount: collectionAmount, amountApplied, amountTendered }
     };
   }
 
@@ -252,12 +268,15 @@ function canonicalPaymentForPreview(inputPayment, previewedPayment) {
 
   const source = inputPayment || {};
 
-  if (previewedPayment.mode === 'IPD_ADVANCE') {
+  if (String(previewedPayment.mode || '').startsWith('IPD_')) {
     return {
       collectNow: true,
       paymentMethod: source.paymentMethod || 'Cash',
       reference: String(source.reference || '').trim(),
-      advanceAmount: round(previewedPayment.advanceCreated),
+      // Keep the legacy field in the canonical payload so existing clients do
+      // not need a request-contract migration.
+      advanceAmount: round(previewedPayment.collectionAmount),
+      amountApplied: round(previewedPayment.amountApplied),
       amountTendered: round(previewedPayment.amountTendered)
     };
   }
@@ -453,6 +472,7 @@ async function commitDeskCheckout(payload, user) {
     const chargeIds = [];
     const invoiceIds = [];
     const billNowChargeIds = [];
+    let issuedIPDInvoice = null;
 
     for (let index = 0; index < preview.rows.length; index += 1) {
       const row = preview.rows[index];
@@ -539,11 +559,13 @@ async function commitDeskCheckout(payload, user) {
         idempotencyKey: `${idempotencyKey}:INVOICE`
       }, user);
 
-      if (issued.invoice?._id) invoiceIds.push(issued.invoice._id);
+      issuedIPDInvoice = issued.invoice || null;
+      if (issuedIPDInvoice?._id) invoiceIds.push(issuedIPDInvoice._id);
       if (issued.bill?._id) billIds.push(issued.bill._id);
     }
 
     const paymentResults = [];
+    let committedPayment = preview.payment;
 
     if (preview.encounterType === 'OPD' && payload.payment?.collectNow && invoiceIds.length) {
       const paymentPayload = {
@@ -558,22 +580,67 @@ async function commitDeskCheckout(payload, user) {
       paymentResults.push(await patientFinancial.recordOPDPayment(patient._id, paymentPayload, user));
     }
 
-    if (preview.encounterType === 'IPD' && payload.payment?.collectNow && preview.payment?.advanceCreated > 0) {
-      const advance = await ipdFinancial.recordAdvance(admission._id, {
-        amount: preview.payment.advanceCreated,
-        paymentMethod: payload.payment.paymentMethod || 'Cash',
-        reference: payload.payment.reference || '',
-        notes: payload.payment.notes || `Advance received during Desk admission checkout ${idempotencyKey}`,
-        idempotencyKey: `${idempotencyKey}:IPD_ADVANCE`
-      }, user);
+    if (preview.encounterType === 'IPD' && payload.payment?.collectNow) {
+      const paymentMethod = payload.payment.paymentMethod || 'Cash';
+      const reference = payload.payment.reference || '';
+      const collectionAmount = round(preview.payment?.collectionAmount || 0);
+      // Use the issued document as the final authority because coverage pricing
+      // can make patient liability lower than the cart's gross estimate.
+      const issuedOutstanding = round(issuedIPDInvoice?.balance_due || 0);
+      const amountApplied = round(Math.min(collectionAmount, issuedOutstanding));
+      const advanceCreated = round(Math.max(0, collectionAmount - amountApplied));
 
-      paymentResults.push({
-        ...advance,
-        paymentKind: 'IPD_ADVANCE',
-        amount: preview.payment.advanceCreated,
-        paymentMethod: payload.payment.paymentMethod || 'Cash',
-        reference: payload.payment.reference || ''
-      });
+      committedPayment = {
+        ...preview.payment,
+        amountApplied,
+        advanceCreated,
+        overpayment: advanceCreated,
+        balanceAfter: round(Math.max(0, issuedOutstanding - amountApplied))
+      };
+
+      // BILL_NOW means issue an invoice now and apply the checkout collection
+      // to that invoice. Previously the entire collection was posted as an
+      // advance, leaving the new invoice unpaid and due.
+      if (amountApplied > 0 && issuedIPDInvoice?._id) {
+        const settlement = await ipdFinancial.recordIPDPayment(admission._id, {
+          invoiceId: issuedIPDInvoice._id,
+          amount: amountApplied,
+          paymentMethod,
+          reference,
+          sourceModule: 'IPD',
+          receiptType: 'Payment',
+          notes: payload.payment.notes || `Payment received during Desk admission checkout ${idempotencyKey}`,
+          idempotencyKey: `${idempotencyKey}:IPD_PAYMENT`
+        }, user);
+
+        paymentResults.push({
+          ...settlement,
+          paymentKind: 'IPD_PAYMENT',
+          amount: amountApplied,
+          paymentMethod,
+          reference
+        });
+      }
+
+      // Only the excess over BILL_NOW invoice liability is retained as advance.
+      // If there are no BILL_NOW rows, the full collection remains an advance.
+      if (advanceCreated > 0) {
+        const advance = await ipdFinancial.recordAdvance(admission._id, {
+          amount: advanceCreated,
+          paymentMethod,
+          reference,
+          notes: payload.payment.notes || `Advance received during Desk admission checkout ${idempotencyKey}`,
+          idempotencyKey: `${idempotencyKey}:IPD_ADVANCE`
+        }, user);
+
+        paymentResults.push({
+          ...advance,
+          paymentKind: 'IPD_ADVANCE',
+          amount: advanceCreated,
+          paymentMethod,
+          reference
+        });
+      }
     }
 
     const documents = [
@@ -594,8 +661,8 @@ async function commitDeskCheckout(payload, user) {
         .map(item => ({
           type: 'RECEIPT',
           id: item.receiptNumber,
-          label: item.paymentKind === 'IPD_ADVANCE' ? 'Admission receipt' : 'Receipt',
-          receiptType: item.paymentKind === 'IPD_ADVANCE' ? 'IPD_ADVANCE' : 'PAYMENT',
+          label: String(item.paymentKind || '').startsWith('IPD_') ? 'Admission receipt' : 'Receipt',
+          receiptType: item.paymentKind === 'IPD_ADVANCE' ? 'IPD_ADVANCE' : 'IPD_PAYMENT',
           amount: item.amount,
           paymentMethod: item.paymentMethod,
           reference: item.reference || '',
@@ -639,7 +706,7 @@ async function commitDeskCheckout(payload, user) {
       paymentResults,
       documents,
       totals: preview.totals,
-      payment: preview.payment,
+      payment: committedPayment,
       warnings: preview.warnings
     };
 

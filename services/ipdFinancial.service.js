@@ -214,6 +214,25 @@ function dateKey(value = new Date()) {
   return new Date(value).toISOString().slice(0, 10);
 }
 
+async function syncLinkedBillFromInvoice(invoice, paymentMethod, session) {
+  if (!invoice?.bill_id) return null;
+
+  const linkedBill = await Bill.findById(invoice.bill_id, null, sessionOptions(session));
+  if (!linkedBill) return null;
+
+  // The invoice is the authoritative settlement document. Mirror its financial
+  // state to the linked bill so bill cards and invoice cards cannot disagree.
+  linkedBill.paid_amount = money(invoice.amount_paid || 0);
+  linkedBill.advance_applied = money(invoice.advance_applied || 0);
+  linkedBill.settlement_discount_amount = money(invoice.settlement_discount_amount || 0);
+  linkedBill.credit_note_amount = money(invoice.credit_note_total || 0);
+  linkedBill.balance_due = money(invoice.balance_due || 0);
+  linkedBill.payment_method = paymentMethod || linkedBill.payment_method || 'Pending';
+  await linkedBill.save(sessionOptions(session));
+
+  return linkedBill;
+}
+
 function serviceTypeForCharge(chargeType) {
   if (chargeType === 'Consultation' || chargeType === 'Doctor Visit') {
     return 'Consultation';
@@ -1406,6 +1425,7 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
       invoice.advance_applied = money(Number(invoice.advance_applied || 0) + invoiceAdvanceApplied);
       invoice.receipt_numbers = Array.from(new Set([...(invoice.receipt_numbers || []), receiptNumber]));
       await invoice.save(sessionOptions(session));
+      await syncLinkedBillFromInvoice(invoice, paymentMethod, session);
 
       const transaction = new FinancialTransaction({
         hospitalId,
