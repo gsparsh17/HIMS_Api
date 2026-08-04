@@ -6,7 +6,11 @@ const rateCardItemSchema = new mongoose.Schema({
   payerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer', required: true, index: true },
   externalCode: { type: String, required: true, trim: true, uppercase: true },
   externalName: { type: String, required: true, trim: true },
-  serviceType: { type: String, enum: ['consultation', 'laboratory', 'radiology', 'procedure', 'ot', 'bed', 'pharmacy', 'equipment', 'other'], required: true },
+  serviceType: { 
+    type: String, 
+    enum: ['consultation', 'laboratory', 'radiology', 'procedure', 'ot', 'bed', 'pharmacy', 'equipment', 'other'], 
+    required: true 
+  },
   specialty: { type: String, trim: true },
   category: { type: String, trim: true },
   internalService: {
@@ -23,18 +27,44 @@ const rateCardItemSchema = new mongoose.Schema({
     tierIII: { nonNabh: Number, nabh: Number, superSpeciality: Number },
     flatAmount: Number
   },
+  // Ward-specific rates (for Lombard-style rate lists)
+  wardRates: {
+    general: Number,
+    semi_private: Number,
+    private: Number,
+    icu: Number,
+    day_care: Number,
+    not_applicable: Number
+  },
+  // Billing unit for the rate card item
+  billingUnit: {
+    type: String,
+    enum: ['package', 'component', 'per_day', 'per_visit', 'per_use', 'per_procedure', 'flat'],
+    default: 'flat'
+  },
   packagePeriodDays: { type: Number, min: 0 },
   wardUniform: { type: Boolean, default: false },
   allowedWards: [{ type: String }],
   inclusions: [{ type: String }],
   exclusions: [{ type: String }],
-  nonAdmissibleRules: [{ code: String, description: String, amount: Number, percentage: Number }],
+  nonAdmissibleRules: [{ 
+    code: String, 
+    description: String, 
+    amount: Number, 
+    percentage: Number 
+  }],
   active: { type: Boolean, default: true },
-  sourceRow: { page: Number, serialNumber: Number, raw: mongoose.Schema.Types.Mixed }
+  sourceRow: { 
+    page: Number, 
+    serialNumber: Number, 
+    raw: mongoose.Schema.Types.Mixed 
+  }
 }, { timestamps: true });
 
+// Indexes
 rateCardItemSchema.index({ rateCardId: 1, externalCode: 1 }, { unique: true });
 rateCardItemSchema.index({ hospitalId: 1, 'internalService.model': 1, 'internalService.id': 1 });
 rateCardItemSchema.index({ hospitalId: 1, serviceType: 1, category: 1 });
+rateCardItemSchema.index({ rateCardId: 1, 'internalService.mappingStatus': 1 });
 
 module.exports = mongoose.model('RateCardItem', rateCardItemSchema);

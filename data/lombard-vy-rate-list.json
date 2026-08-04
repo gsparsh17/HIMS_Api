@@ -1,0 +1,4059 @@
+{
+  "schemaVersion": "1.0",
+  "source": {
+    "title": "ICICI Lombard rate list - Vy Hospital",
+    "filename": "lombard rate list.pdf",
+    "sha256": "1bb3ff93fae6938a868a05c93f85d1c52544e538c85c3920ca2a93d311068813",
+    "hospitalName": "Vy Hospital",
+    "location": "Raipur",
+    "state": "Chhattisgarh",
+    "networkCode": "Non Network",
+    "hospitalType": "Secondry",
+    "speciality": "Multispeciality",
+    "effectiveDate": null,
+    "pages": 7
+  },
+  "normalization": {
+    "specialtyMap": {
+      "ENT": "ENT",
+      "Gastroenterology": "Gastroenterology",
+      "General Surgery": "General Surgery",
+      "Obstetric & Gynaecology": "Obstetrics & Gynaecology",
+      "Opthalmology": "Ophthalmology",
+      "Orthopedics": "Orthopedics",
+      "Plastic Surgery": "Plastic Surgery",
+      "Urology/Nephrology": "Urology/Nephrology"
+    },
+    "note": "Source terminology is retained in externalName/sourceCategory. Only specialty normalization and deterministic generated codes are added."
+  },
+  "indexDefinitions": {
+    "A": {
+      "label": "Inclusions",
+      "items": [
+        "Doctor's fee/visit charges/cross-consultation charges",
+        "OT charges",
+        "OT gas charges",
+        "Anaesthetic charges",
+        "Medicines",
+        "Pre-operative and post-operative investigations",
+        "Surgeon charges",
+        "Assistant surgeon charges",
+        "Room rent",
+        "Nursing charges",
+        "Laparoscopy charges, if applicable",
+        "Oxygen charges",
+        "All types of monitor charges"
+      ],
+      "sourceText": "Doctor's fee/Visit Charges/cross-consultation charges, OT charges,OT gas charges Anaesthetic Charges, Medicines,pre-op & post op Investigations, Surgeon charges, Asst Surgeon Charges,Room rents, Nursing charges,Lap Charges(if applicable),Oxygen Charges,all type of Monitor Charges"
+    },
+    "B": {
+      "label": "Implants",
+      "items": [
+        "IOL",
+        "Pacemaker",
+        "Orthopaedic prosthesis",
+        "Stents",
+        "Staplers",
+        "Mesh",
+        "Valve charges",
+        "Coil charges"
+      ],
+      "sourceText": "IOL, Pacemaker, Ortho prosthesis, Stents, staplers,mesh,Valve charges,Coil charges"
+    },
+    "C": {
+      "label": "Others",
+      "items": [
+        "IABP",
+        "Cement charges",
+        "Catheter charges",
+        "Dye charges"
+      ],
+      "sourceText": "IABP,Cement charges,Catheter charges,Dye charges"
+    },
+    "D": {
+      "label": "Baby Charges",
+      "items": [
+        "Charges incurred against routine care of baby"
+      ],
+      "sourceText": "Charges occured against routine care of baby"
+    }
+  },
+  "rules": {
+    "sameOtSession": [
+      1,
+      0.5,
+      0.25
+    ],
+    "sourceNote": "Primary surgery package 100%, second 50%, third 25% when performed in one sitting under single anaesthesia."
+  },
+  "packages": [
+    {
+      "externalCode": "IL-VY-ENT001",
+      "internalProcedureCode": "ENT001",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "FESS",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 21000,
+        "semi_private": 23800,
+        "private": 28000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 1
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT002",
+      "internalProcedureCode": "ENT002",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Inferior Turbinectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13500,
+        "semi_private": 15300,
+        "private": 18000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 2
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT003",
+      "internalProcedureCode": "ENT003",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Mastoidectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 20900,
+        "semi_private": 23700,
+        "private": 27900
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 3
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT004",
+      "internalProcedureCode": "ENT004",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Microlaryngeal Surgeries",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 28800,
+        "semi_private": 32600,
+        "private": 38300
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 4
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT005",
+      "internalProcedureCode": "ENT005",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Myringoplasty",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 16500,
+        "semi_private": 18700,
+        "private": 22000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 5
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT006",
+      "internalProcedureCode": "ENT006",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Pre- auricular Sinus Excision",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 12000,
+        "semi_private": 13600,
+        "private": 16000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 6
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT007",
+      "internalProcedureCode": "ENT007",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Septoplasty",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 18800,
+        "semi_private": 21300,
+        "private": 25000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 7
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT008",
+      "internalProcedureCode": "ENT008",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Stapedectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 24300,
+        "semi_private": 27500,
+        "private": 32400
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 8
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT009",
+      "internalProcedureCode": "ENT009",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Tonsillectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 15000,
+        "semi_private": 17000,
+        "private": 20000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 9
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ENT010",
+      "internalProcedureCode": "ENT010",
+      "sourceCategory": "ENT",
+      "specialty": "ENT",
+      "externalName": "Tympanoplasty",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 19500,
+        "semi_private": 22100,
+        "private": 26000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 10
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GAS001",
+      "internalProcedureCode": "GAS001",
+      "sourceCategory": "Gastroenterology",
+      "specialty": "Gastroenterology",
+      "externalName": "Colonoscopy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 1500,
+        "semi_private": 1700,
+        "private": 2000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 11
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GAS002",
+      "internalProcedureCode": "GAS002",
+      "sourceCategory": "Gastroenterology",
+      "specialty": "Gastroenterology",
+      "externalName": "ERCP/stenting",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 10400,
+        "semi_private": 11800,
+        "private": 13900
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 12
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-GAS003",
+      "internalProcedureCode": "GAS003",
+      "sourceCategory": "Gastroenterology",
+      "specialty": "Gastroenterology",
+      "externalName": "MRCP/stenting",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 12400,
+        "semi_private": 14100,
+        "private": 16600
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 13
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-GAS004",
+      "internalProcedureCode": "GAS004",
+      "sourceCategory": "Gastroenterology",
+      "specialty": "Gastroenterology",
+      "externalName": "OGD scopy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 2300,
+        "semi_private": 2600,
+        "private": 3000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 14
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GAS005",
+      "internalProcedureCode": "GAS005",
+      "sourceCategory": "Gastroenterology",
+      "specialty": "Gastroenterology",
+      "externalName": "Sigmoidoscopy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 2700,
+        "semi_private": 3100,
+        "private": 3600
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 15
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS001",
+      "internalProcedureCode": "GS001",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Appendisectomy Lap",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 33200,
+        "semi_private": 38300,
+        "private": 45000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 16
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS002",
+      "internalProcedureCode": "GS002",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Appendisectomy Open",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 26300,
+        "semi_private": 29800,
+        "private": 35000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 17
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS003",
+      "internalProcedureCode": "GS003",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Breast Fibroadenoma - Excision",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 16100,
+        "semi_private": 18200,
+        "private": 21400
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 18
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS004",
+      "internalProcedureCode": "GS004",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Cholecystectomy Lap",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 36000,
+        "semi_private": 40800,
+        "private": 48000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 19
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS005",
+      "internalProcedureCode": "GS005",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Cholecystectomy open",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 28500,
+        "semi_private": 32300,
+        "private": 38000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 20
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS006",
+      "internalProcedureCode": "GS006",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Excision of Ganglions",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 11300,
+        "semi_private": 12800,
+        "private": 15000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 21
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS007",
+      "internalProcedureCode": "GS007",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Excision of Pilonidal Sinus",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 14200,
+        "semi_private": 16100,
+        "private": 18900
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 22
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS008",
+      "internalProcedureCode": "GS008",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Fissure - Dilatation",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 10700,
+        "semi_private": 12100,
+        "private": 14200
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 23
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS009",
+      "internalProcedureCode": "GS009",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Fissurectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 15400,
+        "semi_private": 17400,
+        "private": 20500
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 24
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS010",
+      "internalProcedureCode": "GS010",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Fistula - High",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 18800,
+        "semi_private": 21300,
+        "private": 25000
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 25
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS011",
+      "internalProcedureCode": "GS011",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Fistula - Low",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13100,
+        "semi_private": 15100,
+        "private": 17800
+      },
+      "sourceRow": {
+        "page": 1,
+        "serialNumber": 26
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS012",
+      "internalProcedureCode": "GS012",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Gastrectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 39000,
+        "semi_private": 44200,
+        "private": 52000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 27
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS013",
+      "internalProcedureCode": "GS013",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Haemoroidectomy",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 18800,
+        "semi_private": 21300,
+        "private": 25000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 28
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-GS014",
+      "internalProcedureCode": "GS014",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Herniorraphy",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 24000,
+        "semi_private": 27200,
+        "private": 32000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 29
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-GS015",
+      "internalProcedureCode": "GS015",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Hydrocele/Varicocele",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13500,
+        "semi_private": 15300,
+        "private": 18000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 30
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS016",
+      "internalProcedureCode": "GS016",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Intestinal Resection and Anastomosis",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 60100,
+        "semi_private": 68100,
+        "private": 80100
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 31
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS017",
+      "internalProcedureCode": "GS017",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "L N Biopsy - GA",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 10700,
+        "semi_private": 12100,
+        "private": 14200
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 32
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS018",
+      "internalProcedureCode": "GS018",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "L N Biopsy - LA",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 8000,
+        "semi_private": 9000,
+        "private": 10600
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 33
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS019",
+      "internalProcedureCode": "GS019",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Lap Hernioplasty - Bilateral",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 45000,
+        "semi_private": 51000,
+        "private": 60000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 34
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-GS020",
+      "internalProcedureCode": "GS020",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Lap Hernioplasty - Unilateral",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 30000,
+        "semi_private": 34000,
+        "private": 40000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 35
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-GS021",
+      "internalProcedureCode": "GS021",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Lipoma - GA",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 10700,
+        "semi_private": 12100,
+        "private": 14200
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 36
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS022",
+      "internalProcedureCode": "GS022",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Lipoma - LA",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 8000,
+        "semi_private": 9000,
+        "private": 10600
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 37
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS023",
+      "internalProcedureCode": "GS023",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Mastectomy Radical",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 47300,
+        "semi_private": 53600,
+        "private": 63000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 38
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS024",
+      "internalProcedureCode": "GS024",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Mastectomy Simple",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 31500,
+        "semi_private": 35700,
+        "private": 42000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 39
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS025",
+      "internalProcedureCode": "GS025",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Pancreatectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 52500,
+        "semi_private": 59500,
+        "private": 70000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 40
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS026",
+      "internalProcedureCode": "GS026",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Sinus Excision",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13400,
+        "semi_private": 15100,
+        "private": 17800
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 41
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS027",
+      "internalProcedureCode": "GS027",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Splenectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 37500,
+        "semi_private": 42500,
+        "private": 50000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 42
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS028",
+      "internalProcedureCode": "GS028",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Thyroidectomy - Hemi",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 32000,
+        "semi_private": 36300,
+        "private": 42700
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 43
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS029",
+      "internalProcedureCode": "GS029",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Thyroidectomy - Total",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 36800,
+        "semi_private": 44000,
+        "private": 55000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 44
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS030",
+      "internalProcedureCode": "GS030",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Total Colectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 47900,
+        "semi_private": 54300,
+        "private": 63900
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 45
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS031",
+      "internalProcedureCode": "GS031",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Tumor Excision",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 10700,
+        "semi_private": 12100,
+        "private": 14200
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 46
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-GS032",
+      "internalProcedureCode": "GS032",
+      "sourceCategory": "General Surgery",
+      "specialty": "General Surgery",
+      "externalName": "Varicose Vein",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 30000,
+        "semi_private": 34000,
+        "private": 40000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 47
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG001",
+      "internalProcedureCode": "OBG001",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Caeserian Section",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 28500,
+        "semi_private": 32300,
+        "private": 38000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 48
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges",
+        "D: Baby Charges - Charges incurred against routine care of baby"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG002",
+      "internalProcedureCode": "OBG002",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Ectopic Pregnancy - LAP",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 31300,
+        "semi_private": 35500,
+        "private": 41800
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 49
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG003",
+      "internalProcedureCode": "OBG003",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Ectopic Pregnancy - Open",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 26600,
+        "semi_private": 30100,
+        "private": 35500
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 50
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG004",
+      "internalProcedureCode": "OBG004",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Forceps/Vaccum Delivery",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 18000,
+        "semi_private": 20400,
+        "private": 24000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 51
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges",
+        "D: Baby Charges - Charges incurred against routine care of baby"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG005",
+      "internalProcedureCode": "OBG005",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Hysterectomy - Vaginal",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 30000,
+        "semi_private": 34000,
+        "private": 40000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 52
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG006",
+      "internalProcedureCode": "OBG006",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Hysterectomy Abdominal",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 30000,
+        "semi_private": 34000,
+        "private": 40000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 53
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG007",
+      "internalProcedureCode": "OBG007",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Hysterectomy with Salphingoopherectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 31100,
+        "semi_private": 35300,
+        "private": 41500
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 54
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG008",
+      "internalProcedureCode": "OBG008",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Lap Hysterectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 33800,
+        "semi_private": 38300,
+        "private": 45000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 55
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG009",
+      "internalProcedureCode": "OBG009",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Lap. Ovarian Cystectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 24000,
+        "semi_private": 27200,
+        "private": 32000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 56
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG010",
+      "internalProcedureCode": "OBG010",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Laproscopic Assisted Vaginal Hysterectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 33800,
+        "semi_private": 38300,
+        "private": 45000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 57
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG011",
+      "internalProcedureCode": "OBG011",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "MTP/ D & C",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 6200,
+        "semi_private": 7000,
+        "private": 8300
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 58
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG012",
+      "internalProcedureCode": "OBG012",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Myomectomy - LAP",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 32300,
+        "semi_private": 38300,
+        "private": 45000
+      },
+      "sourceRow": {
+        "page": 2,
+        "serialNumber": 59
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG013",
+      "internalProcedureCode": "OBG013",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Myomectomy - Open",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 20300,
+        "semi_private": 24500,
+        "private": 33100
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 60
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG014",
+      "internalProcedureCode": "OBG014",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Normal Delivery",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 12500,
+        "semi_private": 17000,
+        "private": 20000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 61
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges",
+        "D: Baby Charges - Charges incurred against routine care of baby"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OBG015",
+      "internalProcedureCode": "OBG015",
+      "sourceCategory": "Obstetric & Gynaecology",
+      "specialty": "Obstetrics & Gynaecology",
+      "externalName": "Ovarain Cyst / Tumor - Open",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 19500,
+        "semi_private": 22100,
+        "private": 26000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 62
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH001",
+      "internalProcedureCode": "OPH001",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Cataract - Multifocal",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 30000,
+        "semi_private": 30000,
+        "private": 30000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 63
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH002",
+      "internalProcedureCode": "OPH002",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Cataract - Unifocal, Phaco, foldable, Acrylic",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 18000,
+        "semi_private": 18000,
+        "private": 18000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 64
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH003",
+      "internalProcedureCode": "OPH003",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "DCR",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 6700,
+        "semi_private": 6700,
+        "private": 6700
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 65
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH004",
+      "internalProcedureCode": "OPH004",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Enucleation",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13000,
+        "semi_private": 13000,
+        "private": 13000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 66
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH005",
+      "internalProcedureCode": "OPH005",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Evisceration",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13000,
+        "semi_private": 13000,
+        "private": 13000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 67
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH006",
+      "internalProcedureCode": "OPH006",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Keratoplasty",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 10400,
+        "semi_private": 10400,
+        "private": 10400
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 68
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH007",
+      "internalProcedureCode": "OPH007",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Lasik for permanent correction of refractive errors above - 7.5",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 24000,
+        "semi_private": 24000,
+        "private": 24000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 69
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH008",
+      "internalProcedureCode": "OPH008",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Pterygium Excision and auto conjuntival grafting",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 5200,
+        "semi_private": 5200,
+        "private": 5200
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 70
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH009",
+      "internalProcedureCode": "OPH009",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Ptosis correction surgery",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 9000,
+        "semi_private": 9000,
+        "private": 9000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 71
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH010",
+      "internalProcedureCode": "OPH010",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Scleral Buckling (Retinal detachement Surgery)",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 15700,
+        "semi_private": 15700,
+        "private": 15700
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 72
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH011",
+      "internalProcedureCode": "OPH011",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Squint Correction (non - congenitial)",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 9700,
+        "semi_private": 9700,
+        "private": 9700
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 73
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH012",
+      "internalProcedureCode": "OPH012",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Surgical Iridectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 9700,
+        "semi_private": 9700,
+        "private": 9700
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 74
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH013",
+      "internalProcedureCode": "OPH013",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Trabeculectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 8100,
+        "semi_private": 8100,
+        "private": 8100
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 75
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH014",
+      "internalProcedureCode": "OPH014",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Vitrectomy (for proliferative diabetes / other retinopathies",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 14900,
+        "semi_private": 14900,
+        "private": 14900
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 76
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-OPH015",
+      "internalProcedureCode": "OPH015",
+      "sourceCategory": "Opthalmology",
+      "specialty": "Ophthalmology",
+      "externalName": "Vitrectomy (for retinal detachement with PVR)",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 17800,
+        "semi_private": 17800,
+        "private": 17800
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 77
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT001",
+      "internalProcedureCode": "ORT001",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "A.O. Compression Proceedures for Fracture Neck Femur (Undispalced Fracture)",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 26100,
+        "semi_private": 29500,
+        "private": 34700
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 78
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT002",
+      "internalProcedureCode": "ORT002",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "ACL Reconstruction",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 30000,
+        "semi_private": 34000,
+        "private": 40000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 79
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT003",
+      "internalProcedureCode": "ORT003",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Ampution / Disarticulations Major",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 32300,
+        "semi_private": 36600,
+        "private": 43000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 80
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT004",
+      "internalProcedureCode": "ORT004",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Ampution / Disarticulations Minor",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13500,
+        "semi_private": 15300,
+        "private": 18000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 81
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT005",
+      "internalProcedureCode": "ORT005",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Anterolateral Decompresion & Spinal Fusion",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 45800,
+        "semi_private": 51900,
+        "private": 61000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 82
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT006",
+      "internalProcedureCode": "ORT006",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Arthorscopy Knee - Operative",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 20800,
+        "semi_private": 23600,
+        "private": 27700
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 83
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT007",
+      "internalProcedureCode": "ORT007",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Arthroscopy Knee- Diagnostic",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13500,
+        "semi_private": 15300,
+        "private": 18000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 84
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT008",
+      "internalProcedureCode": "ORT008",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Arthrotomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 14600,
+        "semi_private": 16500,
+        "private": 19400
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 85
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT009",
+      "internalProcedureCode": "ORT009",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Carpel Tunnel Syndrome (Nerve Decompression)",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 8400,
+        "semi_private": 9500,
+        "private": 11200
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 86
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT010",
+      "internalProcedureCode": "ORT010",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "DHS - Bilateral Hip",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 64500,
+        "semi_private": 73100,
+        "private": 86000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 87
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT011",
+      "internalProcedureCode": "ORT011",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "DHS - Single Hip",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 45800,
+        "semi_private": 51900,
+        "private": 61000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 88
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT012",
+      "internalProcedureCode": "ORT012",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Discectomy",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 36000,
+        "semi_private": 40800,
+        "private": 48000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 89
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT013",
+      "internalProcedureCode": "ORT013",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Excision of Bone Tumours Deep",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 25500,
+        "semi_private": 28900,
+        "private": 34000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 90
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT014",
+      "internalProcedureCode": "ORT014",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Excision of Bone Tumours Susperficial",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 15800,
+        "semi_private": 17900,
+        "private": 21000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 91
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT015",
+      "internalProcedureCode": "ORT015",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Hip Replacement",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 56300,
+        "semi_private": 63800,
+        "private": 75000
+      },
+      "sourceRow": {
+        "page": 3,
+        "serialNumber": 92
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT016",
+      "internalProcedureCode": "ORT016",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Lamineectomy, Excision and Tumors",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 36000,
+        "semi_private": 40800,
+        "private": 48000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 93
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT017",
+      "internalProcedureCode": "ORT017",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Menisectomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 24800,
+        "semi_private": 28100,
+        "private": 33000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 94
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT018",
+      "internalProcedureCode": "ORT018",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Nail Plate Fixations for Fracture Neck Femur",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 25500,
+        "semi_private": 28900,
+        "private": 34000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 95
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT019",
+      "internalProcedureCode": "ORT019",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Open Reduction & Internal Fixation of Fingers & Toes",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 15800,
+        "semi_private": 17900,
+        "private": 21000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 96
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT020",
+      "internalProcedureCode": "ORT020",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Open Reduction of Dislocations Deep",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 25500,
+        "semi_private": 28900,
+        "private": 34000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 97
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT021",
+      "internalProcedureCode": "ORT021",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Open Reduction of Dislocations Superficial",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 15000,
+        "semi_private": 17000,
+        "private": 20000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 98
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT022",
+      "internalProcedureCode": "ORT022",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Open Reduction of Fracture Dislocation & Internal Fixations",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 25500,
+        "semi_private": 28900,
+        "private": 34000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 99
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT023",
+      "internalProcedureCode": "ORT023",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Open Reduction of Fracture Neck Femur Muscle Pedical Graft & Internal Fixations",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 30600,
+        "semi_private": 34700,
+        "private": 40900
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 100
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT024",
+      "internalProcedureCode": "ORT024",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Open Reduction of Long Bones of Upper & Lower Limb",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 31500,
+        "semi_private": 35700,
+        "private": 42000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 101
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT025",
+      "internalProcedureCode": "ORT025",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "PCL Repair",
+      "inclusionCodes": [
+        "A",
+        "C"
+      ],
+      "exclusionCodes": [
+        "B"
+      ],
+      "wardRates": {
+        "general": 30000,
+        "semi_private": 34000,
+        "private": 40000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 102
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT026",
+      "internalProcedureCode": "ORT026",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Reduction of Compound Fractures with External Fixation",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 25000,
+        "semi_private": 28300,
+        "private": 33300
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 103
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT027",
+      "internalProcedureCode": "ORT027",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Removal of Plates / Wires / Screws",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 13900,
+        "semi_private": 15700,
+        "private": 18500
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 104
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT028",
+      "internalProcedureCode": "ORT028",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "S.P. Nailing for Fracture Neck Femur",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 23000,
+        "semi_private": 26000,
+        "private": 30600
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 105
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-ORT029",
+      "internalProcedureCode": "ORT029",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "TKR - Bilateral",
+      "inclusionCodes": [
+        "A"
+      ],
+      "exclusionCodes": [
+        "B",
+        "C"
+      ],
+      "wardRates": {
+        "general": 82500,
+        "semi_private": 93500,
+        "private": 110000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 106
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT030",
+      "internalProcedureCode": "ORT030",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "TKR - Unilateral",
+      "inclusionCodes": [
+        "A"
+      ],
+      "exclusionCodes": [
+        "B",
+        "C"
+      ],
+      "wardRates": {
+        "general": 56300,
+        "semi_private": 63800,
+        "private": 75000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 107
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges"
+      ],
+      "exclusions": [
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-ORT031",
+      "internalProcedureCode": "ORT031",
+      "sourceCategory": "Orthopedics",
+      "specialty": "Orthopedics",
+      "externalName": "Trigger Finger",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 6000,
+        "semi_private": 6800,
+        "private": 8000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 108
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-PLS001",
+      "internalProcedureCode": "PLS001",
+      "sourceCategory": "Plastic Surgery",
+      "specialty": "Plastic Surgery",
+      "externalName": "AV fistula",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 8200,
+        "semi_private": 9300,
+        "private": 11000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 109
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-PLS002",
+      "internalProcedureCode": "PLS002",
+      "sourceCategory": "Plastic Surgery",
+      "specialty": "Plastic Surgery",
+      "externalName": "Ulcers/Bed Sore - Skin Grafting",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 18500,
+        "semi_private": 21000,
+        "private": 24700
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 110
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO001",
+      "internalProcedureCode": "URO001",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "CAPD catheter Insertion",
+      "inclusionCodes": [
+        "A",
+        "B"
+      ],
+      "exclusionCodes": [
+        "C"
+      ],
+      "wardRates": {
+        "general": 8200,
+        "semi_private": 9300,
+        "private": 11000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 111
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges"
+      ],
+      "exclusions": [
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ]
+    },
+    {
+      "externalCode": "IL-VY-URO002",
+      "internalProcedureCode": "URO002",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "Circumcision",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 5100,
+        "semi_private": 5800,
+        "private": 6800
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 112
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO003",
+      "internalProcedureCode": "URO003",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "Cystoscopic Basketing of Stones",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 16600,
+        "semi_private": 18800,
+        "private": 22100
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 113
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO004",
+      "internalProcedureCode": "URO004",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "Cystoscopy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 8200,
+        "semi_private": 9300,
+        "private": 11000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 114
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO005",
+      "internalProcedureCode": "URO005",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "Dilatation of Stricture Urethra",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 4500,
+        "semi_private": 5100,
+        "private": 6000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 115
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO006",
+      "internalProcedureCode": "URO006",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "DJ Stent Removal",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 6000,
+        "semi_private": 6800,
+        "private": 8000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 116
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO007",
+      "internalProcedureCode": "URO007",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "Cystoscopic+URS+DJ Stenting - Bilateral",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 33800,
+        "semi_private": 38300,
+        "private": 45000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 117
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO008",
+      "internalProcedureCode": "URO008",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "Cystoscopic+URS+DJ Stenting - Unilateral",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 24000,
+        "semi_private": 27200,
+        "private": 32000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 118
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO009",
+      "internalProcedureCode": "URO009",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "ESWL+ DJ Stenting",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 19300,
+        "semi_private": 21900,
+        "private": 25700
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 119
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO010",
+      "internalProcedureCode": "URO010",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "DJ Stenting-Unilateral (All Inclusive)",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 12000,
+        "semi_private": 13600,
+        "private": 16000
+      },
+      "sourceRow": {
+        "page": 4,
+        "serialNumber": 120
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO011",
+      "internalProcedureCode": "URO011",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "Nephrectomy/Pyelolithotomy",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 37500,
+        "semi_private": 42500,
+        "private": 50000
+      },
+      "sourceRow": {
+        "page": 5,
+        "serialNumber": 121
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO012",
+      "internalProcedureCode": "URO012",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "Operaton for Torsion of Testis",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 17600,
+        "semi_private": 19900,
+        "private": 23400
+      },
+      "sourceRow": {
+        "page": 5,
+        "serialNumber": 122
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO013",
+      "internalProcedureCode": "URO013",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "PCNL+DJ stenting",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 28600,
+        "semi_private": 32400,
+        "private": 38200
+      },
+      "sourceRow": {
+        "page": 5,
+        "serialNumber": 123
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO014",
+      "internalProcedureCode": "URO014",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "DJ Stenting-Bilateral (All Inclusive)",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 18000,
+        "semi_private": 20400,
+        "private": 24000
+      },
+      "sourceRow": {
+        "page": 5,
+        "serialNumber": 124
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    },
+    {
+      "externalCode": "IL-VY-URO015",
+      "internalProcedureCode": "URO015",
+      "sourceCategory": "Urology/Nephrology",
+      "specialty": "Urology/Nephrology",
+      "externalName": "TURP",
+      "inclusionCodes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "exclusionCodes": [],
+      "wardRates": {
+        "general": 30000,
+        "semi_private": 34000,
+        "private": 40000
+      },
+      "sourceRow": {
+        "page": 5,
+        "serialNumber": 125
+      },
+      "inclusions": [
+        "A: Inclusions - Doctor's fee/visit charges/cross-consultation charges; OT charges; OT gas charges; Anaesthetic charges; Medicines; Pre-operative and post-operative investigations; Surgeon charges; Assistant surgeon charges; Room rent; Nursing charges; Laparoscopy charges, if applicable; Oxygen charges; All types of monitor charges",
+        "B: Implants - IOL; Pacemaker; Orthopaedic prosthesis; Stents; Staplers; Mesh; Valve charges; Coil charges",
+        "C: Others - IABP; Cement charges; Catheter charges; Dye charges"
+      ],
+      "exclusions": []
+    }
+  ],
+  "nonPackageGrades": [
+    {
+      "grade": "I",
+      "label": "Minor Surgery",
+      "page": 6,
+      "components": [
+        {
+          "code": "SURGEON",
+          "name": "Surgeon/Procedure charges",
+          "wardRates": {
+            "general": 1400,
+            "semi_private": 1800,
+            "private": 2000
+          }
+        },
+        {
+          "code": "OT",
+          "name": "OT charges",
+          "wardRates": {
+            "general": 500,
+            "semi_private": 600,
+            "private": 700
+          }
+        },
+        {
+          "code": "ANAESTHETIST",
+          "name": "Anesthesist Charges",
+          "wardRates": {
+            "general": 400,
+            "semi_private": 500,
+            "private": 600
+          }
+        }
+      ]
+    },
+    {
+      "grade": "II",
+      "label": "Intermidiate Surgery",
+      "page": 6,
+      "components": [
+        {
+          "code": "SURGEON",
+          "name": "Surgeon/Procedure charges",
+          "wardRates": {
+            "general": 2900,
+            "semi_private": 3600,
+            "private": 4000
+          }
+        },
+        {
+          "code": "OT",
+          "name": "OT charges",
+          "wardRates": {
+            "general": 1000,
+            "semi_private": 1300,
+            "private": 1400
+          }
+        },
+        {
+          "code": "ANAESTHETIST",
+          "name": "Anesthesist Charges",
+          "wardRates": {
+            "general": 900,
+            "semi_private": 1100,
+            "private": 1200
+          }
+        }
+      ]
+    },
+    {
+      "grade": "III",
+      "label": "Major Surgery",
+      "page": 6,
+      "components": [
+        {
+          "code": "SURGEON",
+          "name": "Surgeon/Procedure charges",
+          "wardRates": {
+            "general": 5700,
+            "semi_private": 7100,
+            "private": 7900
+          }
+        },
+        {
+          "code": "OT",
+          "name": "OT charges",
+          "wardRates": {
+            "general": 2000,
+            "semi_private": 2500,
+            "private": 2800
+          }
+        },
+        {
+          "code": "ANAESTHETIST",
+          "name": "Anesthesist Charges",
+          "wardRates": {
+            "general": 1700,
+            "semi_private": 2100,
+            "private": 2400
+          }
+        },
+        {
+          "code": "ANAESTHESIA-MED",
+          "name": "Anesthesia (medicines) Charges",
+          "wardRates": {
+            "general": 1100,
+            "semi_private": 1100,
+            "private": 1100
+          }
+        }
+      ]
+    },
+    {
+      "grade": "IV",
+      "label": "Supra Major Surgery",
+      "page": 6,
+      "components": [
+        {
+          "code": "SURGEON",
+          "name": "Surgeon/Procedure charges",
+          "wardRates": {
+            "general": 14100,
+            "semi_private": 17600,
+            "private": 19600
+          }
+        },
+        {
+          "code": "ASSISTANT",
+          "name": "Assistant Charges",
+          "wardRates": {
+            "general": 3500,
+            "semi_private": 4400,
+            "private": 4900
+          }
+        },
+        {
+          "code": "OT",
+          "name": "OT charges",
+          "wardRates": {
+            "general": 4900,
+            "semi_private": 6200,
+            "private": 6900
+          }
+        },
+        {
+          "code": "ANAESTHETIST",
+          "name": "Anesthesist Charges",
+          "wardRates": {
+            "general": 4200,
+            "semi_private": 5300,
+            "private": 5900
+          }
+        },
+        {
+          "code": "ANAESTHESIA-MED",
+          "name": "Anesthesia (medicines) Charges",
+          "wardRates": {
+            "general": 2000,
+            "semi_private": 2000,
+            "private": 2000
+          }
+        },
+        {
+          "code": "OT-GASES",
+          "name": "OT Gases",
+          "wardRates": {
+            "general": 2000,
+            "semi_private": 2000,
+            "private": 2000
+          }
+        }
+      ]
+    },
+    {
+      "grade": "V",
+      "label": "Supra Major Plus Surgery",
+      "page": 6,
+      "components": [
+        {
+          "code": "SURGEON",
+          "name": "Surgeon/Procedure charges",
+          "wardRates": {
+            "general": 22500,
+            "semi_private": 28100,
+            "private": 31200
+          }
+        },
+        {
+          "code": "ASSISTANT",
+          "name": "Assistant Charges",
+          "wardRates": {
+            "general": 5600,
+            "semi_private": 7000,
+            "private": 7800
+          }
+        },
+        {
+          "code": "OT",
+          "name": "OT charges",
+          "wardRates": {
+            "general": 7900,
+            "semi_private": 9800,
+            "private": 10900
+          }
+        },
+        {
+          "code": "ANAESTHETIST",
+          "name": "Anesthesist Charges",
+          "wardRates": {
+            "general": 6700,
+            "semi_private": 8400,
+            "private": 9400
+          }
+        },
+        {
+          "code": "ANAESTHESIA-MED",
+          "name": "Anesthesia (medicines) Charges",
+          "wardRates": {
+            "general": 3000,
+            "semi_private": 3000,
+            "private": 3000
+          }
+        },
+        {
+          "code": "OT-GASES",
+          "name": "OT Gases",
+          "wardRates": {
+            "general": 3000,
+            "semi_private": 3000,
+            "private": 3000
+          }
+        }
+      ]
+    }
+  ],
+  "generalHospitalCharges": {
+    "rooms": [
+      {
+        "externalCode": "IL-VY-ROOM-GENERAL",
+        "roomType": "General/Economy",
+        "roomName": "General Ward",
+        "ward": "general",
+        "roomRent": 600,
+        "nursing": "Included in Room Rent",
+        "doctorVisitPerDay": 300,
+        "superSpecialistPerVisit": 200,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-ROOM-SEMI-PRIVATE",
+        "roomType": "Twin Sharing AC",
+        "roomName": "Semi Private",
+        "ward": "semi_private",
+        "roomRent": 1200,
+        "nursing": "Included in Room Rent",
+        "doctorVisitPerDay": 400,
+        "superSpecialistPerVisit": 300,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-ROOM-PRIVATE",
+        "roomType": "Single Room AC",
+        "roomName": "Private/Deluxe",
+        "ward": "private",
+        "roomRent": 1800,
+        "nursing": "Included in Room Rent",
+        "doctorVisitPerDay": 500,
+        "superSpecialistPerVisit": 400,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-ROOM-ICU",
+        "roomType": "ICU/SICU/MICU/CCU",
+        "roomName": "ICU",
+        "ward": "icu",
+        "roomRent": 2400,
+        "nursing": "Included in Room Rent",
+        "doctorVisitPerDay": 500,
+        "superSpecialistPerVisit": 400,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-ROOM-DAYCARE",
+        "roomType": "Day Care",
+        "roomName": "Day Care",
+        "ward": "day_care",
+        "roomRent": 600,
+        "nursing": "Included in Room Rent",
+        "doctorVisitPerDay": 200,
+        "superSpecialistPerVisit": 200,
+        "page": 7
+      }
+    ]
+  },
+  "specialEquipmentAndInvestigations": {
+    "roomEquipment": [
+      {
+        "externalCode": "IL-VY-EQ-VENTILATOR",
+        "name": "Ventilator",
+        "amount": 2000,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-EQ-CPAP",
+        "name": "C-PAP",
+        "amount": 1000,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-EQ-SYRINGE-PUMP",
+        "name": "Syringe Pump",
+        "amount": 200,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-EQ-INFUSION-PUMP",
+        "name": "Infusion Pump",
+        "amount": 200,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-EQ-PULSE-OXYMETER",
+        "name": "Pulse Oxymeter",
+        "amount": 150,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-EQ-AIR-BED",
+        "name": "Air Bed",
+        "amount": 200,
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-EQ-MONITORING",
+        "name": "Monitor(ing)",
+        "amount": 200,
+        "page": 7
+      }
+    ],
+    "otEquipment": [
+      {
+        "name": "C-Arm",
+        "pricing": "Inclusive in OT Charges",
+        "page": 7
+      },
+      {
+        "name": "Laproscope",
+        "pricing": "Inclusive in OT Charges",
+        "page": 7
+      },
+      {
+        "name": "Microscope",
+        "pricing": "Inclusive in OT Charges",
+        "page": 7
+      },
+      {
+        "name": "Ureteroscope",
+        "pricing": "Inclusive in OT Charges",
+        "page": 7
+      },
+      {
+        "name": "Hysteroscope",
+        "pricing": "Inclusive in OT Charges",
+        "page": 7
+      }
+    ],
+    "specialInvestigations": [
+      {
+        "externalCode": "IL-VY-INV-MAMMOGRAPHY",
+        "name": "MammoGraphy",
+        "amount": 800,
+        "serviceType": "radiology",
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-INV-2D-ECHO",
+        "name": "2D Echo",
+        "amount": 1200,
+        "serviceType": "radiology",
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-INV-EEG",
+        "name": "EEG",
+        "amount": 1000,
+        "serviceType": "other",
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-INV-EMG",
+        "name": "EMG",
+        "amount": 700,
+        "serviceType": "other",
+        "page": 7
+      },
+      {
+        "externalCode": "IL-VY-INV-PFT",
+        "name": "PFT",
+        "amount": 400,
+        "serviceType": "other",
+        "page": 7
+      }
+    ]
+  },
+  "counts": {
+    "packageItems": 125,
+    "packageItemsBySpecialty": {
+      "ENT": 10,
+      "Gastroenterology": 5,
+      "General Surgery": 32,
+      "Obstetrics & Gynaecology": 15,
+      "Ophthalmology": 15,
+      "Orthopedics": 31,
+      "Plastic Surgery": 2,
+      "Urology/Nephrology": 15
+    },
+    "nonPackageGradeComponents": 22,
+    "roomTypes": 5,
+    "roomEquipment": 7,
+    "otEquipmentInclusive": 5,
+    "specialInvestigations": 5
+  }
+}

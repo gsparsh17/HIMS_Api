@@ -1,11 +1,18 @@
 const mongoose = require('mongoose');
 
 const procedureSchema = new mongoose.Schema({
+  // Hospital/Tenant Scope
+  hospitalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    required: true,
+    index: true
+  },
+
   // Identification
   code: {
     type: String,
     required: true,
-    unique: true,
     trim: true,
     uppercase: true,
     index: true
@@ -190,8 +197,11 @@ const procedureSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Indexes for Efficient Searching
-procedureSchema.index({ code: 1, name: 1 });
+// Indexes for efficient tenant-scoped searching
+// Unique compound index: hospitalId + code
+procedureSchema.index({ hospitalId: 1, code: 1 }, { unique: true });
+procedureSchema.index({ hospitalId: 1, name: 1 });
+procedureSchema.index({ hospitalId: 1, code: 1, name: 1 });
 procedureSchema.index({ category: 1, subcategory: 1 });
 procedureSchema.index({ is_active: 1, facility_level: 1 });
 procedureSchema.index({ tags: 1 });
@@ -220,12 +230,16 @@ procedureSchema.statics.searchProcedures = async function(query, options = {}) {
     specialty_id,
     facility_level,
     min_price,
-    max_price
+    max_price,
+    hospitalId
   } = options;
-  
+
+  if (!hospitalId) throw new Error('hospitalId is required for procedure search');
+
   const skip = (page - 1) * limit;
   
   const searchCriteria = {
+    hospitalId,
     is_active: true,
     $or: [
       { code: { $regex: query, $options: 'i' } },
@@ -264,8 +278,9 @@ procedureSchema.statics.searchProcedures = async function(query, options = {}) {
   };
 };
 
-procedureSchema.statics.getPopularProcedures = async function(limit = 10, department_id = null) {
-  const matchCriteria = { is_active: true, usage_count: { $gt: 0 } };
+procedureSchema.statics.getPopularProcedures = async function(limit = 10, department_id = null, hospitalId) {
+  if (!hospitalId) throw new Error('hospitalId is required');
+  const matchCriteria = { hospitalId, is_active: true, usage_count: { $gt: 0 } };
   if (department_id) matchCriteria.department_id = department_id;
   
   return await this.find(matchCriteria)
@@ -274,9 +289,10 @@ procedureSchema.statics.getPopularProcedures = async function(limit = 10, depart
     .select('code name category usage_count duration_minutes base_price');
 };
 
-procedureSchema.statics.getProcedureStats = async function() {
+procedureSchema.statics.getProcedureStats = async function(hospitalId) {
+  if (!hospitalId) throw new Error('hospitalId is required');
   const stats = await this.aggregate([
-    { $match: { is_active: true } },
+    { $match: { hospitalId: new mongoose.Types.ObjectId(String(hospitalId)), is_active: true } },
     {
       $group: {
         _id: null,
@@ -315,11 +331,12 @@ procedureSchema.statics.getProcedureStats = async function() {
   return stats[0] || { total: 0, total_usage: 0, avg_price: 0, min_price: 0, max_price: 0, categories: {} };
 };
 
-procedureSchema.statics.bulkUpload = async function(proceduresData) {
+procedureSchema.statics.bulkUpload = async function(proceduresData, hospitalId) {
+  if (!hospitalId) throw new Error('hospitalId is required');
   const operations = proceduresData.map(proc => ({
     updateOne: {
-      filter: { code: proc.code },
-      update: { $set: proc },
+      filter: { hospitalId, code: proc.code },
+      update: { $set: { ...proc, hospitalId } },
       upsert: true
     }
   }));
