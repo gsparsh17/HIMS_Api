@@ -54,7 +54,6 @@ const RadiologyRequest = require('../models/RadiologyRequest');
 const IPDAdmission = require('../models/IPDAdmission');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const DischargeSummary = require('../models/DischargeSummary');
-const InsuranceProvider = require('../models/InsuranceProvider');
 const Payer = require('../models/Payer');
 const AdmissionCoverage = require('../models/AdmissionCoverage');
 const IPDAccommodationSegment = require(
@@ -930,11 +929,10 @@ async function main() {
       );
     }
 
-    const legacyProviders = await InsuranceProvider.find({
-      is_active: {
-        $ne: false
-      }
-    }).lean();
+    const legacyProviders = await mongoose.connection
+      .collection('insuranceproviders')
+      .find({ is_active: { $ne: false } })
+      .toArray();
 
     const mappedPayers = [
       selfPayer

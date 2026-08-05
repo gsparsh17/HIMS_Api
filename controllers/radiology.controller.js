@@ -40,7 +40,7 @@ exports.createImagingTest = async (req, res) => {
     const {
       code, name, category, description, preparation_instructions,
       contraindications, contrast_required, contrast_details,
-      turnaround_time_hours, base_price, insurance_coverage, is_active
+      turnaround_time_hours, base_price, insurance_coverage, is_active, template_only, is_billable, allow_zero_price, canonical_test_id
     } = req.body;
 
     if (!code || !name || !category) {
@@ -66,6 +66,8 @@ exports.createImagingTest = async (req, res) => {
       turnaround_time_hours: turnaround_time_hours || 24,
       base_price: base_price || 0,
       insurance_coverage: insurance_coverage || 'Partial',
+      template_only: Boolean(template_only), is_billable: is_billable === undefined ? !template_only : Boolean(is_billable),
+      allow_zero_price: Boolean(allow_zero_price), canonical_test_id: canonical_test_id || undefined,
       is_active: is_active !== undefined ? is_active : true,
       createdBy: req.user?._id
     });
@@ -85,6 +87,8 @@ exports.getImagingTests = async (req, res) => {
     const filter = { hospitalId: requireHospitalId(req) };
     
     if (active_only === 'true') filter.is_active = true;
+    if (req.query.include_template_only !== 'true') filter.template_only = false;
+    if (req.query.include_non_billable !== 'true') filter.is_billable = true;
     if (category) filter.category = category;
     if (search) {
       filter.$or = [
@@ -105,9 +109,18 @@ exports.getImagingTests = async (req, res) => {
 exports.updateImagingTest = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const hospitalId = requireHospitalId(req);
+    const current = await ImagingTest.findOne({ _id: id, hospitalId });
+    if (!current) return res.status(404).json({ error: 'Orderable billable imaging test not found' });
+    const updates = { ...req.body, updatedBy: req.user?._id };
     delete updates.hospitalId;
-    const test = await ImagingTest.findOneAndUpdate({ _id: id, hospitalId: requireHospitalId(req) }, { $set: updates }, { new: true, runValidators: true });
+    if (updates.base_price !== undefined && Number(updates.base_price) !== Number(current.base_price)) {
+      current.priceHistory.push({ amount: Number(current.base_price || 0), effectiveFrom: current.updatedAt || current.createdAt, effectiveTo: new Date(), reason: updates.price_change_reason || 'Imaging master edit', changedBy: req.user?._id });
+    }
+    delete updates.price_change_reason;
+    current.set(updates);
+    await current.save();
+    const test = current;
     if (!test) return res.status(404).json({ error: 'Imaging test not found' });
     res.json({ success: true, data: test });
   } catch (error) {
@@ -120,9 +133,13 @@ exports.updateImagingTest = async (req, res) => {
 exports.deleteImagingTest = async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await ImagingTest.findOneAndDelete({ _id: id, hospitalId: requireHospitalId(req) });
+    const deleted = await ImagingTest.findOneAndUpdate(
+      { _id: id, hospitalId: requireHospitalId(req) },
+      { $set: { is_active: false, is_billable: false, updatedBy: req.user?._id } },
+      { new: true }
+    );
     if (!deleted) return res.status(404).json({ error: 'Imaging test not found' });
-    res.json({ success: true, message: 'Imaging test deleted successfully' });
+    res.json({ success: true, message: 'Imaging test archived successfully', data: deleted });
   } catch (error) {
     console.error('Error deleting imaging test:', error);
     res.status(500).json({ error: error.message });
@@ -147,7 +164,7 @@ exports.createRadiologyRequest = async (req, res) => {
 
     // Get imaging test details
     const hospitalId = requireHospitalId(req);
-    const imagingTest = await ImagingTest.findOne({ _id: imagingTestId, hospitalId, is_active: true });
+    const imagingTest = await ImagingTest.findOne({ _id: imagingTestId, hospitalId, is_active: true, is_billable: true, template_only: false });
     if (!imagingTest) {
       return res.status(404).json({ error: 'Imaging test not found' });
     }

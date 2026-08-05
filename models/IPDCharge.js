@@ -97,25 +97,40 @@ const ipdChargeSchema = new mongoose.Schema({
     rateCardVersion: String,
     rateCardItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'RateCardItem' },
     serviceCode: String,
+    internalServiceModel: String,
+    internalServiceId: mongoose.Schema.Types.ObjectId,
+    resultType: { type: String, enum: ['self', 'payer_rate', 'cash_fallback', 'non_admissible', 'package_included', 'package_excluded', 'manual_override'] },
+    fallbackReason: String,
     packageCode: String,
+    packageEpisodeId: { type: mongoose.Schema.Types.ObjectId, ref: 'PackageEpisode' },
+    packageDecision: String,
     inputs: mongoose.Schema.Types.Mixed,
     amounts: {
       hospitalStandard: { type: Number, default: 0 },
       contracted: { type: Number, default: 0 },
+      eligible: { type: Number, default: 0 },
       sponsorLiability: { type: Number, default: 0 },
       // Must permit negative authorised discount/waiver adjustment lines.
       patientLiability: { type: Number, default: 0 },
       nonAdmissible: { type: Number, default: 0 },
-      hospitalAdjustment: { type: Number, default: 0 }
+      hospitalAdjustment: { type: Number, default: 0 },
+      hospitalConcession: { type: Number, default: 0 },
+      packageAbsorbed: { type: Number, default: 0 }
     },
     explanation: [String],
     ruleTrace: [mongoose.Schema.Types.Mixed],
     pricedAt: Date
   },
   // Must permit negative authorised discount/waiver adjustment lines.
+  standardAmount: { type: Number, default: 0 },
+  contractedAmount: { type: Number, default: 0 },
+  eligibleAmount: { type: Number, default: 0 },
   patientLiability: { type: Number, default: 0 },
   sponsorLiability: { type: Number, default: 0, min: 0 },
   nonAdmissibleAmount: { type: Number, default: 0, min: 0 },
+  contractualAdjustmentAmount: { type: Number, default: 0 },
+  hospitalConcessionAmount: { type: Number, default: 0, min: 0 },
+  packageAbsorbedAmount: { type: Number, default: 0, min: 0 },
   rateCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'RateCard' },
   rateCardVersion: String,
   packageCode: String,
@@ -246,10 +261,13 @@ ipdChargeSchema.pre('validate', function calculateCharge(next) {
       amounts: {
         hospitalStandard: Number(this.grossAmount || 0),
         contracted: Number(this.netAmount || 0),
+        eligible: Number(this.netAmount || 0),
         sponsorLiability: 0,
         patientLiability: Number(this.netAmount || 0),
         nonAdmissible: 0,
-        hospitalAdjustment: 0
+        hospitalAdjustment: 0,
+        hospitalConcession: 0,
+        packageAbsorbed: 0
       },
       explanation: ['Standard hospital pricing snapshot'],
       pricedAt: new Date()
@@ -266,9 +284,15 @@ ipdChargeSchema.pre('validate', function calculateCharge(next) {
     this.pricingSnapshot.amounts.patientLiability = Number(this.netAmount || 0);
   }
 
+  this.standardAmount = Number(this.pricingSnapshot?.amounts?.hospitalStandard ?? this.grossAmount ?? 0);
+  this.contractedAmount = Number(this.pricingSnapshot?.amounts?.contracted ?? this.netAmount ?? 0);
+  this.eligibleAmount = Number(this.pricingSnapshot?.amounts?.eligible ?? this.contractedAmount ?? 0);
   this.patientLiability = Number(this.pricingSnapshot?.amounts?.patientLiability ?? this.netAmount ?? 0);
   this.sponsorLiability = Number(this.pricingSnapshot?.amounts?.sponsorLiability ?? 0);
   this.nonAdmissibleAmount = Number(this.pricingSnapshot?.amounts?.nonAdmissible ?? 0);
+  this.contractualAdjustmentAmount = Number(this.pricingSnapshot?.amounts?.hospitalAdjustment ?? 0);
+  this.hospitalConcessionAmount = Number(this.pricingSnapshot?.amounts?.hospitalConcession ?? 0);
+  this.packageAbsorbedAmount = Number(this.pricingSnapshot?.amounts?.packageAbsorbed ?? 0);
   this.rateCardId = this.pricingSnapshot?.rateCardId || this.rateCardId;
   this.rateCardVersion = this.pricingSnapshot?.rateCardVersion || this.rateCardVersion;
   this.packageCode = this.pricingSnapshot?.packageCode || this.packageCode;

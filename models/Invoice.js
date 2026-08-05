@@ -477,6 +477,22 @@ const radiologyItemSchema = new mongoose.Schema({
   timestamps: true
 });
 
+
+const payerLineAllocationFields = {
+  pricing_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  standard_amount: { type: Number, default: 0 },
+  contracted_amount: { type: Number, default: 0 },
+  eligible_amount: { type: Number, default: 0 },
+  patient_liability: { type: Number, default: 0 },
+  sponsor_liability: { type: Number, default: 0 },
+  non_admissible_amount: { type: Number, default: 0 },
+  contractual_adjustment: { type: Number, default: 0 },
+  hospital_concession: { type: Number, default: 0 },
+  package_absorbed: { type: Number, default: 0 }
+};
+[serviceItemSchema, medicineItemSchema, procedureItemSchema, labTestItemSchema, radiologyItemSchema]
+  .forEach((schema) => schema.add(payerLineAllocationFields));
+
 const invoiceSchema = new mongoose.Schema({
   payer_allocation: {
     coverage_id: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
@@ -484,9 +500,14 @@ const invoiceSchema = new mongoose.Schema({
     claim_id: { type: mongoose.Schema.Types.ObjectId, ref: 'ClaimCase' },
     standard_amount: { type: Number, default: 0 },
     contracted_amount: { type: Number, default: 0 },
+    eligible_amount: { type: Number, default: 0 },
     patient_liability: { type: Number, default: 0 },
     sponsor_liability: { type: Number, default: 0 },
     non_admissible_amount: { type: Number, default: 0 },
+    contractual_adjustment: { type: Number, default: 0 },
+    hospital_concession: { type: Number, default: 0 },
+    package_absorbed: { type: Number, default: 0 },
+    fallback_count: { type: Number, default: 0 },
     sponsor_paid_amount: { type: Number, default: 0 }
   },
   invoice_number: {
@@ -849,10 +870,14 @@ invoiceSchema.pre('save', function (next) {
     .reduce((sum, payment) => sum + Number(payment?.amount || 0), 0);
   this.amount_paid = Math.max(Number(this.amount_paid || 0), completedPaymentTotal);
 
-  // Calculate balance due from the authoritative totals.
+  // Patient collection excludes the sponsor share. The full contracted amount
+  // remains visible on the invoice while balance_due tracks only patient money.
+  const patientBase = this.payer_allocation?.coverage_id
+    ? Number(this.payer_allocation?.patient_liability || 0)
+    : Number(this.total || 0);
   this.balance_due = Math.max(
     0,
-    Number(this.total || 0) -
+    patientBase -
       this.amount_paid -
       Number(this.settlement_discount_amount || 0) -
       Number(this.credit_note_total || 0)

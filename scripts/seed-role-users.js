@@ -70,7 +70,11 @@ const ROLE_ACTIONS = {
   accountant: {
     billing_finance: [
       'claim_submit',
+      'claim_manage',
+      'claim_export',
       'preauth_decide',
+      'coverage_reprice',
+      'coverage_reprice_commit',
       'rate_card_approve',
       'pricing_override',
       'settlement',

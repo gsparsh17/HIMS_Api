@@ -12,6 +12,8 @@ const payerSchema = new mongoose.Schema({
   },
   parentPayerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
   tpaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
+  networkStatus: { type: String, enum: ['network', 'non_network', 'not_applicable'], default: 'not_applicable', index: true },
+  demoOnly: { type: Boolean, default: false, index: true },
   empanelment: {
     status: { type: String, enum: ['not_required', 'pending', 'active', 'suspended', 'expired', 'rejected'], default: 'pending' },
     number: { type: String, trim: true },
@@ -26,7 +28,23 @@ const payerSchema = new mongoose.Schema({
     deductionPolicy: { type: String, trim: true },
     notes: { type: String, trim: true }
   },
+  pricingPolicy: {
+    missingItem: { type: String, enum: ['cash_fallback', 'non_admissible', 'block'], default: 'cash_fallback' },
+    balanceBilling: { type: String, enum: ['patient', 'hospital_concession', 'requires_approval', 'not_allowed'], default: 'patient' },
+    defaultCoPayPercentage: { type: Number, default: 0, min: 0, max: 100 },
+    defaultDeductibleAmount: { type: Number, default: 0, min: 0 },
+    requireEligibility: { type: Boolean, default: true },
+    requirePreAuthorisation: { type: Boolean, default: false },
+    receivableRecognition: { type: String, enum: ['invoice_issue', 'claim_submission'], default: 'invoice_issue' }
+  },
   documentChecklist: [{ code: String, label: String, required: { type: Boolean, default: true } }],
+  activation: {
+    activatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    activatedAt: Date,
+    deactivatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    deactivatedAt: Date,
+    reason: String
+  },
   isActive: { type: Boolean, default: true, index: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }

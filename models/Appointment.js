@@ -70,6 +70,9 @@ const appointmentSchema = new mongoose.Schema({
   submissionSource: { type: String, trim: true, default: 'APPOINTMENT_MODAL' },
   bookedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   deskCheckoutId: { type: mongoose.Schema.Types.ObjectId, index: true },
+  coverageId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage', index: true },
+  sponsorType: { type: String, default: 'self' },
+  sponsorName: { type: String, trim: true },
 
   abdmRecordLink: {
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },

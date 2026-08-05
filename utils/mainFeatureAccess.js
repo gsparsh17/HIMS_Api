@@ -244,7 +244,11 @@ const ROLE_ACTION_PRESET = Object.freeze({
   accountant: {
     billing_finance: [
       'claim_submit',
+      'claim_manage',
+      'claim_export',
       'preauth_decide',
+      'coverage_reprice',
+      'coverage_reprice_commit',
       'rate_card_approve',
       'pricing_override',
       'settlement',
@@ -259,7 +263,11 @@ const ROLE_ACTION_PRESET = Object.freeze({
   insurance_desk: {
     billing_finance: [
       'claim_submit',
+      'claim_manage',
+      'claim_export',
       'preauth_decide',
+      'coverage_reprice',
+      'coverage_reprice_commit',
       'rate_card_approve',
       'pricing_override',
       'settlement',

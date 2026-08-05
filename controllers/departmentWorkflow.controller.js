@@ -4,7 +4,10 @@ const IPDCharge = require('../models/IPDCharge');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const labWorkflow = require('../services/labWorkflow.service');
 const radiologyWorkflow = require('../services/radiologyWorkflow.service');
-const { quotePricing } = require('../services/pricingEngine.service');
+const { quotePricing, pricingSnapshot } = require('../services/pricingEngine.service');
+const { recordPackageUtilization } = require('../services/packageAdjudication.service');
+const { activeCoverage } = require('../services/coverage.service');
+const { replaceCoverageUtilization } = require('../services/coverageUtilization.service');
 
 function sendError(res, error) {
   return res.status(error.statusCode || 400).json({
@@ -323,7 +326,7 @@ exports.releaseLab = async (req, res) => {
         const pricing = await quotePricing({
           hospitalId,
           admissionId: request.admissionId,
-          externalCode: request.testCode,
+          internalCode: request.testCode,
           internalServiceModel: 'LabTest',
           internalServiceId: request.labTestId,
           serviceType: 'laboratory',
@@ -331,7 +334,7 @@ exports.releaseLab = async (req, res) => {
           serviceDate: request.releasedAt
         });
 
-        await IPDCharge.findOneAndUpdate(
+        const postedCharge = await IPDCharge.findOneAndUpdate(
           {
             hospitalId,
             sourceModule: 'Lab',
@@ -358,18 +361,10 @@ exports.releaseLab = async (req, res) => {
               addedBy: req.user._id
             },
             $set: {
-              pricingSnapshot: {
-                rateCardId: pricing.rateCard?.id,
-                rateCardVersion: pricing.rateCard?.version,
-                rateCardItemId: pricing.rateCardItemId,
-                serviceCode: pricing.serviceCode,
-                packageCode: pricing.packageCode,
-                inputs: pricing.inputs,
-                amounts: pricing.amounts,
-                explanation: pricing.explanation,
-                ruleTrace: pricing.ruleTrace,
-                pricedAt: new Date()
-              },
+              pricingSnapshot: pricingSnapshot(pricing, {
+                internalServiceModel: 'LabTest',
+                internalServiceId: request.labTestId
+              }),
               patientLiability: pricing.amounts.patientLiability,
               sponsorLiability: pricing.amounts.sponsorLiability,
               nonAdmissibleAmount: pricing.amounts.nonAdmissible,
@@ -384,6 +379,27 @@ exports.releaseLab = async (req, res) => {
             runValidators: true
           }
         );
+        const coverage = await activeCoverage(hospitalId, request.admissionId);
+        await replaceCoverageUtilization({
+          coverage,
+          quote: pricing,
+          hospitalId,
+          encounterType: 'IPD',
+          admissionId: request.admissionId,
+          patientId: request.patientId,
+          sourceType: 'IPDCharge',
+          sourceId: postedCharge._id,
+          internalServiceModel: 'LabTest',
+          internalServiceId: request.labTestId,
+          userId: req.user._id
+        });
+        if (pricing.packageAdjudication) {
+          await recordPackageUtilization({
+            decision: pricing.packageAdjudication,
+            input: { serviceType: 'laboratory', internalServiceModel: 'LabTest', internalServiceId: request.labTestId, internalCode: request.testCode, description: request.testName, quantity: 1 },
+            quote: pricing, sourceType: 'IPDCharge', sourceId: postedCharge._id
+          });
+        }
       } catch (pricingError) {
         data.billingWarning = pricingError.message;
       }
@@ -620,7 +636,7 @@ exports.releaseRadiology = async (req, res) => {
         const pricing = await quotePricing({
           hospitalId,
           admissionId: request.admissionId,
-          externalCode: request.testCode,
+          internalCode: request.testCode,
           internalServiceModel: 'ImagingTest',
           internalServiceId: request.imagingTestId,
           serviceType: 'radiology',
@@ -628,7 +644,7 @@ exports.releaseRadiology = async (req, res) => {
           serviceDate: request.releasedAt
         });
 
-        await IPDCharge.findOneAndUpdate(
+        const postedCharge = await IPDCharge.findOneAndUpdate(
           {
             hospitalId,
             sourceModule: 'Radiology',
@@ -655,18 +671,10 @@ exports.releaseRadiology = async (req, res) => {
               addedBy: req.user._id
             },
             $set: {
-              pricingSnapshot: {
-                rateCardId: pricing.rateCard?.id,
-                rateCardVersion: pricing.rateCard?.version,
-                rateCardItemId: pricing.rateCardItemId,
-                serviceCode: pricing.serviceCode,
-                packageCode: pricing.packageCode,
-                inputs: pricing.inputs,
-                amounts: pricing.amounts,
-                explanation: pricing.explanation,
-                ruleTrace: pricing.ruleTrace,
-                pricedAt: new Date()
-              },
+              pricingSnapshot: pricingSnapshot(pricing, {
+                internalServiceModel: 'ImagingTest',
+                internalServiceId: request.imagingTestId
+              }),
               patientLiability: pricing.amounts.patientLiability,
               sponsorLiability: pricing.amounts.sponsorLiability,
               nonAdmissibleAmount: pricing.amounts.nonAdmissible
@@ -678,6 +686,27 @@ exports.releaseRadiology = async (req, res) => {
             runValidators: true
           }
         );
+        const coverage = await activeCoverage(hospitalId, request.admissionId);
+        await replaceCoverageUtilization({
+          coverage,
+          quote: pricing,
+          hospitalId,
+          encounterType: 'IPD',
+          admissionId: request.admissionId,
+          patientId: request.patientId,
+          sourceType: 'IPDCharge',
+          sourceId: postedCharge._id,
+          internalServiceModel: 'ImagingTest',
+          internalServiceId: request.imagingTestId,
+          userId: req.user._id
+        });
+        if (pricing.packageAdjudication) {
+          await recordPackageUtilization({
+            decision: pricing.packageAdjudication,
+            input: { serviceType: 'radiology', internalServiceModel: 'ImagingTest', internalServiceId: request.imagingTestId, internalCode: request.testCode, description: request.testName, quantity: 1 },
+            quote: pricing, sourceType: 'IPDCharge', sourceId: postedCharge._id
+          });
+        }
       } catch (pricingError) {
         data.billingWarning = pricingError.message;
       }

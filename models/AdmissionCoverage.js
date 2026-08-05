@@ -1,12 +1,23 @@
 const mongoose = require('mongoose');
 
+/**
+ * Encounter coverage for both OPD appointments and IPD admissions.
+ *
+ * The historical model name is retained to avoid breaking stored references
+ * and populate paths. New code should describe this document as encounter
+ * coverage and use encounterType + appointmentId/admissionId.
+ */
 const admissionCoverageSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
-  admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', required: true, index: true },
+  encounterType: { type: String, enum: ['OPD', 'IPD'], required: true, index: true },
+  admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', index: true },
+  appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', index: true },
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
   payerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer', required: true, index: true },
-  payerCategory: { type: String, enum: ['self', 'pmjay', 'cghs', 'state_scheme', 'echs', 'esic', 'government_other', 'corporate', 'private_insurer', 'tpa_managed', 'other'], required: true },
+  payerCategory: { type: String, enum: ['self', 'pmjay', 'cghs', 'state_scheme', 'echs', 'esic', 'government_other', 'corporate', 'private_insurer', 'tpa', 'tpa_managed', 'other'], required: true },
   tpaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
+  planName: String,
+  simulationOnly: { type: Boolean, default: false, index: true },
   beneficiary: {
     beneficiaryId: String,
     schemeCardNumber: String,
@@ -16,8 +27,10 @@ const admissionCoverageSchema = new mongoose.Schema({
     validFrom: Date,
     validTo: Date,
     coverageLimit: Number,
+    coverageLimitUsed: { type: Number, default: 0, min: 0 },
     coPayPercentage: { type: Number, default: 0, min: 0, max: 100 },
     deductibleAmount: { type: Number, default: 0, min: 0 },
+    deductibleUsed: { type: Number, default: 0, min: 0 },
     wardEntitlement: { type: String, enum: ['general', 'semi_private', 'private', 'icu', 'day_care', 'not_applicable'], default: 'semi_private' }
   },
   eligibility: {
@@ -38,6 +51,7 @@ const admissionCoverageSchema = new mongoose.Schema({
     requestedProcedure: String,
     estimatedAmount: Number,
     approvedAmount: Number,
+    consumedAmount: { type: Number, default: 0, min: 0 },
     submittedAt: Date,
     decisionAt: Date,
     validTo: Date,
@@ -53,16 +67,37 @@ const admissionCoverageSchema = new mongoose.Schema({
   },
   rateCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'RateCard' },
   rateCardVersion: String,
+  rateCardFrozenAt: Date,
+  fallbackPolicy: { type: String, enum: ['cash_fallback', 'non_admissible', 'block'], default: 'cash_fallback' },
+  balanceBillingPolicy: { type: String, enum: ['patient', 'hospital_concession', 'requires_approval', 'not_allowed'], default: 'patient' },
   active: { type: Boolean, default: true, index: true },
   effectiveFrom: { type: Date, default: Date.now },
   effectiveTo: Date,
   revision: { type: Number, default: 1 },
+  convertedFromCoverageId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+  conversionReason: String,
   documentChecklist: [{ code: String, label: String, status: { type: String, enum: ['missing', 'received', 'verified', 'rejected'], default: 'missing' }, documentId: mongoose.Schema.Types.ObjectId, note: String }],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
-admissionCoverageSchema.index({ hospitalId: 1, admissionId: 1, active: 1 });
-admissionCoverageSchema.index({ admissionId: 1, active: 1 }, { unique: true, partialFilterExpression: { active: true } });
+admissionCoverageSchema.pre('validate', function validateEncounter(next) {
+  if (this.encounterType === 'IPD' && !this.admissionId) this.invalidate('admissionId', 'admissionId is required for IPD coverage');
+  if (this.encounterType === 'OPD' && !this.appointmentId) this.invalidate('appointmentId', 'appointmentId is required for OPD coverage');
+  if (this.encounterType === 'IPD') this.appointmentId = undefined;
+  if (this.encounterType === 'OPD') this.admissionId = undefined;
+  next();
+});
+
+admissionCoverageSchema.index({ hospitalId: 1, encounterType: 1, admissionId: 1, active: 1 });
+admissionCoverageSchema.index({ hospitalId: 1, encounterType: 1, appointmentId: 1, active: 1 });
+admissionCoverageSchema.index(
+  { hospitalId: 1, admissionId: 1, active: 1 },
+  { unique: true, partialFilterExpression: { encounterType: 'IPD', active: true, admissionId: { $exists: true } } }
+);
+admissionCoverageSchema.index(
+  { hospitalId: 1, appointmentId: 1, active: 1 },
+  { unique: true, partialFilterExpression: { encounterType: 'OPD', active: true, appointmentId: { $exists: true } } }
+);
 
 module.exports = mongoose.model('AdmissionCoverage', admissionCoverageSchema);

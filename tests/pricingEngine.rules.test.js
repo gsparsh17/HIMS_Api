@@ -55,3 +55,14 @@ test('investigations remain ward-uniform', () => {
   assert.equal(roundMoney(value.contractedUnit), 900);
   assert.equal(value.wardUniform, true);
 });
+
+test('exact ward payer packages retain the contracted room-wise amounts without global ward factors', () => {
+  const item = {
+    category: 'General Surgery',
+    pricingMode: 'exact_ward',
+    rates: { exactWard: { general: 26300, semiPrivate: 29800, private: 35000 } }
+  };
+  assert.equal(applyConfiguredRateRules({ item, rules, wardEntitlement: 'general' }).contractedUnit, 26300);
+  assert.equal(applyConfiguredRateRules({ item, rules, wardEntitlement: 'semi_private' }).contractedUnit, 29800);
+  assert.equal(applyConfiguredRateRules({ item, rules, wardEntitlement: 'private' }).contractedUnit, 35000);
+});

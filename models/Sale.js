@@ -81,7 +81,17 @@ const saleItemSchema = new mongoose.Schema({
   commission_amount: { type: Number, default: 0, select: false },
 
   returned_quantity_base_units: { type: Number, default: 0 },
-  returned_amount: { type: Number, default: 0 }
+  returned_amount: { type: Number, default: 0 },
+  pricing_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  standard_amount: { type: Number, default: 0 },
+  contracted_amount: { type: Number, default: 0 },
+  eligible_amount: { type: Number, default: 0 },
+  patient_liability: { type: Number, default: 0 },
+  sponsor_liability: { type: Number, default: 0 },
+  non_admissible_amount: { type: Number, default: 0 },
+  contractual_adjustment: { type: Number, default: 0 },
+  hospital_concession: { type: Number, default: 0 },
+  package_absorbed: { type: Number, default: 0 }
 });
 
 const saleSchema = new mongoose.Schema({
@@ -100,6 +110,7 @@ const saleSchema = new mongoose.Schema({
   source_type: { type: String, enum: ['DIRECT', 'OPD_PRESCRIPTION', 'IPD_MEDICATION', 'IPD_RETURN_ADJUSTMENT'], default: 'DIRECT' },
   patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
   admission_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', index: true },
+  appointment_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', index: true },
   prescription_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Prescription' },
   doctor_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', index: true },
   doctor_name: { type: String, trim: true },
@@ -109,6 +120,20 @@ const saleSchema = new mongoose.Schema({
   ship_no: { type: String, trim: true, index: true },
   sponsor_type: { type: String, trim: true, default: 'Self' },
   sponsor_name: { type: String, trim: true, default: 'Self' },
+  payer_allocation: {
+    coverage_id: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+    payer_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
+    standard_amount: { type: Number, default: 0 },
+    contracted_amount: { type: Number, default: 0 },
+    eligible_amount: { type: Number, default: 0 },
+    patient_liability: { type: Number, default: 0 },
+    sponsor_liability: { type: Number, default: 0 },
+    non_admissible_amount: { type: Number, default: 0 },
+    contractual_adjustment: { type: Number, default: 0 },
+    hospital_concession: { type: Number, default: 0 },
+    package_absorbed: { type: Number, default: 0 },
+    fallback_count: { type: Number, default: 0 }
+  },
 
   customer_name: { type: String },
   customer_phone: { type: String },

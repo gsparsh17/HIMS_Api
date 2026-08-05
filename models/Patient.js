@@ -201,7 +201,7 @@ const patientSchema = new mongoose.Schema({
   },
   insurance_provider_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'InsuranceProvider',
+    ref: 'Payer',
     index: true
   },
   sponsor_name: {

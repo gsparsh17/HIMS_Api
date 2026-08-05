@@ -4,14 +4,22 @@ const controller = require('../controllers/claim.controller');
 const { protect, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
 
 router.use(protect);
+const financeView = requireModuleAccess('billing_finance', 'view');
 const financeManage = requireModuleAccess('billing_finance', 'manage');
 
-router.post('/claims', financeManage, controller.create);
-router.get('/claims', financeManage, controller.list);
-router.get('/claims/:id', financeManage, controller.get);
+router.post('/claims', financeManage, requireActionPermission('claim_manage'), controller.create);
+router.get('/claims', financeView, controller.list);
+router.get('/claims/reports/mis', financeView, controller.report);
+router.get('/claims/reports/export', financeView, requireActionPermission('claim_export'), controller.exportReport);
+router.get('/claims/:id', financeView, controller.get);
+router.patch('/claims/:id', financeManage, requireActionPermission('claim_manage'), controller.updateDraft);
+router.post('/claims/:id/rebuild-lines', financeManage, requireActionPermission('claim_manage'), controller.refresh);
 router.post('/claims/:id/submit', financeManage, requireActionPermission('claim_submit'), controller.submit);
-router.post('/claims/:id/query-response', financeManage, controller.queryResponse);
+router.post('/claims/:id/adjudicate', financeManage, requireActionPermission('claim_manage'), controller.adjudicate);
+router.post('/claims/:id/query-response', financeManage, requireActionPermission('claim_manage'), controller.queryResponse);
 router.post('/claims/:id/settlement', financeManage, requireActionPermission('settlement'), controller.settlement);
-router.get('/sponsor-ledger', financeManage, controller.ledger);
+router.post('/claims/:id/cancel', financeManage, requireActionPermission('claim_manage'), controller.cancel);
+router.get('/sponsor-ledger', financeView, controller.ledger);
+router.get('/sponsor-ledger/export', financeView, requireActionPermission('claim_export'), controller.exportLedger);
 
 module.exports = router;

@@ -1,0 +1,11 @@
+const express = require('express');
+const router = express.Router();
+const controller = require('../controllers/repricing.controller');
+const { requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
+const manage = requireModuleAccess('billing_finance', 'manage');
+router.post('/coverage-repricing/preview', manage, requireActionPermission('coverage_reprice'), controller.preview);
+router.get('/coverage-repricing', manage, controller.list);
+router.get('/coverage-repricing/:id', manage, controller.get);
+router.post('/coverage-repricing/:id/approve', manage, requireActionPermission('coverage_reprice'), controller.approve);
+router.post('/coverage-repricing/:id/commit', manage, requireActionPermission('coverage_reprice_commit'), controller.commit);
+module.exports = router;

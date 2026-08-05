@@ -18,6 +18,16 @@ const billItemSchema = new mongoose.Schema({
   tax_code: { type: String, trim: true },
   net_amount: { type: Number, default: 0 },
   source_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  pricing_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  standard_amount: { type: Number, default: 0 },
+  contracted_amount: { type: Number, default: 0 },
+  eligible_amount: { type: Number, default: 0 },
+  patient_liability: { type: Number, default: 0 },
+  sponsor_liability: { type: Number, default: 0 },
+  non_admissible_amount: { type: Number, default: 0 },
+  contractual_adjustment: { type: Number, default: 0 },
+  hospital_concession: { type: Number, default: 0 },
+  package_absorbed: { type: Number, default: 0 },
   amount: {
     type: Number,
     required: true
@@ -167,6 +177,22 @@ const deletionRequestSchema = new mongoose.Schema({
 });
 
 const billSchema = new mongoose.Schema({
+  payer_allocation: {
+    coverage_id: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+    payer_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
+    rate_card_id: { type: mongoose.Schema.Types.ObjectId, ref: 'RateCard' },
+    rate_card_version: String,
+    standard_amount: { type: Number, default: 0 },
+    contracted_amount: { type: Number, default: 0 },
+    eligible_amount: { type: Number, default: 0 },
+    patient_liability: { type: Number, default: 0 },
+    sponsor_liability: { type: Number, default: 0 },
+    non_admissible_amount: { type: Number, default: 0 },
+    contractual_adjustment: { type: Number, default: 0 },
+    hospital_concession: { type: Number, default: 0 },
+    package_absorbed: { type: Number, default: 0 },
+    fallback_count: { type: Number, default: 0 }
+  },
   bill_number: { type: String, trim: true, uppercase: true, sparse: true },
   document_stage: { type: String, enum: ['DRAFT', 'GENERATED', 'INVOICED', 'VOID'], default: 'DRAFT', index: true },
   invoice_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' }],
@@ -360,9 +386,12 @@ billSchema.pre('save', function (next) {
   this.gross_amount = Number(this.gross_amount || this.subtotal || 0);
   this.taxable_amount = Number(this.taxable_amount || Math.max(0, this.gross_amount - Number(this.line_discount_total || 0) - Number(this.bill_discount_total || 0)));
   this.paid_amount = Math.max(Number(this.paid_amount || 0), paymentTotal);
+  const patientBase = this.payer_allocation?.coverage_id
+    ? Number(this.payer_allocation?.patient_liability || 0)
+    : Number(this.total_amount || 0);
   this.balance_due = Math.max(
     0,
-    Number(this.total_amount || 0) -
+    patientBase -
       this.paid_amount -
       Number(this.settlement_discount_amount || 0) -
       Number(this.credit_note_amount || 0)

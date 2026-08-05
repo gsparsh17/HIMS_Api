@@ -4,7 +4,10 @@ const IPDCharge = require('../models/IPDCharge');
 const LabRequest = require('../models/LabRequest');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const ProcedureRequest = require('../models/ProcedureRequest');
-const { quotePricing } = require('./pricingEngine.service');
+const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
+const { activatePackageEpisode, recordPackageUtilization } = require('./packageAdjudication.service');
+const { activeCoverage } = require('./coverage.service');
+const { replaceCoverageUtilization } = require('./coverageUtilization.service');
 const { syncChargePosted } = require('./sourceBillingSync.service');
 const { BILLING_INTENTS } = require('../utils/billingLifecycle');
 
@@ -15,7 +18,8 @@ const SOURCE_CONFIG = {
     codeField: 'testCode',
     nameField: 'testName',
     chargeType: 'Lab Test',
-    serviceType: 'lab'
+    serviceType: 'laboratory',
+    internalServiceModel: 'LabTest'
   },
   RadiologyRequest: {
     Model: RadiologyRequest,
@@ -23,7 +27,8 @@ const SOURCE_CONFIG = {
     codeField: 'testCode',
     nameField: 'testName',
     chargeType: 'Radiology',
-    serviceType: 'radiology'
+    serviceType: 'radiology',
+    internalServiceModel: 'ImagingTest'
   },
   ProcedureRequest: {
     Model: ProcedureRequest,
@@ -31,7 +36,8 @@ const SOURCE_CONFIG = {
     codeField: 'procedureCode',
     nameField: 'procedureName',
     chargeType: 'Procedure',
-    serviceType: 'procedure'
+    serviceType: 'procedure',
+    internalServiceModel: 'Procedure'
   }
 };
 
@@ -114,8 +120,9 @@ async function postIPDSourceCharge({
     serviceDate: request.requestedDate || new Date(),
     chargeType: config.chargeType,
     serviceType: config.serviceType,
+    internalServiceModel: config.internalServiceModel,
     internalServiceId: request[config.masterField],
-    externalCode: request[config.codeField],
+    internalCode: request[config.codeField],
     standardAmount,
     quantity: 1
   });
@@ -140,21 +147,44 @@ async function postIPDSourceCharge({
     patientLiability: quote.amounts.patientLiability,
     sponsorLiability: quote.amounts.sponsorLiability,
     nonAdmissibleAmount: quote.amounts.nonAdmissible,
-    pricingSnapshot: {
-      rateCardId: quote.rateCard?.id,
-      rateCardVersion: quote.rateCard?.version,
-      rateCardItemId: quote.rateCardItemId,
-      serviceCode: quote.serviceCode,
-      packageCode: quote.packageCode,
-      inputs: quote.inputs,
-      amounts: quote.amounts,
-      explanation: quote.explanation,
-      ruleTrace: quote.ruleTrace,
-      pricedAt: new Date()
-    }
+    pricingSnapshot: pricingSnapshot(quote, {
+      internalServiceModel: config.internalServiceModel,
+      internalServiceId: request[config.masterField]
+    })
   });
 
   await charge.save(opts(session));
+
+  const coverage = await activeCoverage(admission.hospitalId, admission._id, session);
+  await replaceCoverageUtilization({
+    coverage,
+    quote,
+    hospitalId: admission.hospitalId,
+    encounterType: 'IPD',
+    admissionId: admission._id,
+    patientId: request.patientId,
+    sourceType: 'IPDCharge',
+    sourceId: charge._id,
+    internalServiceModel: config.internalServiceModel,
+    internalServiceId: request[config.masterField],
+    userId: user._id,
+    session
+  });
+
+  let packageEpisode = null;
+  if (coverage && quote.rateCardItemId && quote.packageCode) {
+    packageEpisode = await activatePackageEpisode({
+      quote, coverage, hospitalId: admission.hospitalId, encounterType: 'IPD', encounterId: admission._id,
+      patientId: request.patientId, sourceType: 'IPDCharge', sourceId: charge._id, userId: user._id, session
+    });
+  }
+  if (quote.packageAdjudication) {
+    await recordPackageUtilization({
+      decision: quote.packageAdjudication,
+      input: { serviceType: config.serviceType, internalServiceModel: config.internalServiceModel, internalServiceId: request[config.masterField], internalCode: request[config.codeField], description: request[config.nameField], quantity: 1 },
+      quote, sourceType: 'IPDCharge', sourceId: charge._id, session
+    });
+  }
 
   request.billingIntent = billingIntent ||
     request.billingIntent ||
@@ -162,7 +192,7 @@ async function postIPDSourceCharge({
 
   await syncChargePosted(charge, user._id, session);
 
-  return { charge, request, alreadyExists: false };
+  return { charge, request, packageEpisode, alreadyExists: false };
 }
 
 module.exports = {

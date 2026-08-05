@@ -8,6 +8,10 @@ const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const billingPatientService = require('./billingPatient.service');
 const { money, nextFinancialNumber } = require('../utils/financeNumbers');
 const { assertUserHospital } = require('../utils/hospitalScope');
+const { quotePricing, pricingSnapshot, serviceTypeFromCharge } = require('./pricingEngine.service');
+const { activeAppointmentCoverage } = require('./coverage.service');
+const { activatePackageEpisode, recordPackageUtilization } = require('./packageAdjudication.service');
+const { replaceCoverageUtilization } = require('./coverageUtilization.service');
 
 const PAYMENT_METHODS = [
   'Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme',
@@ -111,11 +115,35 @@ async function addOPDCharge(patientId, payload, user) {
       const existing = await Bill.findOne({ hospital_id: hospitalId, idempotency_key: payload.idempotencyKey }, null, sessionOptions(session));
       if (existing) return { bill: existing, alreadyExists: true };
     }
-    const line = calculateLineAmounts(payload);
+    const cashLine = calculateLineAmounts(payload);
     if (!String(payload.description || '').trim()) throw financialError('Charge description is required');
-    if (line.discountAmount > 0 && !String(payload.discountReason || '').trim()) throw financialError('Discount reason is required');
-    if (line.taxMode === 'exempt' && !String(payload.taxExemptionReason || '').trim()) throw financialError('Tax exemption reason is required');
+    if (cashLine.discountAmount > 0 && !String(payload.discountReason || '').trim()) throw financialError('Discount reason is required');
+    if (cashLine.taxMode === 'exempt' && !String(payload.taxExemptionReason || '').trim()) throw financialError('Tax exemption reason is required');
 
+    const appointmentId = payload.appointmentId || null;
+    const quote = await quotePricing({
+      hospitalId,
+      appointmentId,
+      serviceDate: payload.chargeDate || new Date(),
+      chargeType: payload.chargeType,
+      serviceType: payload.serviceType || serviceTypeFromCharge(payload.chargeType),
+      internalServiceModel: payload.internalServiceModel,
+      internalServiceId: payload.internalServiceId,
+      internalCode: payload.serviceCode,
+      payerServiceCode: payload.payerServiceCode,
+      // Existing OPD inputs express rate per unit. The cash calculation remains
+      // available for tax/discount display, while payer allocation uses the
+      // hospital's undiscounted service unit as its standard amount.
+      standardAmount: cashLine.rate,
+      quantity: cashLine.quantity,
+      nonAdmissibleAmount: payload.nonAdmissibleAmount,
+      sponsorApprovalCap: payload.sponsorApprovalCap,
+      balanceBillingApproved: payload.balanceBillingApproved,
+      approvedUncoveredTreatment: payload.approvedUncoveredTreatment
+    });
+
+    const contracted = amount(quote.amounts.contracted);
+    const standard = amount(quote.amounts.hospitalStandard);
     const [billNumber, hospital] = await Promise.all([
       nextFinancialNumber({ documentType: 'BILL', hospitalId, session }),
       Hospital.findById(hospitalId, null, sessionOptions(session)).lean()
@@ -124,63 +152,153 @@ async function addOPDCharge(patientId, payload, user) {
     const itemType = ['Consultation', 'Procedure', 'Lab Test', 'Radiology'].includes(payload.chargeType)
       ? payload.chargeType
       : 'Other';
+    const lineQuantity = cashLine.quantity;
+    const lineUnitPrice = lineQuantity ? amount(contracted / lineQuantity) : contracted;
+    const snapshot = pricingSnapshot(quote, {
+      internalServiceModel: payload.internalServiceModel,
+      internalServiceId: payload.internalServiceId
+    });
+    const coverage = appointmentId ? await activeAppointmentCoverage(hospitalId, appointmentId, session) : null;
     const bill = new Bill({
       hospital_id: hospitalId,
       bill_number: billNumber,
       document_stage: 'GENERATED',
       patient_id: patient._id,
-      appointment_id: payload.appointmentId || undefined,
-      gross_amount: line.grossAmount,
-      subtotal: line.grossAmount,
-      line_discount_total: line.discountAmount,
+      appointment_id: appointmentId || undefined,
+      gross_amount: standard,
+      subtotal: standard,
+      line_discount_total: 0,
       bill_discount_total: 0,
-      discount: line.discountAmount,
-      discount_type: line.discountType,
+      discount: 0,
+      discount_type: 'fixed',
       discount_reason: payload.discountReason,
-      taxable_amount: line.taxableAmount,
-      tax_amount: line.taxAmount,
+      taxable_amount: contracted,
+      tax_amount: 0,
       rounding_adjustment: 0,
-      total_amount: line.netAmount,
+      total_amount: contracted,
       paid_amount: 0,
-      balance_due: line.netAmount,
+      balance_due: quote.amounts.patientLiability,
       payment_method: 'Pending',
-      status: line.netAmount <= 0 ? 'Paid' : 'Pending',
+      status: quote.amounts.patientLiability <= 0 ? 'Paid' : 'Pending',
       generated_at: now,
       created_by: user?._id,
       notes: payload.notes,
       idempotency_key: payload.idempotencyKey,
       patient_snapshot: patient.toObject ? patient.toObject() : patient,
       hospital_snapshot: hospital || {},
+      payer_allocation: {
+        coverage_id: coverage?._id,
+        payer_id: coverage?.payerId?._id || coverage?.payerId,
+        rate_card_id: quote.rateCard?.id,
+        rate_card_version: quote.rateCard?.version,
+        standard_amount: quote.amounts.hospitalStandard,
+        contracted_amount: quote.amounts.contracted,
+        eligible_amount: quote.amounts.eligible,
+        patient_liability: quote.amounts.patientLiability,
+        sponsor_liability: quote.amounts.sponsorLiability,
+        non_admissible_amount: quote.amounts.nonAdmissible,
+        contractual_adjustment: quote.amounts.hospitalAdjustment,
+        hospital_concession: quote.amounts.hospitalConcession,
+        package_absorbed: quote.amounts.packageAbsorbed,
+        fallback_count: quote.resultType === 'cash_fallback' ? 1 : 0
+      },
       items: [{
         description: String(payload.description).trim(),
         charge_type: payload.chargeType || 'Miscellaneous',
         charge_head: payload.chargeHead || payload.chargeType || 'MISCELLANEOUS',
         charge_date: payload.chargeDate || now,
-        quantity: line.quantity,
-        unit_price: line.rate,
-        gross_amount: line.grossAmount,
-        discount_type: line.discountType,
-        discount_rate: line.discountRate,
-        discount_amount: line.discountAmount,
+        quantity: lineQuantity,
+        unit_price: lineUnitPrice,
+        gross_amount: standard,
+        discount_type: 'fixed',
+        discount_rate: 0,
+        discount_amount: 0,
         discount_reason: payload.discountReason,
-        taxable_amount: line.taxableAmount,
-        tax_mode: line.taxMode,
+        taxable_amount: contracted,
+        tax_mode: 'exempt',
         tax_name: payload.taxName,
         tax_code: payload.taxCode,
-        tax_rate: line.taxRate,
-        tax_amount: line.taxAmount,
-        net_amount: line.netAmount,
-        amount: line.netAmount,
+        tax_rate: 0,
+        tax_amount: 0,
+        net_amount: contracted,
+        amount: contracted,
         item_type: itemType,
+        procedure_id: payload.internalServiceModel === 'Procedure' ? payload.internalServiceId : undefined,
+        procedure_code: payload.internalServiceModel === 'Procedure' ? payload.serviceCode : undefined,
+        lab_test_id: payload.internalServiceModel === 'LabTest' ? payload.internalServiceId : undefined,
+        lab_test_code: payload.internalServiceModel === 'LabTest' ? payload.serviceCode : undefined,
+        radiology_test_id: payload.internalServiceModel === 'ImagingTest' ? payload.internalServiceId : undefined,
+        radiology_test_code: payload.internalServiceModel === 'ImagingTest' ? payload.serviceCode : undefined,
+        pricing_snapshot: snapshot,
+        standard_amount: quote.amounts.hospitalStandard,
+        contracted_amount: quote.amounts.contracted,
+        eligible_amount: quote.amounts.eligible,
+        patient_liability: quote.amounts.patientLiability,
+        sponsor_liability: quote.amounts.sponsorLiability,
+        non_admissible_amount: quote.amounts.nonAdmissible,
+        contractual_adjustment: quote.amounts.hospitalAdjustment,
+        hospital_concession: quote.amounts.hospitalConcession,
+        package_absorbed: quote.amounts.packageAbsorbed,
         source_snapshot: {
           sourceModule: 'OPD',
           taxExemptionReason: payload.taxExemptionReason || '',
-          createdFrom: 'OPDRevenueWorkspace'
+          createdFrom: payload.createdFrom || 'OPDRevenueWorkspace',
+          pricingResultType: quote.resultType,
+          fallbackReason: quote.fallbackReason
         }
       }]
     });
     await bill.save(sessionOptions(session));
-    return { bill };
+
+    await replaceCoverageUtilization({
+      coverage,
+      quote,
+      hospitalId,
+      encounterType: 'OPD',
+      appointmentId,
+      patientId: patient._id,
+      sourceType: 'BillItem',
+      sourceId: bill._id,
+      sourceLineId: bill.items[0]?._id,
+      internalServiceModel: payload.internalServiceModel,
+      internalServiceId: payload.internalServiceId,
+      userId: user?._id,
+      session
+    });
+
+    if (coverage && quote.rateCardItemId && quote.packageCode) {
+      await activatePackageEpisode({
+        quote,
+        coverage,
+        hospitalId,
+        encounterType: 'OPD',
+        encounterId: appointmentId,
+        patientId: patient._id,
+        sourceType: 'BillItem',
+        sourceId: bill._id,
+        userId: user?._id,
+        session
+      });
+    }
+    if (quote.packageAdjudication) {
+      await recordPackageUtilization({
+        decision: quote.packageAdjudication,
+        input: {
+          serviceType: payload.serviceType || serviceTypeFromCharge(payload.chargeType),
+          internalServiceModel: payload.internalServiceModel,
+          internalServiceId: payload.internalServiceId,
+          internalCode: payload.serviceCode,
+          description: payload.description,
+          quantity: lineQuantity
+        },
+        quote,
+        sourceType: 'BillItem',
+        sourceId: bill._id,
+        sourceLineId: bill.items[0]?._id,
+        session
+      });
+    }
+    return { bill, quote, alreadyExists: false };
   });
 }
 

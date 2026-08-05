@@ -330,7 +330,7 @@ async function completeTransfer({ req, hospitalId, transferId, payload = {}, ses
       serviceDate: actual,
       chargeType: 'Bed',
       serviceType: 'bed',
-      externalCode: destination.bedCode,
+      internalCode: destination.bedCode,
       internalServiceModel: 'Bed',
       internalServiceId: destination._id,
       standardAmount: destination.dailyCharge,
@@ -342,10 +342,13 @@ async function completeTransfer({ req, hospitalId, transferId, payload = {}, ses
       amounts: {
         hospitalStandard: Number(destination.dailyCharge || 0),
         contracted: Number(destination.dailyCharge || 0),
+        eligible: Number(destination.dailyCharge || 0),
         patientLiability: Number(destination.dailyCharge || 0),
         sponsorLiability: 0,
         nonAdmissible: 0,
-        hospitalAdjustment: 0
+        hospitalAdjustment: 0,
+        hospitalConcession: 0,
+        packageAbsorbed: 0
       },
       explanation: ['Standard bed rate used because no approved payer mapping was available']
     };

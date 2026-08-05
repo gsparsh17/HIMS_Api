@@ -87,7 +87,7 @@ const ENTITY = {
     sheet: 'Lab Tests',
     columns: [
       ['code', 'Code', true], ['name', 'Name', true], ['category', 'Category', true], ['subCategory', 'Sub Category', false],
-      ['description', 'Description', false], ['specimen_type', 'Specimen Type', false], ['specimen_volume', 'Specimen Volume', false],
+      ['description', 'Description', false], ['specimen_type', 'Broad Specimen Type', false], ['specimen_detail', 'Detailed Specimen Description', false], ['specimen_volume', 'Specimen Volume', false],
       ['container_type', 'Container Type', false], ['fasting_required', 'Fasting Required', false], ['fasting_hours', 'Fasting Hours', false],
       ['preparation_instructions', 'Preparation Instructions', false], ['turnaround_time_hours', 'TAT Hours', false],
       ['normal_range', 'Normal Range', false], ['critical_low', 'Critical Low', false], ['critical_high', 'Critical High', false],
@@ -104,7 +104,7 @@ const ENTITY = {
       ['preparation_instructions', 'Preparation Instructions', false], ['contraindications', 'Contraindications', false],
       ['contrast_required', 'Contrast Required', false], ['contrast_details', 'Contrast Details', false],
       ['turnaround_time_hours', 'TAT Hours', false], ['base_price', 'Base Price', false],
-      ['insurance_coverage', 'Insurance Coverage', false], ['is_active', 'Is Active', false], ['update_mode', 'Update Mode', false]
+      ['insurance_coverage', 'Insurance Coverage', false], ['is_billable', 'Is Billable', false], ['allow_zero_price', 'Allow Zero Price', false], ['is_active', 'Is Active', false], ['update_mode', 'Update Mode', false]
     ],
     example: { code: 'XR-CHEST', name: 'Chest X-Ray', category: 'X-Ray', contrast_required: 'false', turnaround_time_hours: '4', base_price: '700', is_active: 'true' }
   },
@@ -256,12 +256,13 @@ function normalize(entity, row, hospitalId, userId) {
   if (entity === 'lab-tests') {
     return {
       hospitalId, code: String(str('code') || '').toUpperCase(), name: str('name'), category: str('category'),
-      subCategory: str('subCategory'), description: str('description'), specimen_type: str('specimen_type') || 'Blood',
+      subCategory: str('subCategory'), description: str('description'), specimen_type: str('specimen_type') || 'Blood', specimen_detail: str('specimen_detail') || str('specimen_type'),
       specimen_volume: str('specimen_volume'), container_type: str('container_type'), fasting_required: bool(str('fasting_required')),
       fasting_hours: num(str('fasting_hours')) || 0, preparation_instructions: str('preparation_instructions'),
       turnaround_time_hours: num(str('turnaround_time_hours')) || 24, normal_range: str('normal_range'),
       critical_low: str('critical_low'), critical_high: str('critical_high'), units: str('units'),
       base_price: num(str('base_price')) || 0, insurance_coverage: str('insurance_coverage') || 'Partial',
+      is_billable: str('is_billable') === '' ? true : bool(str('is_billable')), allow_zero_price: bool(str('allow_zero_price')),
       is_active: str('is_active') === '' ? true : bool(str('is_active')), createdBy: userId
     };
   }
@@ -272,19 +273,21 @@ function normalize(entity, row, hospitalId, userId) {
       description: str('description'), preparation_instructions: str('preparation_instructions'), contraindications: str('contraindications'),
       contrast_required: bool(str('contrast_required')), contrast_details: str('contrast_details'),
       turnaround_time_hours: num(str('turnaround_time_hours')) || 24, base_price: num(str('base_price')) || 0,
-      insurance_coverage: str('insurance_coverage') || 'Partial', is_active: str('is_active') === '' ? true : bool(str('is_active')),
-      createdBy: userId
+      insurance_coverage: str('insurance_coverage') || 'Partial', template_only: bool(str('template_only')),
+      is_billable: str('is_billable') === '' ? !bool(str('template_only')) : bool(str('is_billable')), allow_zero_price: bool(str('allow_zero_price')),
+      canonical_code: String(str('canonical_code') || '').toUpperCase() || undefined, is_active: str('is_active') === '' ? true : bool(str('is_active')),
+      createdBy: userId, updatedBy: userId
     };
   }
 
   if (entity === 'procedures') {
     return {
-      code: String(str('code') || '').toUpperCase(), name: str('name'), category: str('category'), subcategory: str('subcategory'),
+      hospitalId, code: String(str('code') || '').toUpperCase(), name: str('name'), category: str('category'), subcategory: str('subcategory'),
       description: str('description'), base_price: num(str('base_price')) || 0, duration_minutes: num(str('duration_minutes')) || 30,
       cpt_code: str('cpt_code'), icd10_codes: parseArray(str('icd10_codes')), equipment_required: parseArray(str('equipment_required')),
       pre_procedure_instructions: str('pre_procedure_instructions'), post_procedure_instructions: str('post_procedure_instructions'),
       consent_required: str('consent_required') === '' ? true : bool(str('consent_required')),
-      facility_level: parseArray(str('facility_level')), is_active: str('is_active') === '' ? true : bool(str('is_active')), created_by: userId
+      facility_level: parseArray(str('facility_level')), is_active: str('is_active') === '' ? true : bool(str('is_active')), is_billable: true, allow_zero_price: false, createdBy: userId, updatedBy: userId
     };
   }
 
@@ -411,9 +414,8 @@ function validate(entity, data) {
   }
 
   const categorySets = {
-    'lab-tests': ['Hematology', 'Biochemistry', 'Microbiology', 'Immunology', 'Pathology', 'Serology', 'Toxicology', 'Endocrinology', 'Cardiology', 'Molecular Diagnostics', 'Genetic Testing', 'Other'],
-    'radiology-tests': ['X-Ray', 'CT Scan', 'MRI', 'Ultrasound', 'ECG', 'Echocardiography', 'Mammography', 'PET Scan', 'DEXA Scan', 'Fluoroscopy', 'Angiography', 'Other'],
-    procedures: ['Diagnostic', 'Preventive', 'Restorative', 'Endodontics', 'Periodontics', 'Prosthodontics', 'Implant', 'Oral Surgery', 'Orthodontics', 'Adjunctive', 'Radiology', 'Laboratory', 'Anesthesia', 'Emergency', 'Consultation', 'Follow-up', 'Other']
+    'lab-tests': ['Hematology', 'Biochemistry', 'Microbiology', 'Immunology', 'Pathology', 'Serology', 'Toxicology', 'Endocrinology', 'Molecular Diagnostics', 'Genetic Testing', 'Other'],
+    'radiology-tests': ['X-Ray', 'CT Scan', 'MRI', 'Ultrasound', 'ECG', 'Echocardiography', 'EEG', 'EMG', 'NCV', 'TMT', 'Mammography', 'PET Scan', 'DEXA Scan', 'Fluoroscopy', 'Angiography', 'Other'],
   };
   if (categorySets[entity] && data.category && !categorySets[entity].includes(data.category)) errors.push(`category must be one of: ${categorySets[entity].join(', ')}`);
 
@@ -468,6 +470,31 @@ async function prepareData(entity, row, hospitalId, userId) {
   const data = normalize(entity, row, hospitalId, userId);
   const errors = validate(entity, data);
   const warnings = [];
+
+  if (entity === 'lab-tests') {
+    const broad = new Set(['Blood', 'Urine', 'Stool', 'CSF', 'Sputum', 'Tissue', 'Swab', 'Body Fluid', 'Semen', 'Other', 'Not Applicable']);
+    if (!broad.has(data.specimen_type)) {
+      const detail = String(data.specimen_detail || data.specimen_type || '').toLowerCase();
+      data.specimen_detail = data.specimen_detail || data.specimen_type;
+      data.specimen_type = detail.includes('urine') ? 'Urine'
+        : detail.includes('stool') ? 'Stool'
+          : detail.includes('csf') || detail.includes('cerebrospinal') ? 'CSF'
+            : detail.includes('sputum') ? 'Sputum'
+              : detail.includes('tissue') || detail.includes('biopsy') ? 'Tissue'
+                : detail.includes('swab') || detail.includes('smear') ? 'Swab'
+                  : detail.includes('fluid') ? 'Body Fluid'
+                    : detail.includes('semen') ? 'Semen'
+                      : detail.includes('blood') || detail.includes('serum') || detail.includes('plasma') ? 'Blood'
+                        : 'Other';
+    }
+  }
+
+  if (entity === 'radiology-tests' && data.canonical_code) {
+    const canonical = await ImagingTest.findOne({ hospitalId, code: data.canonical_code }).select('_id');
+    if (!canonical) errors.push(`canonical imaging service not found: ${data.canonical_code}`);
+    else data.canonical_test_id = canonical._id;
+    delete data.canonical_code;
+  }
 
   if (entity === 'employees') {
     try {
@@ -552,7 +579,7 @@ async function existing(entity, data, hospitalId) {
     return Medicine.findOne({ hospitalId, name: data.name, strength: data.strength || '', brand: data.brand || '', generic_name: data.generic_name || '', composition: data.composition || '' });
   }
   if (entity === 'charges') return BillingServiceMaster.findOne({ hospitalId, chargeCode: data.chargeCode, effectiveFrom: data.effectiveFrom });
-  if (entity === 'procedures') return Procedure.findOne({ code: data.code });
+  if (entity === 'procedures') return Procedure.findOne({ hospitalId, code: data.code });
   if (['lab-tests', 'radiology-tests'].includes(entity)) return modelFor(entity).findOne({ hospitalId, code: data.code });
   if (entity === 'patients') {
     const clauses = [];
@@ -783,7 +810,7 @@ async function updateEntityRecord(entity, current, data, userId) {
 
   const updateData = { ...clean };
   if (entity === 'employees') updateData.updated_by = userId;
-  if (entity === 'charges' || entity === 'procedures') updateData.updatedBy = userId;
+  if (entity === 'charges' || entity === 'procedures' || entity === 'lab-tests' || entity === 'radiology-tests') updateData.updatedBy = userId;
   current.set(updateData);
   await current.save();
   if (entity === 'employees') {

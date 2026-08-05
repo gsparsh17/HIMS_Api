@@ -13,7 +13,7 @@
  *
  * Required model support:
  *   - Procedure.hospitalId with unique { hospitalId, code }
- *   - RateCardItem.wardRates for exact general/semi-private/private prices
+ *   - RateCardItem.rates.exactWard for exact general/semi-private/private prices
  *
  * Preview:
  *   node scripts/import-lombard-vy-rate-list.js \
@@ -97,6 +97,17 @@ function wardRateDocument(wardRates) {
     icu: wardRates?.icu,
     day_care: wardRates?.day_care,
     not_applicable: wardRates?.not_applicable
+  });
+}
+
+function exactWardRateDocument(wardRates) {
+  return compactObject({
+    general: wardRates?.general,
+    semiPrivate: wardRates?.semi_private ?? wardRates?.semiPrivate,
+    private: wardRates?.private,
+    icu: wardRates?.icu,
+    dayCare: wardRates?.day_care ?? wardRates?.dayCare,
+    notApplicable: wardRates?.not_applicable ?? wardRates?.notApplicable
   });
 }
 
@@ -291,6 +302,7 @@ async function buildRateCardItems(payload, hospitalId) {
 
   for (const row of payload.packages) {
     const wardRates = wardRateDocument(row.wardRates);
+    const exactWardRates = exactWardRateDocument(row.wardRates);
     items.push({
       externalCode: row.externalCode,
       externalName: row.externalName,
@@ -298,11 +310,11 @@ async function buildRateCardItems(payload, hospitalId) {
       specialty: row.specialty,
       category: row.sourceCategory,
       internalService: await procedureMap(hospitalId, row.internalProcedureCode),
-      rates: {},
-      wardRates,
+      pricingMode: 'exact_ward',
+      rates: { exactWard: exactWardRates },
       billingUnit: 'package',
       packagePeriodDays: null,
-      wardUniform: allEqual(Object.values(wardRates)),
+      wardUniform: allEqual(Object.values(exactWardRates)),
       allowedWards: Object.keys(wardRates),
       inclusions: row.inclusions,
       exclusions: row.exclusions,
@@ -322,6 +334,7 @@ async function buildRateCardItems(payload, hospitalId) {
   for (const grade of payload.nonPackageGrades) {
     for (const component of grade.components) {
       const wardRates = wardRateDocument(component.wardRates);
+      const exactWardRates = exactWardRateDocument(component.wardRates);
       items.push({
         externalCode: `IL-VY-NP-G${grade.grade}-${component.code}`,
         externalName: `${grade.label} - ${component.name}`,
@@ -329,10 +342,10 @@ async function buildRateCardItems(payload, hospitalId) {
         specialty: 'Surgery',
         category: `Non Package Grade ${grade.grade}`,
         internalService: { mappingStatus: 'unmapped' },
-        rates: {},
-        wardRates,
+        pricingMode: 'exact_ward',
+        rates: { exactWard: exactWardRates },
         billingUnit: 'component',
-        wardUniform: allEqual(Object.values(wardRates)),
+        wardUniform: allEqual(Object.values(exactWardRates)),
         allowedWards: Object.keys(wardRates),
         inclusions: [],
         exclusions: [],
@@ -356,6 +369,7 @@ async function buildRateCardItems(payload, hospitalId) {
       specialty: 'Accommodation',
       category: room.roomType,
       internalService: { mappingStatus: 'unmapped' },
+      pricingMode: 'flat',
       rates: { flatAmount: room.roomRent },
       billingUnit: 'per_day',
       wardUniform: true,
@@ -374,6 +388,7 @@ async function buildRateCardItems(payload, hospitalId) {
       specialty: 'Consultation',
       category: room.roomType,
       internalService: { mappingStatus: 'unmapped' },
+      pricingMode: 'flat',
       rates: { flatAmount: room.doctorVisitPerDay },
       billingUnit: 'per_day',
       wardUniform: true,
@@ -392,6 +407,7 @@ async function buildRateCardItems(payload, hospitalId) {
       specialty: 'Consultation',
       category: room.roomType,
       internalService: { mappingStatus: 'unmapped' },
+      pricingMode: 'flat',
       rates: { flatAmount: room.superSpecialistPerVisit },
       billingUnit: 'per_visit',
       wardUniform: true,
@@ -412,6 +428,7 @@ async function buildRateCardItems(payload, hospitalId) {
       specialty: 'Room/ICU Equipment',
       category: 'Equipment',
       internalService: { mappingStatus: 'unmapped' },
+      pricingMode: 'flat',
       rates: { flatAmount: equipment.amount },
       billingUnit: 'per_use',
       wardUniform: true,
@@ -433,6 +450,7 @@ async function buildRateCardItems(payload, hospitalId) {
       specialty: 'OT Equipment',
       category: 'Inclusive in OT Charges',
       internalService: { mappingStatus: 'unmapped' },
+      pricingMode: 'flat',
       rates: { flatAmount: 0 },
       billingUnit: 'per_use',
       wardUniform: true,
@@ -457,6 +475,7 @@ async function buildRateCardItems(payload, hospitalId) {
       specialty: 'Special Investigation',
       category: 'Special Investigation',
       internalService: await investigationMap(hospitalId, investigation.name),
+      pricingMode: 'flat',
       rates: { flatAmount: investigation.amount },
       billingUnit: 'per_procedure',
       wardUniform: true,

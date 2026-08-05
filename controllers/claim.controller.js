@@ -1,292 +1,149 @@
+const ExcelJS = require('exceljs');
 const ClaimCase = require('../models/ClaimCase');
 const SponsorLedgerEntry = require('../models/SponsorLedgerEntry');
-const AdmissionCoverage = require('../models/AdmissionCoverage');
-const IPDAdmission = require('../models/IPDAdmission');
-const IPDCharge = require('../models/IPDCharge');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
+const claimService = require('../services/claim.service');
 
-function fail(res, e) {
-  res.status(e.statusCode || 400).json({ success: false, error: e.message });
+function fail(res, error) {
+  res.status(error.statusCode || 400).json({ success: false, error: error.message });
 }
 
-async function nextClaimNumber(hospitalId) {
-  const count = await ClaimCase.countDocuments({ hospitalId });
-  const dateStr = new Date().toISOString().slice(0, 10).replaceAll('-', '');
-  return `CLM-${dateStr}-${String(count + 1).padStart(5, '0')}`;
-}
-
-async function nextEntryNumber(hospitalId) {
-  const count = await SponsorLedgerEntry.countDocuments({ hospitalId });
-  return `SLE-${new Date().getFullYear()}-${String(count + 1).padStart(7, '0')}`;
-}
-
-async function recalcAdmission(admissionId, hospitalId) {
-  const mongoose = require('mongoose');
-
-  const rows = await IPDCharge.aggregate([
-    {
-      $match: {
-        admissionId: mongoose.Types.ObjectId.createFromHexString(String(admissionId)),
-        hospitalId: mongoose.Types.ObjectId.createFromHexString(String(hospitalId)),
-        status: { $in: ['ACTIVE', 'INVOICED'] }
-      }
-    },
-    {
-      $group: {
-        _id: null,
-        patient: { $sum: '$patientLiability' },
-        sponsor: { $sum: '$sponsorLiability' },
-        nonAdmissible: { $sum: '$nonAdmissibleAmount' },
-        contracted: { $sum: '$netAmount' }
-      }
-    }
-  ]);
-
-  const totals = rows[0] || {
-    patient: 0,
-    sponsor: 0,
-    nonAdmissible: 0,
-    contracted: 0
-  };
-
-  await IPDAdmission.updateOne(
-    { _id: admissionId, hospitalId },
-    {
-      $set: {
-        patientReceivable: totals.patient,
-        sponsorReceivable: totals.sponsor,
-        nonAdmissibleAmount: totals.nonAdmissible,
-        totalBillAmount: totals.contracted,
-        dueAmount: totals.patient
-      }
-    }
-  );
-
-  return totals;
+async function audit(req, claim, eventType, summary = {}) {
+  return appendDomainEvent({
+    req,
+    eventType,
+    entityType: 'ClaimCase',
+    entityId: claim._id,
+    hospitalId: claim.hospitalId,
+    patientId: claim.patientId,
+    encounterId: claim.admissionId || claim.appointmentId,
+    revision: claim.revision,
+    afterSummary: { claimNumber: claim.claimNumber, status: claim.status, ...summary }
+  });
 }
 
 exports.create = async (req, res) => {
   try {
-    const hospitalId = requireHospitalId(req);
-
-    const admission = await IPDAdmission.findOne({
-      _id: req.body.admissionId,
-      hospitalId
-    });
-
-    if (!admission) {
-      return res.status(404).json({
-        success: false,
-        error: 'Admission not found'
-      });
-    }
-
-    const coverage = await AdmissionCoverage.findOne({
-      _id: req.body.coverageId || admission.coverageId,
-      hospitalId,
-      admissionId: admission._id,
-      active: true
-    });
-
-    if (!coverage) {
-      return res.status(409).json({
-        success: false,
-        error: 'Active sponsored coverage is required'
-      });
-    }
-
-    const totals = await recalcAdmission(admission._id, hospitalId);
-
-    const data = await ClaimCase.create({
-      hospitalId,
-      claimNumber: await nextClaimNumber(hospitalId),
-      admissionId: admission._id,
-      patientId: admission.patientId,
-      coverageId: coverage._id,
-      payerId: coverage.payerId,
-      type: req.body.type || 'cashless',
-      status: req.body.status || 'draft',
-      preAuth: {
-        requestNumber: coverage.preAuthorisation?.requestNumber,
-        approvedAmount: coverage.preAuthorisation?.approvedAmount,
-        status: coverage.preAuthorisation?.status
-      },
-      amounts: {
-        contractedAmount: totals.contracted,
-        sponsorLiability: totals.sponsor,
-        patientLiability: totals.patient,
-        nonAdmissibleAmount: totals.nonAdmissible,
-        outstandingSponsorAmount: totals.sponsor
-      },
-      documents: req.body.documents || [],
-      createdBy: req.user._id,
-      updatedBy: req.user._id
-    });
-
+    const data = await claimService.createClaim({ hospitalId: requireHospitalId(req), body: req.body, user: req.user });
+    await audit(req, data, 'billing.claim_created');
     res.status(201).json({ success: true, data });
-  } catch (e) {
-    fail(res, e);
-  }
+  } catch (error) { fail(res, error); }
+};
+
+exports.refresh = async (req, res) => {
+  try {
+    const data = await claimService.refreshClaim({ hospitalId: requireHospitalId(req), claimId: req.params.id, user: req.user });
+    await audit(req, data, 'billing.claim_rebuilt', { lineCount: data.lines.length });
+    res.json({ success: true, data });
+  } catch (error) { fail(res, error); }
 };
 
 exports.list = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const filter = { hospitalId };
-
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-
-    if (req.query.payerId) {
-      filter.payerId = req.query.payerId;
-    }
-
-    const data = await ClaimCase
-      .find(filter)
-      .populate('payerId', 'code name type')
-      .populate({
-        path: 'admissionId',
-        select: 'admissionNumber patientId dischargeDate',
-        populate: {
-          path: 'patientId',
-          select: 'first_name last_name patientId uhid'
-        }
-      })
-      .sort({ createdAt: -1 });
-
-    res.json({ success: true, data });
-  } catch (e) {
-    fail(res, e);
-  }
+    const filter = claimService.claimFilter(hospitalId, req.query);
+    if (req.query.search) filter.claimNumber = new RegExp(String(req.query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
+    const [data, total] = await Promise.all([
+      ClaimCase.find(filter)
+        .populate('payerId', 'code name type')
+        .populate('patientId', 'first_name last_name patientId uhid')
+        .populate('admissionId', 'admissionNumber admissionDate dischargeDate')
+        .populate('appointmentId', 'token appointment_date')
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
+      ClaimCase.countDocuments(filter)
+    ]);
+    res.json({ success: true, data, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
+  } catch (error) { fail(res, error); }
 };
 
 exports.get = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    const data = await ClaimCase.findOne({ _id: req.params.id, hospitalId })
+      .populate('payerId')
+      .populate('coverageId')
+      .populate('admissionId')
+      .populate('appointmentId')
+      .populate('patientId');
+    if (!data) return res.status(404).json({ success: false, error: 'Claim not found' });
+    const ledger = await SponsorLedgerEntry.find({ hospitalId, claimId: data._id }).sort({ occurredAt: 1 });
+    return res.json({ success: true, data, ledger });
+  } catch (error) { return fail(res, error); }
+};
 
-    const data = await ClaimCase
-      .findOne({ _id: req.params.id, hospitalId })
-      .populate('payerId coverageId admissionId patientId');
-
-    if (!data) {
-      return res.status(404).json({
-        success: false,
-        error: 'Claim not found'
-      });
+exports.updateDraft = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const claim = await ClaimCase.findOne({ _id: req.params.id, hospitalId });
+    if (!claim) return res.status(404).json({ success: false, error: 'Claim not found' });
+    if (!['draft', 'documents_pending', 'ready', 'query'].includes(claim.status)) {
+      return res.status(409).json({ success: false, error: 'Submitted/settled claim cannot be edited directly' });
     }
-
-    const ledger = await SponsorLedgerEntry
-      .find({ hospitalId, claimId: data._id })
-      .sort({ occurredAt: 1 });
-
-    res.json({ success: true, data, ledger });
-  } catch (e) {
-    fail(res, e);
-  }
+    const allowed = ['type', 'documents', 'status', 'preAuth'];
+    for (const key of allowed) if (req.body[key] !== undefined) claim[key] = req.body[key];
+    if (req.body.lines) {
+      const patches = new Map(req.body.lines.map((row) => [String(row.lineId || row._id), row]));
+      for (const line of claim.lines) {
+        const patch = patches.get(String(line._id));
+        if (!patch) continue;
+        if (patch.submittedAmount !== undefined) {
+          const submitted = claimService.money(patch.submittedAmount);
+          if (submitted < 0 || submitted > Number(line.sponsorLiability || 0)) {
+            return res.status(400).json({ success: false, error: `Invalid submitted amount for line ${line.lineNumber}` });
+          }
+          line.submittedAmount = submitted;
+        }
+      }
+      const totals = claimService.summarizeLines(claim.lines);
+      claim.amounts.claimSubmittedAmount = totals.claimSubmittedAmount;
+    }
+    claim.updatedBy = req.user._id;
+    claim.revision += 1;
+    await claim.save();
+    await audit(req, claim, 'billing.claim_draft_updated');
+    return res.json({ success: true, data: claim });
+  } catch (error) { return fail(res, error); }
 };
 
 exports.submit = async (req, res) => {
   try {
-    const hospitalId = requireHospitalId(req);
-
-    const claim = await ClaimCase.findOne({
-      _id: req.params.id,
-      hospitalId
+    const data = await claimService.submitClaim({
+      hospitalId: requireHospitalId(req), claimId: req.params.id, amount: req.body.amount, user: req.user
     });
+    await audit(req, data, 'billing.claim_submitted', { amount: data.amounts.claimSubmittedAmount });
+    res.json({ success: true, data });
+  } catch (error) { fail(res, error); }
+};
 
-    if (!claim) {
-      return res.status(404).json({
-        success: false,
-        error: 'Claim not found'
-      });
-    }
-
-    if (!['draft', 'documents_pending', 'ready', 'query'].includes(claim.status)) {
-      return res.status(409).json({
-        success: false,
-        error: 'Claim cannot be submitted in its current status'
-      });
-    }
-
-    claim.status = 'submitted';
-    claim.submittedAt = new Date();
-    claim.submittedBy = req.user._id;
-    claim.amounts.claimSubmittedAmount = Number(req.body.amount || claim.amounts.sponsorLiability);
-    claim.amounts.outstandingSponsorAmount = claim.amounts.claimSubmittedAmount;
-    claim.updatedBy = req.user._id;
-    claim.revision += 1;
-    await claim.save();
-
-    await SponsorLedgerEntry.create({
-      hospitalId,
-      payerId: claim.payerId,
-      admissionId: claim.admissionId,
-      patientId: claim.patientId,
-      claimId: claim._id,
-      entryNumber: await nextEntryNumber(hospitalId),
-      entryType: 'receivable',
-      debit: claim.amounts.claimSubmittedAmount,
-      credit: 0,
-      balanceAfter: claim.amounts.claimSubmittedAmount,
-      reference: claim.claimNumber,
-      reason: 'Claim submitted',
-      createdBy: req.user._id
+exports.adjudicate = async (req, res) => {
+  try {
+    const data = await claimService.adjudicateClaim({ hospitalId: requireHospitalId(req), claimId: req.params.id, body: req.body, user: req.user });
+    await audit(req, data, 'billing.claim_adjudicated', {
+      approved: data.amounts.approvedSponsorAmount,
+      deducted: data.amounts.deductedAmount
     });
-
-    await IPDAdmission.updateOne(
-      { _id: claim.admissionId, hospitalId },
-      { $set: { claimSubmittedAmount: claim.amounts.claimSubmittedAmount } }
-    );
-
-    await appendDomainEvent({
-      req,
-      eventType: 'billing.claim_submitted',
-      entityType: 'ClaimCase',
-      entityId: claim._id,
-      hospitalId,
-      patientId: claim.patientId,
-      encounterId: claim.admissionId,
-      revision: claim.revision,
-      afterSummary: {
-        claimNumber: claim.claimNumber,
-        amount: claim.amounts.claimSubmittedAmount
-      }
-    });
-
-    res.json({ success: true, data: claim });
-  } catch (e) {
-    fail(res, e);
-  }
+    res.json({ success: true, data });
+  } catch (error) { fail(res, error); }
 };
 
 exports.queryResponse = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-
-    const claim = await ClaimCase.findOne({
-      _id: req.params.id,
-      hospitalId
-    });
-
-    if (!claim) {
-      return res.status(404).json({
-        success: false,
-        error: 'Claim not found'
-      });
-    }
-
+    const claim = await ClaimCase.findOne({ _id: req.params.id, hospitalId });
+    if (!claim) return res.status(404).json({ success: false, error: 'Claim not found' });
     claim.queries = claim.queries || [];
-
     if (req.body.queryNumber && req.body.response) {
-      const q = claim.queries.find((x) => x.queryNumber === req.body.queryNumber);
-
-      if (q) {
-        q.response = req.body.response;
-        q.respondedAt = new Date();
-        q.respondedBy = req.user._id;
-        q.status = 'responded';
+      const existing = claim.queries.find((row) => row.queryNumber === req.body.queryNumber);
+      if (existing) {
+        existing.response = req.body.response;
+        existing.respondedAt = new Date();
+        existing.respondedBy = req.user._id;
+        existing.status = req.body.close ? 'closed' : 'responded';
       } else {
         claim.queries.push({
           queryNumber: req.body.queryNumber,
@@ -296,172 +153,131 @@ exports.queryResponse = async (req, res) => {
           response: req.body.response,
           respondedAt: new Date(),
           respondedBy: req.user._id,
-          status: 'responded'
+          status: req.body.close ? 'closed' : 'responded'
         });
       }
     } else {
       claim.queries.push({
         queryNumber: req.body.queryNumber || `Q-${Date.now()}`,
         text: req.body.text,
-        receivedAt: new Date(),
+        receivedAt: req.body.receivedAt || new Date(),
         dueAt: req.body.dueAt,
         status: 'open'
       });
     }
-
     claim.status = 'query';
-    claim.revision += 1;
     claim.updatedBy = req.user._id;
+    claim.revision += 1;
     await claim.save();
-
-    res.json({ success: true, data: claim });
-  } catch (e) {
-    fail(res, e);
-  }
+    await audit(req, claim, 'billing.claim_query_updated', { queryNumber: req.body.queryNumber });
+    return res.json({ success: true, data: claim });
+  } catch (error) { return fail(res, error); }
 };
 
 exports.settlement = async (req, res) => {
   try {
-    const hospitalId = requireHospitalId(req);
-
-    const claim = await ClaimCase.findOne({
-      _id: req.params.id,
-      hospitalId
+    const data = await claimService.recordSettlement({ hospitalId: requireHospitalId(req), claimId: req.params.id, body: req.body, user: req.user });
+    await audit(req, data, data.status === 'settled' ? 'billing.claim_settled' : 'billing.claim_partially_settled', {
+      paid: data.amounts.sponsorPaidAmount,
+      outstanding: data.amounts.outstandingSponsorAmount
     });
+    res.json({ success: true, data });
+  } catch (error) { fail(res, error); }
+};
 
-    if (!claim) {
-      return res.status(404).json({
-        success: false,
-        error: 'Claim not found'
-      });
-    }
-
-    const amount = Number(req.body.amount || 0);
-
-    if (amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Settlement amount must be greater than zero'
-      });
-    }
-
-    const previousPaid = Number(claim.amounts.sponsorPaidAmount || 0);
-
-    claim.settlements.push({
-      amount,
-      receivedAt: req.body.receivedAt || new Date(),
-      reference: req.body.reference,
-      method: req.body.method,
-      recordedBy: req.user._id
+exports.cancel = async (req, res) => {
+  try {
+    const claim = await claimService.cancelClaim({
+      hospitalId: requireHospitalId(req),
+      claimId: req.params.id,
+      reason: req.body.reason,
+      user: req.user
     });
+    await audit(req, claim, 'billing.claim_cancelled', { reason: req.body.reason });
+    return res.json({ success: true, data: claim });
+  } catch (error) { return fail(res, error); }
+};
 
-    claim.amounts.approvedSponsorAmount = Number(
-      req.body.approvedSponsorAmount ??
-      claim.amounts.approvedSponsorAmount ??
-      claim.amounts.claimSubmittedAmount
-    );
-
-    claim.amounts.deductedAmount = Number(
-      req.body.deductedAmount ??
-      claim.amounts.deductedAmount ??
-      0
-    );
-
-    claim.amounts.sponsorPaidAmount = previousPaid + amount;
-    claim.amounts.outstandingSponsorAmount = Math.max(
-      0,
-      claim.amounts.approvedSponsorAmount - claim.amounts.sponsorPaidAmount
-    );
-
-    claim.status = claim.amounts.outstandingSponsorAmount === 0
-      ? 'settled'
-      : 'partially_settled';
-
-    claim.revision += 1;
-    claim.updatedBy = req.user._id;
-    await claim.save();
-
-    const previousLedger = await SponsorLedgerEntry
-      .findOne({ hospitalId, payerId: claim.payerId })
-      .sort({ occurredAt: -1 });
-
-    const balanceAfter = Math.max(
-      0,
-      Number(previousLedger?.balanceAfter || claim.amounts.claimSubmittedAmount) - amount
-    );
-
-    await SponsorLedgerEntry.create({
-      hospitalId,
-      payerId: claim.payerId,
-      admissionId: claim.admissionId,
-      patientId: claim.patientId,
-      claimId: claim._id,
-      entryNumber: await nextEntryNumber(hospitalId),
-      entryType: 'settlement',
-      debit: 0,
-      credit: amount,
-      balanceAfter,
-      reference: req.body.reference,
-      reason: req.body.note || 'Sponsor settlement',
-      createdBy: req.user._id
-    });
-
-    await IPDAdmission.updateOne(
-      { _id: claim.admissionId, hospitalId },
-      {
-        $set: {
-          approvedSponsorAmount: claim.amounts.approvedSponsorAmount,
-          sponsorPaidAmount: claim.amounts.sponsorPaidAmount,
-          sponsorReceivable: claim.amounts.outstandingSponsorAmount
-        }
-      }
-    );
-
-    await appendDomainEvent({
-      req,
-      eventType: claim.status === 'settled'
-        ? 'billing.claim_settled'
-        : 'billing.claim_partially_settled',
-      entityType: 'ClaimCase',
-      entityId: claim._id,
-      hospitalId,
-      patientId: claim.patientId,
-      encounterId: claim.admissionId,
-      revision: claim.revision,
-      afterSummary: {
-        amount,
-        paid: claim.amounts.sponsorPaidAmount,
-        outstanding: claim.amounts.outstandingSponsorAmount
-      }
-    });
-
-    res.json({ success: true, data: claim });
-  } catch (e) {
-    fail(res, e);
-  }
+exports.report = async (req, res) => {
+  try {
+    const data = await claimService.report({ hospitalId: requireHospitalId(req), query: req.query });
+    res.json({ success: true, data });
+  } catch (error) { fail(res, error); }
 };
 
 exports.ledger = async (req, res) => {
   try {
-    const hospitalId = requireHospitalId(req);
-    const filter = { hospitalId };
-
-    if (req.query.payerId) {
-      filter.payerId = req.query.payerId;
-    }
-
-    if (req.query.admissionId) {
-      filter.admissionId = req.query.admissionId;
-    }
-
-    const data = await SponsorLedgerEntry
-      .find(filter)
-      .populate('payerId', 'code name')
-      .populate('admissionId', 'admissionNumber')
-      .sort({ occurredAt: -1 });
-
+    const data = await claimService.ledgerReport({ hospitalId: requireHospitalId(req), query: req.query });
     res.json({ success: true, data });
-  } catch (e) {
-    fail(res, e);
-  }
+  } catch (error) { fail(res, error); }
+};
+
+function csvEscape(value) {
+  const text = value == null ? '' : value instanceof Date ? value.toISOString() : String(value);
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+exports.exportReport = async (req, res) => {
+  try {
+    const { rows, summary } = await claimService.report({ hospitalId: requireHospitalId(req), query: req.query });
+    const format = String(req.query.format || 'xlsx').toLowerCase();
+    if (format === 'csv') {
+      const columns = Object.keys(rows[0] || {
+        claimNumber: '', patientName: '', payerName: '', description: '', sponsorLiability: '', patientLiability: ''
+      });
+      const csv = [columns.join(','), ...rows.map((row) => columns.map((column) => csvEscape(row[column])).join(','))].join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="claims-service-ledger.csv"');
+      return res.send(`\uFEFF${csv}`);
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'HIMS';
+    const detail = workbook.addWorksheet('Claim Service Ledger');
+    const detailColumns = Object.keys(rows[0] || {
+      claimNumber: '', patientName: '', payerName: '', description: '', sponsorLiability: '', patientLiability: ''
+    });
+    detail.columns = detailColumns.map((key) => ({ header: key, key, width: Math.max(14, Math.min(40, key.length + 4)) }));
+    rows.forEach((row) => detail.addRow(row));
+    detail.views = [{ state: 'frozen', ySplit: 1 }];
+    detail.autoFilter = { from: 'A1', to: `${detail.getColumn(detailColumns.length).letter}1` };
+
+    const payer = workbook.addWorksheet('Payer Summary');
+    const summaryColumns = Object.keys(summary[0] || { payerCode: '', payerName: '', claims: '', submitted: '', approved: '', paid: '', outstanding: '' });
+    payer.columns = summaryColumns.map((key) => ({ header: key, key, width: Math.max(14, key.length + 4) }));
+    summary.forEach((row) => payer.addRow(row));
+    payer.views = [{ state: 'frozen', ySplit: 1 }];
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="claims-mis-report.xlsx"');
+    await workbook.xlsx.write(res);
+    return res.end();
+  } catch (error) { return fail(res, error); }
+};
+
+exports.exportLedger = async (req, res) => {
+  try {
+    const entries = await claimService.ledgerReport({ hospitalId: requireHospitalId(req), query: req.query });
+    const rows = entries.map((entry) => ({
+      occurredAt: entry.occurredAt,
+      entryNumber: entry.entryNumber,
+      payerCode: entry.payerId?.code,
+      payerName: entry.payerId?.name,
+      claimNumber: entry.claimId?.claimNumber,
+      encounter: entry.admissionId?.admissionNumber || entry.appointmentId?.token,
+      patient: [entry.patientId?.first_name, entry.patientId?.last_name].filter(Boolean).join(' '),
+      entryType: entry.entryType,
+      debit: entry.debit,
+      credit: entry.credit,
+      balanceAfter: entry.balanceAfter,
+      reference: entry.reference,
+      reason: entry.reason,
+      reconciliationStatus: entry.reconciliationStatus
+    }));
+    const columns = Object.keys(rows[0] || { occurredAt: '', entryNumber: '', payerName: '', debit: '', credit: '', balanceAfter: '' });
+    const csv = [columns.join(','), ...rows.map((row) => columns.map((column) => csvEscape(row[column])).join(','))].join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="sponsor-ledger.csv"');
+    return res.send(`\uFEFF${csv}`);
+  } catch (error) { return fail(res, error); }
 };

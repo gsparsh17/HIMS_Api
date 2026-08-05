@@ -8,7 +8,8 @@ const rateCardSchema = new mongoose.Schema({
   currency: { type: String, default: 'INR', uppercase: true },
   effectiveFrom: { type: Date, required: true, index: true },
   effectiveTo: Date,
-  status: { type: String, enum: ['draft', 'staging', 'pending_approval', 'active', 'closed', 'rejected'], default: 'draft', index: true },
+  status: { type: String, enum: ['draft', 'staging', 'pending_approval', 'pending_activation', 'active', 'closed', 'rejected'], default: 'draft', index: true },
+  demoOnly: { type: Boolean, default: false, index: true },
   applicability: {
     cityTiers: [{ type: String, enum: ['I', 'II', 'III', 'X', 'Y', 'Z'] }],
     accreditations: [{ type: String, enum: ['non_nabh_non_nabl', 'nabh_nabl', 'super_speciality'] }],
@@ -23,6 +24,7 @@ const rateCardSchema = new mongoose.Schema({
     bilateralSecondFactor: { type: Number, default: 0.5 },
     withinPackagePeriodFactor: { type: Number, default: 0.75 },
     wardUniformCategories: { type: [String], default: ['radiotherapy', 'investigation', 'day_care', 'minor_no_admission', 'consultation'] },
+    missingItemPolicy: { type: String, enum: ['inherit_payer', 'cash_fallback', 'non_admissible', 'block'], default: 'inherit_payer' },
     rounding: { type: String, enum: ['nearest_rupee', 'two_decimals', 'floor', 'ceil'], default: 'two_decimals' }
   },
   source: {
@@ -34,7 +36,10 @@ const rateCardSchema = new mongoose.Schema({
     pageOrAnnexure: String,
     attachmentUrl: String,
     uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    uploadedAt: Date
+    uploadedAt: Date,
+    verifiedAgainstSource: { type: Boolean, default: false },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    verifiedAt: Date
   },
   approval: {
     firstApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -43,9 +48,39 @@ const rateCardSchema = new mongoose.Schema({
     secondApprovedAt: Date,
     activatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     activatedAt: Date,
+    rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    rejectedAt: Date,
     rejectionReason: String
   },
+  quality: {
+    lastValidatedAt: Date,
+    validationVersion: String,
+    criticalErrors: { type: Number, default: 0 },
+    warnings: { type: Number, default: 0 },
+    informational: { type: Number, default: 0 },
+    blankNames: { type: Number, default: 0 },
+    duplicateCodes: { type: Number, default: 0 },
+    invalidRates: { type: Number, default: 0 },
+    unmappedItems: { type: Number, default: 0 },
+    approvedMappings: { type: Number, default: 0 },
+    requiredMappings: { type: Number, default: 0 },
+    unavailableItems: { type: Number, default: 0 },
+    sourceTraceabilityErrors: { type: Number, default: 0 },
+    mappingPending: { type: Number, default: 0 },
+    packageScopePending: { type: Number, default: 0 },
+    unresolvedSourceNames: { type: Number, default: 0 },
+    activationReady: { type: Boolean, default: false },
+    issueSummary: [{ code: String, severity: { type: String, enum: ['error', 'warning', 'info'] }, message: String, count: Number }],
+    issues: [{ code: String, severity: { type: String, enum: ['error', 'warning', 'info'] }, message: String, itemId: mongoose.Schema.Types.ObjectId, externalCode: String }]
+  },
+  activationRequirements: {
+    requireActiveEmpanelment: { type: Boolean, default: true },
+    requireAllBillableMappings: { type: Boolean, default: false },
+    minimumApprovedMappingPercentage: { type: Number, default: 0, min: 0, max: 100 },
+    requireSourceVerification: { type: Boolean, default: false }
+  },
   itemCount: { type: Number, default: 0 },
+  revision: { type: Number, default: 1 },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });

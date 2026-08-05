@@ -23,6 +23,12 @@ const BILLING_ACTIONS = [
   'billing_delete_charge',
   'billing_apply_discount',
   'billing_finalize',
+  'claim_submit',
+  'claim_manage',
+  'claim_export',
+  'preauth_decide',
+  'coverage_reprice',
+  'coverage_reprice_commit',
   'settlement',
   'final_clearance',
   'pricing_override'

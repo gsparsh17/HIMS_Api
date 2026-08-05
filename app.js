@@ -161,6 +161,9 @@ function preloadHospitalModels() {
     './models/AdmissionCoverage',
     './models/ClaimCase',
     './models/SponsorLedgerEntry',
+    './models/PackageEpisode',
+    './models/RepricingBatch',
+    './models/CoverageUtilization',
     './models/IPDBedTransfer',
     './models/IPDAccommodationSegment',
     './models/BiometricDevice',
@@ -188,6 +191,8 @@ function mountHospitalRoutes() {
 
   app.use('/api/payments', require('./routes/paymentRoutes'));
   app.use('/api/imports', require('./routes/bulkImport.routes.js'));
+  app.use('/api/admin/config/imports', require('./routes/configurationImport.routes.js'));
+  app.use('/api/admin/config/service-masters', require('./routes/serviceMaster.routes.js'));
   app.use('/api/clinical-ai', require('./routes/clinicalAi.routes.js'));
   app.use('/api/audit-logs', require('./routes/auditLog.routes'));
   app.use('/api/patients', require('./routes/patient.routes'));
@@ -207,6 +212,7 @@ function mountHospitalRoutes() {
   app.use('/api/billing', require('./routes/billing.routes'));
   app.use('/api', require('./routes/tariff.routes'));
   app.use('/api', require('./routes/coverage.routes'));
+  app.use('/api', require('./routes/repricing.routes'));
   app.use('/api', require('./routes/claims.routes'));
   app.use('/api/departments', require('./routes/department.routes'));
   app.use('/api/rooms', require('./routes/room.routes'));
