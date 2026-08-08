@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { MAIN_FEATURE_KEYS, normalizeFeaturePermissions } = require('../utils/mainFeatureAccess');
+const { passwordPolicyErrors } = require('../services/nabhSecurity.service');
 
 // Add to the featurePermissionSchema
 const featurePermissionSchema = new mongoose.Schema({
@@ -30,6 +31,30 @@ const userSchema = new mongoose.Schema({
   modulePermissions: { type: [featurePermissionSchema], default: [] },
   resetPasswordToken: String,
   resetPasswordExpire: Date,
+  passwordChangedAt: Date,
+  passwordHistory: {
+    type: [{
+      hash: { type: String, required: true },
+      changedAt: { type: Date, default: Date.now }
+    }],
+    default: [],
+    select: false
+  },
+  failedLoginAttempts: { type: Number, default: 0, min: 0 },
+  lockedUntil: Date,
+  lastLoginAt: Date,
+  lastLoginIp: String,
+  mfa: {
+    enabled: { type: Boolean, default: false },
+    secret: { type: String, select: false },
+    pendingSecret: { type: String, select: false },
+    enabledAt: Date,
+    recoveryCodes: [{ type: String, select: false }]
+  },
+  sso: {
+    provider: String,
+    subject: String
+  },
   is_active: { type: Boolean, default: true }
 }, { timestamps: true });
 
@@ -44,16 +69,79 @@ userSchema.pre('validate', function normalizeFeatureRows(next) {
   next();
 });
 
-userSchema.pre('save', async function hashPassword(next) {
+userSchema.pre('save', async function enforceAndHashPassword(next) {
   if (!this.isModified('password')) return next();
-  this.password = await bcrypt.hash(this.password, 10);
-  next();
+
+  try {
+    const plainPassword = String(this.password || '');
+    let policy = {};
+    if (this.hospital_id) {
+      // Read the configured policy without creating settings from a model hook.
+      // The default NABH policy below applies until the hospital saves settings.
+      const NabhSetting = require('./NabhSetting');
+      const setting = await NabhSetting.findOne({ hospitalId: this.hospital_id })
+        .select('security.passwordPolicy')
+        .lean();
+      policy = setting?.security?.passwordPolicy || {};
+    }
+
+    const errors = passwordPolicyErrors(plainPassword, policy);
+    if (errors.length) {
+      const error = new Error(`Password does not meet the configured policy: ${errors.join('; ')}`);
+      error.statusCode = 400;
+      error.code = 'PASSWORD_POLICY_VIOLATION';
+      error.details = errors;
+      return next(error);
+    }
+
+    const configuredHistoryCount = Number(policy.historyCount ?? 5);
+    const historyCount = Number.isFinite(configuredHistoryCount)
+      ? Math.max(0, Math.min(24, configuredHistoryCount))
+      : 5;
+
+    if (!this.isNew) {
+      const stored = await this.constructor.findById(this._id)
+        .select('+passwordHistory')
+        .lean();
+      if (stored?.password) {
+        const recentHashes = [
+          stored.password,
+          ...(Array.isArray(stored.passwordHistory)
+            ? stored.passwordHistory.map((row) => row?.hash).filter(Boolean)
+            : [])
+        ];
+        for (const oldHash of recentHashes.slice(0, historyCount + 1)) {
+          if (await bcrypt.compare(plainPassword, oldHash)) {
+            const error = new Error('This password was used recently. Choose a different password.');
+            error.statusCode = 400;
+            error.code = 'PASSWORD_REUSE';
+            return next(error);
+          }
+        }
+        this.passwordHistory = historyCount > 0
+          ? [
+            { hash: stored.password, changedAt: new Date() },
+            ...(Array.isArray(stored.passwordHistory) ? stored.passwordHistory : [])
+          ].slice(0, historyCount)
+          : [];
+      }
+    }
+
+    this.password = await bcrypt.hash(plainPassword, 12);
+    this.passwordChangedAt = new Date();
+    return next();
+  } catch (error) {
+    return next(error);
+  }
 });
 
 userSchema.methods.matchPassword = async function matchPassword(enteredPassword) {
+  if (typeof enteredPassword !== 'string' || !enteredPassword || !this.password) return false;
   return bcrypt.compare(enteredPassword, this.password);
 };
 
 userSchema.index({ hospital_id: 1, email: 1 });
+userSchema.index({ lockedUntil: 1 });
+userSchema.index({ 'sso.provider': 1, 'sso.subject': 1 }, { sparse: true });
 
 module.exports = mongoose.model('User', userSchema);

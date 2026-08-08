@@ -91,6 +91,28 @@ const medicineSchema = new mongoose.Schema({
   // Legacy field
   min_stock_level: { type: Number, default: 10 },
   prescription_required: { type: Boolean, default: false },
+  medicationSafety: {
+    highRisk: { type: Boolean, default: false, index: true },
+    lasa: { type: Boolean, default: false, index: true },
+    formularyStatus: {
+      type: String,
+      enum: ['formulary', 'restricted', 'non_formulary', 'unreviewed'],
+      default: 'unreviewed',
+      index: true
+    },
+    alternatives: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Medicine' }],
+    emergencyMedicine: { type: Boolean, default: false, index: true },
+    requiresDoubleCheck: { type: Boolean, default: false },
+    patientBarcodeRequired: { type: Boolean, default: false },
+    barcode: { type: String, trim: true, index: true, sparse: true },
+    snomedCode: { type: String, trim: true, index: true, sparse: true },
+    nrcesCode: { type: String, trim: true, index: true, sparse: true },
+    lookAlikeSoundAlikeGroup: { type: String, trim: true, index: true },
+    maxDoseInstructions: { type: String, trim: true },
+    renalDoseInstructions: { type: String, trim: true },
+    pregnancyWarnings: { type: String, trim: true },
+    storageWarnings: { type: String, trim: true }
+  },
   location: {
     shelf: { type: String },
     rack: { type: String }
@@ -148,5 +170,6 @@ medicineSchema.index({ name: 'text', generic_name: 'text', brand: 'text', compos
 medicineSchema.index({ hsn_code: 1, gst_rate: 1 });
 medicineSchema.index({ gst_rate: 1, is_active: 1 });
 medicineSchema.index({ hospitalId: 1, catalog_source: 1, name: 1 });
+medicineSchema.index({ hospitalId: 1, 'medicationSafety.formularyStatus': 1, 'medicationSafety.highRisk': 1 });
 
 module.exports = mongoose.model('Medicine', medicineSchema);

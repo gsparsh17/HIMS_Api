@@ -190,6 +190,74 @@ const patientSchema = new mongoose.Schema({
     lastEhrBundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'EHRBundle' },
     lastEhrGeneratedAt: Date
   },
+  registrationSource: {
+    channel: {
+      type: String,
+      enum: ['internal', 'website', 'kiosk', 'mobile', 'qr', 'abdm_scan_share'],
+      default: 'internal',
+      index: true
+    },
+    externalReference: { type: String, trim: true },
+    deviceIdentifier: { type: String, trim: true },
+    capturedAt: { type: Date, default: Date.now },
+    capturedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+  mobileVerification: {
+    verified: { type: Boolean, default: false },
+    verifiedAt: Date,
+    verificationId: { type: mongoose.Schema.Types.ObjectId, ref: 'PatientVerification' },
+    phone: { type: String, trim: true }
+  },
+  identityDocuments: [{
+    type: {
+      type: String,
+      enum: ['aadhaar_last4', 'passport', 'driving_licence', 'voter_id', 'other']
+    },
+    maskedValue: { type: String, trim: true },
+    verified: { type: Boolean, default: false },
+    verifiedAt: Date,
+    verificationMethod: String
+  }],
+  paymentPreference: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    default: 'cash'
+  },
+  duplicateReview: {
+    status: {
+      type: String,
+      enum: ['not_checked', 'clear', 'probable_duplicate', 'confirmed_duplicate', 'override_approved'],
+      default: 'not_checked'
+    },
+    candidatePatientIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Patient' }],
+    score: Number,
+    matchedFields: [String],
+    reviewedAt: Date,
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    overrideReason: String
+  },
+  sharingConsents: [{
+    purpose: { type: String, trim: true },
+    facility: { type: String, trim: true },
+    dataCategories: [String],
+    status: {
+      type: String,
+      enum: ['active', 'withdrawn', 'expired'],
+      default: 'active'
+    },
+    grantedAt: { type: Date, default: Date.now },
+    expiresAt: Date,
+    reference: String,
+    capturedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
+  offlineSyncMetadata: {
+    localId: { type: String, trim: true, index: true },
+    capturedOffline: { type: Boolean, default: false },
+    capturedAt: Date,
+    syncedAt: Date,
+    idempotencyKey: { type: String, trim: true }
+  },
   sponsor_type: {
     type: String,
     enum: ['self', 'ayushman_bharat', 'insurance', 'company_panel', 'government_scheme', 'other'],
@@ -325,19 +393,48 @@ patientSchema.index({ 'active_admissions.ship_number': 1 });
 patientSchema.index({ 'active_admissions.status': 1 });
 
 const Hospital = require('./Hospital');
+const HospitalSequence = require('./HospitalSequence');
 
-function generateStructuredPatientId(hospitalCode) {
-  const date = new Date();
-  const year = date.getFullYear().toString().slice(-2);
-  const month = (date.getMonth() + 1).toString().padStart(2, '0');
-  const randomPart = crypto.randomBytes(7).toString('hex').toUpperCase();
-  return `${hospitalCode}-${year}${month}-${randomPart}`;
+async function generateStructuredPatientId(hospital, hospitalId) {
+  const now = new Date();
+  let template = '{HOSPITAL}-{YY}{MM}-{SEQUENCE}';
+  try {
+    const setting = await mongoose.model('NabhSetting')
+      .findOne({ hospitalId })
+      .select('patientRegistration.uhidTemplate')
+      .lean();
+    if (setting?.patientRegistration?.uhidTemplate) {
+      template = setting.patientRegistration.uhidTemplate;
+    }
+  } catch (_error) {
+    // Preserve registration when settings have not yet been initialized.
+  }
+  const sequence = await HospitalSequence.findOneAndUpdate(
+    { hospitalId, key: `PATIENT_${now.getFullYear()}` },
+    { $inc: { value: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+  const values = {
+    HOSPITAL: hospital.tenantCode || hospital.hospitalID,
+    YYYY: String(now.getFullYear()),
+    YY: String(now.getFullYear()).slice(-2),
+    MM: String(now.getMonth() + 1).padStart(2, '0'),
+    DD: String(now.getDate()).padStart(2, '0'),
+    SEQUENCE: String(sequence.value).padStart(6, '0'),
+    RANDOM: crypto.randomBytes(4).toString('hex').toUpperCase()
+  };
+  let generated = String(template);
+  for (const [key, value] of Object.entries(values)) {
+    generated = generated.replaceAll(`{${key}}`, value);
+  }
+  return generated.toUpperCase().replace(/\s+/g, '-');
 }
 
 patientSchema.pre('save', async function (next) {
   try {
     const now = new Date();
     this.updated_at = now;
+    this.normalizedPhone = String(this.phone || '').replace(/\D/g, '').slice(-10);
 
     if (!this.uhid || !this.patientId) {
       const hospital = this.hospitalId ? await Hospital.findById(this.hospitalId) : await Hospital.findOne();
@@ -347,8 +444,9 @@ patientSchema.pre('save', async function (next) {
 
       if (!this.hospitalId) this.hospitalId = hospital._id;
 
-      let finalGeneratedId = generateStructuredPatientId(
-        hospital.hospitalID
+      const finalGeneratedId = await generateStructuredPatientId(
+        hospital,
+        hospital._id
       );
       let checkId = finalGeneratedId;
       let suffixCounter = 0;
@@ -380,5 +478,12 @@ patientSchema.pre('save', async function (next) {
 });
 
 patientSchema.index({ hospitalId: 1, normalizedPhone: 1 });
+patientSchema.index(
+  { hospitalId: 1, 'offlineSyncMetadata.idempotencyKey': 1 },
+  {
+    unique: true,
+    partialFilterExpression: { 'offlineSyncMetadata.idempotencyKey': { $type: 'string' } }
+  }
+);
 
 module.exports = mongoose.model('Patient', patientSchema);

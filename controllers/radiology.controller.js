@@ -346,6 +346,10 @@ exports.uploadReport = async (req, res) => {
       safeUnlink(req.file.path);
       return res.status(404).json({ error: 'Radiology request not found' });
     }
+    if (request.reportFinalisation?.isFinal) {
+      safeUnlink(req.file.path);
+      return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
+    }
 
     // Upload to Cloudinary
     const isPDF = req.file.mimetype === 'application/pdf';

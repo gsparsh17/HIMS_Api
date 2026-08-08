@@ -8,6 +8,7 @@ const controller = require('../controllers/radiology.controller');
 const reportController = require('../controllers/radiologyReport.controller');
 const radiologyStaffController = require('../controllers/radiologyStaff.controller');
 const workflow = require('../controllers/departmentWorkflow.controller');
+const governance = require('../controllers/diagnosticGovernance.controller');
 
 const view = [protect, requireModuleAccess('radiology', 'view')];
 const manage = [
@@ -67,6 +68,11 @@ router.post('/requests/:id/start', ...manage, workflow.startRadiology);
 router.post('/requests/:id/results', ...manage, workflow.enterRadiologyResult);
 router.post('/requests/:id/verify', ...manage, workflow.verifyRadiology);
 router.post('/requests/:id/release', ...manage, workflow.releaseRadiology);
+router.post('/requests/:id/amend', ...manage, governance.amendRadiologyReport);
+router.post('/requests/:id/repeat', ...manage, governance.repeatRadiologyStudy);
+router.post('/requests/:id/contraindications', ...manage, governance.assessRadiologyContraindications);
+router.post('/requests/:id/contraindications/ack', ...manage, governance.acknowledgeRadiologyContraindications);
+router.post('/requests/:id/dicom-metadata', ...manage, governance.importDicomMetadata);
 router.get('/dashboard/stats', ...view, workflow.radiologyStats);
 
 // Request management

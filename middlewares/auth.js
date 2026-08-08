@@ -81,11 +81,14 @@ async function authenticateRequest(req, { optional = false } = {}) {
     error.statusCode = 403;
     throw error;
   }
+  user.$authClaims = decoded;
   return user;
 }
 
 function attachEffectivePermissions(req, user) {
   req.user = user;
+  req.auth = user.$authClaims || {};
+  user.$authClaims = undefined;
   const hospitalId = userHospitalId(user);
   if (hospitalId) {
     req.hospital_id = req.hospital_id || hospitalId;
@@ -133,6 +136,18 @@ exports.optionalAuth = async (req, res, next) => {
 };
 
 exports.protect = exports.verifyToken;
+
+exports.requireCompletedMfaSetup = (req, res, next) => {
+  if (req.auth?.mfaSetupRequired && !req.user?.mfa?.enabled) {
+    return res.status(428).json({
+      success: false,
+      error: 'Multi-factor authentication setup is required before using this API.',
+      code: 'MFA_SETUP_REQUIRED'
+    });
+  }
+  return next();
+};
+
 exports.verifyToken1 = exports.verifyToken;
 
 exports.authorize = (...roles) => (req, res, next) => {

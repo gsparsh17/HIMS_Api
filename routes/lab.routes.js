@@ -5,6 +5,7 @@ const path = require('path');
 const { tempDir } = require('../config/upload.config');
 const controller = require('../controllers/labRequest.controller');
 const workflow = require('../controllers/departmentWorkflow.controller');
+const governance = require('../controllers/diagnosticGovernance.controller');
 const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
 const storage = multer.diskStorage({
@@ -58,6 +59,8 @@ router.post('/requests/:id/results', ...manage, workflow.enterLabResults);
 router.post('/requests/:id/verify', ...manage, workflow.verifyLab);
 router.post('/requests/:id/critical-ack', ...view, workflow.criticalAck);
 router.post('/requests/:id/release', ...manage, workflow.releaseLab);
+router.post('/requests/:id/amend', ...manage, governance.amendLabReport);
+router.post('/requests/:id/repeat', ...manage, governance.repeatLabTest);
 router.get('/dashboard/stats', ...view, workflow.labStats);
 
 // Backward-compatible protected endpoints

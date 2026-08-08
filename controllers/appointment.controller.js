@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Appointment = require('../models/Appointment');
 const Calendar = require('../models/Calendar');
 const Prescription = require('../models/Prescription');
@@ -6,25 +7,112 @@ const Vital = require('../models/Vital');
 const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const Department = require('../models/Department');
+const Episode = require('../models/Episode');
 const Hospital = require('../models/Hospital');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { nextAppointmentToken } = require('../utils/appointmentNumber');
+const { queueNotification } = require('../services/nabhNotification.service');
+async function notifyAppointment(appointmentOrId, eventType, userId, extra = {}, hospitalId = null) {
+  const appointment = typeof appointmentOrId === 'string'
+    ? await Appointment.findOne({
+      _id: appointmentOrId,
+      ...(hospitalId ? { hospital_id: hospitalId } : {})
+    })
+      .populate('patient_id', 'first_name last_name phone email uhid patientId')
+      .populate('doctor_id', 'firstName lastName phone email')
+    : await appointmentOrId.populate([
+      { path: 'patient_id', select: 'first_name last_name phone email uhid patientId' },
+      { path: 'doctor_id', select: 'firstName lastName phone email' }
+    ]);
+  if (!appointment) return null;
+  const patient = appointment.patient_id;
+  const doctor = appointment.doctor_id;
+  const date = new Date(appointment.appointment_date).toLocaleString('en-IN');
+  const mode = appointment.visit_mode || 'physical';
+  const delivery = await queueNotification({
+    hospitalId: appointment.hospital_id,
+    eventType,
+    correlationId: String(appointment._id),
+    recipientType: 'patient',
+    recipientId: patient?._id,
+    recipientName: [patient?.first_name, patient?.last_name].filter(Boolean).join(' '),
+    contact: { email: patient?.email, phone: patient?.phone },
+    requestedChannels: ['portal', ...(patient?.phone ? ['sms'] : [])],
+    subject: extra.subject || `Appointment ${eventType.replaceAll('_', ' ')}`,
+    body: extra.body || `Your ${mode} appointment with Dr. ${[doctor?.firstName, doctor?.lastName].filter(Boolean).join(' ')} is scheduled for ${date}.`,
+    payload: {
+      appointmentId: appointment._id,
+      visitMode: mode,
+      status: appointment.status,
+      meetingUrl: appointment.teleconsultation?.meetingUrl,
+      ...extra.payload
+    },
+    priority: appointment.priority === 'Urgent' ? 'high' : 'normal',
+    createdBy: userId
+  });
+  await Appointment.updateOne(
+    { _id: appointment._id, hospital_id: appointment.hospital_id },
+    { $addToSet: { notificationDeliveryIds: delivery._id } }
+  );
+  return delivery;
+}
+
+async function recalculateQueue({ hospitalId, departmentId, date }) {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  if (Number.isNaN(start.getTime())) return [];
+  const rows = await Appointment.find({
+    hospital_id: hospitalId,
+    department_id: departmentId,
+    appointment_date: { $gte: start, $lt: end },
+    status: { $in: ['Scheduled', 'In Progress'] }
+  });
+  const priorityWeight = { Urgent: 4, High: 3, Normal: 2, Low: 1 };
+  rows.sort((left, right) => {
+    const priorityDifference = (priorityWeight[right.priority] || 0) - (priorityWeight[left.priority] || 0);
+    if (priorityDifference) return priorityDifference;
+    const leftStart = left.start_time ? new Date(left.start_time).getTime() : Number.MAX_SAFE_INTEGER;
+    const rightStart = right.start_time ? new Date(right.start_time).getTime() : Number.MAX_SAFE_INTEGER;
+    if (leftStart !== rightStart) return leftStart - rightStart;
+    const serialDifference = Number(left.serial_number || Number.MAX_SAFE_INTEGER) - Number(right.serial_number || Number.MAX_SAFE_INTEGER);
+    if (serialDifference) return serialDifference;
+    return new Date(left.created_at || left.createdAt || 0) - new Date(right.created_at || right.createdAt || 0);
+  });
+  const writes = [];
+  rows.forEach((row, index) => {
+    const averageDuration = Number(row.duration || 10);
+    row.queuePosition = index + 1;
+    row.estimatedWaitMinutes = rows
+      .slice(0, index)
+      .reduce((sum, previous) => sum + Number(previous.duration || averageDuration), 0);
+    writes.push(row.save());
+  });
+  await Promise.all(writes);
+  return rows;
+}
+
 // Add this function to handle episode linking during appointment creation
 exports.linkAppointmentToEpisodeSuggestion = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { appointmentId, episodeId } = req.body;
 
-    const appointment = await Appointment.findByIdAndUpdate(
-      appointmentId,
-      { episodeId },
-      { new: true }
-    );
-
-    if (!appointment) {
-      return res.status(404).json({ error: 'Appointment not found' });
+    const current = await Appointment.findOne({ _id: appointmentId, hospital_id: hospitalId });
+    if (!current) return res.status(404).json({ error: 'Appointment not found' });
+    if (!mongoose.isValidObjectId(episodeId)) {
+      return res.status(400).json({ error: 'Invalid episodeId' });
     }
+    const episode = await Episode.findOne({ _id: episodeId, patientId: current.patient_id });
+    if (!episode) {
+      return res.status(404).json({ error: 'Episode not found for the appointment patient' });
+    }
+    current.episodeId = episode._id;
+    await current.save();
+    const appointment = current;
 
     res.json({
       success: true,
@@ -32,7 +120,7 @@ exports.linkAppointmentToEpisodeSuggestion = async (req, res) => {
       appointment
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.statusCode || 400).json({ error: err.message });
   }
 };
 
@@ -79,6 +167,24 @@ async function removeAppointmentFromCalendar(appointment) {
   await calendar.save();
 }
 
+async function updateCalendarAppointmentStatus(appointment, status) {
+  const calendar = await Calendar.findOne({ hospitalId: appointment.hospital_id });
+  if (!calendar) return false;
+  const dateKey = new Date(appointment.appointment_date).toISOString().slice(0, 10);
+  const day = calendar.days.find((row) => new Date(row.date).toISOString().slice(0, 10) === dateKey);
+  const doctorDay = day?.doctors?.find(
+    (row) => String(row.doctorId) === String(appointment.doctor_id)
+  );
+  if (!doctorDay) return false;
+  const normalized = status === 'In Progress' ? 'InProgress' : status;
+  const calendarAppointment = doctorDay.bookedAppointments?.find(
+    (row) => String(row.appointmentId) === String(appointment._id)
+  );
+  if (calendarAppointment) calendarAppointment.status = normalized;
+  await calendar.save();
+  return Boolean(calendarAppointment);
+}
+
 function convertUTCTimeToLocalForDate(utcTimeString, targetDateString) {
   if (!utcTimeString) return null;
   const utcDate = new Date(utcTimeString);
@@ -98,19 +204,30 @@ function convertUTCTimeToLocalForDate(utcTimeString, targetDateString) {
 // Check appointment conflict (for offline pre-check)
 exports.checkAppointmentConflict = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { doctorId, appointmentDate, startTime, duration = 10 } = req.query;
-
-    const hospital = await Hospital.findOne();
-    if (!hospital) {
-      return res.json({ hasConflict: false, message: 'No hospital found' });
+    if (!doctorId || !appointmentDate) {
+      return res.status(400).json({ error: 'doctorId and appointmentDate are required' });
+    }
+    const appointmentDateValue = new Date(appointmentDate);
+    if (Number.isNaN(appointmentDateValue.getTime())) {
+      return res.status(400).json({ error: 'Invalid appointmentDate' });
+    }
+    if (!mongoose.isValidObjectId(doctorId)
+      || !(await Doctor.exists({ _id: doctorId, hospitalId }))) {
+      return res.status(404).json({ error: 'Doctor not found for this hospital' });
+    }
+    const durationMinutes = Number(duration);
+    if (!Number.isFinite(durationMinutes) || durationMinutes <= 0 || durationMinutes > 1440) {
+      return res.status(400).json({ error: 'duration must be between 1 and 1440 minutes' });
     }
 
-    const calendar = await Calendar.findOne({ hospitalId: hospital._id });
+    const calendar = await Calendar.findOne({ hospitalId });
     if (!calendar) {
       return res.json({ hasConflict: false, message: 'No calendar found' });
     }
 
-    const dateStr = new Date(appointmentDate).toISOString().split('T')[0];
+    const dateStr = appointmentDateValue.toISOString().split('T')[0];
     const day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
 
     if (!day) {
@@ -124,7 +241,7 @@ exports.checkAppointmentConflict = async (req, res) => {
 
     if (startTime) {
       const start = new Date(startTime);
-      const end = new Date(start.getTime() + parseInt(duration) * 60000);
+      const end = new Date(start.getTime() + durationMinutes * 60000);
 
       const hasConflict = doctor.bookedAppointments.some(appt => {
         const apptStart = new Date(appt.startTime);
@@ -140,23 +257,25 @@ exports.checkAppointmentConflict = async (req, res) => {
 
     res.json({ hasConflict: false });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Get appointment by temp ID (for offline resolution)
 exports.getAppointmentByTempId = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { tempId } = req.params;
 
     const queueItem = await OfflineSyncLog.findOne({
+      hospitalId,
       tempAppointmentId: tempId,
       entityType: 'APPOINTMENT',
       status: 'SYNCED'
     });
 
     if (queueItem && queueItem.serverId) {
-      const appointment = await Appointment.findById(queueItem.serverId)
+      const appointment = await Appointment.findOne({ _id: queueItem.serverId, hospital_id: hospitalId })
         .populate('patient_id')
         .populate('doctor_id')
         .populate('department_id')
@@ -169,13 +288,14 @@ exports.getAppointmentByTempId = async (req, res) => {
 
     // Also check by localId
     const syncLog = await OfflineSyncLog.findOne({
+      hospitalId,
       localId: tempId,
       entityType: 'APPOINTMENT',
       status: 'SYNCED'
     });
 
     if (syncLog && syncLog.serverId) {
-      const appointment = await Appointment.findById(syncLog.serverId)
+      const appointment = await Appointment.findOne({ _id: syncLog.serverId, hospital_id: hospitalId })
         .populate('patient_id')
         .populate('doctor_id')
         .populate('department_id')
@@ -188,7 +308,7 @@ exports.getAppointmentByTempId = async (req, res) => {
 
     res.json({ appointment: null });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
@@ -199,29 +319,44 @@ exports.bulkCreateAppointments = async (req, res) => {
   if (!appointmentsData || !Array.isArray(appointmentsData)) {
     return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
   }
+  if (appointmentsData.length > 500) {
+    return res.status(413).json({ error: 'A maximum of 500 appointments can be synchronized in one request.' });
+  }
 
   const successfulImports = [];
   const failedImports = [];
   const syncLogs = [];
   const calendarUpdates = new Map();
 
-  const hospital = await Hospital.findOne();
+  const hospitalId = requireHospitalId(req);
+  const hospital = await Hospital.findById(hospitalId);
   if (!hospital) {
-    return res.status(500).json({ error: 'Hospital not found.' });
+    return res.status(404).json({ error: 'Hospital not found.' });
   }
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   for (const appointmentData of appointmentsData) {
+    let calendarMutation = null;
+    let appointmentSaved = false;
     try {
+      if (!appointmentData || typeof appointmentData !== 'object') {
+        failedImports.push({ reason: 'Appointment row must be an object.' });
+        continue;
+      }
       // Get patient server ID - Enhanced lookup logic
       let patientId = null;
+      let patientRecord = null;
+      const suppliedPatientIdentifier = appointmentData.patient_id == null
+        ? ''
+        : String(appointmentData.patient_id).trim();
 
       // Strategy 1: Check if patient_id is already a MongoDB ObjectId
-      if (appointmentData.patient_id && appointmentData.patient_id.match(/^[0-9a-fA-F]{24}$/)) {
-        const patient = await Patient.findById(appointmentData.patient_id);
+      if (/^[0-9a-fA-F]{24}$/.test(suppliedPatientIdentifier)) {
+        const patient = await Patient.findOne({ _id: suppliedPatientIdentifier, hospitalId });
         if (patient) {
+          patientRecord = patient;
           patientId = patient._id;
         }
       }
@@ -230,6 +365,7 @@ exports.bulkCreateAppointments = async (req, res) => {
       if (!patientId && appointmentData.patientLocalId) {
         const syncLog = await OfflineSyncLog.findOne({
           localId: appointmentData.patientLocalId,
+          hospitalId,
           entityType: 'PATIENT',
           status: 'SYNCED'
         });
@@ -241,47 +377,45 @@ exports.bulkCreateAppointments = async (req, res) => {
 
       // Strategy 3: Lookup by phone number
       if (!patientId && appointmentData.phone) {
-        const patient = await Patient.findOne({ phone: appointmentData.phone });
+        const patient = await Patient.findOne({ hospitalId, phone: appointmentData.phone });
         if (patient) {
+          patientRecord = patient;
           patientId = patient._id;
         }
       }
 
       // Strategy 4: Lookup by patientId (UHID) - THIS IS THE KEY FIX
-      if (!patientId && appointmentData.patient_id) {
+      if (!patientId && suppliedPatientIdentifier) {
         const patient = await Patient.findOne({
+          hospitalId,
           $or: [
-            { patientId: appointmentData.patient_id },
-            { uhid: appointmentData.patient_id }
+            { patientId: suppliedPatientIdentifier },
+            { uhid: suppliedPatientIdentifier }
           ]
         });
         if (patient) {
           patientId = patient._id;
-          console.log(`Found patient by patientId/uhid: ${appointmentData.patient_id} -> ${patientId}`);
+          console.log(`Found patient by patientId/uhid: ${suppliedPatientIdentifier} -> ${patientId}`);
         }
       }
 
       // Strategy 5: Lookup by any other identifier in the appointment data
       if (!patientId && appointmentData.uhid) {
-        const patient = await Patient.findOne({ uhid: appointmentData.uhid });
+        const patient = await Patient.findOne({ hospitalId, uhid: appointmentData.uhid });
         if (patient) {
+          patientRecord = patient;
           patientId = patient._id;
         }
       }
 
-      // If still no patient found, try to create one (optional - based on your business logic)
+      // Patient registration has its own mandatory-field, duplicate and OTP
+      // controls. Never create a placeholder patient from appointment sync.
       if (!patientId && appointmentData.shouldCreatePatient) {
-        const newPatient = new Patient({
-          patientId: appointmentData.patient_id,
-          uhid: appointmentData.patient_id,
-          phone: appointmentData.phone || appointmentData.patient_id,
-          first_name: appointmentData.patient_first_name || 'Offline',
-          last_name: appointmentData.patient_last_name || 'Patient',
-          patient_type: appointmentData.patient_type || 'opd'
+        failedImports.push({
+          localId: appointmentData.localId,
+          reason: 'Synchronize the patient registration first; appointment sync cannot create placeholder patients.'
         });
-        await newPatient.save();
-        patientId = newPatient._id;
-        console.log(`Created new patient for ID: ${appointmentData.patient_id}`);
+        continue;
       }
 
       if (!patientId) {
@@ -294,9 +428,23 @@ exports.bulkCreateAppointments = async (req, res) => {
         });
         continue;
       }
+      if (!patientRecord) {
+        patientRecord = await Patient.findOne({ _id: patientId, hospitalId }); // eslint-disable-line no-await-in-loop
+        if (!patientRecord) {
+          failedImports.push({ localId: appointmentData.localId, reason: 'Mapped patient is not available in this hospital.' });
+          continue;
+        }
+      }
 
       // Get doctor
-      const doctor = await Doctor.findById(appointmentData.doctor_id);
+      if (!mongoose.isValidObjectId(appointmentData.doctor_id)) {
+        failedImports.push({
+          localId: appointmentData.localId,
+          reason: 'A valid doctor_id is required.'
+        });
+        continue;
+      }
+      const doctor = await Doctor.findOne({ _id: appointmentData.doctor_id, hospitalId });
       if (!doctor) {
         failedImports.push({
           localId: appointmentData.localId,
@@ -310,64 +458,189 @@ exports.bulkCreateAppointments = async (req, res) => {
       if (!departmentId && doctor.department) {
         departmentId = doctor.department;
       }
+      if (!mongoose.isValidObjectId(departmentId)
+        || !(await Department.exists({ _id: departmentId, hospitalId }))) {
+        failedImports.push({
+          localId: appointmentData.localId,
+          reason: `Department not found: ${departmentId || 'missing'}`
+        });
+        continue;
+      }
 
       // Prepare appointment data
       const appointmentDate = new Date(appointmentData.appointment_date);
+      if (Number.isNaN(appointmentDate.getTime())) {
+        failedImports.push({
+          localId: appointmentData.localId,
+          reason: 'Invalid appointment_date.'
+        });
+        continue;
+      }
       const isHistorical = appointmentDate < today;
 
+      const effectiveIdempotencyKey = appointmentData.idempotencyKey || appointmentData.localId || undefined;
+      if (effectiveIdempotencyKey) {
+        const existing = await Appointment.findOne({ // eslint-disable-line no-await-in-loop
+          hospital_id: hospitalId,
+          idempotencyKey: effectiveIdempotencyKey
+        });
+        if (existing) {
+          successfulImports.push({
+            localId: appointmentData.localId,
+            serverId: existing._id,
+            token: existing.token,
+            serialNumber: existing.serial_number,
+            patientId,
+            patientIdentifier: appointmentData.patient_id,
+            duplicate: true
+          });
+          continue;
+        }
+      }
+
+      const visitMode = appointmentData.visit_mode || appointmentData.visitMode || 'physical';
+      if (!['physical', 'teleconsultation', 'homecare'].includes(visitMode)) {
+        failedImports.push({ localId: appointmentData.localId, reason: 'Invalid visit mode.' });
+        continue;
+      }
+      if (visitMode === 'teleconsultation' && !appointmentData.teleconsultation?.consentCaptured) {
+        failedImports.push({
+          localId: appointmentData.localId,
+          reason: 'Teleconsultation consent must be captured before booking.'
+        });
+        continue;
+      }
+      const appointmentType = appointmentData.type || 'time-based';
+      if (!['time-based', 'number-based'].includes(appointmentType)) {
+        failedImports.push({ localId: appointmentData.localId, reason: 'Invalid appointment type.' });
+        continue;
+      }
+      const durationMinutes = Number(appointmentData.duration ?? 10);
+      if (!Number.isFinite(durationMinutes) || durationMinutes <= 0 || durationMinutes > 1440) {
+        failedImports.push({ localId: appointmentData.localId, reason: 'duration must be between 1 and 1440 minutes.' });
+        continue;
+      }
+      const requestedStatus = appointmentData.status || 'Scheduled';
+      if (!['Scheduled', 'In Progress', 'Completed', 'Cancelled'].includes(requestedStatus)) {
+        failedImports.push({ localId: appointmentData.localId, reason: 'Invalid appointment status.' });
+        continue;
+      }
+      if (!isHistorical && !['Scheduled', 'In Progress'].includes(requestedStatus)) {
+        failedImports.push({
+          localId: appointmentData.localId,
+          reason: 'Future appointments must be Scheduled or In Progress; completed/cancelled rows are historical records.'
+        });
+        continue;
+      }
       const appointment = new Appointment({
         patient_id: patientId,
         doctor_id: appointmentData.doctor_id,
         hospital_id: hospital._id,
         department_id: departmentId,
         appointment_date: appointmentDate,
-        type: appointmentData.type || 'time-based',
+        type: appointmentType,
         appointment_type: appointmentData.appointment_type || 'consultation',
         priority: appointmentData.priority || 'Normal',
         notes: appointmentData.notes || '',
-        duration: appointmentData.duration || 10,
-        status: appointmentData.status || 'Scheduled'
+        duration: durationMinutes,
+        status: requestedStatus,
+        visit_mode: visitMode,
+        teleconsultation: {
+          communicationMode: visitMode === 'teleconsultation'
+            ? (appointmentData.teleconsultation?.communicationMode || 'video')
+            : 'not_applicable',
+          meetingUrl: appointmentData.teleconsultation?.meetingUrl,
+          meetingReference: appointmentData.teleconsultation?.meetingReference,
+          consentCaptured: Boolean(appointmentData.teleconsultation?.consentCaptured),
+          consentCapturedAt: appointmentData.teleconsultation?.consentCaptured
+            ? (appointmentData.teleconsultation?.consentCapturedAt || new Date())
+            : undefined,
+          consentCapturedBy: appointmentData.teleconsultation?.consentCaptured
+            ? req.user?._id
+            : undefined
+        },
+        attachments: Array.isArray(appointmentData.attachments)
+          ? appointmentData.attachments.slice(0, 20).map((item) => ({
+            name: item?.name,
+            url: item?.url,
+            mimeType: item?.mimeType,
+            addedAt: new Date(),
+            addedBy: req.user?._id
+          }))
+          : [],
+        externalBooking: appointmentData.externalBooking?.system
+          && appointmentData.externalBooking?.externalAppointmentId
+          ? {
+            system: appointmentData.externalBooking.system,
+            externalAppointmentId: appointmentData.externalBooking.externalAppointmentId,
+            sourceUpdatedAt: appointmentData.externalBooking.sourceUpdatedAt,
+            lastSyncedAt: new Date(),
+            rawPayload: appointmentData.externalBooking.rawPayload
+          }
+          : undefined,
+        idempotencyKey: effectiveIdempotencyKey,
+        submissionSource: appointmentData.submissionSource || 'OFFLINE_SYNC',
+        bookedBy: req.user?._id,
+        lifecycleTimestamps: {
+          bookedAt: appointmentData.lifecycleTimestamps?.bookedAt
+            || appointmentData.offlineCapturedAt
+            || new Date(),
+          checkedInAt: appointmentData.lifecycleTimestamps?.checkedInAt,
+          consultationStartedAt: appointmentData.lifecycleTimestamps?.consultationStartedAt,
+          consultationEndedAt: appointmentData.lifecycleTimestamps?.consultationEndedAt,
+          cancelledAt: appointmentData.lifecycleTimestamps?.cancelledAt
+        },
+        actual_start_time: appointmentData.actual_start_time,
+        actual_end_time: appointmentData.actual_end_time,
+        cancellationReason: requestedStatus === 'Cancelled'
+          ? String(appointmentData.cancellationReason || 'Imported historical cancellation')
+          : undefined,
+        cancelledAt: requestedStatus === 'Cancelled'
+          ? (appointmentData.cancelledAt || appointmentData.lifecycleTimestamps?.cancelledAt || new Date())
+          : undefined,
+        cancelledBy: requestedStatus === 'Cancelled' ? req.user?._id : undefined
       });
 
       // Handle calendar for future appointments
       if (!isHistorical) {
-        const cacheKey = `${hospital._id}_${appointmentDate.toISOString().split('T')[0]}`;
+        // A Calendar document stores all dates for a hospital. Keep one shared
+        // in-memory instance so updates for different dates cannot overwrite
+        // each other when the batch is persisted.
+        const cacheKey = String(hospital._id);
         let calendar = calendarUpdates.get(cacheKey);
 
         if (!calendar) {
           calendar = await Calendar.findOne({ hospitalId: hospital._id });
           if (!calendar) {
-            calendar = new Calendar({ hospitalId: hospital._id, days: [] });
+            failedImports.push({ localId: appointmentData.localId, reason: 'Hospital calendar is not configured.' });
+            continue;
           }
           calendarUpdates.set(cacheKey, calendar);
         }
 
         const dateStr = appointmentDate.toISOString().split('T')[0];
-        let day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
-
+        const day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
         if (!day) {
-          const dayName = appointmentDate.toLocaleDateString('en-US', { weekday: 'long' });
-          calendar.days.push({
-            date: appointmentDate,
-            dayName,
-            doctors: []
-          });
-          day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
+          failedImports.push({ localId: appointmentData.localId, reason: 'Appointment date is not available in the hospital calendar.' });
+          continue;
         }
 
-        let docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
+        const docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
         if (!docDay) {
-          day.doctors.push({
-            doctorId: doctor._id,
-            bookedAppointments: [],
-            bookedPatients: [],
-            breaks: []
-          });
-          docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
+          failedImports.push({ localId: appointmentData.localId, reason: 'Doctor is not scheduled on the appointment date.' });
+          continue;
         }
 
-        if (appointment.type === 'time-based' && appointmentData.start_time) {
+        if (appointment.type === 'time-based') {
+          if (!appointmentData.start_time) {
+            failedImports.push({ localId: appointmentData.localId, reason: 'start_time is required for time-based appointments.' });
+            continue;
+          }
           const startTime = new Date(appointmentData.start_time);
+          if (Number.isNaN(startTime.getTime())) {
+            failedImports.push({ localId: appointmentData.localId, reason: 'Invalid start_time.' });
+            continue;
+          }
           const endTime = new Date(startTime.getTime() + appointment.duration * 60000);
 
           if (hasTimeConflict(docDay.bookedAppointments, startTime, endTime, docDay.breaks)) {
@@ -386,8 +659,9 @@ exports.bulkCreateAppointments = async (req, res) => {
             endTime,
             duration: appointment.duration,
             appointmentId: appointment._id,
-            status: appointment.status
+            status: appointment.status === 'In Progress' ? 'InProgress' : appointment.status
           });
+          calendarMutation = { docDay, type: 'time-based', appointmentId: appointment._id };
         } else if (appointment.type === 'number-based') {
           const lastPatient = docDay.bookedPatients.sort((a, b) => b.serialNumber - a.serialNumber)[0];
           const serialNumber = lastPatient ? lastPatient.serialNumber + 1 : 1;
@@ -398,11 +672,16 @@ exports.bulkCreateAppointments = async (req, res) => {
             serialNumber,
             appointmentId: appointment._id
           });
+          calendarMutation = { docDay, type: 'number-based', appointmentId: appointment._id };
         }
       } else {
         // Historical appointment - set times if provided
         if (appointment.type === 'time-based' && appointmentData.start_time) {
           const startTime = new Date(appointmentData.start_time);
+          if (Number.isNaN(startTime.getTime())) {
+            failedImports.push({ localId: appointmentData.localId, reason: 'Invalid start_time.' });
+            continue;
+          }
           appointment.start_time = startTime;
           appointment.end_time = new Date(startTime.getTime() + appointment.duration * 60000);
         }
@@ -411,7 +690,13 @@ exports.bulkCreateAppointments = async (req, res) => {
         }
       }
 
+      appointment.token = await nextAppointmentToken({
+        hospitalId,
+        patientType: patientRecord.patient_type || 'opd',
+        appointmentDate
+      });
       await appointment.save();
+      appointmentSaved = true;
 
       successfulImports.push({
         localId: appointmentData.localId,
@@ -424,6 +709,7 @@ exports.bulkCreateAppointments = async (req, res) => {
 
       if (appointmentData.localId) {
         syncLogs.push({
+          hospitalId,
           localId: appointmentData.localId,
           entityType: 'APPOINTMENT',
           operationType: 'CREATE',
@@ -437,6 +723,17 @@ exports.bulkCreateAppointments = async (req, res) => {
       }
 
     } catch (err) {
+      if (calendarMutation && !appointmentSaved) {
+        if (calendarMutation.type === 'time-based') {
+          calendarMutation.docDay.bookedAppointments = calendarMutation.docDay.bookedAppointments.filter(
+            (row) => String(row.appointmentId) !== String(calendarMutation.appointmentId)
+          );
+        } else {
+          calendarMutation.docDay.bookedPatients = calendarMutation.docDay.bookedPatients.filter(
+            (row) => String(row.appointmentId) !== String(calendarMutation.appointmentId)
+          );
+        }
+      }
       console.error('Error processing appointment:', err);
       failedImports.push({
         localId: appointmentData.localId,
@@ -469,9 +766,14 @@ exports.bulkCreateAppointments = async (req, res) => {
 // Complete appointment
 exports.completeAppointment = async (req, res) => {
   try {
-    const appointment = await Appointment.findByIdAndUpdate(
-      req.params.id,
-      { status: 'Completed', actual_end_time: new Date() },
+    const hospitalId = requireHospitalId(req);
+    const appointment = await Appointment.findOneAndUpdate(
+      { _id: req.params.id, hospital_id: hospitalId },
+      {
+        status: 'Completed',
+        actual_end_time: new Date(),
+        'lifecycleTimestamps.consultationEndedAt': new Date()
+      },
       { new: true }
     );
 
@@ -479,29 +781,49 @@ exports.completeAppointment = async (req, res) => {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
+    await updateCalendarAppointmentStatus(appointment, 'Completed');
+    await recalculateQueue({
+      hospitalId,
+      departmentId: appointment.department_id,
+      date: appointment.appointment_date
+    });
+
     try {
       await calculatePartTimeSalary(appointment._id);
     } catch (salaryError) {
       console.error('Error calculating part-time salary:', salaryError);
     }
 
-    res.json({ message: 'Appointment status updated to Completed', appointment });
+    await notifyAppointment(appointment, 'appointment_completed', req.user?._id, {
+      subject: 'Appointment completed',
+      body: 'Your appointment has been completed. Follow-up instructions and records are available in the hospital system.'
+    });
+
+    return res.json({
+      message: 'Appointment status updated to Completed',
+      appointment
+    });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    return res.status(400).json({ error: error.message });
   }
 };
 
 // Get procedures scheduled for a doctor on a specific date
 exports.getDoctorProceduresForDate = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { doctorId, date } = req.params;
+    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId });
+    if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
 
     const targetDate = new Date(date);
+    if (Number.isNaN(targetDate.getTime())) return res.status(400).json({ error: 'Invalid date' });
     targetDate.setHours(0, 0, 0, 0);
     const nextDate = new Date(targetDate);
     nextDate.setDate(targetDate.getDate() + 1);
 
     const prescriptions = await Prescription.find({
+      'recommendedProcedures.performed_by': doctorId,
       'recommendedProcedures.scheduled_date': {
         $gte: targetDate,
         $lt: nextDate
@@ -590,17 +912,22 @@ exports.getDoctorProceduresForDate = async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching doctor procedures:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Get appointments by patient ID
 exports.getAppointmentsByPatientId = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { patientId } = req.params;
-    const { status, page = 1, limit = 10 } = req.query;
+    const { status } = req.query;
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(200, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
 
-    const filter = { patient_id: patientId };
+    const patientExists = await Patient.exists({ _id: patientId, hospitalId });
+    if (!patientExists) return res.status(404).json({ error: 'Patient not found' });
+    const filter = { patient_id: patientId, hospital_id: hospitalId };
     if (status) filter.status = status;
 
     const appointments = await Appointment.find(filter)
@@ -620,118 +947,452 @@ exports.getAppointmentsByPatientId = async (req, res) => {
       total
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Create single appointment with hospital-scoped idempotency and atomic calendar reservation
 exports.createAppointment = async (req, res) => {
-  const idempotencyKey = String(req.get('Idempotency-Key') || req.body.idempotencyKey || '').trim();
-  const { type, doctor_id, hospital_id, department_id, appointment_date, duration = 10 } = req.body;
-  if (!type || !doctor_id || !hospital_id || !department_id || !appointment_date || !req.body.patient_id) {
-    return res.status(400).json({ error: 'Missing required fields', code: 'VALIDATION_ERROR' });
-  }
-  if (!idempotencyKey) {
-    return res.status(400).json({ error: 'Idempotency-Key is required', code: 'IDEMPOTENCY_KEY_REQUIRED' });
-  }
+  const suppliedIdempotencyKey = String(
+    req.get('Idempotency-Key') || req.body.idempotencyKey || ''
+  ).trim();
+  const idempotencyKey = suppliedIdempotencyKey || `server:${crypto.randomUUID()}`;
 
-  const existing = await Appointment.findOne({ hospital_id, idempotencyKey });
-  if (existing) return res.status(200).json({ ...existing.toObject(), idempotent: true });
-
-  const session = await mongoose.startSession();
   try {
-    let savedAppointment;
-    await session.withTransaction(async () => {
-      const repeated = await Appointment.findOne({ hospital_id, idempotencyKey }).session(session);
-      if (repeated) { savedAppointment = repeated; return; }
+    const hospitalId = requireHospitalId(req);
+    const { type, doctor_id, department_id, appointment_date, duration = 10 } = req.body;
+    if (req.body.hospital_id && String(req.body.hospital_id) !== String(hospitalId)) {
+      return res.status(403).json({ error: 'Hospital scope mismatch', code: 'TENANT_SCOPE_MISMATCH' });
+    }
+    if (!type || !doctor_id || !department_id || !appointment_date || !req.body.patient_id) {
+      return res.status(400).json({ error: 'Missing required fields', code: 'VALIDATION_ERROR' });
+    }
 
-      const patient = await Patient.findOne({ _id: req.body.patient_id, hospitalId: hospital_id }).session(session);
-      if (!patient) {
-        const error = new Error('Patient not found for this hospital');
-        error.statusCode = 404;
-        throw error;
+    const appointmentDate = new Date(appointment_date);
+    if (Number.isNaN(appointmentDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid appointment_date', code: 'VALIDATION_ERROR' });
+    }
+    const durationMinutes = Number(duration);
+    if (!Number.isFinite(durationMinutes) || durationMinutes <= 0 || durationMinutes > 1440) {
+      return res.status(400).json({ error: 'duration must be between 1 and 1440 minutes', code: 'VALIDATION_ERROR' });
+    }
+
+    const visitMode = req.body.visit_mode || 'physical';
+    if (!['physical', 'teleconsultation', 'homecare'].includes(visitMode)) {
+      return res.status(400).json({ error: 'Invalid visit_mode', code: 'VALIDATION_ERROR' });
+    }
+    if (visitMode === 'teleconsultation' && !req.body.teleconsultation?.consentCaptured) {
+      return res.status(400).json({
+        error: 'Teleconsultation consent is required',
+        code: 'TELECONSULTATION_CONSENT_REQUIRED'
+      });
+    }
+
+    const externalSystem = String(req.body.externalBooking?.system || '').trim();
+    const externalAppointmentId = String(req.body.externalBooking?.externalAppointmentId || '').trim();
+    if (externalSystem && externalAppointmentId) {
+      const externalExisting = await Appointment.findOne({
+        hospital_id: hospitalId,
+        'externalBooking.system': externalSystem,
+        'externalBooking.externalAppointmentId': externalAppointmentId
+      });
+      if (externalExisting) {
+        return res.status(200).json({ ...externalExisting.toObject(), idempotent: true });
       }
+    }
 
-      const dateKey = new Date(appointment_date).toISOString().slice(0, 10);
-      const fingerprintParts = [hospital_id, req.body.patient_id, doctor_id, dateKey, type];
-      if (type === 'time-based') fingerprintParts.push(String(req.body.start_time || ''));
-      const bookingFingerprint = fingerprintParts.join('|');
+    if (suppliedIdempotencyKey) {
+      const existing = await Appointment.findOne({ hospital_id: hospitalId, idempotencyKey });
+      if (existing) return res.status(200).json({ ...existing.toObject(), idempotent: true });
+    }
 
-      const appointment = new Appointment({
-        ...req.body,
-        status: 'Scheduled',
-        type: type === 'time-based' ? 'time-based' : 'number-based',
-        idempotencyKey,
-        bookingFingerprint,
-        submissionSource: req.body.submissionSource || 'APPOINTMENT_MODAL',
-        bookedBy: req.user?._id
-      });
-      appointment.token = await nextAppointmentToken({
-        hospitalId: hospital_id,
-        patientType: patient.patient_type,
-        appointmentDate: appointment_date,
-        session
-      });
+    const [patient, doctorRecord, departmentRecord] = await Promise.all([
+      Patient.findOne({ _id: req.body.patient_id, hospitalId }),
+      Doctor.findOne({ _id: doctor_id, hospitalId }),
+      Department.findOne({ _id: department_id, hospitalId })
+    ]);
+    if (!patient) return res.status(404).json({ error: 'Patient not found for this hospital' });
+    if (!doctorRecord) return res.status(404).json({ error: 'Doctor not found for this hospital' });
+    if (!departmentRecord) return res.status(404).json({ error: 'Department not found for this hospital' });
+    if (req.body.episodeId) {
+      if (!mongoose.isValidObjectId(req.body.episodeId)) {
+        return res.status(400).json({ error: 'Invalid episodeId' });
+      }
+      const episode = await Episode.exists({ _id: req.body.episodeId, patientId: patient._id });
+      if (!episode) {
+        return res.status(404).json({ error: 'Episode not found for the appointment patient' });
+      }
+    }
 
-      const calendar = await Calendar.findOne({ hospitalId: hospital_id }).session(session);
-      if (!calendar) { const error = new Error('Calendar not found'); error.statusCode = 404; throw error; }
-      const day = calendar.days.find((row) => row.date.toISOString().split('T')[0] === dateKey);
-      if (!day) { const error = new Error('Date not found in calendar'); error.statusCode = 404; throw error; }
-      const doctor = day.doctors.find((row) => row.doctorId.toString() === doctor_id.toString());
-      if (!doctor) { const error = new Error('Doctor not found on this date'); error.statusCode = 404; throw error; }
+    const dateKey = appointmentDate.toISOString().slice(0, 10);
+    const fingerprintParts = [hospitalId, patient._id, doctor_id, dateKey, type];
+    if (type === 'time-based') fingerprintParts.push(String(req.body.start_time || ''));
+    const bookingFingerprint = fingerprintParts.join('|');
 
-      if (appointment.type === 'time-based') {
-        if (!req.body.start_time) { const error = new Error('Start time is required for time-based appointments'); error.statusCode = 400; throw error; }
-        const startTime = new Date(req.body.start_time);
-        const endTime = new Date(startTime.getTime() + Number(duration) * 60000);
-        if (hasTimeConflict(doctor.bookedAppointments, startTime, endTime, doctor.breaks)) {
-          const error = new Error('Time slot not available (conflict with appointment or break)');
-          error.statusCode = 409;
-          error.code = 'SLOT_CONFLICT';
-          throw error;
+    const calendar = await Calendar.findOne({ hospitalId });
+    if (!calendar) return res.status(404).json({ error: 'Calendar not found' });
+    const day = calendar.days.find((row) => row.date.toISOString().split('T')[0] === dateKey);
+    if (!day) return res.status(404).json({ error: 'Date not found in calendar' });
+    const doctorDay = day.doctors.find((row) => row.doctorId.toString() === doctor_id.toString());
+    if (!doctorDay) return res.status(404).json({ error: 'Doctor not found on this date' });
+
+    const appointment = new Appointment({
+      hospital_id: hospitalId,
+      patient_id: patient._id,
+      doctor_id,
+      department_id,
+      appointment_date: appointmentDate,
+      duration: durationMinutes,
+      status: 'Scheduled',
+      type: type === 'time-based' ? 'time-based' : 'number-based',
+      appointment_type: req.body.appointment_type || 'consultation',
+      priority: req.body.priority || 'Normal',
+      notes: req.body.notes || '',
+      episodeId: req.body.episodeId || undefined,
+      coverageId: req.body.coverageId || undefined,
+      sponsorType: req.body.sponsorType || patient.sponsor_type || 'self',
+      sponsorName: req.body.sponsorName || patient.sponsor_name,
+      idempotencyKey,
+      bookingFingerprint,
+      submissionSource: req.body.submissionSource || 'APPOINTMENT_MODAL',
+      bookedBy: req.user?._id,
+      visit_mode: visitMode,
+      teleconsultation: {
+        communicationMode: visitMode === 'teleconsultation'
+          ? (req.body.teleconsultation?.communicationMode || 'video')
+          : 'not_applicable',
+        meetingUrl: req.body.teleconsultation?.meetingUrl,
+        meetingReference: req.body.teleconsultation?.meetingReference,
+        consentCaptured: Boolean(req.body.teleconsultation?.consentCaptured),
+        consentCapturedAt: req.body.teleconsultation?.consentCaptured ? new Date() : undefined,
+        consentCapturedBy: req.body.teleconsultation?.consentCaptured ? req.user?._id : undefined
+      },
+      attachments: Array.isArray(req.body.attachments)
+        ? req.body.attachments.slice(0, 20).map((item) => ({
+          name: item?.name,
+          url: item?.url,
+          mimeType: item?.mimeType,
+          addedAt: new Date(),
+          addedBy: req.user?._id
+        }))
+        : [],
+      externalBooking: externalSystem && externalAppointmentId
+        ? {
+          system: externalSystem,
+          externalAppointmentId,
+          sourceUpdatedAt: req.body.externalBooking?.sourceUpdatedAt,
+          lastSyncedAt: new Date(),
+          rawPayload: req.body.externalBooking?.rawPayload || req.body
         }
-        appointment.start_time = startTime;
-        appointment.end_time = endTime;
-        doctor.bookedAppointments.push({ startTime, endTime, duration: Number(duration), appointmentId: appointment._id, status: 'Scheduled' });
-      } else {
-        const serialNumber = doctor.bookedPatients.reduce((max, row) => Math.max(max, Number(row.serialNumber || 0)), 0) + 1;
-        appointment.serial_number = serialNumber;
-        doctor.bookedPatients.push({ patientId: appointment.patient_id, serialNumber, appointmentId: appointment._id });
-      }
-
-      await appointment.save({ session });
-      await calendar.save({ session });
-      savedAppointment = appointment;
+        : undefined,
+      lifecycleTimestamps: { bookedAt: new Date() }
     });
 
-    if (req.body.localId && savedAppointment) {
+    appointment.token = await nextAppointmentToken({
+      hospitalId,
+      patientType: patient.patient_type,
+      appointmentDate
+    });
+
+    if (appointment.type === 'time-based') {
+      if (!req.body.start_time) {
+        return res.status(400).json({ error: 'Start time is required for time-based appointments' });
+      }
+      const startTime = new Date(req.body.start_time);
+      if (Number.isNaN(startTime.getTime())) {
+        return res.status(400).json({ error: 'Invalid start_time', code: 'VALIDATION_ERROR' });
+      }
+      const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
+      if (hasTimeConflict(doctorDay.bookedAppointments, startTime, endTime, doctorDay.breaks)) {
+        return res.status(409).json({
+          error: 'Time slot not available (conflict with appointment or break)',
+          code: 'SLOT_CONFLICT'
+        });
+      }
+      appointment.start_time = startTime;
+      appointment.end_time = endTime;
+      doctorDay.bookedAppointments.push({
+        startTime,
+        endTime,
+        duration: durationMinutes,
+        appointmentId: appointment._id,
+        status: 'Scheduled'
+      });
+    } else {
+      const serialNumber = doctorDay.bookedPatients.reduce(
+        (max, row) => Math.max(max, Number(row.serialNumber || 0)),
+        0
+      ) + 1;
+      appointment.serial_number = serialNumber;
+      doctorDay.bookedPatients.push({
+        patientId: appointment.patient_id,
+        serialNumber,
+        appointmentId: appointment._id
+      });
+    }
+
+    await appointment.save();
+    try {
+      await calendar.save();
+    } catch (calendarError) {
+      await Appointment.deleteOne({ _id: appointment._id, hospital_id: hospitalId }).catch(() => {});
+      throw calendarError;
+    }
+
+    if (req.body.localId) {
       await OfflineSyncLog.updateOne(
-        { localId: req.body.localId, entityType: 'APPOINTMENT' },
-        { $setOnInsert: { operationType: 'CREATE', data: req.body }, $set: { status: 'SYNCED', serverId: savedAppointment._id, syncedAt: new Date(), tempAppointmentId: req.body.localId } },
+        { hospitalId, localId: req.body.localId, entityType: 'APPOINTMENT' },
+        {
+          $setOnInsert: { hospitalId, operationType: 'CREATE', data: req.body },
+          $set: {
+            status: 'SYNCED',
+            serverId: appointment._id,
+            syncedAt: new Date(),
+            tempAppointmentId: req.body.localId
+          }
+        },
         { upsert: true }
       );
     }
-    return res.status(savedAppointment?.idempotencyKey === idempotencyKey ? 201 : 200).json(savedAppointment);
+
+    await recalculateQueue({
+      hospitalId,
+      departmentId: appointment.department_id,
+      date: appointment.appointment_date
+    });
+
+    let notificationWarning;
+    try {
+      await notifyAppointment(appointment, 'appointment_booked', req.user?._id);
+    } catch (notificationError) {
+      notificationWarning = notificationError.message;
+      console.error('Appointment saved but booking notification could not be queued:', notificationError);
+    }
+
+    return res.status(201).json({
+      ...appointment.toObject(),
+      ...(suppliedIdempotencyKey ? {} : { serverGeneratedIdempotencyKey: true }),
+      ...(notificationWarning ? { notificationWarning } : {})
+    });
   } catch (err) {
     if (err?.code === 11000) {
-      const repeated = await Appointment.findOne({ hospital_id, idempotencyKey });
+      const hospitalId = requireHospitalId(req);
+      const repeated = suppliedIdempotencyKey
+        ? await Appointment.findOne({ hospital_id: hospitalId, idempotencyKey })
+        : await Appointment.findOne({
+          hospital_id: hospitalId,
+          'externalBooking.system': req.body.externalBooking?.system,
+          'externalBooking.externalAppointmentId': req.body.externalBooking?.externalAppointmentId
+        });
       if (repeated) return res.status(200).json({ ...repeated.toObject(), idempotent: true });
     }
-    return res.status(err.statusCode || 400).json({ error: err.code || err.message, message: err.message, code: err.code });
-  } finally {
-    await session.endSession();
+    return res.status(err.statusCode || 400).json({
+      error: err.code || err.message,
+      message: err.message,
+      code: err.code
+    });
+  }
+};
+
+// Synchronize an appointment created or changed in an approved external channel.
+// The existing create/update/cancel handlers remain the single source of business rules.
+exports.syncExternalAppointment = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const externalSystem = String(req.body.externalSystem || req.body.externalBooking?.system || '').trim();
+    const externalAppointmentId = String(
+      req.body.externalAppointmentId || req.body.externalBooking?.externalAppointmentId || ''
+    ).trim();
+    const action = String(req.body.action || 'upsert').toLowerCase();
+
+    if (!externalSystem || !externalAppointmentId) {
+      return res.status(400).json({
+        error: 'externalSystem and externalAppointmentId are required',
+        code: 'EXTERNAL_APPOINTMENT_REFERENCE_REQUIRED'
+      });
+    }
+
+    const existing = await Appointment.findOne({
+      hospital_id: hospitalId,
+      'externalBooking.system': externalSystem,
+      'externalBooking.externalAppointmentId': externalAppointmentId
+    });
+
+    const sourceUpdatedAt = req.body.sourceUpdatedAt ? new Date(req.body.sourceUpdatedAt) : new Date();
+    if (Number.isNaN(sourceUpdatedAt.getTime())) {
+      return res.status(400).json({ error: 'Invalid sourceUpdatedAt' });
+    }
+    if (existing?.externalBooking?.sourceUpdatedAt && sourceUpdatedAt < existing.externalBooking.sourceUpdatedAt) {
+      return res.status(409).json({
+        error: 'A newer version of this external appointment is already stored',
+        code: 'STALE_EXTERNAL_APPOINTMENT_UPDATE',
+        appointment: existing
+      });
+    }
+
+    if (action === 'cancel') {
+      if (!existing) return res.status(404).json({ error: 'External appointment not found' });
+      req.params.id = String(existing._id);
+      req.body.reason = req.body.reason || req.body.cancellationReason || `Cancelled by ${externalSystem}`;
+      return exports.cancelAppointment(req, res);
+    }
+
+    if (existing) {
+      req.params.id = String(existing._id);
+      req.body = {
+        ...req.body,
+        externalBooking: {
+          system: externalSystem,
+          externalAppointmentId,
+          sourceUpdatedAt,
+          lastSyncedAt: new Date(),
+          rawPayload: req.body
+        }
+      };
+      return exports.updateAppointment(req, res);
+    }
+
+    req.body = {
+      ...req.body,
+      hospital_id: hospitalId,
+      submissionSource: `EXTERNAL:${externalSystem}`,
+      externalBooking: {
+        system: externalSystem,
+        externalAppointmentId,
+        sourceUpdatedAt,
+        lastSyncedAt: new Date(),
+        rawPayload: req.body
+      },
+      idempotencyKey: req.body.idempotencyKey || `external:${externalSystem}:${externalAppointmentId}`
+    };
+    req.headers['idempotency-key'] = req.body.idempotencyKey;
+    return exports.createAppointment(req, res);
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.message, code: error.code });
+  }
+};
+
+exports.checkInAppointment = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const checkedInAt = new Date();
+    const appointment = await Appointment.findOneAndUpdate(
+      { _id: req.params.id, hospital_id: hospitalId, status: { $nin: ['Cancelled', 'Completed'] } },
+      {
+        $set: {
+          status: 'In Progress',
+          'lifecycleTimestamps.checkedInAt': checkedInAt
+        }
+      },
+      { new: true, runValidators: true }
+    );
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found or cannot be checked in' });
+    await updateCalendarAppointmentStatus(appointment, 'In Progress');
+
+    const queue = await recalculateQueue({
+      hospitalId,
+      departmentId: appointment.department_id,
+      date: appointment.appointment_date
+    });
+    const refreshed = queue.find((row) => String(row._id) === String(appointment._id)) || appointment;
+    await notifyAppointment(refreshed, 'appointment_checked_in', req.user?._id, {
+      subject: 'Patient check-in confirmed',
+      body: `Check-in is complete. Queue position: ${refreshed.queuePosition || 'pending'}.`
+    });
+    return res.json({ message: 'Appointment checked in', appointment: refreshed });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+exports.startConsultation = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const startedAt = new Date();
+    const appointment = await Appointment.findOneAndUpdate(
+      { _id: req.params.id, hospital_id: hospitalId, status: { $nin: ['Cancelled', 'Completed'] } },
+      {
+        $set: {
+          status: 'In Progress',
+          actual_start_time: startedAt,
+          'lifecycleTimestamps.consultationStartedAt': startedAt
+        }
+      },
+      { new: true, runValidators: true }
+    );
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found or cannot be started' });
+    await updateCalendarAppointmentStatus(appointment, 'In Progress');
+    await recalculateQueue({
+      hospitalId,
+      departmentId: appointment.department_id,
+      date: appointment.appointment_date
+    });
+    return res.json({ message: 'Consultation started', appointment });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+exports.getCurrentQueue = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const departmentId = req.query.departmentId || req.query.department_id;
+    const date = req.query.date || new Date();
+    if (!departmentId) return res.status(400).json({ error: 'departmentId is required' });
+    if (!mongoose.isValidObjectId(departmentId)
+      || !(await Department.exists({ _id: departmentId, hospitalId }))) {
+      return res.status(404).json({ error: 'Department not found for this hospital' });
+    }
+    const start = new Date(date);
+    if (Number.isNaN(start.getTime())) return res.status(400).json({ error: 'Invalid date' });
+
+    await recalculateQueue({ hospitalId, departmentId, date: start });
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    const rows = await Appointment.find({
+      hospital_id: hospitalId,
+      department_id: departmentId,
+      appointment_date: { $gte: start, $lt: end },
+      status: { $in: ['Scheduled', 'In Progress'] }
+    })
+      .populate('patient_id', 'first_name last_name patientId uhid')
+      .populate('doctor_id', 'firstName lastName')
+      .sort({ queuePosition: 1, start_time: 1, serial_number: 1 });
+    return res.json({ date: start, departmentId, queue: rows });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 };
 
 // Get all appointments
 exports.getAllAppointments = async (req, res) => {
   try {
-    const appointments = await Appointment.find()
+    const hospitalId = requireHospitalId(req);
+    const filter = { hospital_id: hospitalId };
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.visit_mode) filter.visit_mode = req.query.visit_mode;
+    if (req.query.from || req.query.to) {
+      filter.appointment_date = {};
+      if (req.query.from) {
+        const from = new Date(req.query.from);
+        if (Number.isNaN(from.getTime())) return res.status(400).json({ error: 'Invalid from date' });
+        filter.appointment_date.$gte = from;
+      }
+      if (req.query.to) {
+        const to = new Date(req.query.to);
+        if (Number.isNaN(to.getTime())) return res.status(400).json({ error: 'Invalid to date' });
+        filter.appointment_date.$lte = to;
+      }
+    }
+    const limit = Math.min(2000, Math.max(1, Number.parseInt(req.query.limit, 10) || 1000));
+    const appointments = await Appointment.find(filter)
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
       .populate('hospital_id')
-      .sort({ appointment_date: -1 });
+      .sort({ appointment_date: -1 })
+      .limit(limit);
 
     const appointmentsWithVitals = await Promise.all(appointments.map(async (appt) => {
       const vital = await Vital.findOne({ appointment_id: appt._id });
@@ -743,14 +1404,15 @@ exports.getAllAppointments = async (req, res) => {
 
     res.json(appointmentsWithVitals);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Get appointment by ID
 exports.getAppointmentById = async (req, res) => {
   try {
-    const appointment = await Appointment.findById(req.params.id)
+    const hospitalId = requireHospitalId(req);
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -766,112 +1428,275 @@ exports.getAppointmentById = async (req, res) => {
       vitals: vitals || null
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
-// Update appointment
+// Update or reschedule an appointment while preserving the existing calendar flow.
 exports.updateAppointment = async (req, res) => {
   try {
-    const { type, start_time, duration } = req.body;
-    const appointment = await Appointment.findById(req.params.id);
+    const hospitalId = requireHospitalId(req);
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
-    if (!appointment) {
-      return res.status(404).json({ error: 'Appointment not found' });
-    }
-
-    if (type && type !== appointment.type) {
+    if (req.body.type && req.body.type !== appointment.type) {
       return res.status(400).json({ error: 'Cannot change appointment type' });
     }
 
-    const calendar = await Calendar.findOne({ hospitalId: appointment.hospital_id });
-    if (!calendar) return res.status(404).json({ error: 'Calendar not found' });
-
-    const dateStr = appointment.appointment_date.toISOString().split('T')[0];
-    const day = calendar.days.find(d => d.date.toISOString().split('T')[0] === dateStr);
-    if (!day) return res.status(404).json({ error: 'Day not found in calendar' });
-
-    const doctor = day.doctors.find(d => d.doctorId.toString() === appointment.doctor_id.toString());
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found on this day' });
-
-    if (appointment.type === 'time-based') {
-      const newStartTime = start_time ? new Date(start_time) : appointment.start_time;
-      const newDuration = duration || ((appointment.end_time - appointment.start_time) / 60000);
-      const newEndTime = new Date(newStartTime.getTime() + newDuration * 60000);
-
-      if (newStartTime.getTime() !== appointment.start_time.getTime() ||
-        newEndTime.getTime() !== appointment.end_time.getTime()) {
-
-        const otherAppointments = doctor.bookedAppointments.filter(
-          a => a.appointmentId.toString() !== appointment._id.toString()
-        );
-
-        if (hasTimeConflict(otherAppointments, newStartTime, newEndTime)) {
-          return res.status(400).json({ error: 'New time slot conflicts with existing appointments' });
-        }
-
-        const calendarAppointment = doctor.bookedAppointments.find(
-          a => a.appointmentId.toString() === appointment._id.toString()
-        );
-
-        if (calendarAppointment) {
-          calendarAppointment.startTime = newStartTime;
-          calendarAppointment.endTime = newEndTime;
-          calendarAppointment.duration = newDuration;
-        }
-
-        appointment.start_time = newStartTime;
-        appointment.end_time = newEndTime;
-      }
-    } else {
-      if (req.body.serial_number !== undefined) {
-        const newSerialNumber = req.body.serial_number;
-
-        const existingPatient = doctor.bookedPatients.find(
-          p => p.serialNumber === newSerialNumber &&
-            p.appointmentId.toString() !== appointment._id.toString()
-        );
-
-        if (existingPatient) {
-          return res.status(400).json({ error: 'Serial number already assigned' });
-        }
-
-        const patientEntry = doctor.bookedPatients.find(
-          p => p.appointmentId.toString() === appointment._id.toString()
-        );
-
-        if (patientEntry) {
-          patientEntry.serialNumber = newSerialNumber;
-        }
-
-        appointment.serial_number = newSerialNumber;
-      }
-    }
-
-    const { notes, priority, appointment_type, status } = req.body;
-
-    if (notes !== undefined) appointment.notes = notes;
-    if (priority !== undefined) appointment.priority = priority;
-    if (appointment_type !== undefined) appointment.appointment_type = appointment_type;
-    if (status === 'Cancelled') {
+    const oldAppointmentDate = new Date(appointment.appointment_date);
+    const oldDepartmentId = appointment.department_id;
+    const targetStatus = req.body.status !== undefined ? String(req.body.status) : appointment.status;
+    if (targetStatus === 'Cancelled') {
       return res.status(400).json({ error: 'Use the cancellation action and provide a cancellation reason' });
     }
-    if (status !== undefined) appointment.status = status;
+    if (!['Scheduled', 'In Progress', 'Completed'].includes(targetStatus)) {
+      return res.status(400).json({ error: 'Invalid appointment status' });
+    }
 
-    await Promise.all([appointment.save(), calendar.save()]);
-    res.json(appointment);
+    const scheduleFields = [
+      'appointment_date', 'doctor_id', 'department_id', 'start_time', 'duration', 'serial_number'
+    ];
+    const scheduleChanged = scheduleFields.some((field) => req.body[field] !== undefined);
+    if (scheduleChanged && ['Completed', 'Cancelled'].includes(appointment.status)) {
+      return res.status(409).json({ error: `${appointment.status} appointments cannot be rescheduled` });
+    }
+
+    const targetDate = req.body.appointment_date
+      ? new Date(req.body.appointment_date)
+      : new Date(appointment.appointment_date);
+    if (Number.isNaN(targetDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid appointment_date' });
+    }
+    const targetDoctorId = req.body.doctor_id || appointment.doctor_id;
+    const targetDepartmentId = req.body.department_id || appointment.department_id;
+    const targetDuration = req.body.duration !== undefined
+      ? Number(req.body.duration)
+      : Number(appointment.duration || 10);
+    if (!Number.isFinite(targetDuration) || targetDuration <= 0 || targetDuration > 1440) {
+      return res.status(400).json({ error: 'duration must be between 1 and 1440 minutes' });
+    }
+
+    const [doctorRecord, departmentRecord] = await Promise.all([
+      Doctor.findOne({ _id: targetDoctorId, hospitalId }).select('_id'),
+      Department.findOne({ _id: targetDepartmentId, hospitalId }).select('_id')
+    ]);
+    if (!doctorRecord) return res.status(404).json({ error: 'Doctor not found for this hospital' });
+    if (!departmentRecord) return res.status(404).json({ error: 'Department not found for this hospital' });
+
+    const calendar = await Calendar.findOne({ hospitalId });
+    if (!calendar) return res.status(404).json({ error: 'Calendar not found' });
+    const oldDateKey = new Date(appointment.appointment_date).toISOString().slice(0, 10);
+    const targetDateKey = targetDate.toISOString().slice(0, 10);
+    const oldDay = calendar.days.find((day) => day.date.toISOString().slice(0, 10) === oldDateKey);
+    const oldDoctorDay = oldDay?.doctors?.find(
+      (row) => String(row.doctorId) === String(appointment.doctor_id)
+    );
+    const targetDay = calendar.days.find((day) => day.date.toISOString().slice(0, 10) === targetDateKey);
+    if (!targetDay) return res.status(404).json({ error: 'Target date is not available in the calendar' });
+    const targetDoctorDay = targetDay.doctors.find(
+      (row) => String(row.doctorId) === String(targetDoctorId)
+    );
+    if (!targetDoctorDay) {
+      return res.status(404).json({ error: 'Doctor is not scheduled on the target date' });
+    }
+
+    if (appointment.type === 'time-based') {
+      const targetStart = req.body.start_time
+        ? new Date(req.body.start_time)
+        : new Date(appointment.start_time);
+      if (Number.isNaN(targetStart.getTime())) {
+        return res.status(400).json({ error: 'Invalid start_time' });
+      }
+      const targetEnd = new Date(targetStart.getTime() + targetDuration * 60000);
+      const otherAppointments = targetDoctorDay.bookedAppointments.filter(
+        (row) => String(row.appointmentId) !== String(appointment._id)
+      );
+      if (hasTimeConflict(otherAppointments, targetStart, targetEnd, targetDoctorDay.breaks)) {
+        return res.status(409).json({
+          error: 'New time slot conflicts with an appointment or scheduled break',
+          code: 'SLOT_CONFLICT'
+        });
+      }
+
+      if (oldDoctorDay) {
+        oldDoctorDay.bookedAppointments = oldDoctorDay.bookedAppointments.filter(
+          (row) => String(row.appointmentId) !== String(appointment._id)
+        );
+      }
+      targetDoctorDay.bookedAppointments.push({
+        startTime: targetStart,
+        endTime: targetEnd,
+        duration: targetDuration,
+        appointmentId: appointment._id,
+        status: targetStatus === 'In Progress' ? 'InProgress' : targetStatus
+      });
+      appointment.start_time = targetStart;
+      appointment.end_time = targetEnd;
+      appointment.duration = targetDuration;
+    } else {
+      if (oldDoctorDay) {
+        oldDoctorDay.bookedPatients = oldDoctorDay.bookedPatients.filter(
+          (row) => String(row.appointmentId) !== String(appointment._id)
+        );
+      }
+      const requestedSerial = req.body.serial_number !== undefined
+        ? Number(req.body.serial_number)
+        : null;
+      if (requestedSerial !== null && (!Number.isInteger(requestedSerial) || requestedSerial < 1)) {
+        return res.status(400).json({ error: 'serial_number must be a positive integer' });
+      }
+      const serialNumber = requestedSerial || (
+        targetDoctorDay.bookedPatients.reduce(
+          (maximum, row) => Math.max(maximum, Number(row.serialNumber || 0)),
+          0
+        ) + 1
+      );
+      const occupied = targetDoctorDay.bookedPatients.some(
+        (row) => Number(row.serialNumber) === serialNumber
+          && String(row.appointmentId) !== String(appointment._id)
+      );
+      if (occupied) return res.status(409).json({ error: 'Serial number already assigned' });
+      targetDoctorDay.bookedPatients.push({
+        patientId: appointment.patient_id,
+        serialNumber,
+        appointmentId: appointment._id
+      });
+      appointment.serial_number = serialNumber;
+      appointment.duration = targetDuration;
+    }
+
+    appointment.appointment_date = targetDate;
+    appointment.doctor_id = targetDoctorId;
+    appointment.department_id = targetDepartmentId;
+    appointment.bookingFingerprint = [
+      hospitalId,
+      appointment.patient_id,
+      targetDoctorId,
+      targetDateKey,
+      appointment.type,
+      appointment.type === 'time-based' ? String(appointment.start_time?.toISOString?.() || '') : ''
+    ].join('|');
+
+    const {
+      notes, priority, appointment_type, visit_mode,
+      teleconsultation, attachments, externalBooking
+    } = req.body;
+    if (notes !== undefined) appointment.notes = String(notes);
+    if (priority !== undefined) appointment.priority = priority;
+    if (appointment_type !== undefined) appointment.appointment_type = appointment_type;
+
+    const targetVisitMode = visit_mode || appointment.visit_mode || 'physical';
+    if (!['physical', 'teleconsultation', 'homecare'].includes(targetVisitMode)) {
+      return res.status(400).json({ error: 'Invalid visit_mode' });
+    }
+    const existingTeleconsultation = appointment.teleconsultation?.toObject?.()
+      || appointment.teleconsultation
+      || {};
+    const consentCaptured = Boolean(
+      teleconsultation?.consentCaptured || existingTeleconsultation.consentCaptured
+    );
+    if (targetVisitMode === 'teleconsultation' && !consentCaptured) {
+      return res.status(400).json({ error: 'Teleconsultation consent is required' });
+    }
+    appointment.visit_mode = targetVisitMode;
+    appointment.teleconsultation = targetVisitMode === 'teleconsultation'
+      ? {
+        ...existingTeleconsultation,
+        ...(teleconsultation || {}),
+        communicationMode: teleconsultation?.communicationMode
+          || existingTeleconsultation.communicationMode
+          || 'video',
+        consentCaptured: true,
+        consentCapturedAt: existingTeleconsultation.consentCapturedAt || new Date(),
+        consentCapturedBy: existingTeleconsultation.consentCapturedBy || req.user?._id
+      }
+      : {
+        communicationMode: 'not_applicable',
+        consentCaptured: false
+      };
+
+    if (attachments !== undefined) {
+      if (!Array.isArray(attachments) || attachments.length > 20) {
+        return res.status(400).json({ error: 'attachments must contain at most 20 items' });
+      }
+      appointment.attachments = attachments.map((item) => ({
+        name: item?.name,
+        url: item?.url,
+        mimeType: item?.mimeType,
+        addedAt: item?.addedAt || new Date(),
+        addedBy: req.user?._id
+      }));
+    }
+    if (externalBooking !== undefined) {
+      appointment.externalBooking = {
+        ...(appointment.externalBooking?.toObject?.() || appointment.externalBooking || {}),
+        system: externalBooking.system || appointment.externalBooking?.system,
+        externalAppointmentId: externalBooking.externalAppointmentId
+          || appointment.externalBooking?.externalAppointmentId,
+        sourceUpdatedAt: externalBooking.sourceUpdatedAt,
+        lastSyncedAt: new Date(),
+        rawPayload: externalBooking.rawPayload
+      };
+    }
+    appointment.status = targetStatus;
+    appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
+    const statusChangedAt = new Date();
+    if (targetStatus === 'In Progress') {
+      appointment.actual_start_time = appointment.actual_start_time || statusChangedAt;
+      appointment.lifecycleTimestamps.consultationStartedAt =
+        appointment.lifecycleTimestamps.consultationStartedAt || statusChangedAt;
+    }
+    if (targetStatus === 'Completed') {
+      appointment.actual_end_time = appointment.actual_end_time || statusChangedAt;
+      appointment.lifecycleTimestamps.consultationEndedAt =
+        appointment.lifecycleTimestamps.consultationEndedAt || statusChangedAt;
+    }
+
+    await appointment.save();
+    try {
+      await calendar.save();
+    } catch (calendarError) {
+      throw calendarError;
+    }
+
+    await Promise.all([
+      recalculateQueue({
+        hospitalId,
+        departmentId: targetDepartmentId,
+        date: targetDate
+      }),
+      (String(targetDepartmentId) !== String(oldDepartmentId)
+        || oldDateKey !== targetDateKey)
+        ? recalculateQueue({
+          hospitalId,
+          departmentId: oldDepartmentId,
+          date: oldAppointmentDate
+        })
+        : Promise.resolve([])
+    ]);
+
+    try {
+      await notifyAppointment(appointment, 'appointment_updated', req.user?._id, {
+        subject: 'Appointment updated',
+        body: `Your appointment has been updated for ${new Date(appointment.appointment_date).toLocaleString('en-IN')}.`
+      });
+    } catch (notificationError) {
+      console.error('Appointment updated but notification could not be queued:', notificationError);
+    }
+    return res.json(appointment);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return res.status(err.statusCode || 400).json({ error: err.message, code: err.code });
   }
 };
 
 // Cancel appointment while retaining the appointment and cancellation history.
 exports.cancelAppointment = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const reason = String(req.body.reason || req.body.cancellationReason || '').trim();
     if (!reason) return res.status(400).json({ error: 'Cancellation reason is required' });
 
-    const appointment = await Appointment.findById(req.params.id);
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
     if (appointment.status === 'Completed') {
       return res.status(409).json({ error: 'A completed appointment cannot be cancelled' });
@@ -885,6 +1710,8 @@ exports.cancelAppointment = async (req, res) => {
     appointment.cancellationReason = reason;
     appointment.cancelledAt = cancelledAt;
     appointment.cancelledBy = req.user?._id;
+    appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
+    appointment.lifecycleTimestamps.cancelledAt = cancelledAt;
     appointment.cancellationHistory.push({
       reason,
       cancelledAt,
@@ -896,7 +1723,17 @@ exports.cancelAppointment = async (req, res) => {
       removeAppointmentFromCalendar(appointment)
     ]);
 
-    const populated = await Appointment.findById(appointment._id)
+    await recalculateQueue({
+      hospitalId: appointment.hospital_id,
+      departmentId: appointment.department_id,
+      date: appointment.appointment_date
+    });
+    await notifyAppointment(appointment, 'appointment_cancelled', req.user?._id, {
+      subject: 'Appointment cancelled',
+      body: `Your appointment has been cancelled. Reason: ${reason}`
+    });
+
+    const populated = await Appointment.findOne({ _id: appointment._id, hospital_id: hospitalId })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -908,14 +1745,15 @@ exports.cancelAppointment = async (req, res) => {
       appointment: populated
     });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
 // Delete appointment
 exports.deleteAppointment = async (req, res) => {
   try {
-    const appointment = await Appointment.findById(req.params.id);
+    const hospitalId = requireHospitalId(req);
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
     const calendar = await Calendar.findOne({ hospitalId: appointment.hospital_id });
@@ -942,7 +1780,7 @@ exports.deleteAppointment = async (req, res) => {
           appt.startTime = new Date(appt.startTime.getTime() - duration * 60000);
           appt.endTime = new Date(appt.endTime.getTime() - duration * 60000);
 
-          await Appointment.findByIdAndUpdate(appt.appointmentId, {
+          await Appointment.findOneAndUpdate({ _id: appt.appointmentId, hospital_id: hospitalId }, {
             start_time: appt.startTime,
             end_time: appt.endTime
           });
@@ -955,21 +1793,24 @@ exports.deleteAppointment = async (req, res) => {
     }
 
     await Promise.all([
-      Appointment.findByIdAndDelete(req.params.id),
+      Appointment.deleteOne({ _id: req.params.id, hospital_id: hospitalId }),
       calendar.save()
     ]);
 
     res.json({ message: 'Appointment deleted successfully' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Get appointments by Doctor ID
 exports.getAppointmentsByDoctorId = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { doctorId } = req.params;
-    const appointments = await Appointment.find({ doctor_id: doctorId })
+    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId });
+    if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
+    const appointments = await Appointment.find({ doctor_id: doctorId, hospital_id: hospitalId })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -985,15 +1826,18 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
 
     res.json(appointmentsWithVitals);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Get appointments by Department ID
 exports.getAppointmentsByDepartmentId = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { departmentId } = req.params;
-    const appointments = await Appointment.find({ department_id: departmentId })
+    const departmentExists = await Department.exists({ _id: departmentId, hospitalId });
+    if (!departmentExists) return res.status(404).json({ error: 'Department not found' });
+    const appointments = await Appointment.find({ department_id: departmentId, hospital_id: hospitalId })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -1005,15 +1849,19 @@ exports.getAppointmentsByDepartmentId = async (req, res) => {
 
     res.json(appointments);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Get appointments by Hospital ID
 exports.getAppointmentsByHospitalId = async (req, res) => {
   try {
+    const scopedHospitalId = requireHospitalId(req);
     const { hospitalId } = req.params;
-    const appointments = await Appointment.find({ hospital_id: hospitalId })
+    if (String(hospitalId) !== String(scopedHospitalId)) {
+      return res.status(403).json({ error: 'Hospital scope mismatch', code: 'TENANT_SCOPE_MISMATCH' });
+    }
+    const appointments = await Appointment.find({ hospital_id: scopedHospitalId })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -1025,19 +1873,23 @@ exports.getAppointmentsByHospitalId = async (req, res) => {
 
     res.json(appointments);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Get today's appointments for a doctor
 exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { doctorId } = req.params;
+    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId });
+    if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const appointments = await Appointment.find({
       doctor_id: doctorId,
+      hospital_id: hospitalId,
       appointment_date: {
         $gte: today,
         $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
@@ -1051,55 +1903,112 @@ exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
 
     res.json(appointments);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Update appointment status
 exports.updateAppointmentStatus = async (req, res) => {
   try {
-    const { status } = req.body;
+    const hospitalId = requireHospitalId(req);
+    const statusMap = {
+      Scheduled: 'Scheduled',
+      InProgress: 'In Progress',
+      'In Progress': 'In Progress',
+      Completed: 'Completed',
+      Cancelled: 'Cancelled'
+    };
+    const status = statusMap[String(req.body.status || '')];
+    if (!status) return res.status(400).json({ error: 'Invalid appointment status' });
     if (status === 'Cancelled') {
       return res.status(400).json({ error: 'Use the cancellation action and provide a cancellation reason' });
     }
 
-    const appointment = await Appointment.findByIdAndUpdate(
-      req.params.id,
-      { status: status },
-      { new: true, runValidators: true }
-    );
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
-    if (!appointment) {
-      return res.status(404).json({ error: 'Appointment not found' });
+    const previousStatus = appointment.status;
+    const now = new Date();
+    appointment.status = status;
+    appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
+    if (status === 'In Progress') {
+      appointment.actual_start_time = appointment.actual_start_time || now;
+      appointment.lifecycleTimestamps.consultationStartedAt =
+        appointment.lifecycleTimestamps.consultationStartedAt || now;
     }
+    if (status === 'Completed') {
+      appointment.actual_end_time = appointment.actual_end_time || now;
+      appointment.lifecycleTimestamps.consultationEndedAt =
+        appointment.lifecycleTimestamps.consultationEndedAt || now;
+      if (appointment.actual_start_time) {
+        appointment.duration = Math.max(
+          1,
+          Math.round((appointment.actual_end_time - appointment.actual_start_time) / 60000)
+        );
+      }
+    }
+
+    const calendar = await Calendar.findOne({ hospitalId });
+    if (calendar) {
+      const dateKey = appointment.appointment_date.toISOString().slice(0, 10);
+      const day = calendar.days.find((row) => row.date.toISOString().slice(0, 10) === dateKey);
+      const doctorDay = day?.doctors?.find(
+        (row) => String(row.doctorId) === String(appointment.doctor_id)
+      );
+      const calendarAppointment = doctorDay?.bookedAppointments?.find(
+        (row) => String(row.appointmentId) === String(appointment._id)
+      );
+      if (calendarAppointment) {
+        calendarAppointment.status = status === 'In Progress' ? 'InProgress' : status;
+      }
+      const calendarPatient = doctorDay?.bookedPatients?.find(
+        (row) => String(row.appointmentId) === String(appointment._id)
+      );
+      if (calendarPatient && 'status' in calendarPatient) {
+        calendarPatient.status = status;
+      }
+    }
+
+    await appointment.save();
+    if (calendar) await calendar.save();
 
     if (status === 'Completed') {
       try {
         await calculatePartTimeSalary(appointment._id);
-
-        if (!appointment.actual_end_time) {
-          appointment.actual_end_time = new Date();
-          await appointment.save();
-        }
       } catch (salaryError) {
         console.error('Error calculating part-time salary during status update:', salaryError);
       }
     }
 
-    res.json(appointment);
+    await recalculateQueue({
+      hospitalId,
+      departmentId: appointment.department_id,
+      date: appointment.appointment_date
+    });
+    try {
+      await notifyAppointment(appointment, `appointment_${status.toLowerCase().replaceAll(' ', '_')}`, req.user?._id, {
+        subject: `Appointment ${status.toLowerCase()}`,
+        body: `Your appointment status changed from ${previousStatus} to ${status}.`
+      });
+    } catch (notificationError) {
+      console.error('Appointment status saved but notification could not be queued:', notificationError);
+    }
+
+    return res.json(appointment);
   } catch (err) {
-    console.error("Error updating appointment status:", err);
-    res.status(500).json({ error: 'Server error while updating status' });
+    console.error('Error updating appointment status:', err);
+    return res.status(err.statusCode || 400).json({ error: err.message });
   }
 };
 
 // Update Vitals for an Appointment
 exports.updateVitals = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { bp, weight, pulse, spo2, temperature, respiratory_rate, random_blood_sugar, height } = req.body;
     const appointmentId = req.params.id;
 
-    const appointment = await Appointment.findById(appointmentId);
+    const appointment = await Appointment.findOne({ _id: appointmentId, hospital_id: hospitalId });
     if (!appointment) {
       return res.status(404).json({ error: 'Appointment not found' });
     }
@@ -1140,18 +2049,21 @@ exports.updateVitals = async (req, res) => {
     });
   } catch (err) {
     console.error("Error updating vitals:", err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 // Get Vitals by Appointment ID
 exports.getVitalsByAppointmentId = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const appointmentId = req.params.id;
+    const appointmentExists = await Appointment.exists({ _id: appointmentId, hospital_id: hospitalId });
+    if (!appointmentExists) return res.status(404).json({ error: 'Appointment not found' });
     const vitals = await Vital.findOne({ appointment_id: appointmentId });
     res.json(vitals || null);
   } catch (err) {
     console.error("Error fetching vitals:", err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };

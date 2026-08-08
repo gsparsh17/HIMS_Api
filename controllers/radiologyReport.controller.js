@@ -53,6 +53,9 @@ exports.saveManualReport = async (req, res) => {
   try {
     const request = await RadiologyRequest.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) });
     if (!request) return res.status(404).json({ error: 'Radiology request not found' });
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
+    }
     const payload = JSON.parse(req.body.report || '{}');
     const template = getTemplate(payload.templateId || request.reportTemplateId);
     if (!template) return res.status(400).json({ error: 'Select a valid radiology report template' });

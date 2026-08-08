@@ -76,6 +76,11 @@ const startServer = async () => {
       startMISScheduleJob();
     }
 
+    if (abdmConfig.isHospital) {
+      const { startNabhJobs } = require('./jobs/nabhJob');
+      startNabhJobs();
+    }
+
     const shutdown = (signal) => {
       console.log(`\n${signal} received. Closing HTTP server...`);
       server.close(() => process.exit(0));

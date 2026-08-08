@@ -48,8 +48,13 @@ const recoveryLimiter = rateLimit({
 
 router.post('/register', upload.single('logo'), authController.registerUser);
 router.post('/login', loginLimiter, authController.loginUser);
+router.post('/login/mfa', loginLimiter, authController.completeMfaLogin);
+router.post('/sso/assert', loginLimiter, authController.ssoAssertionLogin);
 router.post('/logout', authController.logoutUser);
 router.get('/me', protect, authController.getCurrentUser);
+router.post('/mfa/setup', protect, authController.beginMfaSetup);
+router.post('/mfa/verify-setup', protect, authController.verifyMfaSetup);
+router.post('/mfa/disable', protect, authController.disableMfa);
 router.post('/forgot-password', recoveryLimiter, authController.forgotPassword);
 router.post('/reset-password/:token', recoveryLimiter, authController.resetPassword);
 

@@ -74,6 +74,51 @@ const appointmentSchema = new mongoose.Schema({
   sponsorType: { type: String, default: 'self' },
   sponsorName: { type: String, trim: true },
 
+  visit_mode: {
+    type: String,
+    enum: ['physical', 'teleconsultation', 'homecare'],
+    default: 'physical',
+    index: true
+  },
+  teleconsultation: {
+    communicationMode: {
+      type: String,
+      enum: ['video', 'phone', 'chat', 'not_applicable'],
+      default: 'not_applicable'
+    },
+    meetingUrl: { type: String, trim: true },
+    meetingReference: { type: String, trim: true },
+    consentCaptured: { type: Boolean, default: false },
+    consentCapturedAt: Date,
+    consentCapturedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+  attachments: [{
+    name: String,
+    url: String,
+    mimeType: String,
+    addedAt: { type: Date, default: Date.now },
+    addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
+  externalBooking: {
+    system: { type: String, trim: true },
+    externalAppointmentId: { type: String, trim: true },
+    sourceUpdatedAt: Date,
+    lastSyncedAt: Date,
+    rawPayload: mongoose.Schema.Types.Mixed
+  },
+  notificationDeliveryIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'NotificationDelivery'
+  }],
+  lifecycleTimestamps: {
+    bookedAt: { type: Date, default: Date.now },
+    checkedInAt: Date,
+    consultationStartedAt: Date,
+    consultationEndedAt: Date,
+    cancelledAt: Date
+  },
+  queuePosition: { type: Number, min: 1 },
+  estimatedWaitMinutes: { type: Number, min: 0 },
   abdmRecordLink: {
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
     abhaNumber: { type: String, index: true },
@@ -85,7 +130,24 @@ const appointmentSchema = new mongoose.Schema({
   },
 });
 
-appointmentSchema.index({ hospital_id: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
+appointmentSchema.index(
+  { hospital_id: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: 'string' } }
+  }
+);
 appointmentSchema.index({ hospital_id: 1, bookingFingerprint: 1, created_at: -1 });
+appointmentSchema.index(
+  { hospital_id: 1, 'externalBooking.system': 1, 'externalBooking.externalAppointmentId': 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      'externalBooking.system': { $type: 'string' },
+      'externalBooking.externalAppointmentId': { $type: 'string' }
+    }
+  }
+);
+appointmentSchema.index({ hospital_id: 1, appointment_date: 1, department_id: 1, status: 1 });
 
 module.exports = mongoose.model('Appointment', appointmentSchema);

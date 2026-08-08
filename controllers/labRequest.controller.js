@@ -17,6 +17,7 @@ const { generateLabReportPdf } = require('../services/clinicalPdf.service');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requireHospitalId } = require('../services/tenantScope.service');
+const { finaliseDiagnosticReport } = require('../services/diagnosticReport.service');
 
 // Configure Cloudinary
 
@@ -327,6 +328,9 @@ exports.saveManualReport = async (req, res) => {
   try {
     const request = await LabRequest.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) });
     if (!request) return res.status(404).json({ error: 'Lab request not found' });
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
+    }
 
     const template = getTemplate(req.body.templateId || request.reportTemplateId)
       || matchTemplate(request.testName, request.testCode, request.reportTemplateId);
@@ -662,6 +666,10 @@ exports.uploadReport = async (req, res) => {
     if (!request) {
       safeUnlink(req.file.path);
       return res.status(404).json({ error: 'Lab request not found' });
+    }
+    if (request.reportFinalisation?.isFinal) {
+      safeUnlink(req.file.path);
+      return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
     }
 
     if (!hasValidFileSignature(req.file)) {

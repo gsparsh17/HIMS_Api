@@ -169,7 +169,12 @@ function preloadHospitalModels() {
     './models/BiometricDevice',
     './models/BiometricEmployeeMap',
     './models/AttendancePunch',
-        './models/StoredFile'
+    './models/StoredFile',
+    './models/NabhSetting',
+    './models/NabhRecord',
+    './models/NotificationDelivery',
+    './models/TerminologyCode',
+    './models/PatientVerification'
   ].forEach((modelPath) => require(modelPath));
 }
 
@@ -186,7 +191,9 @@ function mountHospitalRoutes() {
   // Public contact endpoint used by the marketing/demo-request form. It has its
   // own validation and rate limiting; all remaining hospital APIs require login.
   app.use('/api/email', require('./routes/emailRoutes.js'));
-  app.use('/api', require('./middlewares/auth').protect);
+  const authMiddleware = require('./middlewares/auth');
+  app.use('/api', authMiddleware.protect);
+  app.use('/api', authMiddleware.requireCompletedMfaSetup);
 
 
   app.use('/api/payments', require('./routes/paymentRoutes'));
@@ -195,6 +202,7 @@ function mountHospitalRoutes() {
   app.use('/api/admin/config/service-masters', require('./routes/serviceMaster.routes.js'));
   app.use('/api/clinical-ai', require('./routes/clinicalAi.routes.js'));
   app.use('/api/audit-logs', require('./routes/auditLog.routes'));
+  app.use('/api/nabh', require('./routes/nabh.routes'));
   app.use('/api/patients', require('./routes/patient.routes'));
   if (abdmConfig.featureM1) app.use('/api/abha', require('./routes/abha.routes'));
   app.use('/api/doctors', require('./routes/doctor.routes'));

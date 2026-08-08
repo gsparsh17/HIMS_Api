@@ -177,6 +177,53 @@ const radiologyRequestSchema = new mongoose.Schema({
   report_mime_type: { type: String, trim: true },
   report_file_size: { type: Number, min: 0 },
   manual_report: manualRadiologyReportSchema,
+  reportFinalisation: {
+    isFinal: { type: Boolean, default: false },
+    finalisedAt: Date,
+    finalisedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    checksum: String,
+    version: { type: Number, default: 0 }
+  },
+  reportAmendments: [{
+    version: Number,
+    reason: { type: String, required: true },
+    previousReport: mongoose.Schema.Types.Mixed,
+    previousChecksum: String,
+    amendedAt: { type: Date, default: Date.now },
+    amendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
+  repeatHistory: [{
+    reason: { type: String, required: true },
+    requestedAt: { type: Date, default: Date.now },
+    requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    previousStatus: String
+  }],
+  notificationDeliveryIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'NotificationDelivery' }],
+  contraindicationAssessment: {
+    pregnancyStatus: { type: String, enum: ['not_applicable', 'negative', 'positive', 'unknown'], default: 'not_applicable' },
+    renalRisk: { type: String, enum: ['not_assessed', 'low', 'moderate', 'high'], default: 'not_assessed' },
+    contrastAllergy: { type: Boolean, default: false },
+    implantOrDevice: String,
+    claustrophobia: { type: Boolean, default: false },
+    otherRisks: [String],
+    decision: { type: String, enum: ['pending', 'proceed', 'proceed_with_precautions', 'defer', 'cancel'], default: 'pending' },
+    precautions: [String],
+    assessedAt: Date,
+    assessedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    acknowledgedAt: Date,
+    acknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+  dicomMetadata: {
+    studyInstanceUid: { type: String, trim: true, index: true },
+    seriesInstanceUids: [String],
+    accessionNumber: String,
+    modality: String,
+    studyDate: Date,
+    pacsUrl: String,
+    dicomWebUrl: String,
+    importedAt: Date,
+    importedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
   
   // Notes
   technician_notes: {
@@ -322,5 +369,6 @@ radiologyRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, { unique: tr
 radiologyRequestSchema.index({ admissionId: 1, sourceType: 'IPD' });
 radiologyRequestSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 radiologyRequestSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
+radiologyRequestSchema.index({ hospitalId: 1, 'reportFinalisation.isFinal': 1, releasedAt: -1 });
 
 module.exports = mongoose.model('RadiologyRequest', radiologyRequestSchema);

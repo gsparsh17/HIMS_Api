@@ -35,6 +35,9 @@ router.get('/pharmacy/search', canManagePharmacyPatient, patientController.searc
 router.post('/walkin', canManagePharmacyPatient, patientController.createOrUpdateWalkinPatient);
 router.post('/upload', canManagePatient, upload.single('image'), patientController.uploadPatientImage);
 router.get('/check-duplicate', canManagePatient, patientController.checkDuplicateByPhone);
+router.get('/registration-config', canManagePatient, patientController.getRegistrationConfig);
+router.post('/mobile-otp/request', canManagePatient, patientController.requestMobileOtp);
+router.post('/mobile-otp/verify', canManagePatient, patientController.verifyMobileOtp);
 router.post('/bulk-add', canManagePatient, patientController.bulkCreatePatients);
 router.get('/by-temp-id/:tempId', canReadPatient, patientController.getPatientByTempId);
 router.get('/sync/status', authorize('admin', 'registrar'), patientController.getSyncStatus);
@@ -42,6 +45,8 @@ router.get('/phone/:phone', canReadPatient, patientController.getPatientByPhone)
 
 router.post('/', canManagePatient, patientController.createPatient);
 router.get('/', canReadPatient, patientController.getAllPatients);
+router.get('/:id/longitudinal-record', canReadPatient, patientController.getLongitudinalRecord);
+router.post('/:id/share', canManagePatient, patientController.sharePatientRecord);
 router.get('/:id/pharmacy-account', canManagePharmacyPatient, patientController.getPatientPharmacyAccount);
 router.patch('/:id/pharmacy-balance', canManagePharmacyPatient, patientController.updatePatientPharmacyBalance);
 router.get('/:id', canReadPatient, patientController.getPatientById);

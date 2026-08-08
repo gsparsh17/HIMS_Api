@@ -224,6 +224,29 @@ const labRequestSchema = new mongoose.Schema({
   report_mime_type: { type: String, trim: true },
   report_file_size: { type: Number, min: 0 },
   manual_report: manualLabReportSchema,
+  reportFinalisation: {
+    isFinal: { type: Boolean, default: false },
+    finalisedAt: Date,
+    finalisedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    checksum: String,
+    version: { type: Number, default: 0 }
+  },
+  reportAmendments: [{
+    version: Number,
+    reason: { type: String, required: true },
+    previousReport: mongoose.Schema.Types.Mixed,
+    previousChecksum: String,
+    amendedAt: { type: Date, default: Date.now },
+    amendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
+  repeatHistory: [{
+    reason: { type: String, required: true },
+    requestedAt: { type: Date, default: Date.now },
+    requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    previousStatus: String,
+    previousAccessionNumber: String
+  }],
+  notificationDeliveryIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'NotificationDelivery' }],
   
   // Notes
   technician_notes: {
@@ -375,5 +398,6 @@ labRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });
 labRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, { unique: true, sparse: true });
 labRequestSchema.index({ admissionId: 1, sourceType: 1 });
 labRequestSchema.index({ appointmentId: 1, sourceType: 1 });
+labRequestSchema.index({ hospitalId: 1, 'reportFinalisation.isFinal': 1, releasedAt: -1 });
 
 module.exports = mongoose.model('LabRequest', labRequestSchema);

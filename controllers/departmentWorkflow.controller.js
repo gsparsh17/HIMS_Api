@@ -8,6 +8,10 @@ const { quotePricing, pricingSnapshot } = require('../services/pricingEngine.ser
 const { recordPackageUtilization } = require('../services/packageAdjudication.service');
 const { activeCoverage } = require('../services/coverage.service');
 const { replaceCoverageUtilization } = require('../services/coverageUtilization.service');
+const {
+  finaliseDiagnosticReport,
+  notifyDiagnosticRelease
+} = require('../services/diagnosticReport.service');
 
 function sendError(res, error) {
   return res.status(error.statusCode || 400).json({
@@ -140,6 +144,19 @@ exports.collectSpecimen = async (req, res) => {
   try {
     const { request, hospitalId } = await labById(req);
 
+    // Collection is a normal operational entry point for newly ordered tests.
+    // Preserve the formal NABH workflow by recording the required approval
+    // transition before moving a Pending request to Sample Collected.
+    if (request.status === 'Pending') {
+      await labWorkflow.transition({
+        req,
+        request,
+        to: 'Approved',
+        note: 'Approved during specimen collection',
+        hospitalId
+      });
+    }
+
     request.accessionNumber = req.body.accessionNumber ||
       request.accessionNumber ||
       `ACC-${Date.now()}`;
@@ -195,6 +212,9 @@ exports.accessionSpecimen = async (req, res) => {
 exports.updateLabStatus = async (req, res) => {
   try {
     const { request, hospitalId } = await labById(req);
+    if (request.reportFinalisation?.isFinal && req.body.status !== 'Reported') {
+      return res.status(409).json({ success: false, error: 'Final reports are immutable. Use controlled amendment.' });
+    }
 
     const data = await labWorkflow.transition({
       req,
@@ -214,6 +234,9 @@ exports.updateLabStatus = async (req, res) => {
 exports.enterLabResults = async (req, res) => {
   try {
     const { request, hospitalId } = await labById(req);
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ success: false, error: 'Final reports are immutable. Use controlled amendment.' });
+    }
 
     request.result_value = req.body.result_value ?? request.result_value;
     request.result_interpretation = req.body.result_interpretation ?? request.result_interpretation;
@@ -258,6 +281,9 @@ exports.enterLabResults = async (req, res) => {
 exports.verifyLab = async (req, res) => {
   try {
     const { request, hospitalId } = await labById(req);
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ success: false, error: 'Final reports are immutable. Use controlled amendment.' });
+    }
 
     const data = await labWorkflow.transition({
       req,
@@ -312,6 +338,9 @@ exports.criticalAck = async (req, res) => {
 exports.releaseLab = async (req, res) => {
   try {
     const { request, hospitalId } = await labById(req);
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ success: false, error: 'Report is already final' });
+    }
 
     const data = await labWorkflow.transition({
       req,
@@ -320,6 +349,27 @@ exports.releaseLab = async (req, res) => {
       note: req.body.note,
       hospitalId
     });
+    finaliseDiagnosticReport(request, req.user._id);
+    await request.save();
+    try {
+      const populated = await LabRequest.findById(request._id)
+        .populate('patientId', 'first_name last_name full_name phone email')
+        .populate('doctorId', 'firstName lastName phone email');
+      const deliveries = await notifyDiagnosticRelease({
+        request: populated,
+        hospitalId,
+        type: 'lab',
+        userId: req.user._id,
+        critical: Boolean(request.critical?.isCritical)
+      });
+      request.notificationDeliveryIds = [
+        ...(request.notificationDeliveryIds || []),
+        ...deliveries.map((row) => row._id)
+      ];
+      await request.save();
+    } catch (notificationError) {
+      data.notificationWarning = notificationError.message;
+    }
 
     if (request.admissionId && !request.is_billed) {
       try {
@@ -581,6 +631,9 @@ exports.startRadiology = async (req, res) => {
 exports.enterRadiologyResult = async (req, res) => {
   try {
     const { request, hospitalId } = await radiologyById(req);
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ success: false, error: 'Final reports are immutable. Use controlled amendment.' });
+    }
 
     request.findings = req.body.findings ?? request.findings;
     request.impression = req.body.impression ?? request.impression;
@@ -603,6 +656,9 @@ exports.enterRadiologyResult = async (req, res) => {
 exports.verifyRadiology = async (req, res) => {
   try {
     const { request, hospitalId } = await radiologyById(req);
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ success: false, error: 'Final reports are immutable. Use controlled amendment.' });
+    }
 
     const data = await radiologyWorkflow.transition({
       req,
@@ -622,6 +678,9 @@ exports.verifyRadiology = async (req, res) => {
 exports.releaseRadiology = async (req, res) => {
   try {
     const { request, hospitalId } = await radiologyById(req);
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ success: false, error: 'Report is already final' });
+    }
 
     const data = await radiologyWorkflow.transition({
       req,
@@ -630,6 +689,27 @@ exports.releaseRadiology = async (req, res) => {
       hospitalId,
       note: req.body.note
     });
+    finaliseDiagnosticReport(request, req.user._id);
+    await request.save();
+    try {
+      const populated = await RadiologyRequest.findById(request._id)
+        .populate('patientId', 'first_name last_name full_name phone email')
+        .populate('doctorId', 'firstName lastName phone email');
+      const deliveries = await notifyDiagnosticRelease({
+        request: populated,
+        hospitalId,
+        type: 'radiology',
+        userId: req.user._id,
+        critical: false
+      });
+      request.notificationDeliveryIds = [
+        ...(request.notificationDeliveryIds || []),
+        ...deliveries.map((row) => row._id)
+      ];
+      await request.save();
+    } catch (notificationError) {
+      data.notificationWarning = notificationError.message;
+    }
 
     if (request.admissionId && !request.is_billed) {
       try {
