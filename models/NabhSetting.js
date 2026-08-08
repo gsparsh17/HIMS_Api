@@ -121,7 +121,23 @@ const nabhSettingSchema = new mongoose.Schema({
     },
     helpUrl: { type: String, trim: true },
     supportEmail: { type: String, trim: true },
-    enableMigrationExports: { type: Boolean, default: true }
+    enableMigrationExports: { type: Boolean, default: true },
+    clientSupport: {
+      deviceClasses: { type: [String], default: ['desktop', 'laptop', 'tablet', 'smartphone'] },
+      browsers: { type: [String], default: ['Chrome', 'Firefox', 'Safari', 'Edge'] },
+      mobileOperatingSystems: { type: [String], default: ['Android', 'iOS'] }
+    },
+    dataClassification: {
+      type: [{
+        dataClass: { type: String, required: true, trim: true },
+        allowedRoles: [{ type: String, trim: true }],
+        description: { type: String, trim: true }
+      }],
+      default: [
+        { dataClass: 'clinical', allowedRoles: ['admin', 'doctor', 'nurse', 'staff', 'registrar'] },
+        { dataClass: 'financial', allowedRoles: ['admin', 'accountant', 'staff'] }
+      ]
+    }
   },
   interoperability: {
     icdVersions: { type: [String], default: ['ICD-10', 'ICD-11'] },

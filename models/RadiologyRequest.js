@@ -272,6 +272,14 @@ const radiologyRequestSchema = new mongoose.Schema({
   external_report_url: {
     type: String
   },
+  external_exchange: {
+    status: { type: String, enum: ['not_sent', 'sent', 'acknowledged', 'result_received', 'failed'], default: 'not_sent' },
+    sentAt: Date,
+    acknowledgedAt: Date,
+    resultReceivedAt: Date,
+    lastError: String,
+    payloadReference: String
+  },
   
 
   abdmRecordLink: {

@@ -16,6 +16,7 @@ const Procedure = require('../models/Procedure');
 const Hospital = require('../models/Hospital');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
+const SafetyPolicy = require('../models/SafetyPolicy');
 const { generatePrescriptionPdf } = require('../services/clinicalPdf.service');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
@@ -298,6 +299,56 @@ exports.createPrescription = async (req, res) => {
       repeat_count
     } = req.body;
 
+    // Resolve safety metadata from the existing Medicine master. The order remains
+    // clinically independent of inventory, but when an inventory medicine is selected
+    // we enforce its configured NABH medication-safety controls.
+    const selectedMedicineIds = Array.isArray(items)
+      ? items.map((x) => x.medicine_id).filter(Boolean)
+      : [];
+    const selectedMedicines = selectedMedicineIds.length
+      ? await Medicine.find({ _id: { $in: selectedMedicineIds } }).select('name generic_name medicationSafety').lean()
+      : [];
+    const medicineSafetyById = new Map(selectedMedicines.map((x) => [String(x._id), x]));
+    const antimicrobialPolicy = await SafetyPolicy.findOne({
+      hospitalId: req.user?.hospital_id,
+      policyType: 'antimicrobial_usage',
+      active: true,
+      $or: [{ effectiveTo: null }, { effectiveTo: { $exists: false } }, { effectiveTo: { $gte: new Date() } }]
+    }).sort({ effectiveFrom: -1 }).lean();
+    const medicationSafetyAlerts = [];
+    for (const item of Array.isArray(items) ? items : []) {
+      const master = item.medicine_id ? medicineSafetyById.get(String(item.medicine_id)) : null;
+      if (!master) continue;
+      const safety = master.medicationSafety || {};
+      const alerts = [];
+      if (safety.highRisk) alerts.push('HIGH_RISK_MEDICATION');
+      if (safety.lasa) alerts.push('LOOK_ALIKE_SOUND_ALIKE');
+      if (safety.lookAlikeSoundAlikeGroup) alerts.push(`LASA_GROUP:${safety.lookAlikeSoundAlikeGroup}`);
+      if (safety.formularyStatus === 'restricted') alerts.push('RESTRICTED_FORMULARY');
+      if (safety.antimicrobial) {
+        alerts.push('ANTIMICROBIAL');
+        if (!String(item.antimicrobial_justification || '').trim()) {
+          return res.status(422).json({
+            success: false,
+            error: `Antimicrobial justification is required for ${master.name}`,
+            code: 'ANTIMICROBIAL_JUSTIFICATION_REQUIRED'
+          });
+        }
+        const restricted = (antimicrobialPolicy?.content?.restrictedAntibiotics || [])
+          .map((x) => String(x).toLowerCase())
+          .some((x) => [master.name, master.generic_name].filter(Boolean).map((y) => String(y).toLowerCase()).includes(x));
+        if (restricted && !String(item.antimicrobial_approval_reference || '').trim()) {
+          return res.status(422).json({
+            success: false,
+            error: `Restricted antimicrobial approval is required for ${master.name}`,
+            code: 'ANTIMICROBIAL_APPROVAL_REQUIRED'
+          });
+        }
+      }
+      item.__resolvedSafetyAlerts = alerts;
+      if (alerts.length) medicationSafetyAlerts.push({ medicineId: master._id, medicineName: master.name, alerts });
+    }
+
     // Process medication items and calculate required quantities
     const processedItems = items && Array.isArray(items)
       ? items.map(item => {
@@ -327,7 +378,10 @@ exports.createPrescription = async (req, res) => {
           instructions: item.instructions || '',
           timing: item.timing || 'Anytime',
           // NEW: Include pharmacy dispense flag from frontend
-          requires_pharmacy_dispense: normaliseBoolean(item.requires_pharmacy_dispense, true)
+          requires_pharmacy_dispense: normaliseBoolean(item.requires_pharmacy_dispense, true),
+          antimicrobial_justification: item.antimicrobial_justification || '',
+          antimicrobial_approval_reference: item.antimicrobial_approval_reference || '',
+          safety_alerts: item.__resolvedSafetyAlerts || []
         };
       })
       : [];
@@ -579,7 +633,8 @@ exports.createPrescription = async (req, res) => {
       procedure_requests: createdProcedureRequests,
       ipd_medications_count: source_type === 'IPD' ? (convertedMedications?.length || 0) : 0,
       pharmacy_requests_created: processedItems.filter(m => m.requires_pharmacy_dispense).length
-    });
+,
+      medication_safety_alerts: medicationSafetyAlerts    });
   } catch (err) {
     console.error('Error creating prescription:', err);
     res.status(500).json({ error: err.message });

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const hrController = require('../controllers/hr.controller');
+const hrDevelopment = require('../controllers/hrDevelopment.controller');
 const { protect, authorize, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
 
 const hrAccess = [protect, authorize('admin', 'mediqliq_super_admin', 'hr', 'hr_manager'), requireModuleAccess('hr_staff', 'manage')];
@@ -55,4 +56,19 @@ router.post('/payrolls/bulk-pay', hrAccess, hrController.bulkPayPayrolls);
 router.get('/payrolls/pending-salaries', hrAccess, hrController.getPendingSalaries);
 router.get('/payrolls/pending-commissions', hrAccess, hrController.getPendingCommissions);
 router.post('/payrolls/create', hrAccess, hrController.createPayrollForEmployee);
+
+// Development lifecycle additions that reuse HRStaffProfile as the staff master.
+router.post('/appraisals', hrAccess, hrDevelopment.appraisal);
+router.get('/appraisals', hrAccess, hrDevelopment.appraisals);
+router.post('/workflow-rules', hrAccess, hrDevelopment.createRule);
+router.post('/workflow-rules/:id/evaluate', hrAccess, hrDevelopment.evaluateRule);
+router.post('/inductions', hrAccess, hrDevelopment.induction);
+router.get('/inductions/report', hrAccess, hrDevelopment.inductionReport);
+router.post('/training-events', hrAccess, hrDevelopment.createTraining);
+router.get('/training-events', hrAccess, hrDevelopment.listTraining);
+router.put('/training-events/:id', hrAccess, hrDevelopment.updateTraining);
+router.delete('/training-events/:id', hrAccess, hrDevelopment.cancelTraining);
+router.post('/training-attendance', hrAccess, hrDevelopment.attendance);
+router.get('/training-reports', hrAccess, hrDevelopment.trainingReport);
+
 module.exports = router;

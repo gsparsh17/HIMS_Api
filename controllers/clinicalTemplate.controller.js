@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const ClinicalTemplate = require('../models/ClinicalTemplate');
 const { roundTemplates, dischargeTemplates } = require('../data/defaultClinicalTemplates');
 const { requireHospitalId } = require('../services/tenantScope.service');
@@ -139,13 +140,14 @@ exports.createTemplate = async (req, res) => {
       template
     });
   } catch (error) {
-    return res.status(error.code === 11000 ? 409 : 500).json({ error: error.message });
+    return res.status(error.code === 11000 ? 409 : (['ValidationError','CastError'].includes(error?.name) ? 400 : 500)).json({ error: error.message });
   }
 };
 
 exports.updateTemplate = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid clinical template id' });
     const template = await ClinicalTemplate.findOne({ _id: req.params.id, hospitalId });
     if (!template) return res.status(404).json({ error: 'Clinical template not found' });
 
@@ -172,7 +174,7 @@ exports.updateTemplate = async (req, res) => {
       template
     });
   } catch (error) {
-    return res.status(error.code === 11000 ? 409 : 500).json({ error: error.message });
+    return res.status(error.code === 11000 ? 409 : (['ValidationError','CastError'].includes(error?.name) ? 400 : 500)).json({ error: error.message });
   }
 };
 
@@ -214,4 +216,29 @@ exports.recordTemplateUse = async (req, res) => {
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
+};
+
+exports.validateTemplateData = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid clinical template id' });
+    const template = await ClinicalTemplate.findOne({ _id: req.params.id, hospitalId, isActive: true }).lean();
+    if (!template) return res.status(404).json({ error: 'Clinical template not found' });
+    const content = template.content || {};
+    const fields = [];
+    if (Array.isArray(content.fields)) fields.push(...content.fields);
+    if (Array.isArray(content.sections)) content.sections.forEach((section) => { if (Array.isArray(section?.fields)) fields.push(...section.fields); });
+    const data = { ...(req.body?.data || {}) };
+    const errors = [];
+    for (const field of fields) {
+      const key = String(field?.key || field?.name || '').trim();
+      if (!key) continue;
+      const empty = data[key] === undefined || data[key] === null || data[key] === '';
+      if (empty && field.defaultValue !== undefined) data[key] = field.defaultValue;
+      const stillEmpty = data[key] === undefined || data[key] === null || data[key] === '';
+      if (field.required === true && stillEmpty) errors.push(`${key} is required`);
+    }
+    if (errors.length) return res.status(400).json({ success: false, valid: false, errors, data });
+    return res.json({ success: true, valid: true, data, template: { _id: template._id, name: template.name, templateType: template.templateType } });
+  } catch (error) { return res.status(error.statusCode || 500).json({ error: error.message }); }
 };

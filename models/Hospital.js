@@ -90,6 +90,16 @@ const hospitalSchema = new mongoose.Schema(
       facilityManagerMobile: String
     },
 
+    certifications: [{
+      name: { type: String, required: true, trim: true },
+      issuer: { type: String, required: true, trim: true },
+      certificateNumber: { type: String, trim: true },
+      validFrom: Date,
+      validTo: Date,
+      public: { type: Boolean, default: true },
+      verificationUrl: { type: String, trim: true }
+    }],
+
     primaryAdmin: { type: mongoose.Schema.Types.ObjectId, ref: 'User', sparse: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
   },

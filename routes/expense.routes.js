@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const expenseController = require('../controllers/expense.controller');
+const vendorInvoice = require('../controllers/vendorInvoice.controller');
 
 // Create a new expense
 router.post('/', 
@@ -26,6 +27,18 @@ router.get('/monthly',
 router.get('/summary', 
   expenseController.getExpenseSummary
 );
+
+
+// Vendor invoice/payment additions reuse Expense and Invoice ledgers.
+router.post('/vendor-rules', vendorInvoice.createRule);
+router.get('/vendor-rules', vendorInvoice.listRules);
+router.post('/vendor-invoices', vendorInvoice.createInvoice);
+router.post('/vendor-invoices/:id/pay', vendorInvoice.pay);
+router.post('/vendor-invoices/:id/schedule', vendorInvoice.schedule);
+router.post('/vendor-payments/execute-due', vendorInvoice.executeDue);
+router.get('/vendor-dashboard', vendorInvoice.dashboard);
+router.post('/adjustments', vendorInvoice.adjustment);
+router.post('/vendor-invoices/:id/notify-supplier', vendorInvoice.notifySupplier);
 
 // Get expense by ID
 router.get('/:id', 

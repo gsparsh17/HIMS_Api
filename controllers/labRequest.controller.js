@@ -498,7 +498,8 @@ exports.createLabRequest = async (req, res) => {
     res.status(201).json({ success: true, data: populated });
   } catch (error) {
     console.error('Error creating lab request:', error);
-    res.status(500).json({ error: error.message });
+    const status = ['ValidationError','CastError'].includes(error?.name) ? 400 : Number(error?.statusCode || 500);
+    res.status(status).json({ error: error.message });
   }
 };
 

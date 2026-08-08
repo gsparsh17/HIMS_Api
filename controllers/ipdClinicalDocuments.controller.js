@@ -8,6 +8,7 @@ const IPDRound = require('../models/IPDRound');
 const Prescription = require('../models/Prescription');
 const { clinicalDayBounds, formatClinicalTime, dateKey } = require('../utils/clinicalDate');
 const { DEFAULT_TIMEZONE, EWS_CONFIG } = require('../config/clinicalScoring');
+const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
 
 const id = v => v?._id || v;
 const safeText = v => String(v || '').trim();
@@ -850,9 +851,15 @@ exports.saveNursingAdmissionAssessment = async (req, res) => {
     // Recalculate scores
     const fall = (existing.fallRisk?.items || []).reduce((s, r) => s + Number(r.score || 0), 0);
     const pressure = (existing.pressureUlcerRisk?.items || []).reduce((s, r) => s + Number(r.score || 0), 0);
+    const dvt = (existing.dvtRisk?.items || []).reduce((s, r) => s + Number(r.score || 0), 0);
+    const clinicalSetting = await getOrCreateNabhSetting(hospitalId, req.user._id);
+    const fallThreshold = Number(clinicalSetting?.clinical?.fallRiskThreshold ?? 45);
+    const pressureThreshold = Number(clinicalSetting?.clinical?.pressureUlcerRiskThreshold ?? 18);
+    const dvtThreshold = Number(clinicalSetting?.clinical?.dvtRiskThreshold ?? 2);
 
-    if (existing.fallRisk) existing.fallRisk.total = fall;
-    if (existing.pressureUlcerRisk) existing.pressureUlcerRisk.total = pressure;
+    if (existing.fallRisk) { existing.fallRisk.total = fall; existing.fallRisk.riskBand = fall >= fallThreshold ? 'high' : 'standard'; existing.fallRisk.configVersion = `NabhSetting:${clinicalSetting.version || 1}`; }
+    if (existing.pressureUlcerRisk) { existing.pressureUlcerRisk.total = pressure; existing.pressureUlcerRisk.riskBand = pressure <= pressureThreshold ? 'at_risk' : 'standard'; existing.pressureUlcerRisk.configVersion = `NabhSetting:${clinicalSetting.version || 1}`; }
+    if (existing.dvtRisk) { existing.dvtRisk.total = dvt; existing.dvtRisk.riskBand = dvt >= dvtThreshold ? 'at_risk' : 'standard'; existing.dvtRisk.configVersion = `NabhSetting:${clinicalSetting.version || 1}`; }
 
     if (req.body.sign === true || req.body.status === 'Signed') {
       existing.status = 'Signed';

@@ -1,19 +1,35 @@
+'use strict';
+
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const Patient = require('../models/Patient');
 const PatientIdentityAsset = require('../models/PatientIdentityAsset');
+const EncounterDocument = require('../models/EncounterDocument');
 const fileStorage = require('../services/fileStorage.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { tempDir } = require('../config/upload.config');
+const DomainEvent = require('../models/DomainEvent');
+const {
+  hospitalId: functionalHospitalId,
+  required: functionalRequired,
+  ref: functionalRef,
+  sendError: functionalSendError,
+  postProviderJson
+} = require('../utils/functionalDomain');
 
 const ALLOWED_TYPES = ['patient_signature', 'thumb_impression'];
 const ALLOWED_METHODS = ['drawn', 'typed_acknowledgement', 'uploaded', 'biometric'];
 
 function absoluteAssetPath(storagePath) {
-  if (!storagePath) return null;
-  return path.isAbsolute(storagePath) ? storagePath : fileStorage.absolutePath(storagePath);
+  if (!storagePath) {
+    return null;
+  }
+
+  return path.isAbsolute(storagePath)
+    ? storagePath
+    : fileStorage.absolutePath(storagePath);
 }
 
 function contentUrl(id) {
@@ -21,14 +37,22 @@ function contentUrl(id) {
 }
 
 function responseAsset(asset) {
-  const data = typeof asset?.toObject === 'function' ? asset.toObject() : { ...asset };
-  return { ...data, assetModel: 'PatientIdentityAsset', contentUrl: contentUrl(data._id) };
+  const data = typeof asset?.toObject === 'function'
+    ? asset.toObject()
+    : { ...asset };
+
+  return {
+    ...data,
+    assetModel: 'PatientIdentityAsset',
+    contentUrl: contentUrl(data._id)
+  };
 }
 
 function checksum(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     const stream = fs.createReadStream(filePath);
+
     stream.on('data', (chunk) => hash.update(chunk));
     stream.on('error', reject);
     stream.on('end', () => resolve(hash.digest('hex')));
@@ -37,31 +61,80 @@ function checksum(filePath) {
 
 async function scopedPatient(req, patientId) {
   const hospitalId = requireHospitalId(req);
-  const patient = await Patient.findOne({ _id: patientId, hospitalId }).select('_id hospitalId first_name middle_name last_name patientId uhid').lean();
+
+  const patient = await Patient
+    .findOne({
+      _id: patientId,
+      hospitalId
+    })
+    .select('_id hospitalId first_name middle_name last_name patientId uhid')
+    .lean();
+
   if (!patient) {
     const error = new Error('Patient not found');
     error.statusCode = 404;
     throw error;
   }
-  return { hospitalId, patient };
+
+  return {
+    hospitalId,
+    patient
+  };
 }
 
-async function persistFile({ req, patient, hospitalId, file, assetType, captureMethod, label, capturedName, acknowledgementText, typedFontFamily, biometricDevice, admissionId, consentId, witnessName }) {
+async function persistFile({
+  req,
+  patient,
+  hospitalId,
+  file,
+  assetType,
+  captureMethod,
+  label,
+  capturedName,
+  acknowledgementText,
+  typedFontFamily,
+  biometricDevice,
+  admissionId,
+  consentId,
+  witnessName
+}) {
   if (!ALLOWED_TYPES.includes(assetType)) {
     const error = new Error('assetType must be patient_signature or thumb_impression');
     error.statusCode = 400;
     throw error;
   }
+
   if (!ALLOWED_METHODS.includes(captureMethod)) {
     const error = new Error('Unsupported capture method');
     error.statusCode = 400;
     throw error;
   }
-  const latest = await PatientIdentityAsset.findOne({ hospitalId, patientId: patient._id, assetType }).sort({ version: -1 }).select('version').lean();
+
+  const latest = await PatientIdentityAsset
+    .findOne({
+      hospitalId,
+      patientId: patient._id,
+      assetType
+    })
+    .sort({ version: -1 })
+    .select('version')
+    .lean();
+
   const version = Number(latest?.version || 0) + 1;
   const sha256 = await checksum(file.path);
-  const stored = await fileStorage.upload(file, req, { folder: 'patient-identities', hospitalId });
-  const existingDefault = await PatientIdentityAsset.exists({ hospitalId, patientId: patient._id, assetType, status: 'active', isDefault: true });
+  const stored = await fileStorage.upload(file, req, {
+    folder: 'patient-identities',
+    hospitalId
+  });
+
+  const existingDefault = await PatientIdentityAsset.exists({
+    hospitalId,
+    patientId: patient._id,
+    assetType,
+    status: 'active',
+    isDefault: true
+  });
+
   const asset = await PatientIdentityAsset.create({
     hospitalId,
     patientId: patient._id,
@@ -77,7 +150,9 @@ async function persistFile({ req, patient, hospitalId, file, assetType, captureM
     capturedName,
     acknowledgementText,
     typedFontFamily,
-    legalLabel: captureMethod === 'typed_acknowledgement' ? 'Typed acknowledgement' : (assetType === 'thumb_impression' ? 'Thumb impression' : 'Patient signature'),
+    legalLabel: captureMethod === 'typed_acknowledgement'
+      ? 'Typed acknowledgement'
+      : (assetType === 'thumb_impression' ? 'Thumb impression' : 'Patient signature'),
     evidence: {
       capturedAt: new Date(),
       ipAddress: req.ip || req.socket?.remoteAddress,
@@ -90,6 +165,7 @@ async function persistFile({ req, patient, hospitalId, file, assetType, captureM
     isDefault: !existingDefault,
     capturedBy: req.user._id
   });
+
   await appendDomainEvent({
     req,
     eventType: 'patient_identity.asset_captured',
@@ -97,24 +173,55 @@ async function persistFile({ req, patient, hospitalId, file, assetType, captureM
     entityId: asset._id,
     hospitalId,
     patientId: patient._id,
-    afterSummary: { assetType, captureMethod, version, sha256 }
+    afterSummary: {
+      assetType,
+      captureMethod,
+      version,
+      sha256
+    }
   });
+
   return asset;
 }
 
 exports.listPatientAssets = async (req, res, next) => {
   try {
     const { hospitalId, patient } = await scopedPatient(req, req.params.patientId);
-    const assets = await PatientIdentityAsset.find({ hospitalId, patientId: patient._id, status: 'active' })
-      .sort({ assetType: 1, isDefault: -1, version: -1 });
-    res.json({ success: true, data: { patient, assets: assets.map(responseAsset) } });
-  } catch (error) { next(error); }
+
+    const assets = await PatientIdentityAsset
+      .find({
+        hospitalId,
+        patientId: patient._id,
+        status: 'active'
+      })
+      .sort({
+        assetType: 1,
+        isDefault: -1,
+        version: -1
+      });
+
+    res.json({
+      success: true,
+      data: {
+        patient,
+        assets: assets.map(responseAsset)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
 exports.uploadAsset = async (req, res, next) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'Patient signature or thumb image is required' });
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'Patient signature or thumb image is required'
+      });
+    }
+
     const { hospitalId, patient } = await scopedPatient(req, req.params.patientId);
+
     const asset = await persistFile({
       req,
       patient,
@@ -131,29 +238,71 @@ exports.uploadAsset = async (req, res, next) => {
       consentId: req.body.consentId,
       witnessName: req.body.witnessName
     });
+
     fs.unlink(req.file.path, () => {});
-    res.status(201).json({ success: true, message: 'Patient identity mark saved', data: responseAsset(asset) });
+
+    res.status(201).json({
+      success: true,
+      message: 'Patient identity mark saved',
+      data: responseAsset(asset)
+    });
   } catch (error) {
-    if (req.file?.path) fs.unlink(req.file.path, () => {});
+    if (req.file?.path) {
+      fs.unlink(req.file.path, () => {});
+    }
+
     next(error);
   }
 };
 
 exports.captureAsset = async (req, res, next) => {
   let filePath;
+
   try {
     const { hospitalId, patient } = await scopedPatient(req, req.params.patientId);
     const { dataUrl, assetType, captureMethod = 'drawn' } = req.body;
-    const match = String(dataUrl || '').match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/i);
-    if (!match) return res.status(400).json({ error: 'A PNG, JPEG or WebP data URL is required' });
+
+    const match = String(dataUrl || '').match(
+      /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/i
+    );
+
+    if (!match) {
+      return res.status(400).json({
+        error: 'A PNG, JPEG or WebP data URL is required'
+      });
+    }
+
     const buffer = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
-    if (!buffer.length || buffer.length > 10 * 1024 * 1024) return res.status(400).json({ error: 'Captured image is empty or exceeds 10MB' });
-    const extension = match[1].toLowerCase().includes('jpeg') ? '.jpg' : match[1].toLowerCase().includes('webp') ? '.webp' : '.png';
+
+    if (!buffer.length || buffer.length > 10 * 1024 * 1024) {
+      return res.status(400).json({
+        error: 'Captured image is empty or exceeds 10MB'
+      });
+    }
+
+    const extension = match[1].toLowerCase().includes('jpeg')
+      ? '.jpg'
+      : match[1].toLowerCase().includes('webp')
+        ? '.webp'
+        : '.png';
+
     const directory = path.join(tempDir, 'patient-identities');
     await fs.promises.mkdir(directory, { recursive: true });
-    filePath = path.join(directory, `${patient._id}-${Date.now()}-${crypto.randomBytes(5).toString('hex')}${extension}`);
+
+    filePath = path.join(
+      directory,
+      `${patient._id}-${Date.now()}-${crypto.randomBytes(5).toString('hex')}${extension}`
+    );
+
     await fs.promises.writeFile(filePath, buffer, { flag: 'wx' });
-    const file = { path: filePath, originalname: `${assetType || 'patient-signature'}${extension}`, mimetype: match[1], size: buffer.length };
+
+    const file = {
+      path: filePath,
+      originalname: `${assetType || 'patient-signature'}${extension}`,
+      mimetype: match[1],
+      size: buffer.length
+    };
+
     const asset = await persistFile({
       req,
       patient,
@@ -170,10 +319,171 @@ exports.captureAsset = async (req, res, next) => {
       consentId: req.body.consentId,
       witnessName: req.body.witnessName
     });
+
     await fs.promises.unlink(filePath).catch(() => {});
-    res.status(201).json({ success: true, message: 'Patient identity mark captured', data: responseAsset(asset) });
+
+    res.status(201).json({
+      success: true,
+      message: 'Patient identity mark captured',
+      data: responseAsset(asset)
+    });
   } catch (error) {
-    if (filePath) await fs.promises.unlink(filePath).catch(() => {});
+    if (filePath) {
+      await fs.promises.unlink(filePath).catch(() => {});
+    }
+
+    next(error);
+  }
+};
+
+exports.captureScannedDocument = async (req, res, next) => {
+  let filePath;
+
+  try {
+    const { hospitalId, patient } = await scopedPatient(req, req.params.patientId);
+    const {
+      dataUrl,
+      documentType = 'scanned_document',
+      title = 'Scanned patient document',
+      admissionId
+    } = req.body || {};
+
+    const match = String(dataUrl || '').match(
+      /^data:(image\/(?:png|jpeg|webp)|application\/pdf);base64,([A-Za-z0-9+/=\s]+)$/i
+    );
+
+    if (!match) {
+      return res.status(400).json({
+        error: 'A PNG, JPEG, WebP or PDF data URL is required'
+      });
+    }
+
+    const buffer = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+
+    if (!buffer.length || buffer.length > 10 * 1024 * 1024) {
+      return res.status(400).json({
+        error: 'Scanned document is empty or exceeds 10MB'
+      });
+    }
+
+    const mimeType = match[1].toLowerCase();
+    const extension = mimeType === 'application/pdf'
+      ? '.pdf'
+      : mimeType.includes('jpeg')
+        ? '.jpg'
+        : mimeType.includes('webp')
+          ? '.webp'
+          : '.png';
+
+    const directory = path.join(tempDir, 'patient-scans');
+    await fs.promises.mkdir(directory, { recursive: true });
+
+    filePath = path.join(
+      directory,
+      `${patient._id}-${Date.now()}-${crypto.randomBytes(5).toString('hex')}${extension}`
+    );
+
+    await fs.promises.writeFile(filePath, buffer, { flag: 'wx' });
+
+    const file = {
+      path: filePath,
+      originalname: `${documentType}${extension}`,
+      mimetype: mimeType,
+      size: buffer.length
+    };
+
+    const stored = await fileStorage.upload(file, req, {
+      folder: 'patient-scans',
+      hospitalId
+    });
+
+    const latest = await EncounterDocument
+      .findOne({
+        hospitalId,
+        patientId: patient._id,
+        sourceModel: 'Patient',
+        documentType
+      })
+      .sort({ sourceRevision: -1 })
+      .select('sourceRevision')
+      .lean();
+
+    const row = await EncounterDocument.create({
+      hospitalId,
+      patientId: patient._id,
+      admissionId: admissionId || undefined,
+      encounterType: admissionId ? 'IPD' : 'Other',
+      category: 'scanned_document',
+      documentType,
+      title,
+      sourceModel: 'Patient',
+      sourceId: patient._id,
+      sourceRevision: Number(latest?.sourceRevision || 0) + 1,
+      rendererKey: 'scanned_document',
+      status: 'Completed/Unsigned',
+      authorUserId: req.user._id,
+      fileUrl: stored.secure_url,
+      mimeType,
+      metadata: {
+        storageKey: stored.storage_key,
+        sizeBytes: buffer.length,
+        captureMethod: 'scanner'
+      },
+      visibility: req.body.visibility || 'clinical'
+    });
+
+    await appendDomainEvent({
+      req,
+      eventType: 'patient_document.scanned',
+      entityType: 'EncounterDocument',
+      entityId: row._id,
+      hospitalId,
+      patientId: patient._id,
+      afterSummary: {
+        documentType,
+        title,
+        mimeType,
+        sourceRevision: row.sourceRevision
+      }
+    });
+
+    await fs.promises.unlink(filePath).catch(() => {});
+
+    return res.status(201).json({
+      success: true,
+      message: 'Scanned patient document saved',
+      data: row
+    });
+  } catch (error) {
+    if (filePath) {
+      await fs.promises.unlink(filePath).catch(() => {});
+    }
+
+    next(error);
+  }
+};
+
+exports.listScannedDocuments = async (req, res, next) => {
+  try {
+    const { hospitalId, patient } = await scopedPatient(req, req.params.patientId);
+
+    const data = await EncounterDocument
+      .find({
+        hospitalId,
+        patientId: patient._id,
+        category: 'scanned_document'
+      })
+      .sort({
+        documentDate: -1,
+        createdAt: -1
+      })
+      .lean();
+
+    return res.json({
+      success: true,
+      data
+    });
+  } catch (error) {
     next(error);
   }
 };
@@ -181,45 +491,253 @@ exports.captureAsset = async (req, res, next) => {
 exports.setDefault = async (req, res, next) => {
   try {
     const { hospitalId, patient } = await scopedPatient(req, req.params.patientId);
-    const asset = await PatientIdentityAsset.findOne({ _id: req.params.assetId, hospitalId, patientId: patient._id, status: 'active' });
-    if (!asset) return res.status(404).json({ error: 'Patient identity asset not found' });
-    await PatientIdentityAsset.updateMany({ hospitalId, patientId: patient._id, assetType: asset.assetType }, { $set: { isDefault: false } });
+
+    const asset = await PatientIdentityAsset.findOne({
+      _id: req.params.assetId,
+      hospitalId,
+      patientId: patient._id,
+      status: 'active'
+    });
+
+    if (!asset) {
+      return res.status(404).json({
+        error: 'Patient identity asset not found'
+      });
+    }
+
+    await PatientIdentityAsset.updateMany(
+      {
+        hospitalId,
+        patientId: patient._id,
+        assetType: asset.assetType
+      },
+      {
+        $set: { isDefault: false }
+      }
+    );
+
     asset.isDefault = true;
     await asset.save();
-    res.json({ success: true, message: 'Default patient identity mark updated', data: responseAsset(asset) });
-  } catch (error) { next(error); }
+
+    res.json({
+      success: true,
+      message: 'Default patient identity mark updated',
+      data: responseAsset(asset)
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
 exports.revokeAsset = async (req, res, next) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const asset = await PatientIdentityAsset.findOne({ _id: req.params.assetId, hospitalId, status: 'active' });
-    if (!asset) return res.status(404).json({ error: 'Patient identity asset not found' });
+
+    const asset = await PatientIdentityAsset.findOne({
+      _id: req.params.assetId,
+      hospitalId,
+      status: 'active'
+    });
+
+    if (!asset) {
+      return res.status(404).json({
+        error: 'Patient identity asset not found'
+      });
+    }
+
     asset.status = 'revoked';
     asset.isDefault = false;
     asset.revokedAt = new Date();
     asset.revokedBy = req.user._id;
     asset.revokeReason = req.body.reason;
+
     await asset.save();
-    res.json({ success: true, message: 'Patient identity mark revoked' });
-  } catch (error) { next(error); }
+
+    res.json({
+      success: true,
+      message: 'Patient identity mark revoked'
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
 exports.streamAsset = async (req, res, next) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const asset = await PatientIdentityAsset.findOne({ _id: req.params.assetId, hospitalId, status: 'active' });
-    if (!asset) return res.status(404).json({ error: 'Patient identity asset not found' });
+
+    const asset = await PatientIdentityAsset.findOne({
+      _id: req.params.assetId,
+      hospitalId,
+      status: 'active'
+    });
+
+    if (!asset) {
+      return res.status(404).json({
+        error: 'Patient identity asset not found'
+      });
+    }
+
     const filePath = absoluteAssetPath(asset.storagePath);
-    if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Patient identity image not found' });
+
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(404).json({
+        error: 'Patient identity image not found'
+      });
+    }
+
     const stat = await fs.promises.stat(filePath);
+
     res.setHeader('Content-Type', asset.mimeType || 'image/png');
     res.setHeader('Content-Length', String(stat.size));
     res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+
     const stream = fs.createReadStream(filePath);
     stream.on('error', next);
     stream.pipe(res);
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
+};
+
+function qaDigiLockerProvider(body) {
+  const otp = String(body.otp || '');
+
+  if (otp === '000000') {
+    return {
+      ok: false,
+      reason: 'OTP verification failed',
+      alternateMethods: ['manual_document_review', 'aadhaar_otp', 'in_person_kyc']
+    };
+  }
+
+  return {
+    ok: true,
+    reference: body.providerReference || functionalRef('DLK'),
+    documentType: body.documentType || 'driving_licence',
+    maskedValue: body.maskedValue || '****1234'
+  };
+}
+
+async function resolveDigiLockerProvider(body) {
+  const qa = process.env.NODE_ENV !== 'production' ||
+    String(process.env.DIGILOCKER_QA_MODE || 'false').toLowerCase() === 'true';
+
+  if (qa) {
+    return qaDigiLockerProvider(body);
+  }
+
+  const url = process.env.DIGILOCKER_PROVIDER_URL;
+
+  if (!url) {
+    const error = new Error('DigiLocker provider is not configured');
+    error.statusCode = 503;
+    error.details = {
+      alternateMethods: ['manual_document_review', 'aadhaar_otp', 'in_person_kyc']
+    };
+    throw error;
+  }
+
+  const result = await postProviderJson(
+    url,
+    {
+      otp: body.otp,
+      consentReference: body.consentReference,
+      documentType: body.documentType,
+      providerReference: body.providerReference
+    },
+    {
+      label: 'DigiLocker provider',
+      allowedHosts: process.env.DIGILOCKER_ALLOWED_HOSTS,
+      headers: process.env.DIGILOCKER_API_KEY
+        ? { Authorization: `Bearer ${process.env.DIGILOCKER_API_KEY}` }
+        : {}
+    }
+  );
+
+  return {
+    ok: result.verified === true || result.ok === true,
+    reason: result.reason || result.message,
+    reference: result.reference || result.providerReference,
+    documentType: result.documentType || body.documentType || 'other',
+    maskedValue: result.maskedValue,
+    alternateMethods: result.alternateMethods || [
+      'manual_document_review',
+      'aadhaar_otp',
+      'in_person_kyc'
+    ]
+  };
+}
+
+exports.verifyDigiLocker = async (req, res) => {
+  try {
+    functionalRequired(req.body, ['patientId', 'otp']);
+
+    const patient = await Patient.findOne({
+      _id: req.body.patientId,
+      hospitalId: functionalHospitalId(req)
+    });
+
+    if (!patient) {
+      return res.status(404).json({
+        error: 'Patient not found'
+      });
+    }
+
+    const result = await resolveDigiLockerProvider(req.body);
+
+    await DomainEvent.create({
+      eventId: functionalRef('EVT'),
+      eventType: 'digilocker_kyc_verification',
+      hospitalId: functionalHospitalId(req),
+      patientId: patient._id,
+      actorUserId: req.user._id,
+      actorRole: req.user.role,
+      entityType: 'Patient',
+      entityId: patient._id,
+      correlationId: result.reference || functionalRef('DLK'),
+      metadata: {
+        provider: 'DigiLocker',
+        ok: result.ok,
+        documentType: result.documentType,
+        reason: result.reason
+      }
+    });
+
+    if (!result.ok) {
+      return res.status(422).json({
+        error: result.reason || 'DigiLocker verification failed',
+        alternateMethods: result.alternateMethods
+      });
+    }
+
+    patient.identityDocuments = patient.identityDocuments || [];
+    patient.identityDocuments.push({
+      type: result.documentType,
+      maskedValue: result.maskedValue,
+      verified: true,
+      verifiedAt: new Date(),
+      verificationMethod: 'digilocker'
+    });
+
+    await patient.save({ validateBeforeSave: false });
+
+    return res.json({
+      success: true,
+      verified: true,
+      providerReference: result.reference,
+      patientId: patient._id
+    });
+  } catch (error) {
+    if (error?.details?.alternateMethods) {
+      return res.status(error.statusCode || 503).json({
+        error: error.message,
+        alternateMethods: error.details.alternateMethods
+      });
+    }
+
+    return functionalSendError(res, error);
+  }
 };

@@ -812,6 +812,13 @@ const invoiceSchema = new mongoose.Schema({
   },
 
   // Audit fields
+  printHistory: [{
+    printedAt: { type: Date, default: Date.now },
+    printedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    duplicateNumber: { type: Number, min: 0, max: 2 },
+    watermark: { type: String, trim: true },
+    templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'PrintTemplate' }
+  }],
   created_at: {
     type: Date,
     default: () => new Date(),

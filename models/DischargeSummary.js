@@ -47,6 +47,13 @@ const dischargeSummarySchema = new mongoose.Schema({
     default: 'Improved'
   },
   conditionAtDischargeText: { type: String, trim: true },
+  medicationReconciliation: {
+    performedAt: Date,
+    performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    admissionMedicines: [{ name: String, action: { type: String, enum: ['continue','stop','change'] }, dischargeInstruction: String, reason: String }],
+    discrepancies: [{ medicine: String, discrepancy: String, resolution: String }],
+    completed: { type: Boolean, default: false }
+  },
   dischargeMedications: [dischargeMedicationSchema],
 
   followUpAdvice: { type: String, trim: true },

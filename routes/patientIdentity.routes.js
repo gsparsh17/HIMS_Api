@@ -25,9 +25,12 @@ const readers = authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 's
 const capturers = authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'ot_staff');
 
 router.use(protect);
+router.post('/digilocker/verify', capturers, controller.verifyDigiLocker);
 router.get('/patients/:patientId/assets', readers, controller.listPatientAssets);
 router.post('/patients/:patientId/assets/upload', capturers, upload.single('asset'), controller.uploadAsset);
 router.post('/patients/:patientId/assets/capture', capturers, controller.captureAsset);
+router.post('/patients/:patientId/scanned-documents/capture', capturers, controller.captureScannedDocument);
+router.get('/patients/:patientId/scanned-documents', capturers, controller.listScannedDocuments);
 router.put('/patients/:patientId/assets/:assetId/default', capturers, controller.setDefault);
 router.delete('/assets/:assetId', capturers, controller.revokeAsset);
 router.get('/assets/:assetId/content', readers, controller.streamAsset);

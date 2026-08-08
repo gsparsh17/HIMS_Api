@@ -377,6 +377,17 @@ async function createIPDCharge({
 // ========== ADMISSION CRUD ==========
 
 // Create new IPD admission
+function normalizeAdmissionSponsorType(value) {
+  const raw = String(value || 'self').trim().toLowerCase();
+  const direct = new Set(['self', 'ayushman_bharat', 'insurance', 'company_panel', 'government_scheme', 'other']);
+  if (direct.has(raw)) return raw;
+  if (['private_insurer', 'tpa', 'tpa_managed'].includes(raw)) return 'insurance';
+  if (raw === 'corporate') return 'company_panel';
+  if (['pmjay'].includes(raw)) return 'ayushman_bharat';
+  if (['cghs', 'state_scheme', 'echs', 'esic', 'government_other'].includes(raw)) return 'government_scheme';
+  return 'other';
+}
+
 exports.createAdmission = async (req, res) => {
   const session = await mongoose.startSession();
   let admission;
@@ -469,7 +480,7 @@ exports.createAdmission = async (req, res) => {
         attendant: payload.attendant,
         paymentType: payload.paymentType,
         insuranceDetails: payload.insuranceDetails,
-        sponsorType: payload.sponsorType || patient.sponsor_type || 'self',
+        sponsorType: normalizeAdmissionSponsorType(payload.sponsorType || payload.coverage?.payerCategory || patient.sponsor_type || 'self'),
         sponsorName: payload.sponsorName || patient.sponsor_name,
         advanceAmount: Number(payload.advanceAmount || 0),
         advanceReceivedAmount: Number(payload.advanceAmount || 0),

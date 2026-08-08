@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const generateToken = require('../utils/generateToken');
 const User = require('../models/User');
 const Staff = require('../models/Staff');
@@ -258,26 +259,42 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
   let doctor = null;
 
   if (staffType !== 'doctor') {
+    // Staff normally receives staffId from its pre-save hook, but an upsert via
+    // findOneAndUpdate does not execute document save middleware. The legacy
+    // database has a unique index on staffId, so inserting another document
+    // without a staffId becomes a duplicate `{ staffId: null }`. Seed a real
+    // unique staffId on insert and repair older null-valued records if found.
+    const generatedStaffId = `HR-${String(profile?.hospital_id || 'HOSP').slice(-6).toUpperCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     staff = await Staff.findOneAndUpdate(
       { email: body.email },
       {
-        user_id: user?._id,
-        first_name: firstName,
-        last_name: lastName,
-        email: body.email,
-        phone: body.phone || 'N/A',
-        role: designation,
-        department: departmentId,
-        specialization: body.specialization,
-        gender: body.gender,
-        status: body.employment_status || 'Active',
-        aadharNumber: body.aadhar_number || body.aadharNumber,
-        panNumber: body.pan_number || body.panNumber,
-        shift: body.shift,
-        joined_at: body.joining_date || body.joiningDate || new Date()
+        $set: {
+          user_id: user?._id,
+          first_name: firstName,
+          last_name: lastName,
+          email: body.email,
+          phone: body.phone || 'N/A',
+          role: designation,
+          department: departmentId,
+          specialization: body.specialization,
+          gender: body.gender,
+          status: body.employment_status || 'Active',
+          aadharNumber: body.aadhar_number || body.aadharNumber,
+          panNumber: body.pan_number || body.panNumber,
+          shift: body.shift,
+          joined_at: body.joining_date || body.joiningDate || new Date()
+        },
+        $setOnInsert: {
+          staffId: generatedStaffId
+        }
       },
       { upsert: true, new: true, runValidators: false }
     );
+
+    if (staff && !staff.staffId) {
+      staff.staffId = generatedStaffId;
+      await staff.save({ validateBeforeSave: false });
+    }
   }
 
   if (staffType === 'nurse') {
@@ -567,7 +584,11 @@ exports.createEmployee = async (req, res) => {
       salary_type: body.salary_type || body.paymentType || 'Salary',
       salary_amount: toNumber(body.salary_amount || body.amount, 0),
       source_model: body.source_model || 'Manual',
-      source_id: body.source_id,
+      source_id: body.source_id || (
+        (body.source_model || 'Manual') === 'Manual'
+          ? (user?._id || existingUser?._id || new mongoose.Types.ObjectId())
+          : undefined
+      ),
       payroll_enabled: body.payroll_enabled !== undefined ? Boolean(body.payroll_enabled) : true,
       pay_cycle: body.pay_cycle || 'monthly',
       basic_salary: toNumber(body.basic_salary, 0),

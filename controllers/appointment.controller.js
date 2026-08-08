@@ -2067,3 +2067,24 @@ exports.getVitalsByAppointmentId = async (req, res) => {
     res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
+
+exports.updateHomecareDelivery = async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: req.user.hospital_id, visit_mode: 'homecare' });
+    if (!appointment) return res.status(404).json({ error: 'Home-care appointment not found' });
+    appointment.homecare = { ...(appointment.homecare?.toObject?.() || appointment.homecare || {}), ...req.body };
+    if (['delivered','completed'].includes(req.body.deliveryStatus) && !appointment.homecare.deliveredAt) appointment.homecare.deliveredAt = new Date();
+    await appointment.save();
+    await notifyAppointment(appointment, 'homecare_delivery_update', req.user?._id, { subject: 'Home-care service update', body: `Home-care service status: ${appointment.homecare.deliveryStatus}`, payload: { homecare: appointment.homecare } });
+    return res.json({ success: true, data: appointment });
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+};
+exports.submitHomecareFeedback = async (req, res) => {
+  try {
+    const rating = Number(req.body.rating); if (!Number.isFinite(rating) || rating < 1 || rating > 5) return res.status(400).json({ error: 'rating must be between 1 and 5' });
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: req.user.hospital_id, visit_mode: 'homecare' });
+    if (!appointment) return res.status(404).json({ error: 'Home-care appointment not found' });
+    appointment.homecare.feedback = { rating, comment: req.body.comment, submittedAt: new Date() }; await appointment.save();
+    return res.json({ success: true, data: appointment.homecare.feedback });
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+};

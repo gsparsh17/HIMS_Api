@@ -102,6 +102,8 @@ const medicineSchema = new mongoose.Schema({
     },
     alternatives: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Medicine' }],
     emergencyMedicine: { type: Boolean, default: false, index: true },
+    antimicrobial: { type: Boolean, default: false, index: true },
+    antimicrobialClass: { type: String, trim: true },
     requiresDoubleCheck: { type: Boolean, default: false },
     patientBarcodeRequired: { type: Boolean, default: false },
     barcode: { type: String, trim: true, index: true, sparse: true },

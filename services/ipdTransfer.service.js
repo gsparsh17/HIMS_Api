@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDBedTransfer = require('../models/IPDBedTransfer');
 const IPDAccommodationSegment = require('../models/IPDAccommodationSegment');
+const DailySequence = require('../models/DailySequence');
 const Bed = require('../models/Bed');
 const Room = require('../models/Room');
 const Ward = require('../models/Ward');
@@ -24,9 +25,33 @@ function correlationId() {
 }
 
 async function nextTransferNumber(hospitalId, session) {
-  const count = await IPDBedTransfer.countDocuments({ hospitalId }).session(session);
   const dateStr = new Date().toISOString().slice(0, 10).replaceAll('-', '');
-  return `TRF-${dateStr}-${String(count + 1).padStart(5, '0')}`;
+  const prefix = `TRF-${dateStr}-`;
+  const latestQuery = IPDBedTransfer
+    .findOne({ hospitalId, transferNumber: { $regex: `^${prefix}\\d+$` } })
+    .sort({ transferNumber: -1 })
+    .select('transferNumber');
+  if (session) latestQuery.session(session);
+  const latest = await latestQuery.lean();
+  const seed = Number(String(latest?.transferNumber || '').slice(prefix.length)) || 0;
+  const key = `ipd-transfer:${dateStr}`;
+
+  const seedOptions = { upsert: true, setDefaultsOnInsert: true };
+  if (session) seedOptions.session = session;
+  await DailySequence.updateOne(
+    { hospitalId, key },
+    { $max: { value: seed }, $setOnInsert: { hospitalId, key } },
+    seedOptions
+  );
+
+  const incrementOptions = { new: true };
+  if (session) incrementOptions.session = session;
+  const counter = await DailySequence.findOneAndUpdate(
+    { hospitalId, key },
+    { $inc: { value: 1 } },
+    incrementOptions
+  );
+  return `${prefix}${String(counter.value).padStart(5, '0')}`;
 }
 
 async function loadLocation(hospitalId, bedId, session) {

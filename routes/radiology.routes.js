@@ -68,6 +68,8 @@ router.post('/requests/:id/start', ...manage, workflow.startRadiology);
 router.post('/requests/:id/results', ...manage, workflow.enterRadiologyResult);
 router.post('/requests/:id/verify', ...manage, workflow.verifyRadiology);
 router.post('/requests/:id/release', ...manage, workflow.releaseRadiology);
+router.post('/requests/:id/refer-out', ...manage, controller.referOut);
+router.post('/requests/:id/external-result', ...manage, controller.receiveExternalResult);
 router.post('/requests/:id/amend', ...manage, governance.amendRadiologyReport);
 router.post('/requests/:id/repeat', ...manage, governance.repeatRadiologyStudy);
 router.post('/requests/:id/contraindications', ...manage, governance.assessRadiologyContraindications);

@@ -97,8 +97,9 @@ const MODELS = [
 ];
 
 // Configuration
-const BACKUP_DIR = 'C:\\Pranshu\\hospital_backups';
+const BACKUP_DIR = process.env.HIMS_BACKUP_DIR || process.env.MONGODB_BACKUP_DIR || path.join(process.cwd(), 'backups');
 const TEMP_DIR = path.join(BACKUP_DIR, 'temp');
+const BACKUP_RETENTION_DAYS = Math.max(1, Number(process.env.BACKUP_RETENTION_DAYS || 90));
 const HOSPITAL_NAME = process.env.HOSPITAL_NAME || 'City_Hospital';
 
 const CREDENTIALS_PATH = path.join(__dirname, '../oauth-credentials.json');
@@ -267,6 +268,46 @@ async function exportCollection(modelInfo) {
         console.error(`    ✗ Error exporting ${name}:`, error.message);
         return null;
     }
+}
+
+// Create a machine-restorable JSON payload from every MongoDB collection.
+// This complements the human-readable CSV files. Backup routes are admin-only;
+// storage permissions/encryption remain deployment responsibilities.
+async function createRestorePayload(timestamp) {
+    const collections = await mongoose.connection.db.listCollections().toArray();
+    const payload = {
+        schemaVersion: 'hims-complete-backup-1',
+        createdAt: new Date().toISOString(),
+        timestamp,
+        database: mongoose.connection.name,
+        collections: []
+    };
+    for (const entry of collections) {
+        const name = entry.name;
+        if (!name || name.startsWith('system.')) continue;
+        const documents = await mongoose.connection.db.collection(name).find({}).toArray();
+        payload.collections.push({ name, documents });
+    }
+    const restorePath = path.join(TEMP_DIR, 'restore_payload.json');
+    fs.writeFileSync(restorePath, JSON.stringify(payload), 'utf8');
+    return restorePath;
+}
+
+function cleanOldBackups(retentionDays = BACKUP_RETENTION_DAYS) {
+    if (!fs.existsSync(BACKUP_DIR)) return { deleted: 0, retained: 0 };
+    const cutoff = Date.now() - Number(retentionDays) * 86400000;
+    let deleted = 0;
+    let retained = 0;
+    for (const name of fs.readdirSync(BACKUP_DIR)) {
+        if (!/\.zip$/i.test(name)) continue;
+        const filePath = path.join(BACKUP_DIR, name);
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs < cutoff) {
+            fs.unlinkSync(filePath);
+            deleted += 1;
+        } else retained += 1;
+    }
+    return { deleted, retained, retentionDays: Number(retentionDays) };
 }
 
 // Create metadata file with backup information
@@ -481,6 +522,10 @@ async function performBackup() {
         const metadataPath = createMetadataFile(timestamp, exportedResults);
         exportedFiles.push(metadataPath);
 
+        // Create a full-fidelity restore payload in addition to CSV evidence.
+        const restorePayloadPath = await createRestorePayload(timestamp);
+        exportedFiles.push(restorePayloadPath);
+
         // Create ZIP archive
         console.log(`\n📦 Creating ZIP archive...`);
         const zipFilePath = await createZipArchive(timestamp, exportedFiles);
@@ -496,8 +541,9 @@ async function performBackup() {
             }
         }
 
-        // Clean old backups (keep only last 6 months)
-        // cleanOldBackups();
+        // Enforce configured local retention.
+        const retentionResult = cleanOldBackups(BACKUP_RETENTION_DAYS);
+        console.log(`🗑️ Retention cleanup: ${retentionResult.deleted} deleted, ${retentionResult.retained} retained`);
 
         // Final summary
         console.log('\n' + '='.repeat(70));
@@ -534,4 +580,4 @@ if (require.main === module) {
         });
 }
 
-module.exports = { performBackup };
+module.exports = { performBackup, cleanOldBackups, BACKUP_DIR, BACKUP_RETENTION_DAYS };

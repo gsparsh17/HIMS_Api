@@ -80,6 +80,21 @@ const appointmentSchema = new mongoose.Schema({
     default: 'physical',
     index: true
   },
+  homecare: {
+    serviceType: { type: String, trim: true },
+    address: { type: String, trim: true },
+    scheduledWindowStart: Date,
+    scheduledWindowEnd: Date,
+    assignedStaffId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    deliveryStatus: { type: String, enum: ['scheduled', 'en_route', 'delivered', 'completed', 'cancelled'], default: 'scheduled' },
+    deliveredAt: Date,
+    completionNote: { type: String, trim: true },
+    feedback: {
+      rating: { type: Number, min: 1, max: 5 },
+      comment: { type: String, trim: true },
+      submittedAt: Date
+    }
+  },
   teleconsultation: {
     communicationMode: {
       type: String,

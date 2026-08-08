@@ -27,6 +27,8 @@ router.put('/:id/complete', appointmentController.completeAppointment);
 router.patch('/:id/cancel', appointmentController.cancelAppointment);
 router.put('/:id/vitals', appointmentController.updateVitals);
 router.patch('/:id/status', appointmentController.updateAppointmentStatus);
+router.patch('/:id/homecare/delivery', appointmentController.updateHomecareDelivery);
+router.post('/:id/homecare/feedback', appointmentController.submitHomecareFeedback);
 router.put('/:id', appointmentController.updateAppointment);
 router.delete('/:id', appointmentController.deleteAppointment);
 router.get('/:id', appointmentController.getAppointmentById);

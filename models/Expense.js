@@ -86,7 +86,7 @@ const expenseSchema = new mongoose.Schema({
   // Payment Information
   payment_method: {
     type: String,
-    enum: ['Cash', 'Card', 'Bank Transfer', 'UPI', 'Cheque', 'Online'],
+    enum: ['Cash', 'Card', 'Bank Transfer', 'UPI', 'Cheque', 'Online', 'EFT', 'Wire', 'Bank Portal', 'Mobile App'],
     required: true
   },
   payment_status: {
@@ -106,6 +106,19 @@ const expenseSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  payment_channel: { type: String, trim: true },
+  vendor_invoice_number: { type: String, trim: true, index: true },
+  supplier_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', index: true },
+  invoice_validation: {
+    ruleId: { type: mongoose.Schema.Types.ObjectId, ref: 'VendorInvoiceRule' },
+    validatedAt: Date,
+    status: { type: String, enum: ['valid', 'invalid'] }
+  },
+  auto_pay: { type: Boolean, default: false, index: true },
+  scheduled_payment_at: { type: Date, index: true },
+  adjustment_type: { type: String, enum: ['credit_note', 'debit_note'] },
+  parent_expense_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense' },
+  parent_invoice_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   
   // Department & Location
   department: {

@@ -4,6 +4,7 @@ const Bed = require('../models/Bed');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const transferService = require('../services/ipdTransfer.service');
 const { buildAccommodationPrintData } = require('../services/ipdAccommodationPrint.service');
+const { queueNotification } = require('../services/nabhNotification.service');
 
 function fail(res, e) {
   res.status(e.statusCode || 400).json({ success: false, error: e.message });
@@ -126,6 +127,10 @@ exports.complete = async (req, res) => {
       })
     );
 
+    try {
+      const transfer = await IPDBedTransfer.findById(req.params.id).populate('admissionId');
+      if (transfer) await queueNotification({ hospitalId, eventType:'ipd_transfer_completed', correlationId:String(transfer._id), recipientType:'staff', requestedChannels:['portal'], priority:'high', subject:'IPD transfer completed', body:req.body?.handover?.currentTreatmentPlan || req.body?.note || 'Patient transfer completed; receiving team should review handover.', patientId:transfer.admissionId?.patientId, payload:{transferId:transfer._id,handover:transfer.handover,to:transfer.to}, createdBy:req.user._id });
+    } catch (notificationError) { console.error('Transfer notification error:', notificationError.message); }
     res.json({ success: true, data });
   } catch (e) {
     fail(res, e);

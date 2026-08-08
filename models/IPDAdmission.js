@@ -192,6 +192,28 @@ const ipdAdmissionSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  plannedDischargeAt: { type: Date, index: true },
+  plannedDischargeType: {
+    type: String,
+    enum: ['PLANNED', 'LAMA', 'DAMA', 'DISAPPEARED', 'TRANSFER', 'OTHER']
+  },
+  plannedDischargeReason: { type: String, trim: true },
+  dischargeChecklist: {
+    checkpoints: [{
+      key: { type: String, required: true },
+      label: String,
+      completed: { type: Boolean, default: false },
+      completedAt: Date,
+      completedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      note: String
+    }],
+    delayReasons: [{
+      reason: { type: String, required: true },
+      recordedAt: { type: Date, default: Date.now },
+      recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    }],
+    updatedAt: Date
+  },
   // NEW: Pharmacy clearance tracking
   pharmacyClearanceStatus: {
     type: String,

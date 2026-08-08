@@ -82,6 +82,14 @@ const ipdVitalsSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    source: {
+      type: String,
+      enum: ['manual', 'monitor', 'device_gateway'],
+      default: 'manual',
+      index: true
+    },
+    deviceIdentifier: { type: String, trim: true },
+    devicePayloadReference: { type: String, trim: true },
     recordedAt: {
       type: Date,
       default: Date.now,

@@ -508,11 +508,44 @@ exports.getDischargeChecklist = async (req, res) => {
         pharmacyDue: financeClearance.summary.pharmacyDue,
         advanceAvailable: financeClearance.summary.advanceAvailable
       },
-      financialClearance: financeClearance
+      financialClearance: financeClearance,
+      manualChecklist: admission.dischargeChecklist || { checkpoints: [], delayReasons: [] }
     });
   } catch (err) {
     console.error('Error fetching discharge checklist:', err);
     res.status(err.statusCode || 500).json({ error: err.message, details: err.details });
+  }
+};
+
+
+exports.updateDischargeChecklist = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requireHospitalId(req) });
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    const current = admission.dischargeChecklist || { checkpoints: [], delayReasons: [] };
+    const checkpointMap = new Map((current.checkpoints || []).map((row) => [String(row.key), row]));
+    for (const patch of (req.body.checkpoints || [])) {
+      if (!patch?.key) continue;
+      const previous = checkpointMap.get(String(patch.key));
+      const row = previous?.toObject ? previous.toObject() : (previous || {});
+      row.key = String(patch.key);
+      if (patch.label !== undefined) row.label = patch.label;
+      if (patch.note !== undefined) row.note = patch.note;
+      if (patch.completed !== undefined) {
+        row.completed = Boolean(patch.completed);
+        row.completedAt = row.completed ? new Date() : undefined;
+        row.completedBy = row.completed ? req.user?._id : undefined;
+      }
+      checkpointMap.set(row.key, row);
+    }
+    const delayReasons = (current.delayReasons || []).map((x) => x.toObject ? x.toObject() : x);
+    if (req.body.delayReason) delayReasons.push({ reason: String(req.body.delayReason), recordedAt: new Date(), recordedBy: req.user?._id });
+    admission.dischargeChecklist = { checkpoints: [...checkpointMap.values()], delayReasons, updatedAt: new Date() };
+    await admission.save({ validateBeforeSave: false });
+    return res.json({ success: true, data: admission.dischargeChecklist });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
@@ -605,4 +638,21 @@ exports.getDischargeDocuments = async (req, res) => {
     console.error('Error fetching discharge documents:', err);
     res.status(500).json({ error: err.message });
   }
+};
+
+exports.reconcileDischargeMedications = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const admission = await IPDAdmission.findOne({ _id: req.params.admissionId, hospitalId });
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    let summary = await DischargeSummary.findOne({ admissionId: admission._id, hospitalId });
+    if (!summary) summary = new DischargeSummary({ admissionId: admission._id, patientId: admission.patientId, hospitalId, preparedBy: admission.primaryDoctorId, createdBy: req.user?._id });
+    summary.medicationReconciliation = {
+      performedAt: new Date(), performedBy: req.user?._id,
+      admissionMedicines: Array.isArray(req.body.admissionMedicines) ? req.body.admissionMedicines : [],
+      discrepancies: Array.isArray(req.body.discrepancies) ? req.body.discrepancies : [], completed: true
+    };
+    summary.updatedBy = req.user?._id; await summary.save({ validateBeforeSave: false });
+    return res.json({ success: true, data: summary.medicationReconciliation, summaryId: summary._id });
+  } catch (error) { return res.status(error.statusCode || 400).json({ error: error.message }); }
 };

@@ -15,7 +15,11 @@ const {
   bulkUpdateGST,
   exportGSTData,
   getMedicineTaxHistory,
-  getGSTCompliantMedicines
+  getGSTCompliantMedicines,
+  getFormulary,
+  getEmergencyStock,
+  createEmergencyChecklist,
+  listEmergencyChecklists
 } = require('../controllers/medicine.controller');
 
 // Apply authentication and base permission to all routes
@@ -32,6 +36,10 @@ router.get('/', getAllMedicines);
 router.get('/search', searchMedicines);
 router.get('/expired', getExpiredMedicines);
 router.get('/low-stock', getLowStockMedicines);
+router.get('/formulary', getFormulary);
+router.get('/emergency-stock', getEmergencyStock);
+router.post('/emergency-checklists', createEmergencyChecklist);
+router.get('/emergency-checklists', listEmergencyChecklists);
 router.get('/:id', getMedicineById);
 
 router.put(

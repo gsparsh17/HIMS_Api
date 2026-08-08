@@ -1,4 +1,6 @@
 const LabRequest = require('../models/LabRequest');
+const LabTest = require('../models/LabTest');
+const { queueNotification } = require('../services/nabhNotification.service');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const IPDCharge = require('../models/IPDCharge');
 const { requireHospitalId } = require('../services/tenantScope.service');
@@ -244,10 +246,25 @@ exports.enterLabResults = async (req, res) => {
     request.is_abnormal = Boolean(req.body.is_abnormal);
     request.manual_report = req.body.manual_report || request.manual_report;
 
+    const labTest = await LabTest.findOne({ _id: request.labTestId, hospitalId }).lean();
+    const numericResult = Number(String(request.result_value ?? '').replace(/[^0-9.+-]/g, ''));
+    const lowText = String(labTest?.critical_low ?? '').trim();
+    const highText = String(labTest?.critical_high ?? '').trim();
+    const low = Number(lowText); const high = Number(highText);
+    const lowConfigured = lowText !== '' && Number.isFinite(low);
+    const highConfigured = highText !== '' && Number.isFinite(high);
+    const thresholdCritical = Number.isFinite(numericResult) && ((lowConfigured && numericResult <= low) || (highConfigured && numericResult >= high));
+    const isCritical = thresholdCritical || Boolean(req.body.isCritical);
+    let criticalReason = req.body.criticalReason;
+    if (!criticalReason && thresholdCritical) {
+      criticalReason = lowConfigured && numericResult <= low
+        ? `Result ${numericResult} is at/below critical low ${low}${labTest?.units ? ` ${labTest.units}` : ''}`
+        : `Result ${numericResult} is at/above critical high ${high}${labTest?.units ? ` ${labTest.units}` : ''}`;
+    }
     request.critical = {
       ...(request.critical?.toObject?.() || request.critical || {}),
-      isCritical: Boolean(req.body.isCritical),
-      flagReason: req.body.criticalReason
+      isCritical,
+      flagReason: criticalReason
     };
 
     const target = ['Processing', 'Referred Out'].includes(request.status)
@@ -272,7 +289,24 @@ exports.enterLabResults = async (req, res) => {
         hospitalId
       });
 
-    res.json({ success: true, data });
+    let criticalNotification = null;
+    if (request.critical?.isCritical && !request.critical?.notifiedAt) {
+      criticalNotification = await queueNotification({
+        hospitalId,
+        eventType: 'critical_lab_result',
+        correlationId: request.requestNumber || String(request._id),
+        recipientType: 'staff',
+        requestedChannels: ['portal'],
+        priority: 'critical',
+        subject: `Critical laboratory result: ${request.testName}`,
+        body: request.critical.flagReason || `Critical result entered for ${request.testName}`,
+        patientId: request.patientId,
+        payload: { labRequestId: request._id, result: request.result_value, reason: request.critical.flagReason },
+        createdBy: req.user._id
+      });
+      request.critical.notifiedAt = new Date(); request.critical.notifiedBy = req.user._id; await request.save();
+    }
+    res.json({ success: true, data, criticalNotification });
   } catch (e) {
     sendError(res, e);
   }

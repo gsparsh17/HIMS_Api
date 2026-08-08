@@ -12,6 +12,16 @@ function httpError(message, statusCode = 400, code) {
   return error;
 }
 
+function legacyEncounterSponsorType(payerType) {
+  const raw = String(payerType || 'self').trim().toLowerCase();
+  if (raw === 'self') return 'self';
+  if (['private_insurer', 'tpa', 'tpa_managed'].includes(raw)) return 'insurance';
+  if (raw === 'corporate') return 'company_panel';
+  if (raw === 'pmjay') return 'ayushman_bharat';
+  if (['cghs', 'state_scheme', 'echs', 'esic', 'government_other'].includes(raw)) return 'government_scheme';
+  return 'other';
+}
+
 function sessionQuery(query, session) {
   return session ? query.session(session) : query;
 }
@@ -161,7 +171,7 @@ async function createEncounterCoverage({ req, hospitalId, encounterType, encount
 
   if (activateImmediately) {
     encounter.coverageId = coverage._id;
-    encounter.sponsorType = payer.type === 'self' ? 'self' : payer.type;
+    encounter.sponsorType = legacyEncounterSponsorType(payer.type);
     encounter.sponsorName = payer.name;
     if (normalizedType === 'IPD') {
       encounter.patientReceivable = Number(encounter.patientReceivable || 0);

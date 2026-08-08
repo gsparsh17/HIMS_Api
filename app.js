@@ -191,6 +191,7 @@ function mountHospitalRoutes() {
   // Public contact endpoint used by the marketing/demo-request form. It has its
   // own validation and rate limiting; all remaining hospital APIs require login.
   app.use('/api/email', require('./routes/emailRoutes.js'));
+  app.use('/api/public/hospital-profile', require('./routes/publicHospitalProfile.routes.js'));
   const authMiddleware = require('./middlewares/auth');
   app.use('/api', authMiddleware.protect);
   app.use('/api', authMiddleware.requireCompletedMfaSetup);
@@ -260,6 +261,21 @@ function mountHospitalRoutes() {
   app.use('/api/ot', require('./routes/ot.routes.js'));
   app.use('/api/print-identities', require('./routes/printIdentity.routes.js'));
   app.use('/api/patient-identities', require('./routes/patientIdentity.routes.js'));
+
+  app.use('/api/admission-workflows', require('./routes/admissionWorkflow.routes.js'));
+  app.use('/api/clinical-assessments', require('./routes/clinicalAssessment.routes.js'));
+  app.use('/api/clinical-order-sets', require('./routes/clinicalOrderSet.routes.js'));
+  app.use('/api/blood-bank', require('./routes/bloodBank.routes.js'));
+  app.use('/api/safety', require('./routes/safety.routes.js'));
+  app.use('/api/emergency-care', require('./routes/emergencyCare.routes.js'));
+  app.use('/api/patient-experience', require('./routes/patientExperience.routes.js'));
+  app.use('/api/operational-settings', require('./routes/operationalSettings.routes.js'));
+  app.use('/api/help', require('./routes/help.routes.js'));
+  app.use('/api/releases', require('./routes/release.routes.js'));
+  app.use('/api/portability', require('./routes/portability.routes.js'));
+  app.use('/api/billing-documents', require('./routes/billingDocument.routes.js'));
+  app.use('/api/financial-communications', require('./routes/financialCommunication.routes.js'));
+
   app.use('/api/documents', require('./routes/document.routes.js'));
   app.use('/api/mis', require('./routes/mis.routes.js'));
   app.use('/api/approvals', require('./routes/approval.routes.js'));

@@ -9,6 +9,8 @@ const Pharmacy = require('../models/Pharmacy');
 const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
 const { normaliseBoolean, resolveDoseQtyBaseUnits, calculateMedicationRequiredBaseUnits, generateTimingSlots: generateMedicationTimingSlots, createOrUpdatePharmacyRequest, assertAdmissionHospitalAccess } = require('../services/ipdMedicationFlow.service');
 const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
+const Patient = require('../models/Patient');
+const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
 
 // ========== HELPER FUNCTIONS ==========
 
@@ -154,6 +156,7 @@ async function deductFromPatientMedicineStock(admissionId, patientId, medicineId
 // ========== MEDICATION CHART CRUD ==========
 
 // Create medication order (from Doctor Round)
+const MEDICATION_ROUTE_ALIASES = { IV: 'Intravenous', IM: 'Intramuscular', SC: 'Subcutaneous', PO: 'Oral' };
 exports.createMedicationOrder = async (req, res) => {
   try {
     const {
@@ -168,7 +171,7 @@ exports.createMedicationOrder = async (req, res) => {
       nlemCode,
       dosageForm,
       doseQtyBaseUnits: requestedDoseQtyBaseUnits,
-      route,
+      route: requestedRoute,
       dosage,
       frequency,
       startDate,
@@ -180,6 +183,8 @@ exports.createMedicationOrder = async (req, res) => {
       requiresDoubleVerification,
       requiresPharmacyDispense
     } = req.body;
+
+    const route = MEDICATION_ROUTE_ALIASES[String(requestedRoute || '').toUpperCase()] || requestedRoute;
 
     console.log('[DEBUG] createMedicationOrder - Received request:', {
       admissionId,
@@ -286,7 +291,8 @@ exports.createMedicationOrder = async (req, res) => {
     });
   } catch (err) {
     console.error('[DEBUG] createMedicationOrder - Error:', err);
-    res.status(500).json({ error: err.message });
+    const status = ['ValidationError','CastError'].includes(err?.name) ? 400 : Number(err?.statusCode || 500);
+    res.status(status).json({ error: err.message });
   }
 };
 
@@ -988,6 +994,16 @@ exports.administerMedication = async (req, res) => {
     if (medication.isHighRisk && medication.requiresDoubleVerification && !witnessedBy) {
       return res.status(400).json({ success: false, error: 'Double verification is required for this high-risk medication.' });
     }
+    const setting = await getOrCreateNabhSetting(admission.hospitalId, req.user._id);
+    const identityRequired = Boolean(setting?.medication?.requirePatientBarcodeAtAdministration || medication.medicineId?.medicationSafety?.patientBarcodeRequired);
+    if (identityRequired) {
+      const supplied = String(req.body.patientIdentifier || '').trim();
+      if (!supplied) return res.status(400).json({ success: false, error: 'Patient identifier scan/entry is required before medication administration.' });
+      const patient = await Patient.findOne({ _id: medication.patientId, hospitalId: admission.hospitalId }).select('patientId uhid');
+      if (!patient || ![String(patient._id), String(patient.patientId || ''), String(patient.uhid || '')].includes(supplied)) {
+        return res.status(409).json({ success: false, error: 'Patient identifier does not match the medication order.' });
+      }
+    }
 
     const doseQtyBaseUnits = Number(medication.doseQtyBaseUnits || resolveDoseQtyBaseUnits({ dosage: medication.dosage }));
     let remainingStock = null;
@@ -1416,7 +1432,8 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
     });
   } catch (err) {
     console.error('[DEBUG] receiveExternalPharmacyStock - ERROR:', err);
-    res.status(500).json({ 
+    const status = ['ValidationError','CastError'].includes(err?.name) ? 400 : Number(err?.statusCode || 500);
+    res.status(status).json({ 
       error: err.message || 'Failed to receive external pharmacy stock',
       debug: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });

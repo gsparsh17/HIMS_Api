@@ -1,11 +1,11 @@
 const cron = require('node-cron');
 const mongoose = require('mongoose');
-const { performBackup } = require('./backup');
+const { performBackup, BACKUP_DIR } = require('./backup');
 const fs = require('fs');
 const path = require('path');
 
 // Configuration
-const LOG_DIR = 'C:\\Pranshu\\hospital_backups\\logs';
+const LOG_DIR = process.env.HIMS_BACKUP_LOG_DIR || path.join(BACKUP_DIR, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'backup_cron.log');
 
 // Ensure log directory exists

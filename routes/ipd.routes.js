@@ -551,6 +551,8 @@ router.get(
   meds.getMedicationSummary
 );
 
+router.post('/clinical-templates/:id/validate', clinicalTemplates.validateTemplateData);
+
 // ============== BILLING ==============
 router.post(
   '/billing/charges',
@@ -683,6 +685,8 @@ router.post(
   discharge.saveDischargeSummary
 );
 
+router.post('/discharge/:admissionId/medication-reconciliation', discharge.reconcileDischargeMedications);
+
 router.get(
   '/discharge/:admissionId/summary',
   // ...read,
@@ -716,6 +720,13 @@ router.get(
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),
   discharge.getDischargeChecklist
+);
+
+router.patch(
+  '/discharge/:admissionId/checklist',
+  protect,
+  requireModuleAccess('ipd.patient_file', 'edit'),
+  discharge.updateDischargeChecklist
 );
 
 router.post(

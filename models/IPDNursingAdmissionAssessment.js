@@ -112,6 +112,12 @@ const nursingAdmissionAssessmentSchema = new mongoose.Schema({
     riskBand: { type: String, trim: true },
     configVersion: { type: String, default: 'pending-clinical-approval' }
   },
+  dvtRisk: {
+    items: [{ key: String, label: String, value: String, score: Number }],
+    total: { type: Number, default: 0 },
+    riskBand: { type: String, trim: true },
+    configVersion: { type: String, default: 'hospital-setting' }
+  },
   pressureUlcerRisk: {
     bedsorePresent: { type: Boolean, default: false },
     location: String,
