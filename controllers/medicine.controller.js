@@ -93,8 +93,15 @@ exports.addMedicine = async (req, res) => {
 // Get all medicines with stock and tax info
 exports.getAllMedicines = async (req, res) => {
   try {
+    const filter = { is_active: true };
+    if (req.query.item_type === 'codex') {
+      filter.$or = [{ item_type: 'codex' }, { is_codex: true }, { item_type: { $exists: false } }];
+    } else if (req.query.item_type === 'non_codex') {
+      filter.$or = [{ item_type: 'non_codex' }, { is_codex: false }];
+    }
+
     const medicines = await Medicine
-      .find({ is_active: true })
+      .find(filter)
       .sort({ name: 1 });
 
     const medicinesWithStock = await Promise.all(
@@ -1062,4 +1069,21 @@ exports.listEmergencyChecklists = async (req, res) => {
     success: true,
     data
   });
+};
+
+// Get all distinct categories across active medicines & items
+exports.getCategories = async (req, res) => {
+  try {
+    const rawCategories = await Medicine.distinct('category', { is_active: true });
+    const cleanCategories = Array.from(
+      new Set(rawCategories.filter(Boolean).map(c => String(c).trim()))
+    ).sort((a, b) => a.localeCompare(b));
+
+    return res.json({
+      success: true,
+      categories: cleanCategories
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 };

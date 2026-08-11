@@ -69,18 +69,49 @@ const ENTITY = {
     }
   },
   medicines: {
-    title: 'Pharmacy Medicine Master',
+    title: 'Pharmacy Item Master (Codex & Non-Codex)',
     sheet: 'Medicines',
     columns: [
-      ['name', 'Name', true], ['generic_name', 'Generic Name', false], ['brand', 'Brand', false],
-      ['category', 'Category', true], ['strength', 'Strength', false], ['composition', 'Composition', false],
-      ['manufacturer', 'Manufacturer', false], ['hsn_code', 'HSN Code', true], ['gst_rate', 'GST Rate', true],
-      ['base_unit', 'Base Unit', false], ['pack_unit', 'Pack Unit', false], ['units_per_pack', 'Units Per Pack', false],
-      ['allow_loose_sale', 'Allow Loose Sale', false], ['min_stock_level_base_units', 'Min Stock Level', false],
-      ['prescription_required', 'Prescription Required', false], ['shelf', 'Shelf', false], ['rack', 'Rack', false],
-      ['is_active', 'Is Active', false], ['update_mode', 'Update Mode', false]
+      ['name', 'Name / Item Title', true],
+      ['item_type', 'Item Type (codex / non_codex)', false],
+      ['generic_name', 'Generic Name / Specification', false],
+      ['brand', 'Brand / Manufacturer', false],
+      ['category', 'Category (Custom or Standard)', true],
+      ['strength', 'Strength / Model', false],
+      ['composition', 'Composition / Molecule / Tech Spec', false],
+      ['manufacturer', 'Manufacturer / Supplier', false],
+      ['hsn_code', 'HSN Code', true],
+      ['gst_rate', 'GST Rate (0, 5, 12, 18, 28)', true],
+      ['base_unit', 'Base Unit (tablet, piece, ml, unit...)', false],
+      ['pack_unit', 'Pack Unit (strip, box, bottle...)', false],
+      ['units_per_pack', 'Units Per Pack', false],
+      ['allow_loose_sale', 'Allow Loose Sale (true/false)', false],
+      ['min_stock_level_base_units', 'Min Stock Level', false],
+      ['prescription_required', 'Prescription Required (true/false)', false],
+      ['shelf', 'Shelf Location', false],
+      ['rack', 'Rack Location', false],
+      ['is_active', 'Is Active (true/false)', false],
+      ['update_mode', 'Update Mode', false]
     ],
-    example: { name: 'Paracetamol', generic_name: 'Paracetamol', category: 'Analgesic', strength: '500 mg', hsn_code: '3004', gst_rate: '5', base_unit: 'tablet', pack_unit: 'strip', units_per_pack: '10', is_active: 'true' }
+    example: {
+      name: 'Paracetamol 500mg',
+      item_type: 'codex',
+      generic_name: 'Paracetamol',
+      brand: 'Calpol',
+      category: 'Analgesic',
+      strength: '500 mg',
+      composition: 'Paracetamol IP 500mg',
+      manufacturer: 'GSK',
+      hsn_code: '3004',
+      gst_rate: '12',
+      base_unit: 'tablet',
+      pack_unit: 'strip',
+      units_per_pack: '10',
+      allow_loose_sale: 'true',
+      min_stock_level_base_units: '50',
+      prescription_required: 'false',
+      is_active: 'true'
+    }
   },
   'lab-tests': {
     title: 'Lab Test Master',
@@ -242,13 +273,34 @@ function normalize(entity, row, hospitalId, userId) {
   }
 
   if (entity === 'medicines') {
+    const rawType = str('item_type') || str('type') || '';
+    let itemType;
+    if (rawType.toLowerCase().includes('non')) {
+      itemType = 'non_codex';
+    } else if (rawType.toLowerCase().includes('codex')) {
+      itemType = 'codex';
+    }
+
     return {
-      hospitalId, name: str('name'), generic_name: str('generic_name'), brand: str('brand'), category: str('category'),
-      strength: str('strength'), composition: str('composition'), manufacturer: str('manufacturer'),
-      hsn_code: String(str('hsn_code') || ''), gst_rate: num(str('gst_rate')), base_unit: str('base_unit') || 'tablet',
-      pack_unit: str('pack_unit') || 'strip', units_per_pack: num(str('units_per_pack')) || 1,
-      allow_loose_sale: bool(str('allow_loose_sale')), min_stock_level_base_units: num(str('min_stock_level_base_units')) || 0,
-      prescription_required: bool(str('prescription_required')), location: { shelf: str('shelf'), rack: str('rack') },
+      hospitalId,
+      name: str('name'),
+      item_type: itemType,
+      is_codex: itemType ? itemType === 'codex' : undefined,
+      generic_name: str('generic_name'),
+      brand: str('brand'),
+      category: str('category'),
+      strength: str('strength'),
+      composition: str('composition'),
+      manufacturer: str('manufacturer'),
+      hsn_code: String(str('hsn_code') || ''),
+      gst_rate: num(str('gst_rate')),
+      base_unit: str('base_unit') || 'tablet',
+      pack_unit: str('pack_unit') || 'strip',
+      units_per_pack: num(str('units_per_pack')) || 1,
+      allow_loose_sale: bool(str('allow_loose_sale')),
+      min_stock_level_base_units: num(str('min_stock_level_base_units')) || 0,
+      prescription_required: bool(str('prescription_required')),
+      location: { shelf: str('shelf'), rack: str('rack') },
       is_active: str('is_active') === '' ? true : bool(str('is_active'))
     };
   }

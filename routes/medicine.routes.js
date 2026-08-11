@@ -19,7 +19,8 @@ const {
   getFormulary,
   getEmergencyStock,
   createEmergencyChecklist,
-  listEmergencyChecklists
+  listEmergencyChecklists,
+  getCategories
 } = require('../controllers/medicine.controller');
 
 // Apply authentication and base permission to all routes
@@ -33,6 +34,7 @@ router.post(
 );
 
 router.get('/', getAllMedicines);
+router.get('/categories', getCategories);
 router.get('/search', searchMedicines);
 router.get('/expired', getExpiredMedicines);
 router.get('/low-stock', getLowStockMedicines);

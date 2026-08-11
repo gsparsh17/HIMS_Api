@@ -18,6 +18,13 @@ const medicineSchema = new mongoose.Schema({
   nlem_code: { type: String, trim: true, index: true, sparse: true },
   created_from_purchase_order_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder', index: true },
   name: { type: String, required: true, trim: true, index: true },
+  item_type: {
+    type: String,
+    enum: ['codex', 'non_codex'],
+    default: 'codex',
+    index: true
+  },
+  is_codex: { type: Boolean, default: true, index: true },
   generic_name: { type: String, trim: true, index: true },
   brand: { type: String, trim: true, index: true },
   category: { type: String, required: true, index: true },
@@ -130,6 +137,18 @@ medicineSchema.pre('save', async function(next) {
   if (this.min_stock_level_base_units == null && this.min_stock_level != null) {
     this.min_stock_level_base_units = this.min_stock_level;
   }
+
+  // Sync codex vs non-codex item type
+  const cat = String(this.category || '').toLowerCase();
+  const nonCodexKeywords = ['equipment', 'accessory', 'accessories', 'instrument', 'device', 'consumable', 'disposable', 'hardware', 'kit', 'surgical', 'furniture', 'ppe', 'sterilization'];
+  if (this.item_type === 'non_codex' || this.is_codex === false || nonCodexKeywords.some(kw => cat.includes(kw))) {
+    this.item_type = 'non_codex';
+    this.is_codex = false;
+  } else {
+    this.item_type = 'codex';
+    this.is_codex = true;
+  }
+
   this.composition_keywords = buildCompositionKeywords(this);
   if (this.commission_type === 'None') this.commission_value = 0;
   
