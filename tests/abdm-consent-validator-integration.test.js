@@ -62,13 +62,11 @@ test('hospital rejects a bare or mismatched valid response', () => {
   );
 });
 
-test('deployment files include a private consent-validator service and no published host port', () => {
+test('hospital repository no longer owns the shared validator/crypto/consent deployments', () => {
   const repo = path.join(__dirname, '..');
-  const compose = fs.readFileSync(path.join(repo, 'docker-compose.abdm-services.yml'), 'utf8');
-  const kubernetes = fs.readFileSync(path.join(repo, 'deployment/k8s/abdm-internal-services.yaml'), 'utf8');
-  assert.match(compose, /mediqliq-consent-validator/);
-  assert.match(compose, /expose:\s*\n\s*- "8180"/);
-  assert.doesNotMatch(compose, /ports:\s*\n\s*- "8180:8180"/);
-  assert.match(kubernetes, /kind: NetworkPolicy/);
-  assert.match(kubernetes, /CONSENT_VALIDATOR_REQUIRE_MONGO_TRANSACTIONS/);
+  assert.equal(fs.existsSync(path.join(repo, 'docker-compose.abdm-services.yml')), false);
+  assert.equal(fs.existsSync(path.join(repo, 'deployment/k8s/abdm-internal-services.yaml')), false);
+  assert.equal(fs.existsSync(path.join(repo, 'apps/fhir-validator')), false);
+  assert.equal(fs.existsSync(path.join(repo, 'apps/crypto-adapter')), false);
+  assert.equal(fs.existsSync(path.join(repo, 'apps/consent-validator')), false);
 });

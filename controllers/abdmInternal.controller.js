@@ -151,14 +151,23 @@ exports.health = async (req, res) => {
       reportedAt: new Date().toISOString(),
       productionTransferReady: false,
       transferReadiness: {
-        cryptoMode: abdmConfig.cryptoMode,
-        cryptoAdapterConfigured: Boolean(abdmConfig.cryptoAdapterUrl),
+        cryptoProvider: abdmConfig.cryptoProvider,
+        cryptoAdapterConfigured: abdmConfig.cryptoProvider === 'master'
+          ? Boolean(abdmConfig.masterUrl)
+          : (abdmConfig.cryptoProvider === 'mock' || Boolean(abdmConfig.cryptoAdapterUrl)),
         cryptoIntegrityRequired: abdmConfig.requireCryptoIntegrity === true,
-        fhirValidatorConfigured: Boolean(abdmConfig.fhirValidatorUrl),
+        fhirProvider: abdmConfig.fhirProvider,
+        fhirFallbackProvider: abdmConfig.fhirFallbackProvider,
+        fhirValidatorConfigured: abdmConfig.fhirProvider === 'master'
+          ? Boolean(abdmConfig.masterUrl)
+          : Boolean(abdmConfig.fhirValidatorUrl),
         externalFhirValidationRequired: abdmConfig.requireExternalFhirValidation === true,
         fhirPackage: abdmConfig.fhirPackage,
         fhirVersion: abdmConfig.fhirR4Version,
-        consentValidatorConfigured: Boolean(abdmConfig.consentValidatorUrl),
+        consentProvider: abdmConfig.consentProvider,
+        consentValidatorConfigured: abdmConfig.consentProvider === 'master'
+          ? Boolean(abdmConfig.masterUrl)
+          : Boolean(abdmConfig.consentValidatorUrl),
         consentValidatorProductionCapable: false,
         consentValidationRequired: abdmConfig.requireConsentValidation === true,
         dataPushAllowlistConfigured: abdmConfig.dataPushAllowedHosts.length > 0,

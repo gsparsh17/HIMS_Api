@@ -211,42 +211,16 @@ The hospital:
 - acknowledges the health-information request;
 - returns the plaintext FHIR records only through the private HMAC connector to the master.
 
-The master contains data-push orchestration, but **encryption is fail-closed by default**:
+FHIR validation, certification-critical cryptography and consent validation are accessed through provider-based Hospital services. The current recommended deployment centralizes all three on MediQliq Master:
 
 ```env
-ABDM_DATA_PUSH_MODE=disabled
+ABDM_FHIR_PROVIDER=master
+ABDM_FHIR_FALLBACK_PROVIDER=none
+ABDM_CRYPTO_PROVIDER=master
+ABDM_CONSENT_PROVIDER=master
 ```
 
-For certification-critical Curve25519 encryption, configure a validated ABDM/NHA-compatible crypto adapter:
-
-```env
-ABDM_DATA_PUSH_MODE=external
-ABDM_CRYPTO_ADAPTER_URL=https://your-validated-crypto-adapter/abdm/encrypt
-ABDM_CRYPTO_ADAPTER_TOKEN=...
-```
-
-The adapter must return:
-
-```json
-{
-  "entries": [
-    {
-      "content": "<encrypted content>",
-      "media": "application/fhir+json",
-      "checksum": "<checksum>",
-      "careContextReference": "<care context reference>"
-    }
-  ],
-  "keyMaterial": {
-    "cryptoAlg": "ECDH",
-    "curve": "Curve25519",
-    "dhPublicKey": {},
-    "nonce": "..."
-  }
-}
-```
-
-The repository deliberately does not guess the certification-critical encryption envelope. Connect the exact validated implementation used for the current ABDM sandbox before enabling data push.
+A hospital can later switch one or more providers to `local` without changing the frontend or clinical controllers. Local deployments use the same reviewed/versioned service images maintained by the MediQliq Master Backend repository. FHIR may use an explicit availability fallback; Crypto key handles and Consent usage reservations remain bound to the provider that created them.
 
 ## 11. M3 status
 

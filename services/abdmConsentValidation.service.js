@@ -2,10 +2,8 @@ const crypto = require('crypto');
 const abdmConfig = require('../config/abdm.config');
 const AbdmHospitalConsent = require('../models/AbdmHospitalConsent');
 const { decryptJson } = require('./abdmVault.service');
-const {
-  requestInternalJson,
-  checkInternalHealth
-} = require('./abdmInternalServiceClient');
+const { masterRequest } = require('./abdmMasterClient.service');
+const { requestInternalJson, checkInternalHealth } = require('./abdmInternalServiceClient');
 const { hashArtifact } = require('./abdmConsentPolicy.service');
 
 const {
@@ -60,6 +58,17 @@ function structuralConsentValidation(artefact = {}) {
   return { valid: errors.length === 0, errors };
 }
 
+function selectedProvider(value) {
+  const provider = String(value || abdmConfig.consentProvider || '').toLowerCase();
+  if (!['master', 'local'].includes(provider)) {
+    const error = new Error(`Unsupported ABDM consent provider: ${provider}`);
+    error.code = 'ABDM_CONSENT_PROVIDER_INVALID';
+    error.statusCode = 500;
+    throw error;
+  }
+  return provider;
+}
+
 function validatorHeaders() {
   return process.env.ABDM_CONSENT_VALIDATOR_TOKEN
     ? { Authorization: `Bearer ${process.env.ABDM_CONSENT_VALIDATOR_TOKEN}` }
@@ -71,6 +80,76 @@ function validationEndpoint(path = '') {
   const configured = new URL(abdmConfig.consentValidatorUrl);
   if (!path) return configured.toString();
   return new URL(path, `${configured.origin}/`).toString();
+}
+
+function providerConfigured(provider) {
+  if (provider === 'master') return Boolean(abdmConfig.masterUrl);
+  return Boolean(abdmConfig.consentValidatorUrl);
+}
+
+async function consentProviderRequest(provider, { type, body, reservationId, action }) {
+  if (provider === 'master') {
+    abdmConfig.assertHospitalConnector();
+    if (type === 'validate') {
+      return masterRequest('/internal/abdm/shared/consent/validate', {
+        method: 'POST', timeoutMs: abdmConfig.sharedServiceTimeoutMs, body
+      });
+    }
+    if (type === 'usage') {
+      return masterRequest(`/internal/abdm/shared/consent/usage/${action}`, {
+        method: 'POST', timeoutMs: abdmConfig.sharedServiceTimeoutMs, body: { reservationId }
+      });
+    }
+    if (type === 'status') {
+      return masterRequest('/internal/abdm/shared/consent/status-events', {
+        method: 'POST', timeoutMs: abdmConfig.sharedServiceTimeoutMs, body
+      });
+    }
+  }
+
+  if (provider === 'local') {
+    if (!abdmConfig.consentValidatorUrl) {
+      const error = new Error('ABDM_CONSENT_VALIDATOR_URL is required when ABDM_CONSENT_PROVIDER=local');
+      error.code = 'ABDM_LOCAL_CONSENT_NOT_CONFIGURED';
+      error.statusCode = 503;
+      throw error;
+    }
+    if (type === 'validate') {
+      return requestInternalJson({
+        url: validationEndpoint(),
+        label: 'Hospital-local ABDM consent validator',
+        allowedHosts: abdmConfig.consentValidatorAllowedHosts,
+        timeoutMs: abdmConfig.consentValidatorTimeoutMs,
+        maxResponseBytes: Number(process.env.ABDM_CONSENT_VALIDATOR_MAX_RESPONSE_BYTES || 1024 * 1024),
+        headers: validatorHeaders(),
+        body
+      });
+    }
+    if (type === 'usage') {
+      return requestInternalJson({
+        url: validationEndpoint(`/v1/usage/${encodeURIComponent(reservationId)}/${action}`),
+        label: `Hospital-local ABDM consent usage ${action}`,
+        allowedHosts: abdmConfig.consentValidatorAllowedHosts,
+        timeoutMs: abdmConfig.consentValidatorTimeoutMs,
+        maxResponseBytes: 128 * 1024,
+        headers: validatorHeaders(),
+        body: {}
+      });
+    }
+    if (type === 'status') {
+      return requestInternalJson({
+        url: validationEndpoint('/v1/status-events'),
+        label: 'Hospital-local ABDM consent status event',
+        allowedHosts: abdmConfig.consentValidatorAllowedHosts,
+        timeoutMs: abdmConfig.consentValidatorTimeoutMs,
+        maxResponseBytes: 128 * 1024,
+        headers: validatorHeaders(),
+        body
+      });
+    }
+  }
+
+  throw new Error(`Unsupported consent provider operation: ${provider}/${type}`);
 }
 
 function assertResult(result, operationType) {
@@ -114,9 +193,10 @@ async function validateConsentArtefact(artefact, options = {}) {
     throw error;
   }
 
-  if (!abdmConfig.consentValidatorUrl) {
+  const provider = selectedProvider(options.provider);
+  if (!providerConfigured(provider)) {
     if (abdmConfig.requireConsentValidation) {
-      const error = new Error('External ABDM consent validation is required but ABDM_CONSENT_VALIDATOR_URL is not configured');
+      const error = new Error(`External ABDM consent validation is required but provider ${provider} is not configured`);
       error.statusCode = 503;
       error.code = 'ABDM_CONSENT_VALIDATOR_REQUIRED';
       throw error;
@@ -127,8 +207,9 @@ async function validateConsentArtefact(artefact, options = {}) {
       signatureVerified: false,
       integrityVerified: false,
       skipped: true,
+      provider,
       structural,
-      reason: 'ABDM_CONSENT_VALIDATOR_URL is not configured'
+      reason: `ABDM consent provider ${provider} is not configured`
     };
   }
 
@@ -143,13 +224,8 @@ async function validateConsentArtefact(artefact, options = {}) {
     ...(options.expected || {})
   };
 
-  const result = await requestInternalJson({
-    url: validationEndpoint(),
-    label: 'ABDM consent validator',
-    allowedHosts: abdmConfig.consentValidatorAllowedHosts,
-    timeoutMs: abdmConfig.consentValidatorTimeoutMs,
-    maxResponseBytes: Number(process.env.ABDM_CONSENT_VALIDATOR_MAX_RESPONSE_BYTES || 1024 * 1024),
-    headers: validatorHeaders(),
+  const result = await consentProviderRequest(provider, {
+    type: 'validate',
     body: {
       artefact,
       environment: abdmConfig.environment,
@@ -163,6 +239,7 @@ async function validateConsentArtefact(artefact, options = {}) {
   return {
     valid: true,
     decision: 'PERMIT',
+    provider,
     validationId: accepted.validationId,
     artefactHash: accepted.artefactHash,
     signatureVerified: accepted.signatureVerified === true,
@@ -173,7 +250,7 @@ async function validateConsentArtefact(artefact, options = {}) {
     trust: accepted.trust,
     lifecycleStatus: accepted.lifecycleStatus,
     retentionUntil: accepted.retentionUntil,
-    usage: accepted.usage || null,
+    usage: accepted.usage ? { ...accepted.usage, provider } : null,
     validatedAt: accepted.validatedAt,
     decisionExpiresAt: accepted.decisionExpiresAt,
     reasonCodes: [],
@@ -220,41 +297,45 @@ async function authorizeConsentOperation({ consent, operation }) {
   return authorization;
 }
 
-async function usageAction(reservationId, action) {
-  if (!reservationId) return { skipped: true };
-  return requestInternalJson({
-    url: validationEndpoint(`/v1/usage/${encodeURIComponent(reservationId)}/${action}`),
-    label: `ABDM consent usage ${action}`,
-    allowedHosts: abdmConfig.consentValidatorAllowedHosts,
-    timeoutMs: abdmConfig.consentValidatorTimeoutMs,
-    maxResponseBytes: 128 * 1024,
-    headers: validatorHeaders(),
-    body: {}
-  });
+function usageContext(reservationOrUsage, providerOverride) {
+  if (!reservationOrUsage) return { reservationId: null, provider: selectedProvider(providerOverride) };
+  if (typeof reservationOrUsage === 'object') {
+    return {
+      reservationId: reservationOrUsage.reservationId,
+      provider: selectedProvider(providerOverride || reservationOrUsage.provider)
+    };
+  }
+  // Backward compatibility for reservations created before provider affinity was persisted.
+  return { reservationId: reservationOrUsage, provider: selectedProvider(providerOverride) };
 }
 
-async function commitConsentUsage(reservationId) {
-  return usageAction(reservationId, 'commit');
+async function usageAction(reservationOrUsage, action, providerOverride) {
+  const { reservationId, provider } = usageContext(reservationOrUsage, providerOverride);
+  if (!reservationId) return { skipped: true, provider };
+  if (!['commit', 'release'].includes(action)) throw new Error(`Unsupported consent usage action: ${action}`);
+  return consentProviderRequest(provider, { type: 'usage', reservationId, action });
 }
 
-async function releaseConsentUsage(reservationId) {
-  return usageAction(reservationId, 'release');
+async function commitConsentUsage(reservationOrUsage, providerOverride) {
+  return usageAction(reservationOrUsage, 'commit', providerOverride);
+}
+
+async function releaseConsentUsage(reservationOrUsage, providerOverride) {
+  return usageAction(reservationOrUsage, 'release', providerOverride);
 }
 
 async function recordConsentStatusEvent(consent, extra = {}) {
-  if (!abdmConfig.consentValidatorUrl || !consent?.consentId) return { skipped: true };
-  return requestInternalJson({
-    url: validationEndpoint('/v1/status-events'),
-    label: 'ABDM consent status event',
-    allowedHosts: abdmConfig.consentValidatorAllowedHosts,
-    timeoutMs: abdmConfig.consentValidatorTimeoutMs,
-    maxResponseBytes: 128 * 1024,
-    headers: validatorHeaders(),
+  if (!consent?.consentId) return { skipped: true };
+  const provider = selectedProvider(
+    extra.provider || consent.metadata?.consentValidation?.provider || consent.metadata?.consentAuthorization?.provider
+  );
+  if (!providerConfigured(provider)) return { skipped: true, provider };
+  return consentProviderRequest(provider, {
+    type: 'status',
     body: {
       consentId: consent.consentId,
       status: consent.status,
-      effectiveAt:
-        consent.revokedAt || consent.lastCallbackAt || consent.updatedAt || new Date(),
+      effectiveAt: consent.revokedAt || consent.lastCallbackAt || consent.updatedAt || new Date(),
       artefactHash: consent.artefactHash,
       eventId: extra.eventId || `${consent.consentId}:${consent.status}:${consent.lastCallbackAt || consent.updatedAt}`,
       source: 'HOSPITAL_BACKEND',
@@ -266,32 +347,76 @@ async function recordConsentStatusEvent(consent, extra = {}) {
   });
 }
 
-async function checkConsentValidatorHealth() {
+function productionCapableFromHealth(health) {
+  const capabilities = health.capabilities || {};
+  return Boolean(
+    health.healthy === true &&
+    health.trustReady !== false &&
+    health.databaseReady !== false &&
+    capabilities.signatureVerification === true &&
+    capabilities.integrityVerification === true &&
+    capabilities.lifecycleValidation === true &&
+    capabilities.scopeValidation === true &&
+    capabilities.purposeValidation === true &&
+    capabilities.hiTypeValidation === true &&
+    capabilities.identityValidation === true &&
+    capabilities.frequencyEnforcement === true &&
+    capabilities.retentionEnforcement === true &&
+    capabilities.durableUsageLedger === true &&
+    capabilities.operationBinding === true
+  );
+}
+
+async function masterConsentHealth() {
+  if (!abdmConfig.masterUrl) {
+    return { configured: false, healthy: false, productionCapable: false, provider: 'master', location: 'MEDIQLIQ_MASTER' };
+  }
+  try {
+    const response = await masterRequest('/internal/abdm/shared/health', {
+      method: 'GET',
+      timeoutMs: Math.min(abdmConfig.sharedServiceTimeoutMs || 30000, 5000)
+    });
+    const health = response?.services?.consentValidator || {};
+    return {
+      ...health,
+      configured: health.configured !== false,
+      healthy: health.healthy === true,
+      productionCapable: productionCapableFromHealth(health),
+      provider: 'master',
+      location: 'MEDIQLIQ_MASTER',
+      checkedAt: health.checkedAt || response?.checkedAt || new Date().toISOString()
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      healthy: false,
+      productionCapable: false,
+      provider: 'master',
+      location: 'MEDIQLIQ_MASTER',
+      checkedAt: new Date().toISOString(),
+      errorCode: error.code || 'ABDM_MASTER_SHARED_CONSENT_UNREACHABLE'
+    };
+  }
+}
+
+async function localConsentHealth() {
   const healthUrl = abdmConfig.consentValidatorHealthUrl || validationEndpoint('/health/ready');
   const health = await checkInternalHealth({
     url: healthUrl,
-    label: 'ABDM consent validator health',
+    label: 'Hospital-local ABDM consent validator health',
     allowedHosts: abdmConfig.consentValidatorAllowedHosts,
     timeoutMs: Math.min(abdmConfig.consentValidatorTimeoutMs, 5000)
   });
-  const capabilities = health.capabilities || {};
-  const productionCapable = Boolean(
-    health.healthy &&
-      health.trustReady !== false &&
-      health.databaseReady !== false &&
-      capabilities.signatureVerification === true &&
-      capabilities.integrityVerification === true &&
-      capabilities.lifecycleValidation === true &&
-      capabilities.scopeValidation === true &&
-      capabilities.purposeValidation === true &&
-      capabilities.hiTypeValidation === true &&
-      capabilities.identityValidation === true &&
-      capabilities.frequencyEnforcement === true &&
-      capabilities.retentionEnforcement === true &&
-      capabilities.durableUsageLedger === true &&
-      capabilities.operationBinding === true
-  );
-  return { ...health, productionCapable };
+  return {
+    ...health,
+    provider: 'local',
+    location: 'HOSPITAL_LOCAL',
+    productionCapable: productionCapableFromHealth(health)
+  };
+}
+
+async function checkConsentValidatorHealth(provider = abdmConfig.consentProvider) {
+  return selectedProvider(provider) === 'local' ? localConsentHealth() : masterConsentHealth();
 }
 
 module.exports = {
@@ -303,5 +428,7 @@ module.exports = {
   structuralConsentValidation,
   checkConsentValidatorHealth,
   assertResult,
-  assertVerifiedScopeMatches
+  assertVerifiedScopeMatches,
+  selectedProvider,
+  usageContext
 };

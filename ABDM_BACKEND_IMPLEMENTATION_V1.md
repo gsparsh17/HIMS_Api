@@ -1,31 +1,37 @@
-# MediQliq ABDM Backend Implementation v1
+# MediQliq Hospital ABDM Backend — Hybrid Shared-Service Providers
 
-This patch keeps the Hospital ecosystem in one Git repository while producing
-three independently deployable images:
+The Hospital backend remains the clinical/source-of-truth application. FHIR
+validation, ABDM cryptography and consent validation are called through stable
+Hospital-side service wrappers and may be provided by either:
 
-1. Hospital API (existing root Dockerfile)
-2. NRCeS/HAPI FHIR validator (`apps/fhir-validator`)
-3. Fidelius-based crypto adapter (`apps/crypto-adapter`)
+- `master` — the shared MediQliq Master Backend platform; or
+- `local` — a hospital-local deployment of the same reviewed service images.
 
-It also adds the Hospital ABDM Packet Center and Master dependency-readiness
-reporting. Packet versions bind the source snapshot, consent scope, exact FHIR
-bundle hash, external validation evidence and clinical approval before M2 data
-transfer.
+The Hospital frontend never calls these compute services directly and never
+receives their service credentials.
 
-## Apply order
+## Provider configuration
 
-1. Copy the changed/new files over the corresponding repositories.
-2. Install dependencies in both Node repositories.
-3. Run Master tests and syntax checks.
-4. Run Hospital ABDM tests and syntax checks.
-5. Build the two internal service images in a network-enabled CI runner.
-6. Configure secret-manager values and exact service DNS allowlists.
-7. Deploy internal services with no public ingress.
-8. Enable fail-closed FHIR, crypto and consent validation only after health and
-   interoperability tests pass.
+```env
+ABDM_FHIR_PROVIDER=master
+ABDM_FHIR_FALLBACK_PROVIDER=none
+ABDM_CRYPTO_PROVIDER=master
+ABDM_CONSENT_PROVIDER=master
+```
 
-## Important
+For a hospital-local deployment, change only the required provider(s) to
+`local` and configure the corresponding local URL/token/allow-list settings.
+Mixed deployments are supported, for example Master FHIR with local Crypto and
+Consent.
 
-The crypto image is an integration of the uploaded Fidelius reference engine.
-It must still pass the assigned ABDM interoperability, tamper, replay and
-security-assessment test vectors before production use.
+FHIR validation is stateless, so an optional explicit FHIR fallback may be
+configured. Crypto and Consent do not automatically fail over across providers:
+receiver key handles and consent usage reservations are bound to the provider
+that created them.
+
+## Source ownership
+
+The FHIR Validator, Crypto Adapter and Consent Validator source code is owned by
+the MediQliq Master Backend repository. If a hospital later needs local compute,
+deploy the same versioned images on that hospital's server rather than keeping a
+second copy of the service source in the HIMS repository.

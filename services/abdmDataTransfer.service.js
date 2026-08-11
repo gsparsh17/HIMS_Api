@@ -84,9 +84,9 @@ async function pushHealthInformation({
   if (!hospitalId) throw new Error('hospitalId is required for ABDM transfer');
   const existing = await AbdmDataTransfer.findOne({ hospitalId, idempotencyKey });
   if (existing?.status === 'TRANSFERRED') {
-    const pendingReservationId = existing.metadata?.consentAuthorization?.usage?.reservationId;
-    if (pendingReservationId && existing.metadata?.consentAuthorization?.usageCommitPending) {
-      await commitConsentUsage(pendingReservationId);
+    const pendingUsage = existing.metadata?.consentAuthorization?.usage;
+    if (pendingUsage?.reservationId && existing.metadata?.consentAuthorization?.usageCommitPending) {
+      await commitConsentUsage(pendingUsage);
       existing.metadata = {
         ...(existing.metadata || {}),
         consentAuthorization: {
@@ -271,7 +271,7 @@ async function pushHealthInformation({
     }
     await transfer.save();
     if (consentAuthorization?.usage?.reservationId) {
-      await commitConsentUsage(consentAuthorization.usage.reservationId);
+      await commitConsentUsage(consentAuthorization.usage);
       transfer.metadata = {
         ...(transfer.metadata || {}),
         consentAuthorization: {
@@ -293,11 +293,11 @@ async function pushHealthInformation({
     });
     return { transfer, acknowledgement: transfer.acknowledgement };
   } catch (error) {
-    const reservationId = consentAuthorization?.usage?.reservationId;
-    if (reservationId && sentPageCount === 0) {
-      await releaseConsentUsage(reservationId).catch(() => {});
-    } else if (reservationId && sentPageCount > 0) {
-      await commitConsentUsage(reservationId).catch(() => {});
+    const usage = consentAuthorization?.usage;
+    if (usage?.reservationId && sentPageCount === 0) {
+      await releaseConsentUsage(usage).catch(() => {});
+    } else if (usage?.reservationId && sentPageCount > 0) {
+      await commitConsentUsage(usage).catch(() => {});
     }
     if (transfer.status !== 'TRANSFERRED') transfer.status = 'FAILED';
     transfer.error = { message: error.message, code: error.code, details: error.details, at: new Date() };

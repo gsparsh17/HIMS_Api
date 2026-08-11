@@ -5,6 +5,7 @@ const {
 } = require('../utils/safeOutboundUrl');
 const { canonicalJson, sha256, timingSafeEqualText } = require('../utils/abdmCanonical');
 const { PROFILE_NAMES } = require('../config/abdm.profiles');
+const { masterRequest } = require('./abdmMasterClient.service');
 
 const fetchFn = (...args) => {
   if (typeof fetch === 'function') return fetch(...args);
@@ -126,13 +127,18 @@ function structuralValidation(bundle) {
 }
 
 function internalServiceHeaders() {
-  const headers = { 'Content-Type': 'application/json' };
+  const token = process.env.ABDM_FHIR_VALIDATOR_TOKEN || abdmConfig.internalServiceAuthToken;
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-MediQliq-Service-Identity': process.env.ABDM_INTERNAL_SERVICE_IDENTITY || 'ABDM_MASTER',
+    ...(abdmConfig.tenantCode ? { 'X-MediQliq-Tenant-Code': abdmConfig.tenantCode } : {}),
+    ...(abdmConfig.hipId ? { 'X-MediQliq-Facility-ID': abdmConfig.hipId } : {}),
+    ...(abdmConfig.hfrFacilityId ? { 'X-MediQliq-HFR-ID': abdmConfig.hfrFacilityId } : {})
+  };
   if (abdmConfig.internalServiceAuthToken) {
     headers[abdmConfig.internalServiceAuthHeader] = abdmConfig.internalServiceAuthToken;
   }
-  if (process.env.ABDM_FHIR_VALIDATOR_TOKEN) {
-    headers.Authorization = `Bearer ${process.env.ABDM_FHIR_VALIDATOR_TOKEN}`;
-  }
+  if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
 }
 
@@ -253,7 +259,23 @@ function externalRequestBody(bundle, expectedProfile, bundleHash) {
   };
 }
 
-async function externalValidation(bundle, expectedProfile) {
+function providerConfigured(provider) {
+  if (provider === 'master') return Boolean(abdmConfig.masterUrl);
+  if (provider === 'local') return Boolean(abdmConfig.fhirValidatorUrl);
+  return false;
+}
+
+function providerUnavailable(error) {
+  const status = Number(error?.statusCode || 0);
+  return !status || status >= 500 || [
+    'ABDM_INTERNAL_SERVICE_TIMEOUT',
+    'ABDM_INTERNAL_SERVICE_UNAVAILABLE',
+    'ABDM_MASTER_UNAVAILABLE',
+    'ABDM_FHIR_VALIDATOR_UNREACHABLE'
+  ].includes(error?.code);
+}
+
+async function localExternalValidation(bundle, expectedProfile) {
   if (!abdmConfig.fhirValidatorUrl) return null;
   const url = await safeInternalUrl(abdmConfig.fhirValidatorUrl, 'FHIR validator URL');
   const bundleHash = sha256(canonicalJson(bundle), true);
@@ -277,7 +299,28 @@ async function externalValidation(bundle, expectedProfile) {
     });
     throw error;
   }
+  return { raw, bundleHash };
+}
 
+async function masterExternalValidation(bundle, expectedProfile) {
+  abdmConfig.assertHospitalConnector();
+  const bundleHash = sha256(canonicalJson(bundle), true);
+  const raw = await masterRequest('/internal/abdm/shared/fhir/validate', {
+    method: 'POST',
+    body: externalRequestBody(bundle, expectedProfile, bundleHash),
+    timeoutMs: abdmConfig.sharedServiceTimeoutMs
+  });
+  return { raw, bundleHash };
+}
+
+async function externalValidation(bundle, expectedProfile, provider = abdmConfig.fhirProvider) {
+  let response;
+  if (provider === 'master') response = await masterExternalValidation(bundle, expectedProfile);
+  else if (provider === 'local') response = await localExternalValidation(bundle, expectedProfile);
+  else throw new Error(`Unsupported FHIR provider: ${provider}`);
+
+  if (!response) return null;
+  const { raw, bundleHash } = response;
   const normalized = normalizeExternalResult(raw, {
     fhirVersion: abdmConfig.fhirR4Version,
     package: abdmConfig.fhirPackage,
@@ -299,7 +342,7 @@ async function externalValidation(bundle, expectedProfile) {
     error.code = 'ABDM_FHIR_VALIDATOR_VERSION_MISMATCH';
     throw error;
   }
-  return normalized;
+  return { ...normalized, provider };
 }
 
 async function validateBundle(bundle, options = {}) {
@@ -312,19 +355,42 @@ async function validateBundle(bundle, options = {}) {
   const expectedProfile = options.expectedProfile || (
     recognizedName ? `${abdmConfig.fhirProfileBase}/${recognizedName}` : null
   );
-  if (options.external !== false && abdmConfig.requireExternalFhirValidation && !abdmConfig.fhirValidatorUrl) {
+  const provider = options.provider || abdmConfig.fhirProvider;
+  const fallbackProvider = options.fallbackProvider === undefined
+    ? abdmConfig.fhirFallbackProvider
+    : options.fallbackProvider;
+
+  if (options.external !== false && abdmConfig.requireExternalFhirValidation && !providerConfigured(provider)) {
     return {
       ...structural,
       valid: false,
-      errors: [...structural.errors, 'External NRCeS FHIR validation is required but ABDM_FHIR_VALIDATOR_URL is not configured']
+      errors: [...structural.errors, `External NRCeS FHIR validation is required but provider ${provider} is not configured`],
+      provider
     };
   }
-  if (options.external !== false && abdmConfig.fhirValidatorUrl) {
-    const external = await externalValidation(bundle, expectedProfile);
+  if (options.external !== false && providerConfigured(provider)) {
+    let external;
+    try {
+      external = await externalValidation(bundle, expectedProfile, provider);
+    } catch (error) {
+      if (
+        fallbackProvider &&
+        fallbackProvider !== 'none' &&
+        fallbackProvider !== provider &&
+        providerConfigured(fallbackProvider) &&
+        providerUnavailable(error)
+      ) {
+        external = await externalValidation(bundle, expectedProfile, fallbackProvider);
+        external.fallbackFrom = provider;
+      } else {
+        throw error;
+      }
+    }
     return {
       ...structural,
       valid: external.valid,
       external,
+      provider: external.provider,
       errors: external.errors,
       warnings: external.warnings,
       bundleHash: external.bundleHash || structural.bundleHash
@@ -345,8 +411,8 @@ async function assertValidBundle(bundle, options) {
   return result;
 }
 
-async function checkFhirValidatorHealth() {
-  if (!abdmConfig.fhirValidatorUrl) return { configured: false, healthy: false };
+async function localFhirHealth() {
+  if (!abdmConfig.fhirValidatorUrl) return { configured: false, healthy: false, provider: 'local' };
   const rawHealth = abdmConfig.fhirValidatorHealthUrl || new URL('/validator/version', `${abdmConfig.fhirValidatorUrl.replace(/\/+$/, '')}/`).toString();
   try {
     const url = await safeInternalUrl(rawHealth, 'FHIR validator health URL');
@@ -361,6 +427,8 @@ async function checkFhirValidatorHealth() {
     return {
       configured: true,
       healthy,
+      provider: 'local',
+      location: 'HOSPITAL_LOCAL',
       package: body.package || abdmConfig.fhirPackage,
       fhirVersion: body.fhirVersion || abdmConfig.fhirR4Version,
       checkedAt: new Date().toISOString(),
@@ -370,10 +438,46 @@ async function checkFhirValidatorHealth() {
     return {
       configured: true,
       healthy: false,
+      provider: 'local',
+      location: 'HOSPITAL_LOCAL',
       checkedAt: new Date().toISOString(),
       errorCode: error.code || 'ABDM_FHIR_VALIDATOR_UNREACHABLE'
     };
   }
+}
+
+async function masterFhirHealth() {
+  if (!abdmConfig.masterUrl) return { configured: false, healthy: false, provider: 'master', location: 'MEDIQLIQ_MASTER' };
+  try {
+    const response = await masterRequest('/internal/abdm/shared/health', {
+      method: 'GET',
+      timeoutMs: Math.min(abdmConfig.sharedServiceTimeoutMs, 5000)
+    });
+    return {
+      ...(response?.services?.fhirValidator || {}),
+      configured: response?.services?.fhirValidator?.configured !== false,
+      healthy: response?.services?.fhirValidator?.healthy === true,
+      provider: 'master',
+      location: 'MEDIQLIQ_MASTER'
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      healthy: false,
+      provider: 'master',
+      location: 'MEDIQLIQ_MASTER',
+      checkedAt: new Date().toISOString(),
+      errorCode: error.code || 'ABDM_MASTER_SHARED_FHIR_UNREACHABLE'
+    };
+  }
+}
+
+async function checkFhirValidatorHealth(provider = abdmConfig.fhirProvider) {
+  const primary = provider === 'local' ? await localFhirHealth() : await masterFhirHealth();
+  const fallbackProvider = abdmConfig.fhirFallbackProvider;
+  if (!fallbackProvider || fallbackProvider === 'none' || fallbackProvider === provider) return primary;
+  const fallback = fallbackProvider === 'local' ? await localFhirHealth() : await masterFhirHealth();
+  return { ...primary, fallback };
 }
 
 module.exports = {
@@ -382,6 +486,9 @@ module.exports = {
   structuralValidation,
   externalRequestBody,
   normalizeExternalResult,
+  externalValidation,
+  providerConfigured,
+  providerUnavailable,
   validateBundle,
   assertValidBundle,
   checkFhirValidatorHealth

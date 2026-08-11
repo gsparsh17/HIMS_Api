@@ -21,12 +21,32 @@ function intCsvEnv(name) {
     .filter((item) => Number.isInteger(item) && item > 0 && item <= 65535);
 }
 
+function providerEnv(name, fallback, allowed = ['master', 'local']) {
+  const value = String(process.env[name] || fallback || '').trim().toLowerCase();
+  if (!allowed.includes(value)) {
+    throw new Error(`${name} must be one of: ${allowed.join(', ')}`);
+  }
+  return value;
+}
+
 const environment = String(process.env.ABDM_ENV || 'sandbox').toLowerCase();
 const isProduction = environment === 'production';
 const legacyFacilityId = process.env.ABDM_FACILITY_ID;
 const hfrFacilityId = process.env.ABDM_HFR_FACILITY_ID || legacyFacilityId;
 const hipId = process.env.ABDM_HIP_ID || process.env.ABDM_HIP_SERVICE_ID || legacyFacilityId;
 const hiuId = process.env.ABDM_HIU_ID || hipId;
+
+// Shared ABDM compute can run centrally on MediQliq Master or on a hospital-local
+// deployment of the same reviewed service images. The browser never selects this.
+const legacyCryptoMode = String(process.env.ABDM_CRYPTO_MODE || '').trim().toLowerCase();
+const fhirProvider = providerEnv('ABDM_FHIR_PROVIDER', 'master');
+const fhirFallbackProvider = providerEnv('ABDM_FHIR_FALLBACK_PROVIDER', 'none', ['none', 'master', 'local']);
+const consentProvider = providerEnv('ABDM_CONSENT_PROVIDER', 'master');
+const cryptoProvider = providerEnv(
+  'ABDM_CRYPTO_PROVIDER',
+  legacyCryptoMode === 'external' ? 'local' : (legacyCryptoMode === 'mock' ? 'mock' : 'master'),
+  ['master', 'local', 'mock']
+);
 
 const config = {
   appRole: 'HOSPITAL',
@@ -36,6 +56,7 @@ const config = {
   isProduction,
 
   masterUrl: stripTrailingSlash(process.env.ABDM_MASTER_URL || ''),
+  sharedServiceTimeoutMs: Number(process.env.ABDM_SHARED_SERVICE_TIMEOUT_MS || 30000),
   hfrFacilityId,
   hipId,
   hiuId,
@@ -58,6 +79,8 @@ const config = {
   otpMaxAttempts: Number(process.env.ABDM_OTP_MAX_ATTEMPTS || 5),
   identityTransactionTtlMinutes: Number(process.env.ABDM_IDENTITY_TRANSACTION_TTL_MINUTES || 30),
 
+  fhirProvider,
+  fhirFallbackProvider: fhirFallbackProvider === fhirProvider ? 'none' : fhirFallbackProvider,
   fhirVersion: process.env.ABDM_FHIR_IG_VERSION || process.env.ABDM_FHIR_PACKAGE_VERSION || '6.5.0',
   fhirR4Version: process.env.ABDM_FHIR_VERSION || '4.0.1',
   fhirPackage: process.env.ABDM_FHIR_PACKAGE || 'ndhm.in#6.5.0',
@@ -76,6 +99,7 @@ const config = {
     isProduction
   ),
 
+  consentProvider,
   consentValidatorUrl: stripTrailingSlash(
     process.env.ABDM_CONSENT_VALIDATOR_URL || ''
   ),
@@ -89,7 +113,9 @@ const config = {
     isProduction
   ),
 
-  cryptoMode: String(process.env.ABDM_CRYPTO_MODE || 'external').toLowerCase(),
+  cryptoProvider,
+  // Backward-compatible status field used by older UI/status code. `external` means local adapter.
+  cryptoMode: cryptoProvider === 'local' ? 'external' : cryptoProvider,
   cryptoAdapterUrl: stripTrailingSlash(process.env.ABDM_CRYPTO_ADAPTER_URL || ''),
   cryptoAdapterAllowedHosts: csvEnv('ABDM_CRYPTO_ADAPTER_ALLOWED_HOSTS'),
   cryptoAdapterHealthUrl: stripTrailingSlash(process.env.ABDM_CRYPTO_ADAPTER_HEALTH_URL || ''),
@@ -158,12 +184,30 @@ function assertPacketConfiguration() {
   }
 }
 
+function localProviderRequired(service) {
+  if (service === 'fhir') {
+    return config.fhirProvider === 'local' || config.fhirFallbackProvider === 'local';
+  }
+  if (service === 'crypto') return config.cryptoProvider === 'local';
+  if (service === 'consent') return config.consentProvider === 'local';
+  return false;
+}
+
+function masterProviderRequired(service) {
+  if (service === 'fhir') {
+    return config.fhirProvider === 'master' || config.fhirFallbackProvider === 'master';
+  }
+  if (service === 'crypto') return config.cryptoProvider === 'master';
+  if (service === 'consent') return config.consentProvider === 'master';
+  return false;
+}
+
 function assertTrustedInternalServices() {
   if (!config.isProduction) return;
   const required = [
-    config.fhirValidatorUrl && new URL(config.fhirValidatorUrl).hostname,
-    config.cryptoAdapterUrl && new URL(config.cryptoAdapterUrl).hostname,
-    config.consentValidatorUrl && new URL(config.consentValidatorUrl).hostname
+    localProviderRequired('fhir') && config.fhirValidatorUrl && new URL(config.fhirValidatorUrl).hostname,
+    localProviderRequired('crypto') && config.cryptoAdapterUrl && new URL(config.cryptoAdapterUrl).hostname,
+    localProviderRequired('consent') && config.consentValidatorUrl && new URL(config.consentValidatorUrl).hostname
   ].filter(Boolean);
   const missing = required.filter((host) => !config.trustedInternalServiceHosts.includes(host));
   if (missing.length) {
@@ -171,15 +215,47 @@ function assertTrustedInternalServices() {
   }
 }
 
+function assertFhirConfiguration() {
+  if (masterProviderRequired('fhir')) assertHospitalConnector();
+  if (localProviderRequired('fhir') && !config.fhirValidatorUrl) {
+    throw new Error('ABDM_FHIR_VALIDATOR_URL is required when FHIR provider/fallback is local');
+  }
+  if (config.fhirFallbackProvider !== 'none' && config.fhirFallbackProvider === config.fhirProvider) {
+    throw new Error('ABDM_FHIR_FALLBACK_PROVIDER must differ from ABDM_FHIR_PROVIDER');
+  }
+}
+
+function assertConsentConfiguration() {
+  if (config.consentProvider === 'master') assertHospitalConnector();
+  if (config.consentProvider === 'local' && !config.consentValidatorUrl) {
+    throw new Error('ABDM_CONSENT_VALIDATOR_URL is required when ABDM_CONSENT_PROVIDER=local');
+  }
+  if (config.consentProvider === 'local' && config.consentValidatorUrl) {
+    let parsed;
+    try { parsed = new URL(config.consentValidatorUrl); } catch (_error) {
+      throw new Error('ABDM_CONSENT_VALIDATOR_URL must be a valid URL');
+    }
+    if (!/\/v1\/validate\/?$/i.test(parsed.pathname)) {
+      throw new Error('ABDM_CONSENT_VALIDATOR_URL must use the versioned /v1/validate endpoint');
+    }
+  }
+}
+
 function assertCryptoConfiguration() {
-  if (config.cryptoMode === 'external' && !config.cryptoAdapterUrl) {
-    throw new Error(
-      'ABDM_CRYPTO_ADAPTER_URL is required when ABDM_CRYPTO_MODE=external'
-    );
+  if (config.cryptoProvider === 'master') assertHospitalConnector();
+  if (config.cryptoProvider === 'local' && !config.cryptoAdapterUrl) {
+    throw new Error('ABDM_CRYPTO_ADAPTER_URL is required when ABDM_CRYPTO_PROVIDER=local');
   }
-  if (config.isProduction && config.cryptoMode === 'mock') {
-    throw new Error('ABDM_CRYPTO_MODE=mock is forbidden in production');
+  if (config.isProduction && config.cryptoProvider === 'mock') {
+    throw new Error('ABDM_CRYPTO_PROVIDER=mock is forbidden in production');
   }
+}
+
+function assertSharedServiceConfiguration() {
+  assertFhirConfiguration();
+  assertCryptoConfiguration();
+  assertConsentConfiguration();
+  assertTrustedInternalServices();
 }
 
 module.exports = {
@@ -187,11 +263,17 @@ module.exports = {
   assertHospitalConnector,
   assertEncryptionKey,
   assertCryptoConfiguration,
+  assertFhirConfiguration,
+  assertConsentConfiguration,
+  assertSharedServiceConfiguration,
+  localProviderRequired,
+  masterProviderRequired,
   assertProfileConfiguration,
   assertPacketConfiguration,
   assertTrustedInternalServices,
   stripTrailingSlash,
   boolEnv,
   csvEnv,
-  intCsvEnv
+  intCsvEnv,
+  providerEnv
 };

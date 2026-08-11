@@ -199,8 +199,8 @@ async function initiateHealthInformationRequest({ consent, user }) {
 
     const privateBlob = encryptJson(
       receiver.keyHandle
-        ? { keyHandle: receiver.keyHandle }
-        : receiver.privateMaterial,
+        ? { provider: receiver.provider, keyHandle: receiver.keyHandle }
+        : { provider: receiver.provider, privateMaterial: receiver.privateMaterial },
       `abdm-hiu-private:${requestId}`
     );
     request = await AbdmHiuRequest.create({
@@ -249,7 +249,7 @@ async function initiateHealthInformationRequest({ consent, user }) {
     request.masterRequestId = master.requestId;
     if (consentAuthorization.usage?.reservationId) {
       try {
-        await commitConsentUsage(consentAuthorization.usage.reservationId);
+        await commitConsentUsage(consentAuthorization.usage);
         request.metadata = {
           ...(request.metadata || {}),
           consentAuthorization: {
@@ -273,7 +273,7 @@ async function initiateHealthInformationRequest({ consent, user }) {
     return { request, masterRequestId: master.requestId };
   } catch (error) {
     if (!masterAccepted && consentAuthorization.usage?.reservationId) {
-      await releaseConsentUsage(consentAuthorization.usage.reservationId).catch(() => {});
+      await releaseConsentUsage(consentAuthorization.usage).catch(() => {});
     }
     if (request) {
       request.status = 'FAILED';
@@ -391,10 +391,10 @@ async function onHealthInformationRequestCallback(payload) {
   request.status = payload.error ? 'FAILED' : 'ACKNOWLEDGED';
   request.acknowledgedAt = new Date();
   request.error = payload.error;
-  const pendingReservationId = request.metadata?.consentAuthorization?.usage?.reservationId;
-  if (!payload.error && pendingReservationId && request.metadata?.consentAuthorization?.usageCommitPending) {
+  const pendingUsage = request.metadata?.consentAuthorization?.usage;
+  if (!payload.error && pendingUsage?.reservationId && request.metadata?.consentAuthorization?.usageCommitPending) {
     try {
-      await commitConsentUsage(pendingReservationId);
+      await commitConsentUsage(pendingUsage);
       request.metadata = {
         ...(request.metadata || {}),
         consentAuthorization: {
@@ -667,9 +667,10 @@ async function receiveEncryptedData(payload) {
     const privateMaterial = decryptJson(request.encryptedPrivateMaterial, `abdm-hiu-private:${request.requestId}`);
     const decrypted = await decryptHealthInformation({
       transactionId,
+      provider: privateMaterial?.provider,
       ...(privateMaterial?.keyHandle
         ? { keyHandle: privateMaterial.keyHandle }
-        : { privateMaterial }),
+        : { privateMaterial: privateMaterial?.privateMaterial || privateMaterial }),
       keyMaterial: assembled.keyMaterial,
       entries: assembled.entries
     });

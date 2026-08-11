@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const abdmConfig = require('../config/abdm.config');
 const {
   assertSafeOutboundUrl,
@@ -10,7 +11,15 @@ const fetchFn = (...args) => {
 };
 
 function serviceHeaders(extra = {}) {
-  const headers = { Accept: 'application/json', ...extra };
+  const headers = {
+    Accept: 'application/json',
+    'X-MediQliq-Service-Identity': process.env.ABDM_INTERNAL_SERVICE_IDENTITY || 'ABDM_MASTER',
+    'X-MediQliq-Request-ID': crypto.randomUUID(),
+    ...(abdmConfig.tenantCode ? { 'X-MediQliq-Tenant-Code': abdmConfig.tenantCode } : {}),
+    ...(abdmConfig.hipId ? { 'X-MediQliq-Facility-ID': abdmConfig.hipId } : {}),
+    ...(abdmConfig.hfrFacilityId ? { 'X-MediQliq-HFR-ID': abdmConfig.hfrFacilityId } : {}),
+    ...extra
+  };
   if (abdmConfig.internalServiceAuthToken) {
     headers[abdmConfig.internalServiceAuthHeader] = abdmConfig.internalServiceAuthToken;
   }

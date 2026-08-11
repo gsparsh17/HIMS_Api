@@ -207,16 +207,19 @@ exports.integrationStatus = async (_req, res) => {
   ]);
 
   const transferReadiness = {
-    cryptoMode: abdmConfig.cryptoMode,
-    cryptoAdapterConfigured: Boolean(abdmConfig.cryptoAdapterUrl),
+    cryptoProvider: abdmConfig.cryptoProvider,
+    cryptoAdapterConfigured: cryptoAdapter.configured === true,
     cryptoAdapterHealthy: cryptoAdapter.healthy === true,
     cryptoIntegrityRequired: abdmConfig.requireCryptoIntegrity === true,
-    fhirValidatorConfigured: Boolean(abdmConfig.fhirValidatorUrl),
+    fhirProvider: abdmConfig.fhirProvider,
+    fhirFallbackProvider: abdmConfig.fhirFallbackProvider,
+    fhirValidatorConfigured: fhirValidator.configured === true,
     fhirValidatorHealthy: fhirValidator.healthy === true,
     externalFhirValidationRequired: abdmConfig.requireExternalFhirValidation === true,
     fhirPackage: abdmConfig.fhirPackage,
     fhirVersion: abdmConfig.fhirR4Version,
-    consentValidatorConfigured: Boolean(abdmConfig.consentValidatorUrl),
+    consentProvider: abdmConfig.consentProvider,
+    consentValidatorConfigured: consentValidator.configured === true,
     consentValidatorHealthy: consentValidator.healthy === true,
     consentValidatorProductionCapable: consentValidator.productionCapable === true,
     consentValidationRequired: abdmConfig.requireConsentValidation === true,
@@ -235,7 +238,7 @@ exports.integrationStatus = async (_req, res) => {
   };
   const productionTransferReady = Boolean(
     configured &&
-      abdmConfig.cryptoMode === 'external' &&
+      abdmConfig.cryptoProvider !== 'mock' &&
       transferReadiness.cryptoAdapterConfigured &&
       transferReadiness.cryptoAdapterHealthy &&
       transferReadiness.cryptoIntegrityRequired &&

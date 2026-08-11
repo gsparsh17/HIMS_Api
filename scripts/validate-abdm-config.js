@@ -27,11 +27,36 @@ check('ABDM_CONNECTOR_KEY_ID', Boolean(config.connectorKeyId), config.connectorK
 check('ABDM_CONNECTOR_SECRET strength', strongSecret(config.connectorSecret, 32), config.connectorSecret ? 'configured' : 'missing');
 check('ABDM_HOSPITAL_ENCRYPTION_KEY', Boolean(config.hospitalEncryptionKey), config.hospitalEncryptionKey ? 'configured' : 'missing');
 check('Permission checks enabled', String(process.env.DISABLE_PERMISSION_CHECKS || 'false').toLowerCase() !== 'true', process.env.DISABLE_PERMISSION_CHECKS || 'false');
-check('M3 crypto mode', ['external', 'mock'].includes(config.cryptoMode), config.cryptoMode);
+check('FHIR provider', ['master', 'local'].includes(config.fhirProvider), config.fhirProvider);
 check(
-  'Production crypto adapter',
-  config.environment !== 'production' || (config.cryptoMode === 'external' && Boolean(config.cryptoAdapterUrl)),
-  config.cryptoAdapterUrl || config.cryptoMode
+  'FHIR primary provider configured',
+  config.fhirProvider === 'master' ? Boolean(config.masterUrl) : Boolean(config.fhirValidatorUrl),
+  config.fhirProvider === 'master' ? (config.masterUrl || 'missing Master URL') : (config.fhirValidatorUrl || 'missing local FHIR URL')
+);
+check(
+  'FHIR fallback provider configured',
+  config.fhirFallbackProvider === 'none' ||
+    (config.fhirFallbackProvider === 'master' ? Boolean(config.masterUrl) : Boolean(config.fhirValidatorUrl)),
+  config.fhirFallbackProvider
+);
+check('Crypto provider', ['master', 'local', 'mock'].includes(config.cryptoProvider), config.cryptoProvider);
+check(
+  'Production crypto provider',
+  config.environment !== 'production' || config.cryptoProvider !== 'mock',
+  config.cryptoProvider
+);
+check(
+  'Crypto provider configured',
+  config.cryptoProvider === 'master'
+    ? Boolean(config.masterUrl)
+    : (config.cryptoProvider === 'local' ? Boolean(config.cryptoAdapterUrl) : config.environment !== 'production'),
+  config.cryptoProvider === 'local' ? (config.cryptoAdapterUrl || 'missing local crypto URL') : config.cryptoProvider
+);
+check('Consent provider', ['master', 'local'].includes(config.consentProvider), config.consentProvider);
+check(
+  'Consent provider configured',
+  config.consentProvider === 'master' ? Boolean(config.masterUrl) : Boolean(config.consentValidatorUrl),
+  config.consentProvider === 'master' ? (config.masterUrl || 'missing Master URL') : (config.consentValidatorUrl || 'missing local consent URL')
 );
 check(
   'Production data-push allow-list',
@@ -39,50 +64,44 @@ check(
   `${config.dataPushAllowedHosts.length} host(s)`
 );
 check(
-  'Production external FHIR validator',
-  config.environment !== 'production' ||
-    (!config.requireExternalFhirValidation || Boolean(config.fhirValidatorUrl)),
-  config.fhirValidatorUrl || 'missing'
+  'Production external FHIR validation',
+  config.environment !== 'production' || !config.requireExternalFhirValidation ||
+    (config.fhirProvider === 'master' ? Boolean(config.masterUrl) : Boolean(config.fhirValidatorUrl)),
+  config.fhirProvider
 );
 check(
-  'Production consent artefact validator',
-  config.environment !== 'production' ||
-    (!config.requireConsentValidation || Boolean(config.consentValidatorUrl)),
-  config.consentValidatorUrl || 'missing'
+  'Production consent validation',
+  config.environment !== 'production' || !config.requireConsentValidation ||
+    (config.consentProvider === 'master' ? Boolean(config.masterUrl) : Boolean(config.consentValidatorUrl)),
+  config.consentProvider
 );
-
 check(
-  'Production consent validator service token',
-  config.environment !== 'production' ||
-    !config.requireConsentValidation ||
+  'Local consent validator service token',
+  config.environment !== 'production' || config.consentProvider !== 'local' || !config.requireConsentValidation ||
     strongSecret(process.env.ABDM_CONSENT_VALIDATOR_TOKEN || config.internalServiceAuthToken, 32),
-  process.env.ABDM_CONSENT_VALIDATOR_TOKEN || config.internalServiceAuthToken ? 'configured' : 'missing'
+  config.consentProvider === 'local'
+    ? (process.env.ABDM_CONSENT_VALIDATOR_TOKEN || config.internalServiceAuthToken ? 'configured' : 'missing')
+    : 'not required for Master provider'
 );
 check(
-  'Consent validator endpoint version',
-  !config.consentValidatorUrl || /\/v1\/validate\/?$/i.test(config.consentValidatorUrl),
-  config.consentValidatorUrl || 'missing'
-);
-
-check(
-  'Production FHIR validator allow-list',
-  config.environment !== 'production' ||
-    !config.fhirValidatorUrl ||
-    config.fhirValidatorAllowedHosts.length > 0,
-  `${config.fhirValidatorAllowedHosts.length} host(s)`
+  'Local consent validator endpoint version',
+  config.consentProvider !== 'local' || !config.consentValidatorUrl || /\/v1\/validate\/?$/i.test(config.consentValidatorUrl),
+  config.consentValidatorUrl || 'not local'
 );
 check(
-  'Production consent validator allow-list',
-  config.environment !== 'production' ||
-    !config.consentValidatorUrl ||
-    config.consentValidatorAllowedHosts.length > 0,
-  `${config.consentValidatorAllowedHosts.length} host(s)`
+  'Local FHIR validator allow-list',
+  config.environment !== 'production' || !config.localProviderRequired('fhir') || config.fhirValidatorAllowedHosts.length > 0 || config.trustedInternalServiceHosts.length > 0,
+  `${config.fhirValidatorAllowedHosts.length} service-specific, ${config.trustedInternalServiceHosts.length} trusted host(s)`
 );
-
 check(
-  'Production adapter allow-list',
-  config.environment !== 'production' || config.cryptoAdapterAllowedHosts.length > 0,
-  `${config.cryptoAdapterAllowedHosts.length} host(s)`
+  'Local consent validator allow-list',
+  config.environment !== 'production' || config.consentProvider !== 'local' || config.consentValidatorAllowedHosts.length > 0 || config.trustedInternalServiceHosts.length > 0,
+  `${config.consentValidatorAllowedHosts.length} service-specific, ${config.trustedInternalServiceHosts.length} trusted host(s)`
+);
+check(
+  'Local crypto adapter allow-list',
+  config.environment !== 'production' || config.cryptoProvider !== 'local' || config.cryptoAdapterAllowedHosts.length > 0 || config.trustedInternalServiceHosts.length > 0,
+  `${config.cryptoAdapterAllowedHosts.length} service-specific, ${config.trustedInternalServiceHosts.length} trusted host(s)`
 );
 check(
   'Production test OTP disabled',
