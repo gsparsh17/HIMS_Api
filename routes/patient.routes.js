@@ -36,6 +36,7 @@ router.post('/walkin', canManagePharmacyPatient, patientController.createOrUpdat
 router.post('/upload', canManagePatient, upload.single('image'), patientController.uploadPatientImage);
 router.get('/check-duplicate', canManagePatient, patientController.checkDuplicateByPhone);
 router.get('/registration-config', canManagePatient, patientController.getRegistrationConfig);
+router.get('/registration-payers', canManagePatient, patientController.getRegistrationPayers);
 router.post('/mobile-otp/request', canManagePatient, patientController.requestMobileOtp);
 router.post('/mobile-otp/verify', canManagePatient, patientController.verifyMobileOtp);
 router.post('/bulk-add', canManagePatient, patientController.bulkCreatePatients);
@@ -45,6 +46,7 @@ router.get('/phone/:phone', canReadPatient, patientController.getPatientByPhone)
 
 router.post('/', canManagePatient, patientController.createPatient);
 router.get('/', canReadPatient, patientController.getAllPatients);
+router.get('/:id/coverage-preference', canReadPatient, patientController.getCoveragePreference);
 router.get('/:id/longitudinal-record', canReadPatient, patientController.getLongitudinalRecord);
 router.post('/:id/share', canManagePatient, patientController.sharePatientRecord);
 router.get('/:id/pharmacy-account', canManagePharmacyPatient, patientController.getPatientPharmacyAccount);

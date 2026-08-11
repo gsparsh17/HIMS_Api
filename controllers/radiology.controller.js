@@ -10,6 +10,7 @@ const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { postProviderJson } = require('../utils/functionalDomain');
+const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
 
 
 const safeUnlink = (filePath) => {
@@ -158,7 +159,7 @@ exports.createRadiologyRequest = async (req, res) => {
     const {
       sourceType, admissionId, appointmentId, prescriptionId, patientId, doctorId,
       imagingTestId, clinical_indication, clinical_history,
-      priority, scheduledDate, patient_notes
+      priority, scheduledDate, patient_notes, coverage
     } = req.body;
 
     // Validate required fields
@@ -181,6 +182,17 @@ exports.createRadiologyRequest = async (req, res) => {
     // Increment usage count
     await imagingTest.incrementUsage();
 
+    const payerContext = await resolveRequestPayerContext({
+      hospitalId,
+      patientId,
+      sourceType: sourceType || 'IPD',
+      admissionId,
+      appointmentId,
+      declaredCoverage: coverage,
+      userId: req.user?._id,
+      rememberSource: 'RADIOLOGY'
+    });
+
     const request = new RadiologyRequest({
       hospitalId,
       sourceType: sourceType || 'IPD',
@@ -201,10 +213,20 @@ exports.createRadiologyRequest = async (req, res) => {
       scheduledDate: scheduledDate || null,
       patient_notes: patient_notes || '',
       cost: imagingTest.base_price,
+      payerContext: payerContext || undefined,
       createdBy: req.user?._id
     });
 
     await request.save();
+    await rememberRequestPayerContextUsage({
+      hospitalId,
+      patientId,
+      payerContext,
+      source: 'RADIOLOGY',
+      encounterId: admissionId || appointmentId || request._id,
+      userId: req.user?._id,
+      usedAt: request.createdAt || new Date()
+    });
 
     // Populate response
     const populated = await RadiologyRequest.findOne({ _id: request._id, hospitalId })
@@ -215,7 +237,8 @@ exports.createRadiologyRequest = async (req, res) => {
     res.status(201).json({ success: true, data: populated });
   } catch (error) {
     console.error('Error creating radiology request:', error);
-    res.status(500).json({ error: error.message });
+    const status = Number(error?.statusCode || (['ValidationError', 'CastError'].includes(error?.name) ? 400 : 500));
+    res.status(status).json({ error: error.code || error.message, message: error.message, code: error.code });
   }
 };
 

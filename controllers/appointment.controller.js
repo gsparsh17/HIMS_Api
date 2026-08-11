@@ -14,6 +14,11 @@ const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { nextAppointmentToken } = require('../utils/appointmentNumber');
 const { queueNotification } = require('../services/nabhNotification.service');
+const { assertPatientReadyForContext } = require('../services/patientRegistration.service');
+const { appendDomainEvent } = require('../services/auditEvent.service');
+const { createEncounterCoverage } = require('../services/coverage.service');
+const AdmissionCoverage = require('../models/AdmissionCoverage');
+const { rememberDeclaredPreference } = require('../services/patientCoveragePreference.service');
 async function notifyAppointment(appointmentOrId, eventType, userId, extra = {}, hospitalId = null) {
   const appointment = typeof appointmentOrId === 'string'
     ? await Appointment.findOne({
@@ -698,6 +703,44 @@ exports.bulkCreateAppointments = async (req, res) => {
       await appointment.save();
       appointmentSaved = true;
 
+      try {
+        const coverageProvided = appointmentData.coverage !== undefined && appointmentData.coverage !== null;
+        const requestedCoverage = appointmentData.coverage || {};
+        if (requestedCoverage.payerCategory && requestedCoverage.payerCategory !== 'self' && !requestedCoverage.payerId) {
+          const error = new Error('Select an approved payer for sponsored appointment coverage');
+          error.statusCode = 400;
+          error.code = 'PAYER_REQUIRED';
+          throw error;
+        }
+        if (requestedCoverage.payerId) {
+          await createEncounterCoverage({
+            req,
+            hospitalId: hospital._id,
+            encounterType: 'OPD',
+            encounterId: appointment._id,
+            payload: { ...requestedCoverage, allowPendingRateCard: requestedCoverage.allowPendingRateCard ?? true }
+          });
+        } else if (coverageProvided) {
+          await rememberDeclaredPreference({
+            hospitalId: hospital._id,
+            patientId,
+            payerCategory: 'self',
+            payerName: 'Self / Cash',
+            beneficiary: {},
+            source: 'OPD',
+            encounterId: appointment._id,
+            userId: req.user?._id,
+            usedAt: appointmentData.offlineCapturedAt || appointment.createdAt || new Date(),
+            updateLegacyPatientFields: false
+          });
+        }
+      } catch (coverageError) {
+        await Appointment.deleteOne({ _id: appointment._id, hospital_id: hospital._id }).catch(() => {});
+        await AdmissionCoverage.deleteMany({ hospitalId: hospital._id, appointmentId: appointment._id }).catch(() => {});
+        appointmentSaved = false;
+        throw coverageError;
+      }
+
       successfulImports.push({
         localId: appointmentData.localId,
         serverId: appointment._id,
@@ -1012,6 +1055,20 @@ exports.createAppointment = async (req, res) => {
       Department.findOne({ _id: department_id, hospitalId })
     ]);
     if (!patient) return res.status(404).json({ error: 'Patient not found for this hospital' });
+    try {
+      await assertPatientReadyForContext({
+        hospitalId,
+        patientId: patient._id,
+        context: 'OPD',
+        userId: req.user?._id
+      });
+    } catch (registrationError) {
+      return res.status(registrationError.statusCode || 409).json({
+        error: registrationError.code || 'PATIENT_REGISTRATION_INCOMPLETE',
+        message: registrationError.message,
+        missingFields: registrationError.missingFields || registrationError.completeness?.missingFields || []
+      });
+    }
     if (!doctorRecord) return res.status(404).json({ error: 'Doctor not found for this hospital' });
     if (!departmentRecord) return res.status(404).json({ error: 'Department not found for this hospital' });
     if (req.body.episodeId) {
@@ -1049,9 +1106,9 @@ exports.createAppointment = async (req, res) => {
       priority: req.body.priority || 'Normal',
       notes: req.body.notes || '',
       episodeId: req.body.episodeId || undefined,
-      coverageId: req.body.coverageId || undefined,
-      sponsorType: req.body.sponsorType || patient.sponsor_type || 'self',
-      sponsorName: req.body.sponsorName || patient.sponsor_name,
+      coverageId: undefined,
+      sponsorType: 'self',
+      sponsorName: undefined,
       idempotencyKey,
       bookingFingerprint,
       submissionSource: req.body.submissionSource || 'APPOINTMENT_MODAL',
@@ -1132,10 +1189,51 @@ exports.createAppointment = async (req, res) => {
     }
 
     await appointment.save();
+
+    let encounterCoverage = null;
+    try {
+      const coverageProvided = req.body.coverage !== undefined && req.body.coverage !== null;
+      const requestedCoverage = req.body.coverage || {};
+      if (requestedCoverage.payerCategory && requestedCoverage.payerCategory !== 'self' && !requestedCoverage.payerId) {
+        const error = new Error('Select an approved payer for sponsored appointment coverage');
+        error.statusCode = 400;
+        error.code = 'PAYER_REQUIRED';
+        throw error;
+      }
+      if (requestedCoverage.payerId) {
+        encounterCoverage = await createEncounterCoverage({
+          req,
+          hospitalId,
+          encounterType: 'OPD',
+          encounterId: appointment._id,
+          payload: { ...requestedCoverage, allowPendingRateCard: requestedCoverage.allowPendingRateCard ?? true }
+        });
+      } else if (coverageProvided) {
+        await rememberDeclaredPreference({
+          hospitalId,
+          patientId: patient._id,
+          payerCategory: 'self',
+          payerName: 'Self / Cash',
+          beneficiary: {},
+          source: 'OPD',
+          encounterId: appointment._id,
+          userId: req.user?._id,
+          usedAt: new Date(),
+          updateLegacyPatientFields: false
+        });
+      }
+    } catch (coverageError) {
+      await Appointment.deleteOne({ _id: appointment._id, hospital_id: hospitalId }).catch(() => {});
+      throw coverageError;
+    }
+
     try {
       await calendar.save();
     } catch (calendarError) {
       await Appointment.deleteOne({ _id: appointment._id, hospital_id: hospitalId }).catch(() => {});
+      if (encounterCoverage?._id) {
+        await AdmissionCoverage.deleteMany({ hospitalId, appointmentId: appointment._id }).catch(() => {});
+      }
       throw calendarError;
     }
 
@@ -1169,8 +1267,26 @@ exports.createAppointment = async (req, res) => {
       console.error('Appointment saved but booking notification could not be queued:', notificationError);
     }
 
+    await appendDomainEvent({
+      req,
+      eventType: 'opd.appointment.created',
+      entityType: 'Appointment',
+      entityId: appointment._id,
+      hospitalId,
+      patientId: patient._id,
+      encounterId: appointment._id,
+      afterSummary: {
+        status: appointment.status,
+        appointmentDate: appointment.appointment_date,
+        doctorId: appointment.doctor_id,
+        departmentId: appointment.department_id
+      }
+    });
+
+    const persistedAppointment = await Appointment.findOne({ _id: appointment._id, hospital_id: hospitalId });
     return res.status(201).json({
-      ...appointment.toObject(),
+      ...(persistedAppointment || appointment).toObject(),
+      coverage: encounterCoverage || undefined,
       ...(suppliedIdempotencyKey ? {} : { serverGeneratedIdempotencyKey: true }),
       ...(notificationWarning ? { notificationWarning } : {})
     });

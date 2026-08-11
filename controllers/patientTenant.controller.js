@@ -11,6 +11,7 @@ const Prescription = require('../models/Prescription');
 const DischargeSummary = require('../models/DischargeSummary');
 const NabhRecord = require('../models/NabhRecord');
 const Doctor = require('../models/Doctor');
+const Payer = require('../models/Payer');
 const HospitalSequence = require('../models/HospitalSequence');
 const {
   validateConfiguredRegistration,
@@ -19,10 +20,14 @@ const {
   verifyMobileOtp,
   consumeMobileVerification,
   registrationConfig,
-  normalizePhone
+  normalizePhone,
+  registerPatient,
+  calculateRegistrationCompleteness
 } = require('../services/patientRegistration.service');
 const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
 const { queueNotification } = require('../services/nabhNotification.service');
+const { appendDomainEvent } = require('../services/auditEvent.service');
+const { getPatientCoveragePreference } = require('../services/patientCoveragePreference.service');
 
 
 async function nextShareRecordNumber(hospitalId) {
@@ -69,320 +74,183 @@ exports.createOrUpdateWalkinPatient = legacy.createOrUpdateWalkinPatient;
 exports.getPatientPharmacyAccount = legacy.getPatientPharmacyAccount;
 exports.updatePatientPharmacyBalance = legacy.updatePatientPharmacyBalance;
 
+exports.getRegistrationPayers = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const payers = await Payer.find({
+      hospitalId,
+      isActive: true
+    })
+      .select('_id code name type networkStatus empanelment.status pricingPolicy tpaId isActive')
+      .sort({ type: 1, name: 1 })
+      .lean();
+
+    return res.json({ success: true, data: payers });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+
+exports.getCoveragePreference = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const data = await getPatientCoveragePreference({ hospitalId, patientId: req.params.id });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+
+
 exports.createPatient = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const settings = await getOrCreateNabhSetting(hospitalId, req.user?._id);
-    if (req.body.idempotencyKey) {
-      const existingReplay = await Patient.findOne({
-        hospitalId,
-        'offlineSyncMetadata.idempotencyKey': String(req.body.idempotencyKey)
-      });
-      if (existingReplay) {
-        return res.status(200).json({
-          success: true,
-          patient: existingReplay,
-          duplicateReview: existingReplay.duplicateReview,
-          synced: true,
-          duplicate: true
-        });
-      }
-    }
-    const payload = {
-      ...req.body,
+    const result = await registerPatient({
       hospitalId,
-      normalizedPhone: normalizePhone(req.body.phone),
-      // Verification state is server-owned. Never accept a client supplied
-      // `verified: true` flag without validating its verification record.
-      mobileVerification: { verified: false },
-      registrationSource: {
-        channel: req.body.registrationSource?.channel
-          || req.body.registrationChannel
-          || 'internal',
-        externalReference: req.body.registrationSource?.externalReference,
-        deviceIdentifier: req.body.registrationSource?.deviceIdentifier,
-        capturedAt: req.body.registrationSource?.capturedAt || new Date(),
-        capturedBy: req.user?._id
-      }
-    };
+      input: req.body,
+      userId: req.user?._id,
+      defaultPatientType: 'opd'
+    });
 
-    if (req.body.mobileVerification?.verificationId) {
-      const verified = await verifyMobileOtp({
+    if (result.created) {
+      await appendDomainEvent({
+        req,
+        eventType: 'patient.registration.created',
+        entityType: 'Patient',
+        entityId: result.patient._id,
         hospitalId,
-        verificationId: req.body.mobileVerification.verificationId,
-        phone: req.body.phone,
-        otp: req.body.mobileVerification.otp
-      });
-      payload.mobileVerification = {
-        verified: true,
-        verifiedAt: verified.verifiedAt,
-        verificationId: verified.verificationId,
-        phone: verified.phone
-      };
-    }
-
-    const validationErrors = validateConfiguredRegistration(payload, settings);
-    if (validationErrors.length) {
-      return res.status(400).json({
-        error: 'REGISTRATION_VALIDATION_FAILED',
-        message: validationErrors.join('; '),
-        fields: validationErrors
-      });
-    }
-
-    const candidates = await findDuplicateCandidates(hospitalId, payload);
-    const exact = candidates.find((candidate) => candidate.classification === 'exact');
-    const probable = candidates.find((candidate) => candidate.classification === 'probable');
-
-    const duplicateOverrideReason = String(
-      req.body.duplicateOverride?.reason
-      || (req.body.force_create ? 'Legacy force_create override' : '')
-    ).trim();
-
-    if (exact && !req.body.force_create) {
-      return res.status(409).json({
-        error: 'DUPLICATE_PATIENT',
-        message: 'An exact duplicate patient record was detected',
-        candidates
-      });
-    }
-
-    if (probable && !duplicateOverrideReason) {
-      return res.status(409).json({
-        error: 'PROBABLE_DUPLICATE_PATIENT',
-        message: 'A probable duplicate patient record was detected. Review or provide an override reason.',
-        candidates,
-        overrideAllowed: Boolean(settings.patientRegistration?.allowProbableDuplicateOverride)
-      });
-    }
-
-    if (probable && !settings.patientRegistration?.allowProbableDuplicateOverride) {
-      return res.status(409).json({
-        error: 'DUPLICATE_OVERRIDE_DISABLED',
-        message: 'Probable duplicate override is disabled by hospital policy',
-        candidates
-      });
-    }
-
-    payload.duplicateReview = {
-      status: (exact || probable) ? 'override_approved' : 'clear',
-      candidatePatientIds: candidates.map((candidate) => candidate.patientId),
-      score: candidates[0]?.score || 0,
-      matchedFields: candidates[0]?.matches || [],
-      reviewedAt: new Date(),
-      reviewedBy: req.user?._id,
-      overrideReason: duplicateOverrideReason
-    };
-    payload.offlineSyncMetadata = {
-      localId: req.body.localId,
-      capturedOffline: Boolean(req.body.capturedOffline || req.body.localId),
-      capturedAt: req.body.offlineCapturedAt,
-      syncedAt: new Date(),
-      idempotencyKey: req.body.idempotencyKey
-    };
-
-    if (payload.mobileVerification?.verified) {
-      await consumeMobileVerification({
-        hospitalId,
-        verificationId: payload.mobileVerification.verificationId,
-        phone: payload.phone
-      });
-    }
-
-    const patient = await Patient.create(payload);
-
-    if (req.body.localId) {
-      await OfflineSyncLog.findOneAndUpdate(
-        { hospitalId, localId: req.body.localId, entityType: 'PATIENT' },
-        {
-          hospitalId,
-          localId: req.body.localId,
-          entityType: 'PATIENT',
-          operationType: 'CREATE',
-          data: req.body,
-          status: 'SYNCED',
-          serverId: patient._id,
-          syncedAt: new Date()
+        patientId: result.patient._id,
+        afterSummary: {
+          uhid: result.patient.uhid,
+          registrationStatus: result.patient.registrationStatus,
+          registrationSource: result.patient.registrationSource?.channel
         },
-        { upsert: true, new: true }
-      );
+        metadata: {
+          duplicateScore: result.duplicateReview?.score || 0,
+          duplicateOverride: result.duplicateReview?.status === 'override_approved'
+        }
+      });
     }
 
-    return res.status(201).json({
+    return res.status(result.created ? 201 : 200).json({
       success: true,
-      patient,
-      duplicateReview: payload.duplicateReview,
+      patient: result.patient,
+      duplicateReview: result.duplicateReview,
+      duplicate: Boolean(result.duplicateMatched),
+      idempotent: Boolean(result.idempotent),
       synced: true
     });
   } catch (error) {
-    const statusCode = error.code === 11000 ? 409 : 400;
-    return fail(res, error, statusCode);
+    return res.status(error.statusCode || (error.code === 11000 ? 409 : 400)).json({
+      error: error.code || 'REGISTRATION_FAILED',
+      message: error.message,
+      ...(error.fields ? { fields: error.fields } : {}),
+      ...(error.candidates ? { candidates: error.candidates } : {}),
+      ...(error.overrideAllowed !== undefined ? { overrideAllowed: error.overrideAllowed } : {})
+    });
   }
 };
 
 exports.bulkCreatePatients = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-
     if (!Array.isArray(req.body)) {
-      return res.status(400).json({
-        error: 'Invalid data format. Expected an array.'
-      });
+      return res.status(400).json({ error: 'Invalid data format. Expected an array.' });
     }
     if (req.body.length > 500) {
       return res.status(413).json({ error: 'Maximum 500 patients per offline sync batch' });
     }
 
-    const settings = await getOrCreateNabhSetting(hospitalId, req.user?._id);
     const successful = [];
     const failed = [];
 
     for (const row of req.body) {
       try {
-        const payload = {
-          ...row,
+        const result = await registerPatient({ // eslint-disable-line no-await-in-loop
           hospitalId,
-          normalizedPhone: normalizePhone(row.phone),
-          mobileVerification: { verified: false },
-          registrationSource: {
-            channel: row.registrationSource?.channel || row.registrationChannel || 'internal',
-            externalReference: row.registrationSource?.externalReference,
-            deviceIdentifier: row.registrationSource?.deviceIdentifier,
-            capturedAt: row.registrationSource?.capturedAt || row.offlineCapturedAt || new Date(),
-            capturedBy: req.user?._id
-          }
-        };
-
-        if (row.mobileVerification?.verificationId) {
-          const verified = await verifyMobileOtp({ // eslint-disable-line no-await-in-loop
-            hospitalId,
-            verificationId: row.mobileVerification.verificationId,
-            phone: row.phone,
-            otp: row.mobileVerification.otp
-          });
-          payload.mobileVerification = {
-            verified: true,
-            verifiedAt: verified.verifiedAt,
-            verificationId: verified.verificationId,
-            phone: verified.phone
-          };
-        }
-
-        const validationErrors = validateConfiguredRegistration(payload, settings);
-        if (validationErrors.length) {
-          const error = new Error(validationErrors.join('; '));
-          error.code = 'REGISTRATION_VALIDATION_FAILED';
-          throw error;
-        }
-
-        const candidates = await findDuplicateCandidates(hospitalId, payload); // eslint-disable-line no-await-in-loop
-        const exact = candidates.find((candidate) => candidate.classification === 'exact');
-        const probable = candidates.find((candidate) => candidate.classification === 'probable');
-        const duplicateOverrideReason = String(
-          row.duplicateOverride?.reason
-          || (row.force_create ? 'Legacy force_create override' : '')
-        ).trim();
-        let patient = null;
-        let duplicate = false;
-
-        // Offline replay is idempotent: exact matches resolve to the existing patient.
-        if (exact && !row.force_create) {
-          patient = await Patient.findOne({ _id: exact.patientId, hospitalId }); // eslint-disable-line no-await-in-loop
-          duplicate = true;
-        }
-
-        if (!patient && probable) {
-          if (!settings.patientRegistration?.allowProbableDuplicateOverride) {
-            const error = new Error('Probable duplicate override is disabled by hospital policy');
-            error.code = 'DUPLICATE_OVERRIDE_DISABLED';
-            throw error;
-          }
-          if (!duplicateOverrideReason) {
-            const error = new Error('Probable duplicate detected; an override reason is required');
-            error.code = 'PROBABLE_DUPLICATE_PATIENT';
-            throw error;
-          }
-        }
-
-        if (!patient) {
-          if (payload.mobileVerification?.verified) {
-            await consumeMobileVerification({ // eslint-disable-line no-await-in-loop
-              hospitalId,
-              verificationId: payload.mobileVerification.verificationId,
-              phone: payload.phone
-            });
-          }
-          const {
-            localId, tempPatientId, isSynced, force_create,
-            registrationChannel, duplicateOverride, capturedOffline,
-            offlineCapturedAt, idempotencyKey, ...clean
-          } = payload;
-          patient = await Patient.create({ // eslint-disable-line no-await-in-loop
-            ...clean,
-            hospitalId,
-            duplicateReview: {
-              status: (exact || probable) ? 'override_approved' : 'clear',
-              candidatePatientIds: candidates.map((candidate) => candidate.patientId),
-              score: candidates[0]?.score || 0,
-              matchedFields: candidates[0]?.matches || [],
-              reviewedAt: new Date(),
-              reviewedBy: req.user?._id,
-              overrideReason: duplicateOverrideReason
-            },
-            offlineSyncMetadata: {
-              localId: row.localId || row.tempPatientId,
-              capturedOffline: Boolean(row.capturedOffline || row.localId || row.tempPatientId),
-              capturedAt: row.offlineCapturedAt || row.registrationSource?.capturedAt,
-              syncedAt: new Date(),
-              idempotencyKey: row.idempotencyKey
-            }
-          });
-        }
+          input: {
+            ...row,
+            localId: row.localId || row.tempPatientId,
+            capturedOffline: true,
+            offlineCapturedAt: row.offlineCapturedAt || row.registrationSource?.capturedAt
+          },
+          userId: req.user?._id,
+          offlineReplay: true,
+          defaultPatientType: 'opd'
+        });
 
         successful.push({
           localId: row.localId || row.tempPatientId,
-          serverId: patient._id,
-          patientId: patient.patientId,
-          uhid: patient.uhid,
-          duplicate,
-          duplicateCandidates: candidates
+          serverId: result.patient._id,
+          patientId: result.patient.patientId,
+          uhid: result.patient.uhid,
+          duplicate: Boolean(result.duplicateMatched),
+          duplicateCandidates: result.candidates || []
         });
 
-        if (row.localId || row.tempPatientId) {
-          await OfflineSyncLog.findOneAndUpdate( // eslint-disable-line no-await-in-loop
-            {
-              hospitalId,
-              localId: row.localId || row.tempPatientId,
-              entityType: 'PATIENT'
+        if (result.created) {
+          await appendDomainEvent({ // eslint-disable-line no-await-in-loop
+            req,
+            eventType: 'patient.registration.synced',
+            entityType: 'Patient',
+            entityId: result.patient._id,
+            hospitalId,
+            patientId: result.patient._id,
+            afterSummary: {
+              uhid: result.patient.uhid,
+              registrationStatus: result.patient.registrationStatus
             },
-            {
-              hospitalId,
-              localId: row.localId || row.tempPatientId,
-              entityType: 'PATIENT',
-              operationType: 'CREATE',
-              data: row,
-              status: 'SYNCED',
-              serverId: patient._id,
-              syncedAt: new Date()
-            },
-            { upsert: true }
-          );
+            metadata: { localId: row.localId || row.tempPatientId }
+          });
         }
       } catch (error) {
+        const localId = row.localId || row.tempPatientId;
+        const code = error.code || 'REGISTRATION_FAILED';
+        const isConflict = [
+          'DUPLICATE_PATIENT',
+          'PROBABLE_DUPLICATE_PATIENT',
+          'DUPLICATE_OVERRIDE_DISABLED'
+        ].includes(code);
+
+        if (localId) {
+          await OfflineSyncLog.findOneAndUpdate( // eslint-disable-line no-await-in-loop
+            { hospitalId, localId, entityType: 'PATIENT' },
+            {
+              $set: {
+                hospitalId,
+                localId,
+                entityType: 'PATIENT',
+                operationType: 'CREATE',
+                data: row,
+                status: isConflict ? 'CONFLICT' : 'FAILED',
+                errorMessage: error.message
+              },
+              $inc: { retryCount: 1 }
+            },
+            { upsert: true, new: true }
+          );
+        }
+
         failed.push({
-          localId: row.localId || row.tempPatientId,
-          code: error.code,
-          reason: error.message
+          localId,
+          reason: error.message,
+          code,
+          conflict: isConflict,
+          candidates: error.candidates || []
         });
       }
     }
 
     return res.status(201).json({
       message: 'Bulk patient sync completed',
+      success: failed.length === 0,
       successfulCount: successful.length,
       failedCount: failed.length,
       successful,
-      failed
+      failed,
+      summary: { total: req.body.length, synced: successful.length, failed: failed.length }
     });
   } catch (error) {
     return fail(res, error);
@@ -406,10 +274,15 @@ exports.checkDuplicateByPhone = async (req, res) => {
       });
     }
     const candidates = await findDuplicateCandidates(hospitalId, payload);
+    const topCandidate = candidates[0] || null;
+    const matchedPatient = topCandidate
+      ? await Patient.findOne({ _id: topCandidate.patientId, hospitalId }).lean()
+      : null;
     return res.json({
       exists: candidates.some((candidate) => candidate.classification === 'exact'),
       probable: candidates.some((candidate) => candidate.classification === 'probable'),
-      patient: candidates[0] || null,
+      // Preserve the legacy response shape for existing admin/demo consumers.
+      patient: matchedPatient,
       candidates
     });
   } catch (error) {
@@ -581,8 +454,29 @@ exports.updatePatient = async (req, res) => {
       }
     }
 
+    const settings = await getOrCreateNabhSetting(hospitalId, req.user?._id);
+    patient.registrationCompleteness = calculateRegistrationCompleteness(patient, settings, 'OPD');
+    if (patient.registrationStatus !== 'MERGED' && patient.registrationStatus !== 'INACTIVE') {
+      patient.registrationStatus = settings.patientRegistration?.requireMobileOtp && !patient.mobileVerification?.verified
+        ? 'PENDING_VERIFICATION'
+        : 'REGISTERED';
+    }
     patient.updated_at = new Date();
     await patient.save();
+
+    await appendDomainEvent({
+      req,
+      eventType: 'patient.registration.updated',
+      entityType: 'Patient',
+      entityId: patient._id,
+      hospitalId,
+      patientId: patient._id,
+      afterSummary: {
+        uhid: patient.uhid,
+        registrationStatus: patient.registrationStatus,
+        completenessScore: patient.registrationCompleteness?.score
+      }
+    });
 
     return res.json(patient);
   } catch (error) {
@@ -680,39 +574,54 @@ exports.getRecentPatients = async (req, res) => {
 exports.createOrUpdateWalkinPatient = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const phone = req.body.phone;
-
-    let patient = phone
-      ? await Patient.findOne({ hospitalId, phone })
-      : null;
-
-    if (patient) {
-      Object.assign(patient, {
+    const result = await registerPatient({
+      hospitalId,
+      input: {
         ...req.body,
-        hospitalId,
+        // Walk-in describes today's service context, not the patient's identity.
+        patient_type: req.body.patient_type === 'ipd' ? 'ipd' : 'opd',
         is_walkin: true,
-        patient_type: 'walkin',
-        last_pharmacy_visit: new Date()
-      });
-    } else {
-      patient = new Patient({
-        ...req.body,
+        walkin_created_at: req.body.walkin_created_at || new Date(),
+        registrationSource: {
+          ...(req.body.registrationSource || {}),
+          channel: req.body.registrationSource?.channel || 'internal'
+        }
+      },
+      userId: req.user?._id,
+      reuseExactMatch: true,
+      defaultPatientType: 'opd'
+    });
+
+    await Patient.updateOne(
+      { _id: result.patient._id, hospitalId },
+      { $set: { last_pharmacy_visit: new Date() } }
+    );
+    const patient = await Patient.findOne({ _id: result.patient._id, hospitalId });
+
+    if (result.created) {
+      await appendDomainEvent({
+        req,
+        eventType: 'patient.registration.walkin_created',
+        entityType: 'Patient',
+        entityId: patient._id,
         hospitalId,
-        is_walkin: true,
-        patient_type: 'walkin',
-        walkin_created_at: new Date(),
-        last_pharmacy_visit: new Date()
+        patientId: patient._id,
+        afterSummary: { uhid: patient.uhid, registrationStatus: patient.registrationStatus }
       });
     }
 
-    await patient.save();
-
-    return res.status(patient.isNew ? 201 : 200).json({
+    return res.status(result.created ? 201 : 200).json({
       success: true,
-      patient
+      patient,
+      duplicateMatched: Boolean(result.duplicateMatched),
+      candidates: result.candidates || []
     });
   } catch (error) {
-    return fail(res, error, 400);
+    return res.status(error.statusCode || 400).json({
+      error: error.code || 'WALKIN_REGISTRATION_FAILED',
+      message: error.message,
+      ...(error.candidates ? { candidates: error.candidates } : {})
+    });
   }
 };
 

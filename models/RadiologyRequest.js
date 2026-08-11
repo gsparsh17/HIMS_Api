@@ -44,7 +44,7 @@ const radiologyRequestSchema = new mongoose.Schema({
   // Source context
   sourceType: {
     type: String,
-    enum: ['OPD', 'IPD', 'Emergency'],
+    enum: ['OPD', 'IPD', 'WALKIN', 'Emergency'],
     required: true,
     default: 'IPD'
   },
@@ -336,8 +336,16 @@ const radiologyRequestSchema = new mongoose.Schema({
   turnaroundDueAt: Date,
   payerContext: {
     coverageId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+    payerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
+    payerCategory: { type: String, enum: ['self', 'pmjay', 'cghs', 'state_scheme', 'echs', 'esic', 'government_other', 'corporate', 'private_insurer', 'tpa', 'tpa_managed', 'other'] },
     payerName: String,
-    preAuthStatus: String
+    policyNumber: String,
+    memberId: String,
+    beneficiaryId: String,
+    schemeCardNumber: String,
+    validTo: Date,
+    preAuthStatus: String,
+    source: { type: String, enum: ['ENCOUNTER_COVERAGE', 'LAST_USED', 'EXPLICIT'] }
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

@@ -33,6 +33,8 @@ const {
 } = require('../services/coverage.service');
 const { quotePricing: quoteAdmissionPricing2026 } = require('../services/pricingEngine.service');
 const { buildPatientFileDto: buildPatientFileDto2026 } = require('../services/ipdPatientFileDto.service');
+const { assertPatientReadyForContext } = require('../services/patientRegistration.service');
+const { appendDomainEvent } = require('../services/auditEvent.service');
 
 function activeAdmissionFilter2026() {
   return {
@@ -409,6 +411,14 @@ exports.createAdmission = async (req, res) => {
         throw error;
       }
 
+      await assertPatientReadyForContext({
+        hospitalId,
+        patientId: patient._id,
+        context: 'IPD',
+        userId: req.user?._id,
+        session
+      });
+
       const existing = await IPDAdmission.findOne({
         hospitalId,
         patientId: patient._id,
@@ -480,8 +490,8 @@ exports.createAdmission = async (req, res) => {
         attendant: payload.attendant,
         paymentType: payload.paymentType,
         insuranceDetails: payload.insuranceDetails,
-        sponsorType: normalizeAdmissionSponsorType(payload.sponsorType || payload.coverage?.payerCategory || patient.sponsor_type || 'self'),
-        sponsorName: payload.sponsorName || patient.sponsor_name,
+        sponsorType: normalizeAdmissionSponsorType(payload.coverage?.payerCategory || payload.sponsorType || 'self'),
+        sponsorName: payload.sponsorName || undefined,
         advanceAmount: Number(payload.advanceAmount || 0),
         advanceReceivedAmount: Number(payload.advanceAmount || 0),
         admissionNotes: payload.admissionNotes,
@@ -738,6 +748,21 @@ exports.createAdmission = async (req, res) => {
     const populated = await IPDAdmission
       .findOne({ _id: admission._id, hospitalId: admission.hospitalId })
       .populate('patientId primaryDoctorId departmentId bedId wardId roomId');
+
+    await appendDomainEvent({
+      req,
+      eventType: 'ipd.admission.created',
+      entityType: 'IPDAdmission',
+      entityId: admission._id,
+      hospitalId: admission.hospitalId,
+      patientId: patient._id,
+      encounterId: admission._id,
+      afterSummary: {
+        admissionNumber: admission.admissionNumber,
+        status: admission.status,
+        bedId: admission.bedId
+      }
+    });
 
     return res.status(201).json({
       success: true,
@@ -1187,6 +1212,14 @@ exports.updateAdmissionStatus = async (req, res) => {
           }
         );
       }
+
+      await Patient.updateOne(
+        { _id: admission.patientId, hospitalId },
+        {
+          $pull: { active_admissions: { admission_id: admission._id } },
+          $set: { patient_type: 'opd' }
+        }
+      );
     }
 
     if (reason) {
@@ -1194,6 +1227,18 @@ exports.updateAdmissionStatus = async (req, res) => {
     }
 
     await admission.save();
+
+    await appendDomainEvent({
+      req,
+      eventType: 'ipd.admission.status_changed',
+      entityType: 'IPDAdmission',
+      entityId: admission._id,
+      hospitalId,
+      patientId: admission.patientId,
+      encounterId: admission._id,
+      afterSummary: { status: admission.status, dischargeDate: admission.dischargeDate },
+      reasonCode: reason || undefined
+    });
 
     return res.json({
       success: true,

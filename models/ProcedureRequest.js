@@ -15,7 +15,7 @@ const procedureRequestSchema = new mongoose.Schema({
   // Source context (OPD or IPD)
   sourceType: {
     type: String,
-    enum: ['OPD', 'IPD', 'Emergency'],
+    enum: ['OPD', 'IPD', 'WALKIN', 'Emergency'],
     required: true,
     default: 'IPD'
   },
@@ -209,6 +209,19 @@ const procedureRequestSchema = new mongoose.Schema({
   invoiceId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Invoice'
+  },
+  payerContext: {
+    coverageId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+    payerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
+    payerCategory: { type: String, enum: ['self', 'pmjay', 'cghs', 'state_scheme', 'echs', 'esic', 'government_other', 'corporate', 'private_insurer', 'tpa', 'tpa_managed', 'other'] },
+    payerName: String,
+    policyNumber: String,
+    memberId: String,
+    beneficiaryId: String,
+    schemeCardNumber: String,
+    validTo: Date,
+    preAuthStatus: String,
+    source: { type: String, enum: ['ENCOUNTER_COVERAGE', 'LAST_USED', 'EXPLICIT'] }
   },
   
   // Cancellation

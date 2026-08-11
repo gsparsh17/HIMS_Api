@@ -2,6 +2,8 @@ const LabRequest = require('../models/LabRequest');
 const LabTest = require('../models/LabTest');
 const LabStaff = require('../models/LabStaff');
 const IPDAdmission = require('../models/IPDAdmission');
+const Appointment = require('../models/Appointment');
+const Prescription = require('../models/Prescription');
 const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const LabReport = require('../models/LabReport');
@@ -18,6 +20,9 @@ const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { finaliseDiagnosticReport } = require('../services/diagnosticReport.service');
+const { assertPatientReadyForContext } = require('../services/patientRegistration.service');
+const { appendDomainEvent } = require('../services/auditEvent.service');
+const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
 
 // Configure Cloudinary
 
@@ -396,6 +401,15 @@ exports.saveManualReport = async (req, res) => {
     request.status = 'Result Entered';
     request.processing_completed_at = completedAt;
     await request.save();
+    await rememberRequestPayerContextUsage({
+      hospitalId,
+      patientId,
+      payerContext,
+      source: 'LAB',
+      encounterId: admissionId || appointmentId || request._id,
+      userId: req.user?._id,
+      usedAt: request.createdAt || new Date()
+    });
     await upsertLabReportRecord(request, req.user?._id);
 
     res.json({ success: true, message: 'Structured laboratory report saved', data: request });
@@ -433,40 +447,87 @@ exports.downloadGeneratedReport = async (req, res) => {
 exports.createLabRequest = async (req, res) => {
   try {
     const {
-      sourceType, admissionId, appointmentId, prescriptionId,
+      sourceType = 'IPD', admissionId, appointmentId, prescriptionId,
       patientId, doctorId, labTestId, clinical_indication,
-      clinical_history, priority, scheduledDate, patient_notes
+      clinical_history, priority, scheduledDate, patient_notes, coverage
     } = req.body;
 
     if (!patientId || !doctorId || !labTestId) {
       return res.status(400).json({ error: 'Patient, doctor, and lab test are required' });
     }
 
-    // Get lab test details
+    const normalizedSource = String(sourceType || 'IPD').toUpperCase();
+    if (!['IPD', 'OPD', 'WALKIN', 'EMERGENCY'].includes(normalizedSource)) {
+      return res.status(400).json({ error: 'sourceType must be IPD, OPD, WALKIN or Emergency' });
+    }
+
     const hospitalId = requireHospitalId(req);
+    const context = normalizedSource === 'WALKIN' ? 'WALKIN_LAB' : normalizedSource;
+    await assertPatientReadyForContext({
+      hospitalId,
+      patientId,
+      context,
+      userId: req.user?._id
+    });
+
+    const doctor = await Doctor.findOne({ _id: doctorId, hospitalId }).select('_id');
+    if (!doctor) return res.status(404).json({ error: 'Doctor not found in this hospital' });
+
+    if (normalizedSource === 'IPD') {
+      if (!admissionId) {
+        return res.status(400).json({ error: 'Admission ID is required for IPD requests' });
+      }
+      const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('patientId status');
+      if (!admission || String(admission.patientId) !== String(patientId)) {
+        return res.status(409).json({ error: 'Admission does not belong to the selected patient' });
+      }
+      if (['Discharged', 'Cancelled'].includes(admission.status)) {
+        return res.status(409).json({ error: 'Lab request cannot be added to a closed admission' });
+      }
+    }
+
+    if (normalizedSource === 'OPD') {
+      if (!appointmentId && !prescriptionId) {
+        return res.status(400).json({ error: 'Appointment or Prescription ID is required for OPD requests' });
+      }
+      if (appointmentId) {
+        const appointment = await Appointment.findOne({ _id: appointmentId, hospital_id: hospitalId }).select('patient_id');
+        if (!appointment || String(appointment.patient_id) !== String(patientId)) {
+          return res.status(409).json({ error: 'Appointment does not belong to the selected patient' });
+        }
+      }
+      if (prescriptionId) {
+        const prescription = await Prescription.findById(prescriptionId).select('patient_id doctor_id');
+        if (!prescription || String(prescription.patient_id) !== String(patientId)) {
+          return res.status(409).json({ error: 'Prescription does not belong to the selected patient' });
+        }
+      }
+    }
+
     const labTest = await LabTest.findOne({ _id: labTestId, hospitalId, is_active: true });
     if (!labTest) {
       return res.status(404).json({ error: 'Lab test not found' });
     }
 
-    // Validate source-specific requirements
-    if (sourceType === 'IPD' && !admissionId) {
-      return res.status(400).json({ error: 'Admission ID is required for IPD requests' });
-    }
-    if (sourceType === 'OPD' && !appointmentId && !prescriptionId) {
-      return res.status(400).json({ error: 'Appointment or Prescription ID is required for OPD requests' });
-    }
-
-    // Resolve and snapshot the structured report template at request creation time.
     const matchedReportTemplate = getTemplate(labTest.report_template_id)
       || matchTemplate(labTest.name, labTest.code, labTest.report_template_id);
 
-    // Increment usage count
     await labTest.incrementUsage();
+
+    const payerContext = await resolveRequestPayerContext({
+      hospitalId,
+      patientId,
+      sourceType: normalizedSource,
+      admissionId,
+      appointmentId,
+      declaredCoverage: coverage,
+      userId: req.user?._id,
+      rememberSource: 'LAB'
+    });
 
     const request = new LabRequest({
       hospitalId,
-      sourceType: sourceType || 'IPD',
+      sourceType: normalizedSource === 'EMERGENCY' ? 'Emergency' : normalizedSource,
       admissionId: admissionId || null,
       appointmentId: appointmentId || null,
       prescriptionId: prescriptionId || null,
@@ -484,22 +545,44 @@ exports.createLabRequest = async (req, res) => {
       scheduledDate: scheduledDate || null,
       patient_notes: patient_notes || '',
       cost: labTest.base_price,
+      payerContext: payerContext || undefined,
       createdBy: req.user?._id
     });
 
     await request.save();
 
-    // Populate response
+    await appendDomainEvent({
+      req,
+      eventType: 'lab.request.created',
+      entityType: 'LabRequest',
+      entityId: request._id,
+      hospitalId,
+      patientId,
+      encounterId: admissionId || appointmentId || undefined,
+      afterSummary: {
+        requestNumber: request.requestNumber,
+        sourceType: request.sourceType,
+        labTestId: request.labTestId,
+        status: request.status
+      }
+    });
+
     const populated = await LabRequest.findOne({ _id: request._id, hospitalId })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
       .populate('labTestId', 'code name category report_template_id report_template_name report_template_version');
 
-    res.status(201).json({ success: true, data: populated });
+    return res.status(201).json({ success: true, data: populated });
   } catch (error) {
     console.error('Error creating lab request:', error);
-    const status = ['ValidationError','CastError'].includes(error?.name) ? 400 : Number(error?.statusCode || 500);
-    res.status(status).json({ error: error.message });
+    const status = ['ValidationError', 'CastError'].includes(error?.name)
+      ? 400
+      : Number(error?.statusCode || 500);
+    return res.status(status).json({
+      error: error.code || error.message,
+      message: error.message,
+      ...(error.missingFields ? { missingFields: error.missingFields } : {})
+    });
   }
 };
 

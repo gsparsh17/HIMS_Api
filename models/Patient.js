@@ -13,7 +13,7 @@ const patientSchema = new mongoose.Schema({
   },
   salutation: {
     type: String,
-    enum: ['Mr.', 'Mrs.', 'Ms.', 'Miss', 'Dr.', 'Prof.', 'Baby', 'Master'],
+    enum: ['Mr.', 'Mrs.', 'Ms.', 'Miss', 'Dr.', 'Prof.', 'Baby', 'Master', 'Mr', 'Mrs', 'Ms', 'Miss', 'Dr', 'Prof'],
   },
   first_name: {
     type: String,
@@ -237,6 +237,18 @@ const patientSchema = new mongoose.Schema({
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     overrideReason: String
   },
+  registrationStatus: {
+    type: String,
+    enum: ['DRAFT', 'PENDING_VERIFICATION', 'DUPLICATE_REVIEW', 'REGISTERED', 'MERGED', 'INACTIVE'],
+    default: 'REGISTERED',
+    index: true
+  },
+  registrationCompleteness: {
+    score: { type: Number, min: 0, max: 100, default: 100 },
+    missingFields: [{ type: String, trim: true }],
+    evaluatedAt: Date,
+    context: { type: String, trim: true, uppercase: true }
+  },
   sharingConsents: [{
     purpose: { type: String, trim: true },
     facility: { type: String, trim: true },
@@ -288,6 +300,43 @@ const patientSchema = new mongoose.Schema({
     default: 0,
     min: 0,
     max: 100
+  },
+  // Cached suggestion for the next encounter. This is NOT authoritative
+  // encounter coverage; every appointment/admission/service may override it.
+  // It exists so returning patients can be prefilled with their most recently
+  // used payer and beneficiary/policy number without changing patient identity.
+  lastCoveragePreference: {
+    payerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer', index: true },
+    payerCategory: {
+      type: String,
+      enum: ['self', 'pmjay', 'cghs', 'state_scheme', 'echs', 'esic', 'government_other', 'corporate', 'private_insurer', 'tpa', 'tpa_managed', 'other'],
+      default: 'self'
+    },
+    payerName: { type: String, trim: true },
+    tpaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payer' },
+    planName: { type: String, trim: true },
+    beneficiary: {
+      beneficiaryId: { type: String, trim: true },
+      schemeCardNumber: { type: String, trim: true },
+      policyNumber: { type: String, trim: true },
+      memberId: { type: String, trim: true },
+      relationship: { type: String, trim: true },
+      validFrom: Date,
+      validTo: Date,
+      coverageLimit: Number,
+      coPayPercentage: Number,
+      deductibleAmount: Number,
+      wardEntitlement: { type: String, trim: true }
+    },
+    source: {
+      type: String,
+      enum: ['REGISTRATION', 'OPD', 'IPD', 'LAB', 'RADIOLOGY', 'PROCEDURE', 'OTHER'],
+      default: 'REGISTRATION'
+    },
+    encounterId: mongoose.Schema.Types.ObjectId,
+    coverageId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage' },
+    usedAt: Date,
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
   is_walkin: {
     type: Boolean,

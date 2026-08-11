@@ -6,8 +6,27 @@ const Patient = require('../models/Patient');
 const Hospital = require('../models/Hospital');
 const HospitalSequence = require('../models/HospitalSequence');
 const PatientVerification = require('../models/PatientVerification');
+const OfflineSyncLog = require('../models/OfflineSyncLog');
+const Payer = require('../models/Payer');
 const { getOrCreateNabhSetting } = require('./nabhSetting.service');
 const { sendSensitiveSms } = require('./nabhNotification.service');
+const { rememberDeclaredPreference } = require('./patientCoveragePreference.service');
+
+const REGISTRATION_STATES = Object.freeze({
+  DRAFT: 'DRAFT',
+  PENDING_VERIFICATION: 'PENDING_VERIFICATION',
+  DUPLICATE_REVIEW: 'DUPLICATE_REVIEW',
+  REGISTERED: 'REGISTERED',
+  MERGED: 'MERGED',
+  INACTIVE: 'INACTIVE'
+});
+
+const CONTEXT_BASE_FIELDS = Object.freeze({
+  OPD: ['first_name', 'phone', 'gender', 'dob'],
+  IPD: ['first_name', 'phone', 'gender', 'dob'],
+  WALKIN_LAB: ['first_name', 'phone', 'gender', 'dob'],
+  EMERGENCY: ['first_name', 'gender']
+});
 
 function normalizePhone(value) {
   const digits = String(value || '').replace(/\D/g, '');
@@ -29,6 +48,57 @@ function valueAt(payload, path) {
   return String(path).split('.').reduce((value, key) => value?.[key], payload);
 }
 
+function hasValue(value) {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return String(value).trim() !== '';
+}
+
+function registrationError(message, statusCode = 400, code = 'REGISTRATION_ERROR', details = {}) {
+  return Object.assign(new Error(message), { statusCode, code, ...details });
+}
+
+
+async function resolveRegistrationPayer(hospitalId, payload) {
+  const sponsorType = String(payload.sponsor_type || 'self').trim().toLowerCase();
+  if (sponsorType === 'self') {
+    payload.sponsor_type = 'self';
+    payload.insurance_provider_id = undefined;
+    payload.sponsor_name = undefined;
+    payload.sponsor_policy_number = undefined;
+    payload.sponsor_valid_until = undefined;
+    return null;
+  }
+
+  if (!payload.insurance_provider_id) {
+    throw registrationError(
+      'An approved payer must be selected for sponsored/insured registration',
+      400,
+      'PAYER_REQUIRED'
+    );
+  }
+
+  const payer = await Payer.findOne({
+    _id: payload.insurance_provider_id,
+    hospitalId,
+    isActive: true
+  }).lean();
+
+  if (!payer) {
+    throw registrationError(
+      'Selected payer is not active or does not belong to this hospital',
+      400,
+      'INVALID_PAYER'
+    );
+  }
+
+  // Never trust a free-text payer name from a registration client. The payer
+  // master is the hospital-scoped source of truth.
+  payload.insurance_provider_id = payer._id;
+  payload.sponsor_name = payer.name;
+  return payer;
+}
+
 function validateConfiguredRegistration(payload, settings) {
   const config = settings.patientRegistration || {};
   const errors = [];
@@ -38,9 +108,7 @@ function validateConfiguredRegistration(payload, settings) {
   }
   for (const field of config.requiredFields || []) {
     const value = valueAt(payload, field);
-    if (value === undefined || value === null || String(value).trim() === '') {
-      errors.push(`${field} is required`);
-    }
+    if (!hasValue(value)) errors.push(`${field} is required`);
   }
   const configuredPaymentPreferences = (config.paymentPreferences || [])
     .map((item) => String(item).trim().toLowerCase())
@@ -56,6 +124,21 @@ function validateConfiguredRegistration(payload, settings) {
     errors.push('Verified mobile number is required');
   }
   return errors;
+}
+
+
+function sanitizeRegistrationAbha(abha) {
+  if (!abha || (!hasValue(abha.number) && !hasValue(abha.address))) return undefined;
+  return {
+    number: hasValue(abha.number) ? String(abha.number).trim() : undefined,
+    address: hasValue(abha.address) ? String(abha.address).trim().toLowerCase() : undefined,
+    status: 'manually_captured',
+    registrationMode: 'manual_capture',
+    kycVerified: false,
+    verificationMethod: undefined,
+    verifiedAt: undefined,
+    linkedAt: undefined
+  };
 }
 
 function scoreDuplicate(patient, payload) {
@@ -107,6 +190,286 @@ async function findDuplicateCandidates(hospitalId, payload, { limit = 20 } = {})
     .map((patient) => scoreDuplicate(patient, payload))
     .filter((candidate) => candidate.score >= 20)
     .sort((a, b) => b.score - a.score);
+}
+
+function registrationFieldsForContext(settings, context = 'OPD') {
+  const normalizedContext = String(context || 'OPD').toUpperCase();
+  const configured = settings?.patientRegistration?.requiredFields || [];
+  return [...new Set([...(CONTEXT_BASE_FIELDS[normalizedContext] || CONTEXT_BASE_FIELDS.OPD), ...configured])];
+}
+
+function calculateRegistrationCompleteness(patientLike, settings, context = 'OPD') {
+  const fields = registrationFieldsForContext(settings, context);
+  const missingFields = fields.filter((field) => !hasValue(valueAt(patientLike, field)));
+  const completed = Math.max(0, fields.length - missingFields.length);
+  return {
+    score: fields.length ? Math.round((completed / fields.length) * 100) : 100,
+    missingFields,
+    evaluatedAt: new Date(),
+    context: String(context || 'OPD').toUpperCase()
+  };
+}
+
+async function assertPatientReadyForContext({ hospitalId, patientId, context = 'OPD', userId, session = null }) {
+  const query = Patient.findOne({ _id: patientId, hospitalId });
+  if (session) query.session(session);
+  const patient = await query;
+  if (!patient) throw registrationError('Patient not found in this hospital', 404, 'PATIENT_NOT_FOUND');
+
+  if (['MERGED', 'INACTIVE'].includes(patient.registrationStatus)) {
+    throw registrationError(
+      `Patient registration is ${String(patient.registrationStatus).toLowerCase()}`,
+      409,
+      'PATIENT_REGISTRATION_INACTIVE'
+    );
+  }
+  if (patient.registrationStatus === REGISTRATION_STATES.DUPLICATE_REVIEW
+    || patient.duplicateReview?.status === 'probable_duplicate') {
+    throw registrationError(
+      'Patient registration requires duplicate review before this workflow can continue',
+      409,
+      'PATIENT_DUPLICATE_REVIEW_REQUIRED'
+    );
+  }
+
+  const settings = await getOrCreateNabhSetting(hospitalId, userId);
+  const completeness = calculateRegistrationCompleteness(patient, settings, context);
+  if (completeness.missingFields.length) {
+    throw registrationError(
+      `Patient registration is incomplete for ${String(context).toUpperCase()}`,
+      409,
+      'PATIENT_REGISTRATION_INCOMPLETE',
+      { missingFields: completeness.missingFields, completeness }
+    );
+  }
+
+  return { patient, completeness, settings };
+}
+
+function buildRegistrationPayload(input, { hospitalId, userId, defaultPatientType = 'opd' }) {
+  const capturedOffline = Boolean(input.capturedOffline || input.localId || input.tempPatientId);
+  return {
+    ...input,
+    // Registration may capture a patient-reported ABHA identifier, but only
+    // ABDM verification endpoints are allowed to promote it to VERIFIED.
+    abha: sanitizeRegistrationAbha(input.abha),
+    hospitalId,
+    normalizedPhone: normalizePhone(input.phone),
+    patient_type: input.patient_type || defaultPatientType,
+    mobileVerification: { verified: false },
+    registrationSource: {
+      channel: input.registrationSource?.channel || input.registrationChannel || 'internal',
+      externalReference: input.registrationSource?.externalReference,
+      deviceIdentifier: input.registrationSource?.deviceIdentifier,
+      capturedAt: input.registrationSource?.capturedAt || input.offlineCapturedAt || new Date(),
+      capturedBy: userId
+    },
+    offlineSyncMetadata: {
+      localId: input.localId || input.tempPatientId,
+      capturedOffline,
+      capturedAt: input.offlineCapturedAt || input.registrationSource?.capturedAt,
+      syncedAt: capturedOffline ? new Date() : undefined,
+      idempotencyKey: input.idempotencyKey
+    }
+  };
+}
+
+async function registerPatient({
+  hospitalId,
+  input,
+  userId,
+  reuseExactMatch = false,
+  offlineReplay = false,
+  defaultPatientType = 'opd'
+}) {
+  if (!hospitalId) throw registrationError('Hospital context is required', 400, 'HOSPITAL_CONTEXT_REQUIRED');
+  const source = input || {};
+  const settings = await getOrCreateNabhSetting(hospitalId, userId);
+
+  if (source.idempotencyKey) {
+    const existingReplay = await Patient.findOne({
+      hospitalId,
+      'offlineSyncMetadata.idempotencyKey': String(source.idempotencyKey)
+    });
+    if (existingReplay) {
+      return {
+        patient: existingReplay,
+        created: false,
+        idempotent: true,
+        duplicateMatched: false,
+        candidates: [],
+        duplicateReview: existingReplay.duplicateReview
+      };
+    }
+  }
+
+  const payload = buildRegistrationPayload(source, { hospitalId, userId, defaultPatientType });
+
+  const registrationPayer = await resolveRegistrationPayer(hospitalId, payload);
+
+  if (source.mobileVerification?.verificationId) {
+    const verified = await verifyMobileOtp({
+      hospitalId,
+      verificationId: source.mobileVerification.verificationId,
+      phone: source.phone,
+      otp: source.mobileVerification.otp
+    });
+    payload.mobileVerification = {
+      verified: true,
+      verifiedAt: verified.verifiedAt,
+      verificationId: verified.verificationId,
+      phone: verified.phone
+    };
+  }
+
+  const validationErrors = validateConfiguredRegistration(payload, settings);
+  if (validationErrors.length) {
+    throw registrationError(
+      validationErrors.join('; '),
+      400,
+      'REGISTRATION_VALIDATION_FAILED',
+      { fields: validationErrors }
+    );
+  }
+
+  const candidates = await findDuplicateCandidates(hospitalId, payload);
+  const exact = candidates.find((candidate) => candidate.classification === 'exact');
+  const probable = candidates.find((candidate) => candidate.classification === 'probable');
+  const duplicateOverrideReason = String(
+    source.duplicateOverride?.reason || (source.force_create ? 'Legacy force_create override' : '')
+  ).trim();
+
+  if (exact && !source.force_create) {
+    if (reuseExactMatch || offlineReplay) {
+      const existing = await Patient.findOne({ _id: exact.patientId, hospitalId });
+      if (source.localId || source.tempPatientId) {
+        await OfflineSyncLog.findOneAndUpdate(
+          { hospitalId, localId: source.localId || source.tempPatientId, entityType: 'PATIENT' },
+          {
+            hospitalId,
+            localId: source.localId || source.tempPatientId,
+            entityType: 'PATIENT',
+            operationType: 'CREATE',
+            data: source,
+            status: 'SYNCED',
+            serverId: existing._id,
+            syncedAt: new Date()
+          },
+          { upsert: true, new: true }
+        );
+      }
+      return {
+        patient: existing,
+        created: false,
+        duplicateMatched: true,
+        candidates,
+        duplicateReview: existing.duplicateReview
+      };
+    }
+    throw registrationError(
+      'An exact duplicate patient record was detected',
+      409,
+      'DUPLICATE_PATIENT',
+      { candidates }
+    );
+  }
+
+  if (probable && !duplicateOverrideReason) {
+    throw registrationError(
+      'A probable duplicate patient record was detected. Review or provide an override reason.',
+      409,
+      'PROBABLE_DUPLICATE_PATIENT',
+      {
+        candidates,
+        overrideAllowed: Boolean(settings.patientRegistration?.allowProbableDuplicateOverride)
+      }
+    );
+  }
+
+  if (probable && !settings.patientRegistration?.allowProbableDuplicateOverride) {
+    throw registrationError(
+      'Probable duplicate override is disabled by hospital policy',
+      409,
+      'DUPLICATE_OVERRIDE_DISABLED',
+      { candidates }
+    );
+  }
+
+  payload.duplicateReview = {
+    status: probable ? 'override_approved' : 'clear',
+    candidatePatientIds: candidates.map((candidate) => candidate.patientId),
+    score: candidates[0]?.score || 0,
+    matchedFields: candidates[0]?.matches || [],
+    reviewedAt: new Date(),
+    reviewedBy: userId,
+    overrideReason: duplicateOverrideReason
+  };
+
+  const completeness = calculateRegistrationCompleteness(payload, settings, 'OPD');
+  payload.registrationCompleteness = completeness;
+  payload.registrationStatus = payload.offlineSyncMetadata?.capturedOffline && settings.patientRegistration?.requireMobileOtp
+    && !payload.mobileVerification?.verified
+    ? REGISTRATION_STATES.PENDING_VERIFICATION
+    : REGISTRATION_STATES.REGISTERED;
+
+  if (payload.mobileVerification?.verified) {
+    await consumeMobileVerification({
+      hospitalId,
+      verificationId: payload.mobileVerification.verificationId,
+      phone: payload.phone
+    });
+  }
+
+  const {
+    localId, tempPatientId, isSynced, force_create, registrationChannel,
+    duplicateOverride, capturedOffline, offlineCapturedAt, idempotencyKey,
+    ...cleanPayload
+  } = payload;
+  const patient = await Patient.create(cleanPayload);
+
+  await rememberDeclaredPreference({
+    hospitalId,
+    patientId: patient._id,
+    payer: registrationPayer,
+    payerId: registrationPayer?._id,
+    payerCategory: registrationPayer?.type || 'self',
+    payerName: registrationPayer?.name,
+    beneficiary: {
+      policyNumber: payload.sponsor_policy_number,
+      validTo: payload.sponsor_valid_until,
+      coPayPercentage: payload.insurance_coverage_percentage
+    },
+    source: 'REGISTRATION',
+    userId,
+    usedAt: patient.createdAt || new Date(),
+    updateLegacyPatientFields: false
+  });
+
+  if (source.localId || source.tempPatientId) {
+    await OfflineSyncLog.findOneAndUpdate(
+      { hospitalId, localId: source.localId || source.tempPatientId, entityType: 'PATIENT' },
+      {
+        hospitalId,
+        localId: source.localId || source.tempPatientId,
+        entityType: 'PATIENT',
+        operationType: 'CREATE',
+        data: source,
+        status: 'SYNCED',
+        serverId: patient._id,
+        syncedAt: new Date()
+      },
+      { upsert: true, new: true }
+    );
+  }
+
+  return {
+    patient,
+    created: true,
+    duplicateMatched: false,
+    candidates,
+    duplicateReview: payload.duplicateReview,
+    completeness
+  };
 }
 
 async function nextPatientIdentifier(hospitalId, template) {
@@ -245,9 +608,14 @@ async function registrationConfig(hospitalId, userId) {
 }
 
 module.exports = {
+  REGISTRATION_STATES,
   normalizePhone,
   validateConfiguredRegistration,
   findDuplicateCandidates,
+  registrationFieldsForContext,
+  calculateRegistrationCompleteness,
+  assertPatientReadyForContext,
+  registerPatient,
   nextPatientIdentifier,
   requestMobileOtp,
   verifyMobileOtp,

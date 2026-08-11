@@ -2,6 +2,8 @@ const ProcedureRequest = require('../models/ProcedureRequest');
 const Procedure = require('../models/Procedure');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
+const { requireHospitalId } = require('../services/tenantScope.service');
+const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
 
 
 
@@ -25,15 +27,18 @@ exports.createProcedureRequest = async (req, res) => {
       anesthesia_type,
       pre_procedure_instructions,
       consent_obtained,
-      patient_notes
+      patient_notes,
+      coverage
     } = req.body;
 
     if (!patientId || !doctorId || !procedureId) {
       return res.status(400).json({ error: 'Patient, doctor, and procedure are required' });
     }
 
-    // Get procedure details
-    const procedure = await Procedure.findById(procedureId);
+    const hospitalId = requireHospitalId(req);
+
+    // Get procedure details from this hospital only.
+    const procedure = await Procedure.findOne({ _id: procedureId, hospitalId, is_active: { $ne: false } });
     if (!procedure) {
       return res.status(404).json({ error: 'Procedure not found' });
     }
@@ -46,7 +51,19 @@ exports.createProcedureRequest = async (req, res) => {
     // Increment usage count
     await procedure.incrementUsage();
 
+    const payerContext = await resolveRequestPayerContext({
+      hospitalId,
+      patientId,
+      sourceType: sourceType || 'IPD',
+      admissionId,
+      appointmentId,
+      declaredCoverage: coverage,
+      userId: req.user?._id,
+      rememberSource: 'PROCEDURE'
+    });
+
     const request = new ProcedureRequest({
+      hospitalId,
       sourceType: sourceType || 'IPD',
       admissionId: admissionId || null,
       appointmentId: appointmentId || null,
@@ -67,10 +84,20 @@ exports.createProcedureRequest = async (req, res) => {
       pre_procedure_instructions: pre_procedure_instructions || procedure.pre_procedure_instructions || '',
       consent_obtained: consent_obtained || false,
       cost: procedure.base_price,
+      payerContext: payerContext || undefined,
       createdBy: req.user?._id
     });
 
     await request.save();
+    await rememberRequestPayerContextUsage({
+      hospitalId,
+      patientId,
+      payerContext,
+      source: 'PROCEDURE',
+      encounterId: admissionId || appointmentId || request._id,
+      userId: req.user?._id,
+      usedAt: request.createdAt || new Date()
+    });
 
     // Populate response
     const populated = await ProcedureRequest.findById(request._id)
@@ -81,7 +108,8 @@ exports.createProcedureRequest = async (req, res) => {
     res.status(201).json({ success: true, data: populated });
   } catch (error) {
     console.error('Error creating procedure request:', error);
-    res.status(500).json({ error: error.message });
+    const status = Number(error?.statusCode || (['ValidationError', 'CastError'].includes(error?.name) ? 400 : 500));
+    res.status(status).json({ error: error.code || error.message, message: error.message, code: error.code });
   }
 };
 

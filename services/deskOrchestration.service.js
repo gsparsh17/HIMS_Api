@@ -14,8 +14,10 @@ const patientFinancial = require('./patientFinancial.service');
 const ipdFinancial = require('./ipdFinancial.service');
 const { getTemplate, matchTemplate } = require('./labReportTemplate.service');
 const { searchServiceCatalog } = require('./serviceCatalog.service');
-const { normalizeIndianPhone, demographicsFromInput } = require('../utils/patientDemographics');
 const { userHospitalId } = require('../utils/hospitalScope');
+const { registerPatient, assertPatientReadyForContext } = require('./patientRegistration.service');
+const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('./requestPayerContext.service');
+const { resolveDeclaredCoveragePreference } = require('./patientCoveragePreference.service');
 
 const round = value => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 const stableHash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -98,17 +100,14 @@ async function authoritativeCart({ user, cart, encounterType }) {
   return out;
 }
 
-async function resolvePatient({ hospitalId, patientSelection, quickPatient }) {
+async function resolvePatient({ hospitalId, patientSelection, quickPatient, userId }) {
   if (patientSelection?.patientId) {
-    const patient = await Patient.findOne({
-      _id: patientSelection.patientId,
-      hospitalId
+    const { patient } = await assertPatientReadyForContext({
+      hospitalId,
+      patientId: patientSelection.patientId,
+      context: 'OPD',
+      userId
     });
-
-    if (!patient) {
-      throw checkoutError('Selected patient was not found', 404);
-    }
-
     return { patient, created: false };
   }
 
@@ -116,32 +115,34 @@ async function resolvePatient({ hospitalId, patientSelection, quickPatient }) {
     throw checkoutError('Select or create a patient');
   }
 
-  const normalizedPhone = normalizeIndianPhone(quickPatient.phone);
-  const demographics = demographicsFromInput(quickPatient);
-
-  const duplicate = await Patient.findOne({
-    hospitalId,
-    normalizedPhone,
-    first_name: new RegExp(`^${String(quickPatient.first_name || '').trim()}$`, 'i')
-  });
-
-  if (duplicate) {
-    return { patient: duplicate, created: false, duplicateMatched: true };
+  try {
+    const result = await registerPatient({
+      hospitalId,
+      input: {
+        ...quickPatient,
+        registrationSource: {
+          ...(quickPatient.registrationSource || {}),
+          channel: quickPatient.registrationSource?.channel || 'internal'
+        },
+        idempotencyKey: quickPatient.idempotencyKey
+      },
+      userId,
+      reuseExactMatch: true,
+      defaultPatientType: 'opd'
+    });
+    return {
+      patient: result.patient,
+      created: result.created,
+      duplicateMatched: result.duplicateMatched
+    };
+  } catch (error) {
+    throw checkoutError(
+      error.message,
+      error.statusCode || 400,
+      error.code || 'PATIENT_REGISTRATION_FAILED',
+      { candidates: error.candidates || [] }
+    );
   }
-
-  const [patient] = await Patient.create([{
-    hospitalId,
-    first_name: String(quickPatient.first_name || '').trim(),
-    middle_name: String(quickPatient.middle_name || '').trim(),
-    last_name: String(quickPatient.last_name || '').trim(),
-    phone: normalizedPhone,
-    normalizedPhone,
-    gender: quickPatient.gender,
-    patient_type: quickPatient.patient_type || 'opd',
-    ...demographics
-  }]);
-
-  return { patient, created: true };
 }
 
 function previewTotals(rows) {
@@ -364,6 +365,7 @@ async function createClinicalRequest({
   hospitalId,
   context,
   refs,
+  payerContext,
   idempotencyKey,
   user
 }) {
@@ -375,7 +377,7 @@ async function createClinicalRequest({
   const common = {
     hospitalId,
     deskCheckoutKey,
-    sourceType: context.admissionId ? 'IPD' : 'OPD',
+    sourceType: context.admissionId ? 'IPD' : (context.appointmentId ? 'OPD' : 'WALKIN'),
     admissionId: context.admissionId || null,
     appointmentId: context.appointmentId || null,
     patientId: patient._id,
@@ -388,6 +390,7 @@ async function createClinicalRequest({
     chargeIds: refs.chargeIds || [],
     billIds: refs.billIds || [],
     invoiceIds: refs.invoiceIds || [],
+    payerContext: payerContext || undefined,
     pricingSnapshot: {
       source: 'Desk',
       serviceCode: row.code,
@@ -587,6 +590,13 @@ async function previewDeskCheckout(payload, user) {
     rows: decoratedRows
   });
 
+  if (payload.coverage && (payload.coverage.payerId || payload.coverage.payerCategory)) {
+    await resolveDeclaredCoveragePreference({
+      hospitalId: userHospitalId(user),
+      coverage: payload.coverage
+    });
+  }
+
   const warnings = [
     ...decoratedRows
       .filter(row => row.pricingDifference)
@@ -607,6 +617,7 @@ async function previewDeskCheckout(payload, user) {
     admissionId: payload.admissionId || null,
     encounterContext: normalizeEncounterContext(payload.encounterContext),
     serviceCart: decoratedRows.map(({ pricingDifference, clinicalAction, financialAction, gross, ...row }) => row),
+    coverage: payload.coverage || null,
     issueInvoice: payload.issueInvoice !== false,
     payment: canonicalPaymentForPreview(payload.payment, payment)
   };
@@ -713,7 +724,8 @@ async function commitDeskCheckout(payload, user) {
     const { patient, created, duplicateMatched } = await resolvePatient({
       hospitalId,
       patientSelection: payload.patientSelection,
-      quickPatient: payload.quickPatient
+      quickPatient: payload.quickPatient,
+      userId: user?._id
     });
 
     let admission = null;
@@ -730,6 +742,7 @@ async function commitDeskCheckout(payload, user) {
       }
     }
 
+    const financialEncounterContext = normalizeEncounterContext(payload.encounterContext);
     const billIds = [];
     const chargeIds = [];
     const invoiceIds = [];
@@ -760,6 +773,7 @@ async function commitDeskCheckout(payload, user) {
           chargeHead: row.serviceType,
           quantity: row.quantity,
           rate: row.rate,
+          appointmentId: financialEncounterContext.appointmentId || undefined,
           idempotencyKey: rowKey,
           notes: `Desk checkout ${idempotencyKey}`
         }, user);
@@ -940,6 +954,20 @@ async function commitDeskCheckout(payload, user) {
       admission
     });
     const clinicalRequests = [];
+    const hasClinicalRequests = preview.rows.some(isClinicalRequestRow);
+    const hasDeclaredCoverage = Boolean(payload.coverage && (payload.coverage.payerId || payload.coverage.payerCategory));
+    const requestPayerContext = (hasClinicalRequests || hasDeclaredCoverage)
+      ? await resolveRequestPayerContext({
+        hospitalId,
+        patientId: patient._id,
+        sourceType: clinicalContext.admissionId ? 'IPD' : (clinicalContext.appointmentId ? 'OPD' : 'WALKIN'),
+        admissionId: clinicalContext.admissionId,
+        appointmentId: clinicalContext.appointmentId,
+        declaredCoverage: payload.coverage,
+        userId: user?._id,
+        rememberSource: 'OTHER'
+      })
+      : null;
 
     for (let index = 0; index < preview.rows.length; index += 1) {
       const request = await createClinicalRequest({
@@ -949,10 +977,31 @@ async function commitDeskCheckout(payload, user) {
         hospitalId,
         context: clinicalContext,
         refs: rowFinancialRefs[index],
+        payerContext: requestPayerContext,
         idempotencyKey,
         user
       });
       if (request) clinicalRequests.push(request);
+    }
+
+    if (requestPayerContext) {
+      const serviceSources = [...new Set(preview.rows.filter(isClinicalRequestRow).map(row => row.serviceType))];
+      const preferenceSource = clinicalContext.admissionId
+        ? 'IPD'
+        : clinicalContext.appointmentId
+          ? 'OPD'
+          : serviceSources.length === 1 && ['LAB', 'RADIOLOGY', 'PROCEDURE'].includes(serviceSources[0])
+            ? serviceSources[0]
+            : 'OTHER';
+      await rememberRequestPayerContextUsage({
+        hospitalId,
+        patientId: patient._id,
+        payerContext: requestPayerContext,
+        source: preferenceSource,
+        encounterId: clinicalContext.admissionId || clinicalContext.appointmentId || undefined,
+        userId: user?._id,
+        usedAt: new Date()
+      });
     }
 
     const documents = [

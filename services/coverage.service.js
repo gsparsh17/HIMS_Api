@@ -4,6 +4,7 @@ const Appointment = require('../models/Appointment');
 const Payer = require('../models/Payer');
 const RateCard = require('../models/RateCard');
 const { appendDomainEvent } = require('./auditEvent.service');
+const { rememberCoveragePreference } = require('./patientCoveragePreference.service');
 
 function httpError(message, statusCode = 400, code) {
   const error = new Error(message);
@@ -180,6 +181,13 @@ async function createEncounterCoverage({ req, hospitalId, encounterType, encount
     await encounter.save({ session });
   }
 
+  await rememberCoveragePreference({
+    hospitalId,
+    coverage,
+    userId: req.user?._id,
+    session
+  });
+
   await appendDomainEvent({
     req,
     eventType: existing ? 'coverage.replaced' : 'coverage.created',
@@ -304,6 +312,7 @@ async function activatePreparedCoverage({ req, hospitalId, coverageId, session }
   encounter.sponsorType = payer?.type || coverage.payerCategory;
   encounter.sponsorName = payer?.name;
   await encounter.save({ session });
+  await rememberCoveragePreference({ hospitalId, coverage, userId: req.user?._id, session });
   await appendDomainEvent({
     req,
     eventType: 'coverage.activated',
