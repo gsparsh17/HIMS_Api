@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const IPDCharge = require('../models/IPDCharge');
 const finance = require('../services/ipdFinancial.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
@@ -5,6 +6,15 @@ const { requireHospitalId } = require('../services/tenantScope.service');
 function handleError(res, error) {
   console.error('IPD billing error:', error);
   return res.status(error.statusCode || 500).json({ success: false, error: error.message || 'IPD billing operation failed', details: error.details });
+}
+
+function requireObjectId(value, field = 'id') {
+  if (!mongoose.isValidObjectId(value)) {
+    const error = new Error(`${field} must be a valid ObjectId`);
+    error.statusCode = 400;
+    error.code = 'INVALID_OBJECT_ID';
+    throw error;
+  }
 }
 
 // Kept as the compatibility controller for existing IPD routes. All financial
@@ -20,6 +30,7 @@ exports.addManualCharge = async (req, res) => {
 exports.getChargesByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
+    requireObjectId(admissionId, 'admissionId');
     const filter = { hospitalId: requireHospitalId(req), admissionId };
     if (req.query.chargeType) filter.chargeType = req.query.chargeType;
     if (req.query.isBilled !== undefined) filter.isBilled = req.query.isBilled === 'true';
@@ -59,6 +70,7 @@ exports.markChargesAsBilled = async (req, res) => {
 
 exports.getUnbilledChargesByType = async (req, res) => {
   try {
+    requireObjectId(req.params.admissionId, 'admissionId');
     const filter = { hospitalId: requireHospitalId(req), admissionId: req.params.admissionId, isBilled: false, status: { $in: ['ACTIVE', null] } };
     if (req.query.chargeType) filter.chargeType = req.query.chargeType;
     const charges = await IPDCharge.find(filter).sort({ chargeDate: 1 });

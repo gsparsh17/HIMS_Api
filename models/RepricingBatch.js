@@ -48,8 +48,22 @@ const repricingBatchSchema = new mongoose.Schema({
   },
   firstApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   firstApprovedAt: Date,
+  approvalOverride: {
+    used: { type: Boolean, default: false },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: Date,
+    role: String,
+    reason: String
+  },
   committedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   committedAt: Date,
+  commitOverride: {
+    used: { type: Boolean, default: false },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: Date,
+    role: String,
+    reason: String
+  },
   idempotencyKey: { type: String, required: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   error: String

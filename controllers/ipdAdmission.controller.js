@@ -402,6 +402,20 @@ exports.createAdmission = async (req, res) => {
     const hospitalId = requireAdmissionHospitalId(req);
     const payload = req.body || {};
 
+    const requireObjectId = (value, field) => {
+      if (!mongoose.isValidObjectId(value)) {
+        const error = new Error(`${field} must be a valid ObjectId`);
+        error.statusCode = 400;
+        error.code = 'INVALID_OBJECT_ID';
+        throw error;
+      }
+    };
+
+    requireObjectId(payload.patientId, 'patientId');
+    requireObjectId(payload.primaryDoctorId, 'primaryDoctorId');
+    if (payload.departmentId) requireObjectId(payload.departmentId, 'departmentId');
+    if (payload.bedId) requireObjectId(payload.bedId, 'bedId');
+
     await session.withTransaction(async () => {
       patient = await Patient.findOne({ _id: payload.patientId, hospitalId }).session(session);
 

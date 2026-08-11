@@ -309,7 +309,11 @@ async function activatePreparedCoverage({ req, hospitalId, coverageId, session }
     : await tenantAdmission(hospitalId, coverage.admissionId, session);
   const payer = await sessionQuery(Payer.findById(coverage.payerId), session);
   encounter.coverageId = coverage._id;
-  encounter.sponsorType = payer?.type || coverage.payerCategory;
+  // IPDAdmission.sponsorType is a legacy enum (insurance/company_panel/etc.),
+  // while Payer.type uses the canonical 2026 values (private_insurer/corporate/etc.).
+  // Use the same canonical->legacy mapping as createEncounterCoverage so a prepared
+  // coverage can be activated during repricing without failing model validation.
+  encounter.sponsorType = legacyEncounterSponsorType(payer?.type || coverage.payerCategory);
   encounter.sponsorName = payer?.name;
   await encounter.save({ session });
   await rememberCoveragePreference({ hospitalId, coverage, userId: req.user?._id, session });

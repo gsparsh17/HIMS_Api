@@ -271,8 +271,17 @@ async function activationGate({ card, hospitalId, quality = card.quality || {}, 
   }
   if (!card.approval?.firstApprovedBy) reasons.push({ code: 'FIRST_APPROVAL_REQUIRED', message: 'First approval is required' });
   if (!card.approval?.secondApprovedBy) reasons.push({ code: 'SECOND_APPROVAL_REQUIRED', message: 'Second approval is required' });
-  if (card.approval?.firstApprovedBy && card.approval?.secondApprovedBy && String(card.approval.firstApprovedBy) === String(card.approval.secondApprovedBy)) {
-    reasons.push({ code: 'SAME_APPROVER', message: 'First and second approval must be completed by different users' });
+  const firstApproverId = card.approval?.firstApprovedBy?._id || card.approval?.firstApprovedBy;
+  const secondApproverId = card.approval?.secondApprovedBy?._id || card.approval?.secondApprovedBy;
+  const sameApprover = firstApproverId && secondApproverId && String(firstApproverId) === String(secondApproverId);
+  const overrideById = card.approval?.secondApprovalOverride?.by?._id || card.approval?.secondApprovalOverride?.by;
+  const overrideRole = String(card.approval?.secondApprovalOverride?.role || '').trim().toLowerCase();
+  const validAdminSelfApprovalOverride = Boolean(card.approval?.secondApprovalOverride?.used)
+    && overrideById
+    && String(overrideById) === String(secondApproverId)
+    && ['admin', 'mediqliq_super_admin'].includes(overrideRole);
+  if (sameApprover && !validAdminSelfApprovalOverride) {
+    reasons.push({ code: 'SAME_APPROVER', message: 'First and second approval must be completed by different users unless an audited admin self-approval override was used' });
   }
   if (Number(quality.criticalErrors || 0) > 0) reasons.push({ code: 'QUALITY_ERRORS', message: `${quality.criticalErrors} critical tariff validation error(s) remain` });
   const requiredPercent = card.activationRequirements?.requireAllBillableMappings

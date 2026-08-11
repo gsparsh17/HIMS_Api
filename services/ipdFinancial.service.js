@@ -305,6 +305,13 @@ function sessionOptions(session) {
 }
 
 async function findAdmission(admissionId, session, user) {
+  if (!mongoose.isValidObjectId(admissionId)) {
+    const error = new Error('admissionId must be a valid ObjectId');
+    error.statusCode = 400;
+    error.code = 'INVALID_OBJECT_ID';
+    throw error;
+  }
+
   const filter = { _id: admissionId };
   const hospitalId = userHospitalId(user);
 

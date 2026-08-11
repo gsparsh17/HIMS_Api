@@ -5,6 +5,7 @@ const hrDevelopment = require('../controllers/hrDevelopment.controller');
 const { protect, authorize, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
 
 const hrAccess = [protect, authorize('admin', 'mediqliq_super_admin', 'hr', 'hr_manager'), requireModuleAccess('hr_staff', 'manage')];
+const loginAccess = [...hrAccess, requireActionPermission('user_access_manage')];
 const selfRoles = ['admin', 'mediqliq_super_admin', 'hr', 'hr_manager', 'doctor', 'nurse', 'staff', 'pharmacy', 'pathology_staff', 'radiology_staff', 'ot_staff', 'receptionist', 'registrar', 'store', 'store_manager', 'inventory_manager', 'accountant', 'insurance_desk', 'equipment_manager', 'bed_manager'];
 const staffSelfAccess = [protect, authorize(...selfRoles)];
 
@@ -29,7 +30,7 @@ router.post('/employees', hrAccess, hrController.createEmployee);
 router.get('/employees', hrAccess, hrController.getEmployees);
 router.get('/employees/:id', hrAccess, hrController.getEmployeeById);
 router.put('/employees/:id', hrAccess, hrController.updateEmployee);
-router.put('/employees/:id/login', hrAccess, hrController.setEmployeeLogin);
+router.put('/employees/:id/login', loginAccess, hrController.setEmployeeLogin);
 router.put('/employees/:id/deactivate', hrAccess, hrController.deactivateEmployee);
 router.put('/employees/:id/salary', hrAccess, hrController.updateEmployeeSalaryConfig);
 

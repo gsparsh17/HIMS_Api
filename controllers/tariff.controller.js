@@ -11,6 +11,7 @@ const { appendDomainEvent } = require('../services/auditEvent.service');
 const { validateRateCard, activationGate } = require('../services/tariffValidation.service');
 const { suggestMappings, reviewMapping, mappingCoverage } = require('../services/tariffMapping.service');
 const { prepareRateCardReadiness } = require('../services/rateCardReadiness.service');
+const { canUseInsuranceSelfApprovalOverride, buildInsuranceAdminOverride } = require('../utils/insuranceWorkflowAuthority');
 
 function fail(res, error) {
   const status = error.statusCode || (error.name === 'ValidationError' ? 422 : 400);
@@ -162,6 +163,8 @@ exports.updateRateCard = async (req, res) => {
     card.approval.firstApprovedAt = undefined;
     card.approval.secondApprovedBy = undefined;
     card.approval.secondApprovedAt = undefined;
+    card.approval.secondApprovalOverride = undefined;
+    card.approval.activationOverride = undefined;
     card.status = 'staging';
     await card.save();
     res.json({ success: true, data: card });
@@ -171,7 +174,7 @@ exports.updateRateCard = async (req, res) => {
 exports.getRateCard = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const data = await RateCard.findOne({ _id: req.params.id, hospitalId }).populate('payerId').populate('approval.firstApprovedBy approval.secondApprovedBy approval.activatedBy', 'name email role');
+    const data = await RateCard.findOne({ _id: req.params.id, hospitalId }).populate('payerId').populate('approval.firstApprovedBy approval.secondApprovedBy approval.activatedBy approval.secondApprovalOverride.by approval.activationOverride.by', 'name email role');
     if (!data) return res.status(404).json({ success: false, error: 'Rate card not found' });
     const itemFilter = { hospitalId, rateCardId: data._id };
     if (req.query.mappingStatus) itemFilter['internalService.mappingStatus'] = req.query.mappingStatus;
@@ -218,6 +221,8 @@ exports.upsertRateCardItems = async (req, res) => {
     card.approval.firstApprovedAt = undefined;
     card.approval.secondApprovedBy = undefined;
     card.approval.secondApprovedAt = undefined;
+    card.approval.secondApprovalOverride = undefined;
+    card.approval.activationOverride = undefined;
     card.updatedBy = req.user._id;
     card.revision += 1;
     await card.save({ validateBeforeSave: false });
@@ -348,18 +353,38 @@ exports.approveRateCard = async (req, res) => {
       card.approval.firstApprovedAt = new Date();
       card.approval.secondApprovedBy = undefined;
       card.approval.secondApprovedAt = undefined;
+      card.approval.secondApprovalOverride = undefined;
+      card.approval.activationOverride = undefined;
       card.status = 'pending_approval';
     } else {
       if (!card.approval.firstApprovedBy) return res.status(409).json({ success: false, error: 'First approval is required' });
-      if (String(card.approval.firstApprovedBy) === String(req.user._id)) return res.status(409).json({ success: false, error: 'Second approval must be performed by another user' });
+      const sameAsFirstApprover = String(card.approval.firstApprovedBy) === String(req.user._id);
+      if (sameAsFirstApprover && !canUseInsuranceSelfApprovalOverride(req.user)) {
+        return res.status(409).json({ success: false, error: 'Second approval must be performed by another user', code: 'FOUR_EYES_REQUIRED' });
+      }
       card.approval.secondApprovedBy = req.user._id;
       card.approval.secondApprovedAt = new Date();
+      card.approval.secondApprovalOverride = sameAsFirstApprover
+        ? buildInsuranceAdminOverride(req.user, 'Small-hospital admin completed both rate-card approvals')
+        : { used: false };
       card.status = 'pending_activation';
     }
     card.approval.rejectedBy = undefined; card.approval.rejectedAt = undefined; card.approval.rejectionReason = undefined;
     card.updatedBy = req.user._id; card.revision += 1;
     await card.save({ validateBeforeSave: false });
-    await appendDomainEvent({ req, eventType: stage === 'first' ? 'rate_card.first_approved' : 'rate_card.second_approved', entityType: 'RateCard', entityId: card._id, hospitalId, afterSummary: { status: card.status, version: card.version, itemCount: card.itemCount } });
+    await appendDomainEvent({
+      req,
+      eventType: stage === 'first' ? 'rate_card.first_approved' : 'rate_card.second_approved',
+      entityType: 'RateCard',
+      entityId: card._id,
+      hospitalId,
+      afterSummary: {
+        status: card.status,
+        version: card.version,
+        itemCount: card.itemCount,
+        adminSelfApprovalOverride: stage === 'second' && Boolean(card.approval?.secondApprovalOverride?.used)
+      }
+    });
     res.json({ success: true, data: card });
   } catch (error) { fail(res, error); }
 };
@@ -372,13 +397,34 @@ exports.activateRateCard = async (req, res) => {
     if (card.status !== 'pending_activation') return res.status(409).json({ success: false, error: 'Rate card must have two approvals before activation' });
     const gate = await activationGate({ card, hospitalId, quality: result.quality, mappingPercentage: result.mappingPercentage });
     if (!gate.ready) return res.status(409).json({ success: false, error: 'Activation gates are not satisfied', gate });
-    if ([card.approval.firstApprovedBy, card.approval.secondApprovedBy].some((id) => String(id) === String(req.user._id))) {
-      return res.status(409).json({ success: false, error: 'Activation must be performed by an authorised user other than both approvers' });
+    const actorWasApprover = [card.approval.firstApprovedBy, card.approval.secondApprovedBy]
+      .some((id) => id && String(id) === String(req.user._id));
+    if (actorWasApprover && !canUseInsuranceSelfApprovalOverride(req.user)) {
+      return res.status(409).json({ success: false, error: 'Activation must be performed by an authorised user other than both approvers', code: 'FOUR_EYES_REQUIRED' });
     }
     await RateCard.updateMany({ hospitalId, payerId: card.payerId, status: 'active', _id: { $ne: card._id } }, { $set: { status: 'closed', effectiveTo: new Date(card.effectiveFrom.getTime() - 1), updatedBy: req.user._id } });
-    card.status = 'active'; card.approval.activatedBy = req.user._id; card.approval.activatedAt = new Date(); card.updatedBy = req.user._id; card.revision += 1;
+    card.status = 'active';
+    card.approval.activatedBy = req.user._id;
+    card.approval.activatedAt = new Date();
+    card.approval.activationOverride = actorWasApprover
+      ? buildInsuranceAdminOverride(req.user, 'Small-hospital admin activated a rate card they also approved')
+      : { used: false };
+    card.updatedBy = req.user._id;
+    card.revision += 1;
     await card.save({ validateBeforeSave: false });
-    await appendDomainEvent({ req, eventType: 'rate_card.activated', entityType: 'RateCard', entityId: card._id, hospitalId, afterSummary: { status: card.status, version: card.version, itemCount: card.itemCount } });
+    await appendDomainEvent({
+      req,
+      eventType: 'rate_card.activated',
+      entityType: 'RateCard',
+      entityId: card._id,
+      hospitalId,
+      afterSummary: {
+        status: card.status,
+        version: card.version,
+        itemCount: card.itemCount,
+        adminSelfApprovalOverride: Boolean(card.approval?.activationOverride?.used)
+      }
+    });
     res.json({ success: true, data: card, gate });
   } catch (error) { fail(res, error); }
 };

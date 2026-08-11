@@ -16,6 +16,7 @@ const { createCreditNote } = require('./ipdFinancial.service');
 const { nextFinancialNumber, money } = require('../utils/financeNumbers');
 const { appendDomainEvent } = require('./auditEvent.service');
 const { replaceCoverageUtilization } = require('./coverageUtilization.service');
+const { canUseInsuranceSelfApprovalOverride, buildInsuranceAdminOverride } = require('../utils/insuranceWorkflowAuthority');
 
 function httpError(message, statusCode = 400, code, details) {
   const error = new Error(message); error.statusCode = statusCode; error.code = code; error.details = details; return error;
@@ -233,13 +234,35 @@ async function preview({ req, hospitalId, encounterType, encounterId, payload })
   return batch;
 }
 
-async function approve({ hospitalId, batchId, userId }) {
+async function approve({ req, hospitalId, batchId, user }) {
   const batch = await RepricingBatch.findOne({ _id: batchId, hospitalId });
   if (!batch) throw httpError('Repricing batch not found', 404);
   if (batch.status === 'approved') return batch;
   if (batch.status !== 'pending_approval') throw httpError(`Batch cannot be approved from ${batch.status}`, 409);
-  if (String(batch.createdBy) === String(userId)) throw httpError('Repricing must be approved by another authorised user', 409, 'FOUR_EYES_REQUIRED');
-  batch.status = 'approved'; batch.firstApprovedBy = userId; batch.firstApprovedAt = new Date(); await batch.save(); return batch;
+  const sameAsPreparer = String(batch.createdBy) === String(user?._id);
+  if (sameAsPreparer && !canUseInsuranceSelfApprovalOverride(user)) {
+    throw httpError('Repricing must be approved by another authorised user', 409, 'FOUR_EYES_REQUIRED');
+  }
+  batch.status = 'approved';
+  batch.firstApprovedBy = user._id;
+  batch.firstApprovedAt = new Date();
+  batch.approvalOverride = sameAsPreparer
+    ? buildInsuranceAdminOverride(user, 'Small-hospital admin approved their own repricing batch')
+    : { used: false };
+  await batch.save();
+  if (req) {
+    await appendDomainEvent({
+      req,
+      eventType: 'coverage.repricing_approved',
+      entityType: 'RepricingBatch',
+      entityId: batch._id,
+      hospitalId,
+      patientId: batch.patientId,
+      encounterId: batch.admissionId || batch.appointmentId,
+      afterSummary: { batchNumber: batch.batchNumber, adminSelfApprovalOverride: Boolean(batch.approvalOverride?.used) }
+    });
+  }
+  return batch;
 }
 
 function applyAfterToCharge(charge, after) {
@@ -419,7 +442,13 @@ async function commit({ req, hospitalId, batchId }) {
   if (!batch) throw httpError('Repricing batch not found', 404);
   if (batch.status === 'committed') return batch;
   if (batch.status !== 'approved') throw httpError('Repricing batch must be approved before commit', 409);
-  if (String(batch.createdBy) === String(req.user._id)) throw httpError('The user who prepared repricing cannot commit it', 409, 'FOUR_EYES_REQUIRED');
+  const sameAsPreparer = String(batch.createdBy) === String(req.user._id);
+  if (sameAsPreparer && !canUseInsuranceSelfApprovalOverride(req.user)) {
+    throw httpError('The user who prepared repricing cannot commit it', 409, 'FOUR_EYES_REQUIRED');
+  }
+  batch.commitOverride = sameAsPreparer
+    ? buildInsuranceAdminOverride(req.user, 'Small-hospital admin committed their own repricing batch')
+    : { used: false };
   batch.status = 'committing'; await batch.save();
   const coverage = await AdmissionCoverage.findOne({ _id: batch.toCoverageId, hospitalId }).populate('payerId rateCardId');
   if (!coverage) throw httpError('Target coverage not found', 404);
@@ -520,7 +549,21 @@ async function commit({ req, hospitalId, batchId }) {
       await sponsorLedgerAdjustment({ batch, coverage, amount: money(totalSponsorDelta), user: req.user });
     }
     batch.status = 'committed'; batch.committedBy = req.user._id; batch.committedAt = new Date(); await batch.save();
-    await appendDomainEvent({ req, eventType: 'coverage.repricing_committed', entityType: 'RepricingBatch', entityId: batch._id, hospitalId, patientId: batch.patientId, encounterId: batch.admissionId || batch.appointmentId, afterSummary: { batchNumber: batch.batchNumber, totals: batch.totals, generatedDocuments: generated } });
+    await appendDomainEvent({
+      req,
+      eventType: 'coverage.repricing_committed',
+      entityType: 'RepricingBatch',
+      entityId: batch._id,
+      hospitalId,
+      patientId: batch.patientId,
+      encounterId: batch.admissionId || batch.appointmentId,
+      afterSummary: {
+        batchNumber: batch.batchNumber,
+        totals: batch.totals,
+        generatedDocuments: generated,
+        adminSelfApprovalOverride: Boolean(batch.commitOverride?.used)
+      }
+    });
     return batch;
   } catch (error) {
     batch.status = 'failed'; batch.error = error.message; batch.lines.forEach((line) => { if (line.locked && line.adjustmentStatus === 'pending') { line.adjustmentStatus = 'failed'; line.error = error.message; } }); await batch.save().catch(() => {}); throw error;

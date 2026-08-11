@@ -48,6 +48,20 @@ const rateCardSchema = new mongoose.Schema({
     secondApprovedAt: Date,
     activatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     activatedAt: Date,
+    secondApprovalOverride: {
+      used: { type: Boolean, default: false },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      role: String,
+      reason: String
+    },
+    activationOverride: {
+      used: { type: Boolean, default: false },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      role: String,
+      reason: String
+    },
     rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     rejectedAt: Date,
     rejectionReason: String

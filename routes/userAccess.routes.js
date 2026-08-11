@@ -1,9 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { protect, authorize } = require('../middlewares/auth');
+const { protect, authorize, requireActionPermission } = require('../middlewares/auth');
 const controller = require('../controllers/userAccess.controller');
 
-const requireAuth = [protect, authorize('admin', 'mediqliq_super_admin')];
+const requireAuth = [
+  protect,
+  authorize('admin', 'mediqliq_super_admin', 'hr', 'hr_manager'),
+  requireActionPermission('user_access_manage')
+];
 
 // Get all users
 router.get('/users', requireAuth, controller.getUsers);

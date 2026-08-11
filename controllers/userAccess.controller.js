@@ -2,6 +2,14 @@
 
 const User = require('../models/User');
 const { MAIN_FEATURE_KEYS, toMainFeatureKey } = require('../utils/mainFeatureAccess');
+const { normalizeRole } = require('../utils/insuranceWorkflowAuthority');
+
+const HR_PERMISSION_MANAGER_ROLES = new Set(['hr', 'hr_manager']);
+const ADMIN_ROLES = new Set(['admin', 'mediqliq_super_admin']);
+
+function hrCannotManageTarget(actor, target) {
+  return HR_PERMISSION_MANAGER_ROLES.has(normalizeRole(actor)) && ADMIN_ROLES.has(normalizeRole(target));
+}
 
 const ALLOWED_ACTIONS = new Set([
   'approve',
@@ -86,6 +94,19 @@ function normalizePermissions(rows, actor) {
   });
 }
 
+function ensurePermissionManagerActions(permissions, role) {
+  if (!HR_PERMISSION_MANAGER_ROLES.has(normalizeRole(role))) return permissions;
+  let row = permissions.find((permission) => permission.moduleKey === 'hr_staff');
+  if (!row) {
+    row = { moduleKey: 'hr_staff', access: 'manage', actions: [], grantedAt: new Date(), updatedAt: new Date() };
+    permissions.push(row);
+  }
+  row.access = 'manage';
+  row.actions = Array.from(new Set([...(row.actions || []), 'user_access_manage']));
+  row.updatedAt = new Date();
+  return permissions;
+}
+
 exports.getUsers = async (req, res) => {
   try {
     const filter = req.user.role === 'mediqliq_super_admin'
@@ -153,7 +174,7 @@ exports.createUser = async (req, res) => {
       });
     }
 
-    const permissions = normalizePermissions(modulePermissions, req.user._id);
+    const permissions = ensurePermissionManagerActions(normalizePermissions(modulePermissions, req.user._id), role);
 
     const user = await User.create({
       name,
@@ -212,6 +233,13 @@ exports.updateUserPermissions = async (req, res) => {
       });
     }
 
+    if (hrCannotManageTarget(req.user, user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'HR can manage staff permissions but cannot change hospital administrator or super-admin accounts'
+      });
+    }
+
     if (req.user.role !== 'mediqliq_super_admin' &&
         String(user.hospital_id) !== String(req.user.hospital_id)) {
       return res.status(403).json({
@@ -229,7 +257,7 @@ exports.updateUserPermissions = async (req, res) => {
       });
     }
 
-    const permissions = normalizePermissions(modulePermissions, req.user._id);
+    const permissions = ensurePermissionManagerActions(normalizePermissions(modulePermissions, req.user._id), role || user.role);
 
     if (role) {
       user.role = role;
@@ -280,6 +308,13 @@ exports.resetPassword = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'User not found'
+      });
+    }
+
+    if (hrCannotManageTarget(req.user, user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'HR can manage staff permissions but cannot change hospital administrator or super-admin accounts'
       });
     }
 

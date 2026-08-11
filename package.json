@@ -28,7 +28,8 @@
     "reference-documents:validate": "node scripts/validate-reference-document-templates.js",
     "insurance-platform:migrate": "node scripts/migrate-insurance-tariff-platform-2026.js",
     "insurance:payers:consolidate": "node scripts/consolidate-payer-masters-2026.js",
-    "insurance:rate-cards:repair": "node scripts/repair-rate-card-readiness-2026.js"
+    "insurance:rate-cards:repair": "node scripts/repair-rate-card-readiness-2026.js",
+    "insurance:delegation:migrate": "node scripts/migrate-insurance-delegation-permissions-2026.js"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",
