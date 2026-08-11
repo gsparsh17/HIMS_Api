@@ -9,7 +9,7 @@ const StorePurchaseOrder = require('../models/StorePurchaseOrder');
 const StoreIssue = require('../models/StoreIssue');
 const StoreRequisition = require('../models/StoreRequisition');
 const HRStaffProfile = require('../models/HRStaffProfile');
-const { resolveHospitalId } = require('../utils/hospitalScope');
+const { requestHospitalId, resolveHospitalId = requestHospitalId } = require('../utils/hospitalScope');
 
 const STORE_ROLES = ['store', 'store_manager', 'inventory_manager', 'admin', 'mediqliq_super_admin'];
 
@@ -872,5 +872,70 @@ exports.getMaintenanceRecords = async (req, res) => {
   } catch (error) {
     console.error('Get maintenance records error:', error);
     res.status(500).json({ error: 'Failed to fetch maintenance records', details: error.message });
+  }
+};
+
+exports.getDashboard = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    if (!hospitalId) {
+      return res.status(403).json({ success: false, error: 'Authenticated user is not linked to a hospital' });
+    }
+
+    const [
+      totalItems,
+      activeItems,
+      items,
+      pendingRequisitions,
+      pendingPurchaseOrders,
+      recentTransactions,
+      recentPurchaseOrders
+    ] = await Promise.all([
+      StoreItem.countDocuments({ hospital_id: hospitalId }),
+      StoreItem.countDocuments({ hospital_id: hospitalId, is_active: { $ne: false } }),
+      StoreItem.find({ hospital_id: hospitalId }).select('current_stock min_stock unit_cost').lean(),
+      StoreRequisition.countDocuments({ hospital_id: hospitalId, status: 'Pending' }),
+      StorePurchaseOrder.countDocuments({ hospital_id: hospitalId, status: { $in: ['Draft', 'Sent', 'Approved'] } }),
+      StoreInventoryTransaction.find({ hospital_id: hospitalId })
+        .populate('item', 'name item_code')
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean(),
+      StorePurchaseOrder.find({ hospital_id: hospitalId })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean()
+    ]);
+
+    let lowStockItems = 0;
+    let inventoryValue = 0;
+
+    for (const item of items) {
+      const stock = toNumber(item.current_stock, 0);
+      const minStock = toNumber(item.min_stock, 0);
+      const unitCost = toNumber(item.unit_cost, 0);
+
+      if (stock <= minStock) {
+        lowStockItems++;
+      }
+      inventoryValue += stock * unitCost;
+    }
+
+    res.json({
+      success: true,
+      summary: {
+        totalItems,
+        activeItems,
+        lowStockItems,
+        pendingRequisitions,
+        pendingPurchaseOrders,
+        inventoryValue: Math.round(inventoryValue * 100) / 100
+      },
+      recentTransactions,
+      recentPurchaseOrders
+    });
+  } catch (error) {
+    console.error('Get store dashboard error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to fetch store dashboard' });
   }
 };

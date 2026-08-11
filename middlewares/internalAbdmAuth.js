@@ -65,12 +65,16 @@ async function verifyHospitalInbound(req, res, next) {
       });
     }
 
+    const signedBody = ['GET', 'HEAD'].includes(String(req.method).toUpperCase())
+      ? undefined
+      : req.body;
+
     const expected = signRequest(abdmConfig.connectorSecret, {
       timestamp: value.timestamp,
       requestId: value.requestId,
       method: req.method,
       path: req.originalUrl,
-      body: req.body
+      body: signedBody
     });
     if (!safeEqual(expected, value.signature)) {
       return res.status(401).json({ error: 'Invalid connector signature' });

@@ -26,55 +26,74 @@ exports.uploadPatientImage = async (req, res) => {
 exports.searchPatientsForPharmacy = async (req, res) => {
   try {
     const {
-      query,
+      query = '',
       searchType = 'all',
       includeWalkins = true,
       includeActiveIPD = true,
-      limit = 20
+      customerType,
+      limit = 30
     } = req.query;
 
-    if (!query || query.trim().length < 2) {
-      return res.status(400).json({ error: 'Search query must be at least 2 characters' });
-    }
-
-    const searchRegex = new RegExp(query, 'i');
+    const trimmedQuery = String(query || '').trim();
+    const escapeRegexStr = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchRegex = trimmedQuery ? new RegExp(escapeRegexStr(trimmedQuery), 'i') : null;
     const conditions = [];
 
-    // Search by different fields based on searchType
-    if (searchType === 'all' || searchType === 'name') {
-      conditions.push(
-        { first_name: searchRegex },
-        { last_name: searchRegex },
-        {
-          $expr: {
-            $regexMatch: {
-              input: { $concat: ['$first_name', ' ', { $ifNull: ['$last_name', ''] }] },
-              regex: query,
-              options: 'i'
+    // Search by different fields based on searchType if query provided
+    if (searchRegex) {
+      if (searchType === 'all' || searchType === 'name') {
+        conditions.push(
+          { first_name: searchRegex },
+          { last_name: searchRegex },
+          {
+            $expr: {
+              $regexMatch: {
+                input: { $concat: ['$first_name', ' ', { $ifNull: ['$last_name', ''] }] },
+                regex: escapeRegexStr(trimmedQuery),
+                options: 'i'
+              }
             }
           }
-        }
-      );
+        );
+      }
+
+      if (searchType === 'all' || searchType === 'phone') {
+        conditions.push({ phone: searchRegex });
+      }
+
+      if (searchType === 'all' || searchType === 'uhid') {
+        conditions.push({ uhid: searchRegex });
+      }
+
+      if (searchType === 'all' || searchType === 'patientId') {
+        conditions.push({ patientId: searchRegex });
+      }
+
+      if (searchType === 'all' || searchType === 'ship') {
+        conditions.push({ 'active_admissions.ship_number': searchRegex });
+      }
+
+      if (searchType === 'all' || searchType === 'registration') {
+        conditions.push({ 'active_admissions.registration_number': searchRegex });
+      }
     }
 
-    if (searchType === 'all' || searchType === 'phone') {
-      conditions.push({ phone: searchRegex });
+    // Tenant scoping
+    const hospitalId = req.hospitalId || req.user?.hospitalId;
+    const matchStage = {};
+    if (hospitalId) {
+      matchStage.hospitalId = new mongoose.Types.ObjectId(hospitalId);
     }
-
-    if (searchType === 'all' || searchType === 'uhid') {
-      conditions.push({ uhid: searchRegex });
+    if (conditions.length > 0) {
+      matchStage.$or = conditions;
     }
-
-    if (searchType === 'all' || searchType === 'patientId') {
-      conditions.push({ patientId: searchRegex });
+    if (customerType === 'opd') {
+      matchStage.patient_type = { $ne: 'ipd' };
+    } else if (customerType === 'ipd') {
+      matchStage.patient_type = 'ipd';
     }
-
-    if (searchType === 'all' || searchType === 'ship') {
-      conditions.push({ 'active_admissions.ship_number': searchRegex });
-    }
-
-    if (searchType === 'all' || searchType === 'registration') {
-      conditions.push({ 'active_admissions.registration_number': searchRegex });
+    if (!includeWalkins || customerType === 'opd' || customerType === 'ipd') {
+      matchStage.is_walkin = { $ne: true };
     }
 
     // ========== FIX: Define all active admission statuses ==========
@@ -90,10 +109,7 @@ exports.searchPatientsForPharmacy = async (req, res) => {
 
     const pipeline = [
       {
-        $match: {
-          $or: conditions,
-          ...(!includeWalkins ? { is_walkin: false } : {})
-        }
+        $match: matchStage
       },
       {
         $lookup: {

@@ -87,5 +87,6 @@ module.exports = {
   assertSameHospital,
   hospitalFilter,
   isPlatformAdmin,
-  requestHospitalId
+  requestHospitalId,
+  resolveHospitalId: requestHospitalId
 };

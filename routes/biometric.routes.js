@@ -2,7 +2,11 @@ const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/biometric.controller');
 const { protect, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
+
 router.post('/ingest', controller.ingest);
+router.post('/quick-punch', protect, controller.quickPunch);
+router.get('/employees', protect, controller.listEmployeesForMapping);
+
 router.use(protect, requireModuleAccess('hr_staff', 'manage'));
 router.get('/devices', controller.listDevices);
 router.post('/devices', requireActionPermission('biometric_manage'), controller.createDevice);
@@ -10,4 +14,5 @@ router.get('/mappings', controller.listMappings);
 router.post('/mappings', requireActionPermission('biometric_manage'), controller.mapEmployee);
 router.post('/reconcile', requireActionPermission('biometric_manage'), controller.reconcile);
 router.get('/exceptions', controller.exceptions);
+
 module.exports = router;

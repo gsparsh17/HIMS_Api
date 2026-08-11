@@ -2174,13 +2174,21 @@ exports.getInventoryLedger = asyncHandler(async (req, res) => {
 });
 
 exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
-  const { q = '', limit = 20, patientId } = req.query;
+  const { q = '', limit = 20, patientId, status } = req.query;
   const text = String(q).trim();
 
-  const admissionQuery = { status: { $ne: 'Discharged' } };
+  const admissionQuery = {};
+  if (status) {
+    admissionQuery.status = status;
+  } else {
+    admissionQuery.status = { $ne: 'Discharged' };
+  }
+
+  const saleQuery = {};
 
   if (patientId) {
     admissionQuery.patientId = patientId;
+    saleQuery.patient_id = patientId;
   }
 
   if (text && !patientId) {
@@ -2189,7 +2197,8 @@ exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
         { patientId: { $regex: text, $options: 'i' } },
         { uhid: { $regex: text, $options: 'i' } },
         { phone: { $regex: text, $options: 'i' } },
-        { first_name: { $regex: text, $options: 'i' } }
+        { first_name: { $regex: text, $options: 'i' } },
+        { last_name: { $regex: text, $options: 'i' } }
       ]
     }).select('_id').lean();
 
@@ -2200,19 +2209,34 @@ exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
       { shipNumber: { $regex: text, $options: 'i' } },
       { patientId: { $in: patientIds } }
     ];
+
+    saleQuery.$or = [
+      { sale_number: { $regex: text, $options: 'i' } },
+      { invoice_number: { $regex: text, $options: 'i' } },
+      { customer_name: { $regex: text, $options: 'i' } },
+      { customer_phone: { $regex: text, $options: 'i' } },
+      { patient_id: { $in: patientIds } }
+    ];
   }
 
-  const admissions = await IPDAdmission.find(admissionQuery)
-    .populate('patientId', 'first_name last_name patientId uhid phone sponsor_type sponsor_name')
-    .populate('primaryDoctorId', 'firstName lastName')
-    .populate('wardId', 'name')
-    .populate('bedId', 'bedNumber bedType')
-    .populate('roomId', 'room_number type name')
-    .sort({ admissionDate: -1 })
-    .limit(Number(limit))
-    .lean();
+  const [admissions, sales] = await Promise.all([
+    IPDAdmission.find(admissionQuery)
+      .populate('patientId', 'first_name last_name patientId uhid phone sponsor_type sponsor_name')
+      .populate('primaryDoctorId', 'firstName lastName')
+      .populate('wardId', 'name')
+      .populate('bedId', 'bedNumber bedType')
+      .populate('roomId', 'room_number type name')
+      .sort({ admissionDate: -1 })
+      .limit(Number(limit))
+      .lean(),
+    text ? Sale.find(saleQuery)
+      .populate('patient_id', 'first_name last_name patientId uhid phone sponsor_type sponsor_name')
+      .sort({ sale_date: -1 })
+      .limit(Number(limit))
+      .lean() : Promise.resolve([])
+  ]);
 
-  res.json({ success: true, admissions });
+  res.json({ success: true, admissions, sales });
 });
 
 exports.getDoseCalculation = asyncHandler(async (req, res) => {

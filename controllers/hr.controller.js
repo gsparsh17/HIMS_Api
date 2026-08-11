@@ -2192,18 +2192,59 @@ exports.getPendingCommissions = async (req, res) => {
 async function resolveSelfEmployee(req) {
   const hospitalId = await resolveHospitalId(req);
   const directId = req.user?.staff_profile_id;
-  const filter = directId
+  let filter = directId
     ? { _id: directId, ...(hospitalId ? { hospital_id: hospitalId } : {}) }
     : { user_id: req.user?._id, ...(hospitalId ? { hospital_id: hospitalId } : {}) };
-  const employee = await HRStaffProfile.findOne(filter).populate('department', 'name').populate('shift');
+  
+  let employee = await HRStaffProfile.findOne(filter).populate('department', 'name').populate('shift');
+  
+  // If not found by directId or user_id, search by email or phone
+  if (!employee && req.user?.email) {
+    employee = await HRStaffProfile.findOne({ email: req.user.email.toLowerCase(), ...(hospitalId ? { hospital_id: hospitalId } : {}) })
+      .populate('department', 'name')
+      .populate('shift');
+  }
+
+  // If still not found, auto-create a staff profile for the authenticated user
+  if (!employee && req.user) {
+    try {
+      const fullName = `${req.user.first_name || ''} ${req.user.last_name || ''}`.trim() || req.user.name || req.user.username || req.user.email?.split('@')[0] || 'Hospital Staff';
+      const email = req.user.email || `${req.user.username || 'user'}_${req.user._id}@hospital.internal`;
+      const y = new Date().getFullYear();
+      const rand = Math.random().toString(36).slice(2, 7).toUpperCase();
+      const employeeCode = `EMP-${y}-${rand}`;
+      const staffType = String(req.user.role || 'staff').toLowerCase();
+
+      employee = await HRStaffProfile.create({
+        user_id: req.user._id,
+        hospital_id: hospitalId || req.user.hospital_id || req.user.hospitalId,
+        employee_code: employeeCode,
+        full_name: fullName,
+        first_name: req.user.first_name || fullName.split(' ')[0],
+        last_name: req.user.last_name || fullName.split(' ').slice(1).join(' '),
+        email: email,
+        phone: req.user.phone || req.user.mobile || '',
+        staff_type: staffType,
+        designation: req.user.designation || req.user.role || 'Staff Member',
+        status: 'active',
+        joining_date: new Date()
+      });
+      console.log(`Auto-created HRStaffProfile (${employee._id}) for user (${req.user._id})`);
+    } catch (createErr) {
+      console.error('Failed to auto-create HRStaffProfile:', createErr);
+    }
+  }
+
   if (!employee) {
     const error = new Error('Employee profile is not linked to this login');
     error.statusCode = 404;
     throw error;
   }
+
   if (!req.user.staff_profile_id || String(req.user.staff_profile_id) !== String(employee._id)) {
     await User.updateOne({ _id: req.user._id }, { $set: { staff_profile_id: employee._id } });
   }
+
   return employee;
 }
 

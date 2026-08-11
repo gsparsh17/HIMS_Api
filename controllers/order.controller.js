@@ -518,7 +518,10 @@ exports.receivePurchaseOrder = async (req, res) => {
       const orderedPacks = toNumber(orderItem.quantity, 0);
       const pendingPacks = Math.max(0, orderedPacks - alreadyReceivedPacks);
       const receivedPacks = Math.max(0, toNumber(receivedItem.quantity_received_packs ?? receivedItem.quantity_received, 0));
-      if (receivedPacks <= 0) continue;
+      const freePacks = Math.max(0, toNumber(receivedItem.free_packs, 0));
+      const totalPacks = Math.max(0, toNumber(receivedItem.total_received_packs, receivedPacks + freePacks));
+
+      if (receivedPacks <= 0 && freePacks <= 0) continue;
       if (receivedPacks > pendingPacks) {
         return res.status(400).json({ error: `Cannot receive ${receivedPacks} packs for ${orderItem.medicine_name}. Pending quantity is ${pendingPacks} packs.` });
       }
@@ -538,7 +541,7 @@ exports.receivePurchaseOrder = async (req, res) => {
       if (materialized) createdLocalMedicines.push(medicine);
 
       const unitsPerPack = Math.max(1, toNumber(receivedItem.units_per_pack ?? orderItem.units_per_pack ?? medicine.units_per_pack, 1));
-      const quantityBaseUnits = Math.max(0, toNumber(receivedItem.quantity_received_base_units, receivedPacks * unitsPerPack));
+      const quantityBaseUnits = Math.max(0, toNumber(receivedItem.quantity_received_base_units, totalPacks * unitsPerPack));
       const batchNumber = String(receivedItem.batch_number || orderItem.batch_number || '').trim();
       const expiryDate = receivedItem.expiry_date || orderItem.expiry_date;
       if (!batchNumber) return res.status(400).json({ error: `Batch number is required for ${orderItem.medicine_name}.` });
@@ -577,6 +580,9 @@ exports.receivePurchaseOrder = async (req, res) => {
       createdBatches.push(batch);
 
       orderItem.received = alreadyReceivedPacks + receivedPacks;
+      if (freePacks > 0) {
+        orderItem.free_packs = toNumber(orderItem.free_packs, 0) + freePacks;
+      }
       orderItem.batch_number = batchNumber;
       orderItem.expiry_date = expiry;
       orderItem.selling_price = sellingPricePerPack;

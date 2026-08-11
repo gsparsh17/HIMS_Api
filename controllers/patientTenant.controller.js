@@ -64,6 +64,10 @@ async function ensureOwned(req, res) {
 }
 
 exports.uploadPatientImage = legacy.uploadPatientImage;
+exports.searchPatientsForPharmacy = legacy.searchPatientsForPharmacy;
+exports.createOrUpdateWalkinPatient = legacy.createOrUpdateWalkinPatient;
+exports.getPatientPharmacyAccount = legacy.getPatientPharmacyAccount;
+exports.updatePatientPharmacyBalance = legacy.updatePatientPharmacyBalance;
 
 exports.createPatient = async (req, res) => {
   try {

@@ -41,6 +41,7 @@ const purchaseOrderItemSchema = new mongoose.Schema({
   gst_rate: { type: Number, min: 0, max: 100 },
   quantity: { type: Number, required: true, min: 1 },
   received: { type: Number, default: 0, min: 0 },
+  free_packs: { type: Number, default: 0, min: 0 },
   quantity_base_units: { type: Number, default: 0, min: 0 },
   received_base_units: { type: Number, default: 0, min: 0 },
   unit_cost: { type: Number, required: true, min: 0 },
