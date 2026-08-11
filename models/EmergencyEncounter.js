@@ -66,6 +66,21 @@ const schema = new mongoose.Schema(
       required: true,
       index: true
     },
+    appointmentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Appointment',
+      index: true
+    },
+    admissionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'IPDAdmission',
+      index: true
+    },
+    source: {
+      type: String,
+      enum: ['standalone', 'front_desk'],
+      default: 'standalone'
+    },
     readmissionReference: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'EmergencyEncounter'
@@ -174,6 +189,24 @@ schema.index(
   },
   {
     unique: true
+  }
+);
+
+schema.index(
+  { hospitalId: 1, appointmentId: 1 },
+  {
+    name: 'uniq_emergency_frontdesk_appointment',
+    unique: true,
+    partialFilterExpression: { appointmentId: { $type: 'objectId' } }
+  }
+);
+
+schema.index(
+  { hospitalId: 1, admissionId: 1 },
+  {
+    name: 'uniq_emergency_frontdesk_admission',
+    unique: true,
+    partialFilterExpression: { admissionId: { $type: 'objectId' } }
   }
 );
 

@@ -656,6 +656,7 @@ exports.getEmployees = async (req, res) => {
     await syncExistingToHR(hospitalId);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
     if (req.query.staff_type) filter.staff_type = req.query.staff_type;
+    else if (req.query.staff_group === 'other') filter.staff_type = { $nin: ['doctor', 'nurse'] };
     if (req.query.department) filter.department = req.query.department;
     if (req.query.status) filter.employment_status = req.query.status;
     if (req.query.availability_status) filter.availability_status = req.query.availability_status;
