@@ -73,7 +73,7 @@ const ENTITY = {
     sheet: 'Medicines',
     columns: [
       ['name', 'Name / Item Title', true],
-      ['item_type', 'Item Type (codex / non_codex)', false],
+      ['item_type', 'Item Type (capex / non_capex)', false],
       ['generic_name', 'Generic Name / Specification', false],
       ['brand', 'Brand / Manufacturer', false],
       ['category', 'Category (Custom or Standard)', true],
@@ -95,7 +95,7 @@ const ENTITY = {
     ],
     example: {
       name: 'Paracetamol 500mg',
-      item_type: 'codex',
+      item_type: 'capex',
       generic_name: 'Paracetamol',
       brand: 'Calpol',
       category: 'Analgesic',
@@ -276,16 +276,16 @@ function normalize(entity, row, hospitalId, userId) {
     const rawType = str('item_type') || str('type') || '';
     let itemType;
     if (rawType.toLowerCase().includes('non')) {
-      itemType = 'non_codex';
-    } else if (rawType.toLowerCase().includes('codex')) {
-      itemType = 'codex';
+      itemType = 'non_capex';
+    } else if (rawType.toLowerCase().includes('capex')) {
+      itemType = 'capex';
     }
 
     return {
       hospitalId,
       name: str('name'),
       item_type: itemType,
-      is_codex: itemType ? itemType === 'codex' : undefined,
+      is_capex: itemType ? itemType === 'capex' : undefined,
       generic_name: str('generic_name'),
       brand: str('brand'),
       category: str('category'),

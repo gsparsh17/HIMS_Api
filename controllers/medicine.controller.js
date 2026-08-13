@@ -94,10 +94,10 @@ exports.addMedicine = async (req, res) => {
 exports.getAllMedicines = async (req, res) => {
   try {
     const filter = { is_active: true };
-    if (req.query.item_type === 'codex') {
-      filter.$or = [{ item_type: 'codex' }, { is_codex: true }, { item_type: { $exists: false } }];
-    } else if (req.query.item_type === 'non_codex') {
-      filter.$or = [{ item_type: 'non_codex' }, { is_codex: false }];
+    if (req.query.item_type === 'capex') {
+      filter.$or = [{ item_type: 'capex' }, { is_capex: true }, { item_type: { $exists: false } }];
+    } else if (req.query.item_type === 'non_capex') {
+      filter.$or = [{ item_type: 'non_capex' }, { is_capex: false }];
     }
 
     const medicines = await Medicine
@@ -121,10 +121,10 @@ exports.getAllMedicines = async (req, res) => {
 
         const earliestExpiry = batches.length > 0
           ? batches.reduce(
-              (earliest, batch) =>
-                batch.expiry_date < earliest ? batch.expiry_date : earliest,
-              batches[0].expiry_date
-            )
+            (earliest, batch) =>
+              batch.expiry_date < earliest ? batch.expiry_date : earliest,
+            batches[0].expiry_date
+          )
           : null;
 
         const totalValue = batches.reduce(
@@ -234,7 +234,7 @@ exports.updateMedicine = async (req, res) => {
 
     // Track if tax information is being changed
     const taxChanged = (req.body.hsn_code && req.body.hsn_code !== medicine.hsn_code) ||
-                       (req.body.gst_rate !== undefined && req.body.gst_rate !== medicine.gst_rate);
+      (req.body.gst_rate !== undefined && req.body.gst_rate !== medicine.gst_rate);
 
     // Validate HSN code if provided
     if (req.body.hsn_code !== undefined) {
@@ -693,7 +693,7 @@ exports.bulkUpdateGST = async (req, res) => {
 
         // Track tax change in history
         if ((updateData.hsn_code && updateData.hsn_code !== medicine.hsn_code) ||
-            (updateData.gst_rate !== undefined && updateData.gst_rate !== medicine.gst_rate)) {
+          (updateData.gst_rate !== undefined && updateData.gst_rate !== medicine.gst_rate)) {
           const historyEntry = {
             hsn_code: updateData.hsn_code || medicine.hsn_code,
             gst_rate: updateData.gst_rate !== undefined ? updateData.gst_rate : medicine.gst_rate,

@@ -20,11 +20,11 @@ const medicineSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, index: true },
   item_type: {
     type: String,
-    enum: ['codex', 'non_codex'],
-    default: 'codex',
+    enum: ['capex', 'non_capex'],
+    default: 'capex',
     index: true
   },
-  is_codex: { type: Boolean, default: true, index: true },
+  is_capex: { type: Boolean, default: true, index: true },
   generic_name: { type: String, trim: true, index: true },
   brand: { type: String, trim: true, index: true },
   category: { type: String, required: true, index: true },
@@ -36,35 +36,35 @@ const medicineSchema = new mongoose.Schema({
   compositions: [compositionSchema],
   composition_keywords: [{ type: String, trim: true, lowercase: true, index: true }],
   manufacturer: { type: String, trim: true },
-  
+
   // ========== TAX INFORMATION (Source of Truth) ==========
-  hsn_code: { 
-    type: String, 
+  hsn_code: {
+    type: String,
     required: true,
-    trim: true, 
+    trim: true,
     index: true,
     validate: {
-      validator: function(v) {
+      validator: function (v) {
         return /^\d{4,8}$/.test(v);
       },
       message: 'HSN code must be 4-8 digits'
     }
   },
-  gst_rate: { 
-    type: Number, 
+  gst_rate: {
+    type: Number,
     required: true,
-    default: 0, 
-    min: 0, 
+    default: 0,
+    min: 0,
     max: 100,
     validate: {
-      validator: function(v) {
+      validator: function (v) {
         const validRates = [0, 5, 12, 18, 28];
         return validRates.includes(v);
       },
       message: 'GST rate must be one of: 0, 5, 12, 18, 28'
     }
   },
-  
+
   // Track GST changes for audit
   gst_history: [{
     hsn_code: String,
@@ -132,26 +132,26 @@ const medicineSchema = new mongoose.Schema({
 });
 
 // Pre-save hook for tax history tracking
-medicineSchema.pre('save', async function(next) {
+medicineSchema.pre('save', async function (next) {
   if (!this.units_per_pack || this.units_per_pack < 1) this.units_per_pack = 1;
   if (this.min_stock_level_base_units == null && this.min_stock_level != null) {
     this.min_stock_level_base_units = this.min_stock_level;
   }
 
-  // Sync codex vs non-codex item type
+  // Sync capex vs non-capex item type
   const cat = String(this.category || '').toLowerCase();
   const nonCodexKeywords = ['equipment', 'accessory', 'accessories', 'instrument', 'device', 'consumable', 'disposable', 'hardware', 'kit', 'surgical', 'furniture', 'ppe', 'sterilization'];
-  if (this.item_type === 'non_codex' || this.is_codex === false || nonCodexKeywords.some(kw => cat.includes(kw))) {
-    this.item_type = 'non_codex';
-    this.is_codex = false;
+  if (this.item_type === 'non_capex' || this.is_capex === false || nonCodexKeywords.some(kw => cat.includes(kw))) {
+    this.item_type = 'non_capex';
+    this.is_capex = false;
   } else {
-    this.item_type = 'codex';
-    this.is_codex = true;
+    this.item_type = 'capex';
+    this.is_capex = true;
   }
 
   this.composition_keywords = buildCompositionKeywords(this);
   if (this.commission_type === 'None') this.commission_value = 0;
-  
+
   // Track GST/HSN changes
   if (!this.isNew) {
     const original = await this.constructor.findById(this._id);
@@ -165,7 +165,7 @@ medicineSchema.pre('save', async function(next) {
       });
     }
   }
-  
+
   this.updated_at = Date.now();
   next();
 });
