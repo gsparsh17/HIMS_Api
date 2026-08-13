@@ -30,6 +30,7 @@ const schema = new mongoose.Schema(
     refreshExpiresAt: Date,
     purgeAt: { type: Date, required: true },
     scopes: [String],
+    sessionKind: { type: String, enum: ['ABHA_PROFILE', 'PHR_APP'], default: 'ABHA_PROFILE', index: true },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
   { timestamps: true }

@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const schema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
-  flow: { type: String, enum: ['FACE_LOGIN', 'ABHA_ADDRESS_LOGIN', 'AADHAAR_LOGIN'], required: true, index: true },
+  flow: { type: String, enum: ['FACE_LOGIN', 'ABHA_ADDRESS_LOGIN', 'ABHA_NUMBER_LOGIN', 'AADHAAR_LOGIN'], required: true, index: true },
   txnId: { type: String, required: true, unique: true, index: true },
   parentTxnId: { type: String, index: true },
   mobile: { type: String, index: true },

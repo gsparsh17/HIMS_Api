@@ -3,6 +3,8 @@ const { masterRequest } = require('./abdmMasterClient.service');
 
 let cachedPublicKey;
 let publicKeyExpiresAt = 0;
+let cachedPhrPublicKey;
+let phrPublicKeyExpiresAt = 0;
 
 function toPem(base64PublicKey) {
   if (!base64PublicKey) throw new Error('ABDM public key is empty');
@@ -55,6 +57,29 @@ async function getPublicKeyPem() {
   return cachedPublicKey;
 }
 
+
+async function getPhrPublicKeyPem() {
+  if (cachedPhrPublicKey && Date.now() < phrPublicKeyExpiresAt) return cachedPhrPublicKey;
+  const data = await abdmGet('/v3/phr/app/login/public/certificate');
+  cachedPhrPublicKey = toPem(data.publicKey);
+  phrPublicKeyExpiresAt = Date.now() + 6 * 60 * 60 * 1000;
+  return cachedPhrPublicKey;
+}
+
+async function encryptForPhr(value) {
+  const publicKey = await getPhrPublicKeyPem();
+  return crypto
+    .publicEncrypt(
+      {
+        key: publicKey,
+        padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: 'sha1'
+      },
+      Buffer.from(String(value), 'utf8')
+    )
+    .toString('base64');
+}
+
 async function encryptForAbdm(value) {
   const publicKey = await getPublicKeyPem();
   return crypto
@@ -71,6 +96,7 @@ async function encryptForAbdm(value) {
 
 module.exports = {
   encryptForAbdm,
+  encryptForPhr,
   abdmPost,
   abdmGet,
   abdmPatch,

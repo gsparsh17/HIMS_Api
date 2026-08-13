@@ -160,7 +160,8 @@ async function persistPatientSession({
   hospitalId,
   tokens,
   updatedBy,
-  existingSession
+  existingSession,
+  sessionKind
 }) {
   const mergedTokens = {
     ...tokens,
@@ -204,6 +205,7 @@ async function persistPatientSession({
       accessExpiresAt: session.accessExpiresAt,
       refreshExpiresAt: session.refreshExpiresAt,
       purgeAt: session.refreshExpiresAt || session.accessExpiresAt,
+      sessionKind: sessionKind || existingSession?.sessionKind || 'ABHA_PROFILE',
       scopes: Array.isArray(session.scopes)
         ? session.scopes
         : String(session.scopes || '')
@@ -220,12 +222,13 @@ async function persistPatientSession({
   return record;
 }
 
-async function storePatientSession({ patient, tokens, updatedBy }) {
+async function storePatientSession({ patient, tokens, updatedBy, sessionKind = 'ABHA_PROFILE' }) {
   return persistPatientSession({
     patientId: patient._id,
     hospitalId: patient.hospitalId,
     tokens,
-    updatedBy
+    updatedBy,
+    sessionKind
   });
 }
 
@@ -248,7 +251,8 @@ async function getPatientSession(patientId) {
     hospitalId: record.hospitalId,
     accessExpiresAt: record.accessExpiresAt,
     refreshExpiresAt: record.refreshExpiresAt,
-    scopes: record.scopes
+    scopes: record.scopes,
+    sessionKind: record.sessionKind || 'ABHA_PROFILE'
   };
 }
 
@@ -293,7 +297,10 @@ async function performRefresh(patientId, session, updatedBy) {
     // Loaded lazily so the credential module remains straightforward to unit test
     // and to avoid sending refresh tokens anywhere except the server-side proxy.
     const { abdmGet } = require('./abdm.service');
-    const data = await abdmGet('/v3/profile/account/request/token', {
+    const refreshPath = session.sessionKind === 'PHR_APP'
+      ? '/v3/phr/app/login/profile/request/token'
+      : '/v3/profile/account/request/token';
+    const data = await abdmGet(refreshPath, {
       'R-token': `Bearer ${session.refreshToken}`
     });
     const tokens = extractTokenPayload(data);
@@ -312,7 +319,8 @@ async function performRefresh(patientId, session, updatedBy) {
       hospitalId: session.hospitalId,
       tokens,
       updatedBy,
-      existingSession: session
+      existingSession: session,
+      sessionKind: session.sessionKind || 'ABHA_PROFILE'
     });
     return getPatientSession(patientId);
   } catch (error) {
