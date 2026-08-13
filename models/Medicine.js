@@ -140,8 +140,8 @@ medicineSchema.pre('save', async function (next) {
 
   // Sync capex vs non-capex item type
   const cat = String(this.category || '').toLowerCase();
-  const nonCodexKeywords = ['equipment', 'accessory', 'accessories', 'instrument', 'device', 'consumable', 'disposable', 'hardware', 'kit', 'surgical', 'furniture', 'ppe', 'sterilization'];
-  if (this.item_type === 'non_capex' || this.is_capex === false || nonCodexKeywords.some(kw => cat.includes(kw))) {
+  const nonCapexKeywords = ['equipment', 'accessory', 'accessories', 'instrument', 'device', 'consumable', 'disposable', 'hardware', 'kit', 'surgical', 'furniture', 'ppe', 'sterilization'];
+  if (this.item_type === 'non_capex' || this.is_capex === false || nonCapexKeywords.some(kw => cat.includes(kw))) {
     this.item_type = 'non_capex';
     this.is_capex = false;
   } else {

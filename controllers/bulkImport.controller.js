@@ -69,7 +69,7 @@ const ENTITY = {
     }
   },
   medicines: {
-    title: 'Pharmacy Item Master (Codex & Non-Codex)',
+    title: 'Pharmacy Item Master (Capex & Non-Capex)',
     sheet: 'Medicines',
     columns: [
       ['name', 'Name / Item Title', true],
