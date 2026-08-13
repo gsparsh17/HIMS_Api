@@ -1,0 +1,41 @@
+const express = require('express');
+const auth = require('../controllers/patientPortalAuth.controller');
+const portal = require('../controllers/patientPortal.controller');
+const { requirePatientPortal } = require('../middlewares/patientPortalAuth');
+const router = express.Router();
+
+// Public patient authentication endpoints. They are mounted before staff auth.
+router.post('/auth/mobile/request-otp', auth.requestMobileOtp);
+router.post('/auth/mobile/verify-otp', auth.verifyMobileOtp);
+router.post('/auth/mobile/select-patient', auth.selectPatient);
+router.post('/auth/aadhaar/request-otp', auth.aadhaarRequestOtp);
+router.post('/auth/aadhaar/verify-otp', auth.aadhaarVerifyOtp);
+router.post('/auth/aadhaar/select-user', auth.aadhaarSelectUser);
+router.post('/auth/abha-address/request-otp', auth.addressRequestOtp);
+router.post('/auth/abha-address/verify-otp', auth.addressVerifyOtp);
+router.post('/auth/face/search', auth.faceSearch);
+router.post('/auth/face/init', auth.faceInit);
+router.get('/auth/face/:txnId/status', auth.faceStatus);
+router.post('/auth/face/complete', auth.faceComplete);
+
+router.use(requirePatientPortal);
+router.get('/me', auth.me);
+router.get('/dashboard', portal.dashboard);
+router.get('/appointments', portal.appointments);
+router.get('/prescriptions', portal.prescriptions);
+router.get('/medications', portal.medications);
+router.get('/admissions', portal.admissions);
+router.get('/reports', portal.reports);
+router.get('/documents', portal.documents);
+router.get('/bills', portal.bills);
+router.get('/consents', portal.consents);
+router.patch('/consents/:consentId/responses', portal.updateConsentResponses);
+router.post('/consents/:consentId/sign', portal.signConsent);
+router.post('/feedback', portal.submitFeedback);
+router.get('/abdm', portal.abdmOverview);
+router.get('/abdm/records/:recordId', portal.abdmRecord);
+router.get('/abdm/subscription-requests', portal.subscriptionRequests);
+router.post('/abdm/subscription-requests/:id/approve', portal.approveSubscription);
+router.post('/abdm/subscription-requests/:id/deny', portal.denySubscription);
+router.get('/abdm/health-lockers', portal.healthLockers);
+module.exports = router;

@@ -508,6 +508,87 @@ exports.requestExistingAbhaOtp = async (req, res) => {
   }
 };
 
+exports.requestExistingAbhaFace = async (req, res) => {
+  try {
+    const { patientId, txnId, index } = req.body;
+    if (!patientId || !txnId || index === undefined || index === null || index === '') {
+      return res.status(400).json({ success: false, error: 'patientId, search txnId and selected ABHA index are required' });
+    }
+    const patient = await ensurePatient(patientId, req.user);
+    const searchTransaction = await getOwnedTransaction({ txnId, patient, userId: req.user._id, flows: ['EXISTING_ABHA_SEARCH'] });
+    const data = await abdmPost('/v3/profile/login/request/otp', {
+      scope: ['abha-login', 'search-abha', 'face-auth'],
+      loginHint: 'index',
+      loginId: await encryptForAbdm(String(index)),
+      otpSystem: 'aadhaar',
+      txnId
+    });
+    const transaction = await createTransaction({
+      txnId: data.txnId,
+      flow: 'FACE_LOGIN',
+      patient,
+      userId: req.user._id,
+      consent: searchTransaction.consent,
+      selectedIndex: String(index),
+      req,
+      metadata: { searchTxnId: txnId, captureScope: ['abha-enrol', 'face-verify'], loginScope: ['abha-login', 'aadhaar-face-verify'], qrFlow: true }
+    });
+    const qrUrl = `${String(process.env.ABDM_PHR_FACE_AUTH_URL || 'https://phrsbx.abdm.gov.in/face-auth').replace(/\/$/, '')}?txnId=${encodeURIComponent(transaction.txnId)}`;
+    return res.json({ success: true, txnId: transaction.txnId, qrUrl, message: data.message, expiresIn: 600 });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
+exports.captureExistingAbhaFace = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    const transaction = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['FACE_LOGIN'] });
+    const data = await abdmPost('/v3/enrollment/enrol/capturePID', {
+      scope: transaction.metadata?.captureScope || ['abha-enrol', 'face-verify'],
+      txnId: transaction.txnId
+    });
+    const status = String(data.status || '').toUpperCase();
+    if (status === 'FAILED') await recordAttempt(transaction, new Error(data.message || 'Face authentication failed')).catch(() => {});
+    return res.json({ success: true, txnId: transaction.txnId, status, message: data.message });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
+exports.verifyExistingAbhaFace = async (req, res) => {
+  let transaction;
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    transaction = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['FACE_LOGIN'] });
+    const capture = await abdmPost('/v3/enrollment/enrol/capturePID', {
+      scope: transaction.metadata?.captureScope || ['abha-enrol', 'face-verify'],
+      txnId: transaction.txnId
+    });
+    if (String(capture.status || '').toUpperCase() !== 'COMPLETE') {
+      return res.status(409).json({ success: false, error: 'Face authentication is not complete in the ABHA App', status: capture.status, message: capture.message });
+    }
+    const data = await abdmPost('/v3/profile/login/verify', {
+      scope: transaction.metadata?.loginScope || ['abha-login', 'aadhaar-face-verify'],
+      authData: { authMethods: ['face_auth'], face: { txnId: transaction.txnId } }
+    });
+    const profile = extractProfile(data);
+    const tokens = extractTokens(data);
+    if (!(profile.ABHANumber || profile.abhaNumber || getAbhaAddress(profile)) || !tokens.token) {
+      const error = new Error('ABDM Face Auth completed but did not return a final ABHA profile/token');
+      error.statusCode = 502;
+      error.details = data;
+      throw error;
+    }
+    const saved = await saveVerifiedProfile({ patient, profile, tokens, method: 'ABDM_FACE_QR_LOGIN', userId: req.user._id });
+    await markCompleted(transaction, { faceQr: true });
+    return res.json({ success: true, message: data.message || 'Existing ABHA verified with Face Authentication', abha: safeAbha(saved) });
+  } catch (error) {
+    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
 exports.verifyExistingAbhaOtp = async (req, res) => {
   let transaction;
   try {
@@ -1073,6 +1154,9 @@ exports.requestAdvancedLogin = async (req, res) => {
     const patient = await ensurePatient(req.body.patientId, req.user);
     const mode = loginMode(req.body.mode);
     const config = LOGIN_MODE_CONFIG[mode];
+    if (mode === 'face') {
+      return res.status(410).json({ success: false, error: 'Legacy browser PID face login is disabled. Use mobile search + ABHA App Face Auth QR.' });
+    }
     if (!config) {
       return res.status(400).json({ success: false, error: 'Unsupported ABHA login mode' });
     }
@@ -1123,6 +1207,9 @@ exports.verifyAdvancedLogin = async (req, res) => {
     const patient = await ensurePatient(req.body.patientId, req.user);
     const mode = loginMode(req.body.mode);
     const config = LOGIN_MODE_CONFIG[mode];
+    if (mode === 'face') {
+      return res.status(410).json({ success: false, error: 'Legacy browser PID face login is disabled. Use mobile search + ABHA App Face Auth QR.' });
+    }
     if (!config || !req.body.txnId) {
       return res.status(400).json({ success: false, error: 'A valid mode and txnId are required' });
     }
@@ -1364,8 +1451,9 @@ exports.initBiometricEnrollment = async (req, res) => {
     const method = loginMode(req.body.method || 'face');
     if (!['face', 'fingerprint', 'iris'].includes(method)) return res.status(400).json({ success: false, error: 'method must be face, fingerprint or iris' });
     const consent = consentForIdentity(req, patient, 'abha-enrollment', '1.4');
-    const scope = ['abha-enrol', method === 'face' ? 'face-verify' : method === 'fingerprint' ? 'bio-verify' : 'iris-verify'];
-    const data = await abdmPost('/v3/enrollment/enrol/auth/init', { scope });
+    const initScope = ['abha-enrol', method === 'face' ? 'face-auth' : method === 'fingerprint' ? 'bio-verify' : 'iris-verify'];
+    const captureScope = ['abha-enrol', method === 'face' ? 'face-verify' : method === 'fingerprint' ? 'bio-verify' : 'iris-verify'];
+    const data = await abdmPost('/v3/enrollment/enrol/auth/init', { scope: initScope });
     const transaction = await createTransaction({
       txnId: data.txnId,
       flow: 'BIOMETRIC_ENROLMENT',
@@ -1373,9 +1461,16 @@ exports.initBiometricEnrollment = async (req, res) => {
       userId: req.user._id,
       consent,
       req,
-      metadata: { method, scope }
+      metadata: { method, initScope, captureScope }
     });
-    return res.json({ success: true, txnId: transaction.txnId, data });
+    return res.json({
+      success: true,
+      txnId: transaction.txnId,
+      qrUrl: method === 'face'
+        ? `${String(process.env.ABDM_PHR_FACE_AUTH_URL || 'https://phrsbx.abdm.gov.in/face-auth').replace(/\/$/, '')}?txnId=${encodeURIComponent(transaction.txnId)}`
+        : undefined,
+      data
+    });
   } catch (error) {
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
@@ -1386,7 +1481,7 @@ exports.captureBiometricPid = async (req, res) => {
     const patient = await ensurePatient(req.body.patientId, req.user);
     const transaction = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['BIOMETRIC_ENROLMENT'] });
     const data = await abdmPost('/v3/enrollment/enrol/capturePID', {
-      scope: transaction.metadata?.scope,
+      scope: transaction.metadata?.captureScope || transaction.metadata?.scope,
       txnId: transaction.txnId
     });
     return res.json({ success: true, txnId: transaction.txnId, data });
@@ -1412,12 +1507,23 @@ exports.enrolByBiometric = async (req, res) => {
       '1.4'
     );
     const encryptedAadhaar = await encryptForAbdm(cleanDigits(req.body.aadhaarNumber));
-    const pid = requireOpaquePid(req.body.pid);
-    const authData = method === 'face'
-      ? { authMethods: ['face'], face: { aadhaar: encryptedAadhaar, rdPidData: pid, mobile: cleanDigits(req.body.mobile) } }
-      : method === 'fingerprint'
+    let authData;
+    if (method === 'face') {
+      if (!transaction) return res.status(400).json({ success: false, error: 'Face QR enrolment requires a valid txnId' });
+      const capture = await abdmPost('/v3/enrollment/enrol/capturePID', {
+        scope: transaction.metadata?.captureScope || ['abha-enrol', 'face-verify'],
+        txnId: transaction.txnId
+      });
+      if (String(capture.status || '').toUpperCase() !== 'COMPLETE') {
+        return res.status(409).json({ success: false, error: 'Face authentication is not complete in the ABHA App', status: capture.status, message: capture.message });
+      }
+      authData = { authMethods: ['face_auth'], face: { txnId: transaction.txnId, aadhaar: encryptedAadhaar, mobile: cleanDigits(req.body.mobile) } };
+    } else {
+      const pid = requireOpaquePid(req.body.pid);
+      authData = method === 'fingerprint'
         ? { authMethods: ['bio'], bio: { aadhaar: encryptedAadhaar, fingerPrintAuthPid: pid, mobile: cleanDigits(req.body.mobile) } }
         : { authMethods: ['iris'], iris: { aadhaar: encryptedAadhaar, Pid: pid, mobile: cleanDigits(req.body.mobile) } };
+    }
     const data = await abdmPost('/v3/enrollment/enrol/byAadhaar', {
       authData,
       consent: {

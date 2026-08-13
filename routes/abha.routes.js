@@ -20,6 +20,9 @@ router.post('/capture-existing', controller.captureExistingAbha);
 router.post('/existing/search-mobile', controller.searchExistingAbhaByMobile);
 router.post('/existing/request-otp', controller.requestExistingAbhaOtp);
 router.post('/existing/verify-otp', controller.verifyExistingAbhaOtp);
+router.post('/existing/face/request', controller.requestExistingAbhaFace);
+router.post('/existing/face/status', controller.captureExistingAbhaFace);
+router.post('/existing/face/verify', controller.verifyExistingAbhaFace);
 router.post('/mobile/request-otp', controller.requestMobileOtp);
 router.post('/mobile/verify-otp', controller.verifyMobileOtp);
 

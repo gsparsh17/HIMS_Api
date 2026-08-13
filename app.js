@@ -192,6 +192,8 @@ function mountHospitalRoutes() {
   // own validation and rate limiting; all remaining hospital APIs require login.
   app.use('/api/email', require('./routes/emailRoutes.js'));
   app.use('/api/public/hospital-profile', require('./routes/publicHospitalProfile.routes.js'));
+  // Patient portal has its own patient-scoped JWT boundary and must be mounted before staff auth.
+  app.use('/api/patient-portal', require('./routes/patientPortal.routes.js'));
   const authMiddleware = require('./middlewares/auth');
   app.use('/api', authMiddleware.protect);
   app.use('/api', authMiddleware.requireCompletedMfaSetup);
