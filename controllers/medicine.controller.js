@@ -433,7 +433,7 @@ exports.searchMedicines = async (req, res) => {
     const medicines = await Medicine
       .find(medicineQuery)
       .limit(Number(limit))
-      .select('name generic_name composition compositions brand strength category hsn_code gst_rate base_unit pack_unit units_per_pack allow_loose_sale min_stock_level location prescription_required is_own_brand manufacturer')
+      .select('name generic_name composition compositions brand strength category hsn_code gst_rate base_unit pack_unit units_per_pack allow_loose_sale min_stock_level location prescription_required is_high_risk is_high_alert medicationSafety is_own_brand manufacturer')
       .lean();
 
     if (includeBatches === 'false') {

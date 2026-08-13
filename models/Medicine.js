@@ -97,7 +97,11 @@ const medicineSchema = new mongoose.Schema({
 
   // Legacy field
   min_stock_level: { type: Number, default: 10 },
-  prescription_required: { type: Boolean, default: false },
+  // Regulatory and High-Risk / Prescription classification
+  prescription_required: { type: Boolean, default: false, index: true },
+  is_high_risk: { type: Boolean, default: false, index: true },
+  is_high_alert: { type: Boolean, default: false, index: true },
+
   medicationSafety: {
     highRisk: { type: Boolean, default: false, index: true },
     lasa: { type: Boolean, default: false, index: true },
@@ -136,6 +140,17 @@ medicineSchema.pre('save', async function (next) {
   if (!this.units_per_pack || this.units_per_pack < 1) this.units_per_pack = 1;
   if (this.min_stock_level_base_units == null && this.min_stock_level != null) {
     this.min_stock_level_base_units = this.min_stock_level;
+  }
+
+  // Sync high-risk / high-alert flags with medicationSafety
+  if (this.is_high_risk || this.is_high_alert) {
+    if (!this.medicationSafety) this.medicationSafety = {};
+    this.medicationSafety.highRisk = true;
+    this.is_high_risk = true;
+    this.is_high_alert = true;
+  } else if (this.medicationSafety?.highRisk) {
+    this.is_high_risk = true;
+    this.is_high_alert = true;
   }
 
   // Sync capex vs non-capex item type

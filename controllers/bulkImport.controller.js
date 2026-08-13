@@ -88,6 +88,7 @@ const ENTITY = {
       ['allow_loose_sale', 'Allow Loose Sale (true/false)', false],
       ['min_stock_level_base_units', 'Min Stock Level', false],
       ['prescription_required', 'Prescription Required (true/false)', false],
+      ['is_high_risk', 'High Risk / High Alert Medicine (true/false)', false],
       ['shelf', 'Shelf Location', false],
       ['rack', 'Rack Location', false],
       ['is_active', 'Is Active (true/false)', false],
@@ -110,6 +111,7 @@ const ENTITY = {
       allow_loose_sale: 'true',
       min_stock_level_base_units: '50',
       prescription_required: 'false',
+      is_high_risk: 'false',
       is_active: 'true'
     }
   },
@@ -300,6 +302,11 @@ function normalize(entity, row, hospitalId, userId) {
       allow_loose_sale: bool(str('allow_loose_sale')),
       min_stock_level_base_units: num(str('min_stock_level_base_units')) || 0,
       prescription_required: bool(str('prescription_required')),
+      is_high_risk: bool(str('is_high_risk')) || bool(str('is_high_alert')) || bool(str('high_risk')) || bool(str('high_alert')),
+      is_high_alert: bool(str('is_high_risk')) || bool(str('is_high_alert')) || bool(str('high_risk')) || bool(str('high_alert')),
+      medicationSafety: {
+        highRisk: bool(str('is_high_risk')) || bool(str('is_high_alert')) || bool(str('high_risk')) || bool(str('high_alert'))
+      },
       location: { shelf: str('shelf'), rack: str('rack') },
       is_active: str('is_active') === '' ? true : bool(str('is_active'))
     };
