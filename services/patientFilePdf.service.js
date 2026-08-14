@@ -218,10 +218,11 @@ async function generatedLabReport(item, hospitalId) {
   const request = await LabRequest.findOne({ _id: item.sourceId, hospitalId })
     .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
     .populate('doctorId', 'firstName lastName first_name last_name specialization department')
+    .populate('labTestId', 'code name category normal_range units report_template_id')
     .populate('admissionId', 'admissionNumber hospitalId')
     .populate('appointmentId', 'token')
     .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
-  if (!request || request.report_mode !== 'manual' || !request.manual_report) return null;
+  if (!request || (!request.manual_report && !request.result_value)) return null;
   const hospital = await Hospital.findById(hospitalId).lean();
   return collectPipedPdf((res) => generateLabReportPdf({ res, request, hospital }));
 }

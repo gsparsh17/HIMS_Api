@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
+const { getTemplate, matchTemplate, normalizeLabTestName } = require('./labReportTemplate.service');
 
 const mm = (value) => value * 2.834645669;
 const PAGE = { width: mm(210), height: mm(297), margin: mm(10) };
@@ -392,7 +393,134 @@ function deriveObservationGroup(observation) {
   return '';
 }
 
-function drawLabObservationTable(doc, observations, report, onNewPage) {
+function deriveObservationReference(observation = {}, template = null, request = null) {
+  // 1. Direct fields on observation
+  const explicit = firstText(
+    observation.referenceText,
+    observation.reference_text,
+    observation.referenceRange,
+    observation.reference_range,
+    observation.referenceValue,
+    observation.reference_value,
+    observation.referenceInterval,
+    observation.reference_interval,
+    observation.normalRange,
+    observation.normal_range,
+    observation.refRange,
+    observation.ref_range,
+    observation.reference
+  );
+  if (explicit) return explicit;
+
+  // 2. Low / High or Min / Max combination
+  const low = firstText(
+    observation.referenceLow,
+    observation.reference_low,
+    observation.referenceMin,
+    observation.min_value,
+    observation.normal_min
+  );
+  const high = firstText(
+    observation.referenceHigh,
+    observation.reference_high,
+    observation.referenceMax,
+    observation.max_value,
+    observation.normal_max
+  );
+  if (low && high) return `${low} - ${high}`;
+  if (low && !high) return `>= ${low}`;
+  if (!low && high) return `<= ${high}`;
+
+  // 3. Handle unit-scaled reference intervals for WBC/TLC and Platelets when unit is 10^3/uL
+  const unitText = firstText(observation.unit, observation.units);
+  const isThousands = /10\^?3|10³|thous/i.test(unitText);
+  if (isThousands) {
+    const obsNorm = normalizeLabTestName(observation.name);
+    if (/total (leucocyte|leukocyte|wbc)|tlc\b|wbc count/.test(obsNorm)) {
+      return '4.0 - 11.0';
+    }
+    if (/platelet/.test(obsNorm)) {
+      return '150 - 450';
+    }
+  }
+
+  // 4. Fallback to matched template observation from catalog
+  if (template?.observations?.length) {
+    const obsNameNorm = normalizeLabTestName(observation.name);
+    const matchedObs = template.observations.find((item) => {
+      if (item.analyteCode && observation.analyteCode && item.analyteCode === observation.analyteCode) return true;
+      const itemNameNorm = normalizeLabTestName(item.name);
+      return itemNameNorm === obsNameNorm
+        || (itemNameNorm && obsNameNorm && (itemNameNorm.includes(obsNameNorm) || obsNameNorm.includes(itemNameNorm)));
+    });
+    if (matchedObs) {
+      const templateRef = firstText(
+        matchedObs.referenceText,
+        matchedObs.referenceRange,
+        matchedObs.normalRange,
+        (matchedObs.referenceLow && matchedObs.referenceHigh) ? `${matchedObs.referenceLow} - ${matchedObs.referenceHigh}` : ''
+      );
+      if (templateRef) return templateRef;
+    }
+  }
+
+  // 5. Fallback to master test normal range
+  const testNormalRange = firstText(
+    request?.normal_range_used,
+    request?.labTestId?.normal_range,
+    request?.normal_range
+  );
+  if (testNormalRange && (!template?.observations || template.observations.length <= 1)) {
+    return testNormalRange;
+  }
+
+  return '';
+}
+
+function deriveObservationUnit(observation = {}, template = null, request = null) {
+  let direct = firstText(observation.unit, observation.units, observation.unit_name);
+  if (!direct && template?.observations?.length) {
+    const obsNameNorm = normalizeLabTestName(observation.name);
+    const matchedObs = template.observations.find((item) => {
+      if (item.analyteCode && observation.analyteCode && item.analyteCode === observation.analyteCode) return true;
+      const itemNameNorm = normalizeLabTestName(item.name);
+      return itemNameNorm === obsNameNorm || (itemNameNorm && obsNameNorm && (itemNameNorm.includes(obsNameNorm) || obsNameNorm.includes(itemNameNorm)));
+    });
+    if (matchedObs?.unit) direct = matchedObs.unit;
+  }
+  if (!direct) direct = firstText(request?.labTestId?.units, '');
+  if (direct) {
+    return direct.replace(/10\^3\s*\/?\s*uL/gi, '10³/µL').replace(/10\^3/g, '10³').replace(/\buL\b/gi, 'µL');
+  }
+  return '';
+}
+
+function parseResultValueToObservations(resultValue = '', template = null) {
+  if (!resultValue || typeof resultValue !== 'string') return [];
+  const parts = resultValue.split(';').map((p) => p.trim()).filter(Boolean);
+  return parts.map((part) => {
+    const colonIndex = part.indexOf(':');
+    if (colonIndex === -1) return { name: part, resultText: '' };
+    const name = part.slice(0, colonIndex).trim();
+    const rest = part.slice(colonIndex + 1).trim();
+    const match = rest.match(/^([<>=≤≥]*)?\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*(.*)$/);
+    if (match) {
+      return {
+        name,
+        comparator: match[1] || '',
+        resultNumeric: match[2] || '',
+        resultText: match[2] || '',
+        unit: match[3] ? match[3].trim() : ''
+      };
+    }
+    return {
+      name,
+      resultText: rest
+    };
+  });
+}
+
+function drawLabObservationTable(doc, observations, report, onNewPage, template = null, request = null) {
   const left = PAGE.margin;
   const totalWidth = PAGE.width - PAGE.margin * 2;
   const widths = [mm(72), mm(27), mm(22), mm(43), totalWidth - mm(164)];
@@ -452,12 +580,14 @@ function drawLabObservationTable(doc, observations, report, onNewPage) {
       observation.value
     )}`;
     const flag = firstText(observation.printedFlag, observation.derivedFlag, observation.flag);
+    const reference = deriveObservationReference(observation, template, request);
+    const unit = deriveObservationUnit(observation, template, request);
     const values = [
       text(observation.name),
       result,
       flag,
-      firstText(observation.referenceText, observation.referenceRange),
-      text(observation.unit)
+      reference,
+      unit
     ];
     const method = text(observation.method);
     const nameHeight = doc.heightOfString(values[0] || ' ', { width: widths[0] - 6 });
@@ -667,9 +797,16 @@ function generateLabReportPdf({ res, request, hospital }) {
   const doc = createDocument();
   doc.pipe(res);
 
+  const template = getTemplate(report.templateId || request.reportTemplateId || request.labTestId?.report_template_id)
+    || matchTemplate(request.testName || report.templateName || request.labTestId?.name, request.testCode || request.labTestId?.code, report.templateId);
+
+  const rawObservations = Array.isArray(report.observations) && report.observations.length
+    ? report.observations
+    : parseResultValueToObservations(request.result_value, template);
+
   const header = () => drawLabReportHeader(doc, request, hospital, report);
   header();
-  drawLabObservationTable(doc, report.observations || [], report, header);
+  drawLabObservationTable(doc, rawObservations, report, header, template, request);
 
   (report.additionalTables || []).forEach((table) => {
     if (!table?.title || table.displayInReport === false) return;

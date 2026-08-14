@@ -42,10 +42,26 @@ const toObservation = (item = {}) => ({
   comparator: cleanText(item.comparator || item.resultComparator),
   printedFlag: cleanText(item.printedFlag || item.printed_flag || item.flag),
   derivedFlag: cleanText(item.derivedFlag || item.derived_flag),
-  referenceLow: cleanText(item.referenceLow || item.reference_low),
-  referenceHigh: cleanText(item.referenceHigh || item.reference_high),
-  referenceText: cleanText(item.referenceText || item.reference_text || item.referenceValue),
-  unit: cleanText(item.unit),
+  referenceLow: cleanText(item.referenceLow || item.reference_low || item.referenceMin || item.min_value),
+  referenceHigh: cleanText(item.referenceHigh || item.reference_high || item.referenceMax || item.max_value),
+  referenceText: cleanText(
+    item.referenceText
+    || item.reference_text
+    || item.referenceValue
+    || item.reference_value
+    || item.referenceRange
+    || item.reference_range
+    || item.referenceInterval
+    || item.reference_interval
+    || item.normalRange
+    || item.normal_range
+    || item.refRange
+    || item.ref_range
+    || ((item.referenceLow || item.reference_low || item.referenceMin) && (item.referenceHigh || item.reference_high || item.referenceMax)
+      ? `${item.referenceLow || item.reference_low || item.referenceMin} - ${item.referenceHigh || item.reference_high || item.referenceMax}`
+      : '')
+  ),
+  unit: cleanText(item.unit || item.units),
   method: cleanText(item.method),
   instrument: cleanText(item.instrument),
   comments: cleanText(item.comments)
@@ -424,12 +440,13 @@ exports.downloadGeneratedReport = async (req, res) => {
     const request = await LabRequest.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) })
       .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
       .populate('doctorId', 'firstName lastName specialization department')
+      .populate('labTestId', 'code name category normal_range units report_template_id')
       .populate('admissionId', 'admissionNumber')
       .populate('appointmentId', 'token')
       .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
     if (!request) return res.status(404).json({ error: 'Lab request not found' });
 
-    if (request.report_mode === 'manual' && request.manual_report) {
+    if ((request.report_mode === 'manual' && request.manual_report) || request.manual_report || request.result_value) {
       const hospital = req.user?.hospital_id ? await Hospital.findById(req.user.hospital_id) : null;
       return generateLabReportPdf({ res, request, hospital });
     }
@@ -805,10 +822,11 @@ exports.downloadReport = async (req, res) => {
     const { id } = req.params;
     const request = await LabRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) })
       .populate('patientId', 'first_name last_name patientId uhid dob gender phone address')
-      .populate('doctorId', 'firstName lastName specialization department');
+      .populate('doctorId', 'firstName lastName specialization department')
+      .populate('labTestId', 'code name category normal_range units report_template_id');
     
     if (!request) return res.status(404).json({ error: 'Report not found' });
-    if (request.report_mode === 'manual' && request.manual_report) {
+    if ((request.report_mode === 'manual' && request.manual_report) || request.manual_report || request.result_value) {
       const hospital = req.user?.hospital_id ? await Hospital.findById(req.user.hospital_id) : null;
       return generateLabReportPdf({ res, request, hospital });
     }

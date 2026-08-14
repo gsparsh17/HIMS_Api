@@ -33,26 +33,53 @@ const LAYOUT_PROFILES = {
 function layoutProfile(template) { return { ...LAYOUT_PROFILES.default, ...(LAYOUT_PROFILES[template?.id] || {}) }; }
 
 
-function firstExisting(paths) {
-  return paths.filter(Boolean).find((candidate) => {
-    try { return fs.existsSync(candidate); } catch (_) { return false; }
-  });
+function resolveFontCandidate(candidate) {
+  if (!candidate || typeof candidate !== 'string') return null;
+  const trimmed = candidate.trim();
+  if (!trimmed) return null;
+  const pathsToTry = [
+    trimmed,
+    path.resolve(trimmed),
+    path.resolve(process.cwd(), trimmed),
+    path.resolve(__dirname, '..', trimmed),
+    path.resolve(__dirname, '../assets/fonts', path.basename(trimmed))
+  ];
+  return pathsToTry.find((p) => {
+    try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch (_) { return false; }
+  }) || null;
 }
+
+function firstExisting(candidates = []) {
+  for (const candidate of candidates) {
+    const resolved = resolveFontCandidate(candidate);
+    if (resolved) return resolved;
+  }
+  return undefined;
+}
+
 function fontConfigMatch(pattern) {
   try {
     const result = execFileSync('fc-match', ['-f', '%{file}', pattern], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     return result && fs.existsSync(result) ? result : undefined;
   } catch (_) { return undefined; }
 }
+
 const DEV_REG = firstExisting([
   process.env.DEVANAGARI_FONT_PATH,
+  'assets/fonts/NotoSansDevanagari-Regular.ttf',
+  path.join(__dirname, '../assets/fonts/NotoSansDevanagari-Regular.ttf'),
+  path.join(__dirname, '../../assets/fonts/NotoSansDevanagari-Regular.ttf'),
   '/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf',
   '/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Regular.ttf',
   '/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.ttf',
   '/usr/share/fonts/opentype/noto/NotoSansDevanagariUI-Regular.ttf'
 ]) || fontConfigMatch('Noto Sans Devanagari');
+
 const DEV_BOLD = firstExisting([
   process.env.DEVANAGARI_BOLD_FONT_PATH,
+  'assets/fonts/NotoSansDevanagari-Bold.ttf',
+  path.join(__dirname, '../assets/fonts/NotoSansDevanagari-Bold.ttf'),
+  path.join(__dirname, '../../assets/fonts/NotoSansDevanagari-Bold.ttf'),
   '/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf',
   '/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Bold.ttf',
   '/usr/share/fonts/opentype/noto/NotoSansDevanagari-Bold.ttf',
