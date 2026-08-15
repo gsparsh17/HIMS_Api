@@ -35,6 +35,8 @@ router.post('/certificates', requireModuleAccess('reports', 'manage'), controlle
 router.patch('/certificates/:id', requireModuleAccess('reports', 'manage'), controller.certificateUpdate);
 router.get('/certificates/:id/pdf', controller.certificatePdf);
 
+router.get('/exports/:section', controller.exportSection);
+
 router.get('/reports/catalog', controller.reportCatalog);
 router.get('/reports/:key', controller.report);
 

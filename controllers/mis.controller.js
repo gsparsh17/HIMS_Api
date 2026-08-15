@@ -2,7 +2,8 @@ const mongoose = require('mongoose');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const crypto = require('crypto');
 const ExcelJS = require('exceljs');
-const PDFDocument = require('pdfkit');
+const { renderStructuredReportPdf } = require('../services/clinicalPdf.service');
+const { buildReportPresentation } = require('../services/reportPresentation.service');
 const MISMetricDefinition = require('../models/MISMetricDefinition');
 const MISSnapshot = require('../models/MISSnapshot');
 const MISExportJob = require('../models/MISExportJob');
@@ -544,6 +545,24 @@ async function standardStatusReport(
 }
 
 // ============================================
+// Hospital Summary
+// ============================================
+
+async function hospitalSummary(hospitalId) {
+  const Hospital = model('Hospital');
+
+  if (!Hospital) {
+    return {};
+  }
+
+  const hospital = await Hospital.findById(hospitalId)
+    .select('name hospitalName address city state pinCode contact phone phoneNumber email logo')
+    .lean();
+
+  return hospital || {};
+}
+
+// ============================================
 // Build Report
 // ============================================
 
@@ -628,11 +647,19 @@ async function buildReport(key, hospitalId, startDate, endDate, extraFilters = {
     throw error;
   }
 
+  const presentation = buildReportPresentation({
+    context: 'mis',
+    key,
+    rows: data.rows || []
+  });
+
   return {
     report: REPORT_CATALOG.find((item) => item.key === key),
     filters,
     generatedAt: new Date().toISOString(),
-    ...data
+    hospital: await hospitalSummary(hospitalId),
+    ...data,
+    presentation
   };
 }
 
@@ -652,53 +679,14 @@ function flattenReport(report) {
     ...(report.cards || []).map((card) => [card.label, card.value])
   ];
 
-  if (Array.isArray(report.rows) && report.rows.length) {
-    const preferred = [
-      'period',
-      'careSetting',
-      'visitType',
-      'status',
-      'medicoStatus',
-      'department',
-      'doctor',
-      'surgeon',
-      'procedure',
-      'test',
-      'ward',
-      'bed',
-      'patient',
-      'admissionDate',
-      'count',
-      'averageMinutes',
-      'maxMinutes',
-      'billed',
-      'collected',
-      'outstanding',
-      'quantity',
-      'value'
-    ];
+  const presentedColumns = report.presentation?.columns || [];
+  const presentedRows = report.presentation?.rows || [];
 
-    const available = new Set();
+  if (presentedRows.length && presentedColumns.length) {
+    rows.push([], ['Detailed MIS'], presentedColumns.map((column) => column.label));
 
-    report.rows.forEach((row) => {
-      Object.keys(row || {}).forEach((key) => {
-        if (!key.startsWith('__') && key !== '_id') {
-          available.add(key);
-        }
-      });
-    });
-
-    const columns = [
-      ...preferred.filter((key) => available.has(key)),
-      ...[...available].filter((key) => !preferred.includes(key))
-    ];
-
-    rows.push([], ['Detailed MIS'], columns);
-
-    report.rows.forEach((row) => {
-      rows.push(columns.map((key) =>
-        typeof row[key] === 'object' ? JSON.stringify(row[key]) : row[key]
-      ));
+    presentedRows.forEach((row) => {
+      rows.push(presentedColumns.map((column) => row[column.key]));
     });
   }
 
@@ -776,134 +764,30 @@ async function renderExport(report, format) {
   }
 
   // PDF
-  const output = await new Promise((resolve, reject) => {
-    const doc = new PDFDocument({
-      size: 'A4',
-      margin: 36,
-      bufferPages: true
-    });
+  const presentation = report.presentation || buildReportPresentation({
+    context: 'mis',
+    key: report.report?.key || '',
+    rows: report.rows || []
+  });
 
-    const chunks = [];
-
-    doc.on('data', (chunk) => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-
-    doc
-      .fontSize(16)
-      .font('Helvetica-Bold')
-      .text(report.report?.label || 'MIS Report');
-
-    doc
-      .moveDown(0.3)
-      .fontSize(9)
-      .font('Helvetica')
-      .text(
-        `Period: ${report.filters?.startDate || 'All'} to ${report.filters?.endDate || 'All'} | Generated: ${report.generatedAt}`
-      );
-
-    doc.moveDown();
-
-    (report.cards || []).forEach((card) => {
-      if (doc.y > 760) {
-        doc.addPage();
-      }
-
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(10)
-        .text(`${card.label}: `, { continued: true })
-        .font('Helvetica')
-        .text(String(card.value ?? '—'));
-    });
-
-    if (Array.isArray(report.rows) && report.rows.length) {
-      if (doc.y > 700) {
-        doc.addPage();
-      }
-
-      doc
-        .moveDown()
-        .font('Helvetica-Bold')
-        .fontSize(12)
-        .text('Detailed MIS');
-
-      report.rows.forEach((row) => {
-        if (doc.y > 760) {
-          doc.addPage();
-        }
-
-        const detail = Object.entries(row || {})
-          .filter(([key, value]) =>
-            key !== '_id' &&
-            !key.startsWith('__') &&
-            value !== undefined &&
-            value !== null &&
-            value !== ''
-          )
-          .map(([key, value]) =>
-            `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`
-          )
-          .join(' | ');
-
-        doc
-          .font('Helvetica')
-          .fontSize(7.5)
-          .text(detail || '—');
-      });
-    }
-
-    Object.entries(report.series || {}).forEach(([name, values]) => {
-      if (name === 'detail') return;
-
-      if (doc.y > 700) {
-        doc.addPage();
-      }
-
-      doc
-        .moveDown()
-        .font('Helvetica-Bold')
-        .fontSize(12)
-        .text(name.replace(/([A-Z])/g, ' $1'));
-
-      (values || []).forEach((row) => {
-        if (doc.y > 760) {
-          doc.addPage();
-        }
-
-        doc
-          .font('Helvetica')
-          .fontSize(8)
-          .text(
-            `${typeof row._id === 'object' ? JSON.stringify(row._id) : row._id || 'Unknown'} | Count ${row.count ?? ''} | Qty ${row.quantity ?? ''} | Value ${row.value ?? ''}`
-          );
-      });
-    });
-
-    const range = doc.bufferedPageRange();
-
-    for (let i = 0; i < range.count; i += 1) {
-      doc.switchToPage(i);
-
-      doc
-        .fontSize(7)
-        .fillColor('#555')
-        .text(
-          `Page ${i + 1} of ${range.count}`,
-          36,
-          805,
-          { align: 'right', width: 523 }
-        );
-    }
-
-    doc.end();
+  const output = await renderStructuredReportPdf({
+    hospital: report.hospital || {},
+    title: report.report?.label || 'MIS Report',
+    subtitle: report.report?.module || 'Enterprise MIS',
+    filters: report.filters || {},
+    metrics: report.cards || [],
+    rows: presentation.rows || [],
+    columns: presentation.columns || [],
+    generatedAt: report.generatedAt,
+    footerLabel: 'MediQliq HMS · Governed MIS report',
+    preparedBy: 'MIS Desk'
   });
 
   return {
     output,
     filename: `${safeFilename}.pdf`,
     mimeType: 'application/pdf',
-    rowCount: rows.length
+    rowCount: report.rows?.length || 0
   };
 }
 

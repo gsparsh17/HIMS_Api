@@ -1346,4 +1346,168 @@ function generateOpdSlipPdf({ res, prescription, hospital, vitals, receipt, prin
   doc.end();
 }
 
-module.exports = { generateLabReportPdf, generatePrescriptionPdf, generateOpdSlipPdf };
+
+
+async function renderStructuredReportPdf({
+  hospital = {},
+  title = 'Hospital Report',
+  subtitle = '',
+  filters = {},
+  metrics = [],
+  rows = [],
+  columns = [],
+  generatedAt = new Date(),
+  footerLabel = 'Computer-generated hospital report',
+  preparedBy = 'MIS / MRD Desk'
+}) {
+  const discoveredColumns = [...new Set(rows.flatMap((row) => Object.keys(row || {})))];
+  const resolvedColumns = (columns.length ? columns : discoveredColumns).map((column) => (
+    typeof column === 'string' ? { key: column, label: column } : column
+  ));
+  // MIS/MRD reports are standardised to A4 portrait. Wide source datasets are
+  // grouped into concise presentation columns before reaching this renderer.
+  const pageSize = { width: mm(210), height: mm(297) };
+  const margin = mm(7);
+  const doc = new PDFDocument({
+    size: 'A4',
+    layout: 'portrait',
+    margins: { top: margin, right: margin, bottom: mm(11), left: margin },
+    bufferPages: true,
+    info: { Creator: 'MediQliq HIMS', Title: title }
+  });
+  const chunks = [];
+  doc.on('data', (chunk) => chunks.push(chunk));
+  const done = new Promise((resolve, reject) => {
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+  });
+
+  const usableWidth = pageSize.width - margin * 2;
+  const bottom = pageSize.height - mm(13);
+  const period = `${filters.startDate || filters.from || 'All'} to ${filters.endDate || filters.to || 'All'}`;
+  const generated = formatDate(generatedAt, true);
+  const label = (value) => String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const columnKey = (column) => column?.key || String(column || '');
+  const columnLabel = (column) => column?.label || label(columnKey(column));
+  const scalar = (value) => {
+    if (value === null || value === undefined || value === '') return '—';
+    if (value instanceof Date) return formatDate(value, true);
+    if (typeof value === 'object') return text(value, '—');
+    return String(value);
+  };
+
+  function drawReportHeader(continued = false) {
+    const top = margin;
+    const logoSize = mm(12);
+    drawHospitalLogo(doc, hospital, margin, top, logoSize);
+    const name = hospitalName(hospital);
+    const address = text(hospital?.address) || [hospital?.city, hospital?.state].filter(Boolean).join(', ');
+    const contact = [hospital?.contact || hospital?.phone || hospital?.phoneNumber, hospital?.email].filter(Boolean).join(' | ');
+    doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(12).text(name, margin + logoSize + mm(2), top + 1, { width: usableWidth * 0.53, ellipsis: true });
+    doc.font('Helvetica').fontSize(6.5).fillColor(COLORS.muted).text(address || 'Hospital Management System', margin + logoSize + mm(2), top + mm(5.5), { width: usableWidth * 0.53, ellipsis: true });
+    if (contact) doc.text(contact, margin + logoSize + mm(2), top + mm(9), { width: usableWidth * 0.53, ellipsis: true });
+    const titleX = margin + usableWidth * 0.66;
+    doc.rect(titleX, top, usableWidth * 0.34, mm(14)).lineWidth(0.5).strokeColor(COLORS.ink).stroke();
+    doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(8.5).text(String(title).toUpperCase(), titleX + 3, top + mm(3), { width: usableWidth * 0.34 - 6, align: 'center', ellipsis: true });
+    doc.font('Helvetica').fontSize(6).text(continued ? 'CONTINUED' : (subtitle || 'HOSPITAL REPORT'), titleX + 3, top + mm(8), { width: usableWidth * 0.34 - 6, align: 'center', ellipsis: true });
+    const infoY = top + mm(16);
+    const infoH = mm(8);
+    const cells = [
+      `Period: ${period}`,
+      `Grouping: ${filters.grain || filters.period || '—'}`,
+      `Generated: ${generated}`,
+      `Total records: ${rows.length}`
+    ];
+    const cellW = usableWidth / 4;
+    cells.forEach((value, index) => {
+      const x = margin + index * cellW;
+      doc.rect(x, infoY, cellW, infoH).lineWidth(0.35).strokeColor(COLORS.border).stroke();
+      doc.fillColor(COLORS.ink).font('Helvetica').fontSize(6.2).text(value, x + 3, infoY + 4, { width: cellW - 6, height: infoH - 6, ellipsis: true });
+    });
+    doc.y = infoY + infoH + mm(2);
+  }
+
+  function drawMetrics() {
+    const visibleMetrics = metrics.filter((metric) => !(metrics.length === 1 && /total\s*records?/i.test(String(metric?.label || ''))));
+    if (!visibleMetrics.length) return;
+    const values = visibleMetrics.slice(0, 8);
+    const cols = Math.min(4, values.length);
+    const cellW = usableWidth / cols;
+    const rowsCount = Math.ceil(values.length / cols);
+    for (let r = 0; r < rowsCount; r += 1) {
+      const y = doc.y;
+      for (let c = 0; c < cols; c += 1) {
+        const metric = values[r * cols + c];
+        if (!metric) continue;
+        const x = margin + c * cellW;
+        doc.rect(x, y, cellW, mm(10)).fillAndStroke(COLORS.panel, COLORS.lightBorder);
+        doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(5.8).text(String(metric.label || '').toUpperCase(), x + 4, y + 3, { width: cellW - 8, ellipsis: true });
+        doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(9).text(scalar(metric.value), x + 4, y + mm(5), { width: cellW - 8, ellipsis: true });
+      }
+      doc.y = y + mm(10);
+    }
+    doc.y += mm(2);
+  }
+
+  const weights = resolvedColumns.map((column) => {
+    const preferredWidth = Number(column?.width || column?.weight || 0);
+    return preferredWidth > 0 ? preferredWidth : Math.max(9, Math.min(24, columnLabel(column).length + 3));
+  });
+  const weightTotal = weights.reduce((sum, value) => sum + value, 0) || 1;
+  const widths = weights.map((value) => usableWidth * value / weightTotal);
+
+  function drawTableHeader() {
+    const y = doc.y;
+    const height = mm(9);
+    let x = margin;
+    doc.save().fillColor(COLORS.header).rect(margin, y, usableWidth, height).fill().restore();
+    resolvedColumns.forEach((column, index) => {
+      doc.rect(x, y, widths[index], height).lineWidth(0.35).strokeColor(COLORS.border).stroke();
+      doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(6.1).text(columnLabel(column), x + 2.5, y + 3, { width: widths[index] - 5, height: height - 5, ellipsis: true });
+      x += widths[index];
+    });
+    doc.y = y + height;
+  }
+
+  function newPage() {
+    doc.addPage();
+    drawReportHeader(true);
+    drawTableHeader();
+  }
+
+  drawReportHeader(false);
+  drawMetrics();
+  if (resolvedColumns.length) drawTableHeader();
+  if (!rows.length || !resolvedColumns.length) {
+    doc.fillColor(COLORS.muted).font('Helvetica').fontSize(9).text('No detailed records for the selected report and filters.', margin, doc.y + mm(8), { width: usableWidth, align: 'center' });
+  } else {
+    rows.forEach((row, rowIndex) => {
+      const values = resolvedColumns.map((column) => scalar(row?.[columnKey(column)]));
+      const rowHeight = Math.max(mm(7), Math.min(mm(18), ...values.map((value, index) => doc.font('Helvetica').fontSize(6).heightOfString(value, { width: widths[index] - 5 }) + 5)));
+      if (doc.y + rowHeight > bottom) newPage();
+      const y = doc.y;
+      let x = margin;
+      if (rowIndex % 2 === 1) doc.save().fillColor('#fbfdff').rect(margin, y, usableWidth, rowHeight).fill().restore();
+      values.forEach((value, index) => {
+        doc.rect(x, y, widths[index], rowHeight).lineWidth(0.25).strokeColor(COLORS.lightBorder).stroke();
+        doc.fillColor(COLORS.ink).font('Helvetica').fontSize(6).text(value, x + 2.5, y + 3, { width: widths[index] - 5, height: rowHeight - 5, ellipsis: true });
+        x += widths[index];
+      });
+      doc.y = y + rowHeight;
+    });
+  }
+
+  const range = doc.bufferedPageRange();
+  for (let index = range.start; index < range.start + range.count; index += 1) {
+    doc.switchToPage(index);
+    const pageNo = index - range.start + 1;
+    const footerY = pageSize.height - mm(8);
+    doc.moveTo(margin, footerY - 4).lineTo(pageSize.width - margin, footerY - 4).lineWidth(0.35).strokeColor(COLORS.lightBorder).stroke();
+    doc.fillColor(COLORS.muted).font('Helvetica').fontSize(5.8).text(`${footerLabel} · Prepared by ${preparedBy}`, margin, footerY, { width: usableWidth - mm(35), lineBreak: false });
+    doc.text(`Page ${pageNo} of ${range.count}`, pageSize.width - margin - mm(35), footerY, { width: mm(35), align: 'right', lineBreak: false });
+  }
+  doc.end();
+  return done;
+}
+
+module.exports = { generateLabReportPdf, generatePrescriptionPdf, generateOpdSlipPdf, renderStructuredReportPdf };

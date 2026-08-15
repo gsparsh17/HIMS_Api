@@ -1,6 +1,7 @@
 const mrd = require('../services/mrd.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
+const { buildReportPresentation } = require('../services/reportPresentation.service');
 
 // ============================================
 // Helpers
@@ -19,7 +20,7 @@ function asyncHandler(fn) {
 function listFilter(req, extra = {}) {
   return {
     hospitalId: requireHospitalId(req),
-    ...extra,
+    ...extra
   };
 }
 
@@ -42,7 +43,7 @@ exports.lookupPatients = asyncHandler(async (req, res) => {
       { last_name: new RegExp(escaped, 'i') },
       { uhid: new RegExp(escaped, 'i') },
       { patientId: new RegExp(escaped, 'i') },
-      { phone: new RegExp(escaped, 'i') },
+      { phone: new RegExp(escaped, 'i') }
     ];
   }
 
@@ -59,8 +60,8 @@ exports.lookupPatients = asyncHandler(async (req, res) => {
       ...patient,
       name: [patient.first_name, patient.middle_name, patient.last_name]
         .filter(Boolean)
-        .join(' '),
-    })),
+        .join(' ')
+    }))
   });
 });
 
@@ -78,8 +79,8 @@ exports.lookupDoctors = asyncHandler(async (req, res) => {
     success: true,
     data: rows.map((doctor) => ({
       ...doctor,
-      name: [doctor.firstName, doctor.lastName].filter(Boolean).join(' '),
-    })),
+      name: [doctor.firstName, doctor.lastName].filter(Boolean).join(' ')
+    }))
   });
 });
 
@@ -89,7 +90,7 @@ exports.lookupDepartments = asyncHandler(async (req, res) => {
   const rows = await Department
     .find({
       hospitalId: requireHospitalId(req),
-      active: { $ne: false },
+      active: { $ne: false }
     })
     .select('code name departmentClass departmentType')
     .sort({ displayOrder: 1, name: 1 })
@@ -97,7 +98,7 @@ exports.lookupDepartments = asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
-    data: rows,
+    data: rows
   });
 });
 
@@ -108,28 +109,28 @@ exports.lookupDepartments = asyncHandler(async (req, res) => {
 exports.summary = asyncHandler(async (req, res) => {
   res.json({
     success: true,
-    data: await mrd.summary(requireHospitalId(req)),
+    data: await mrd.summary(requireHospitalId(req))
   });
 });
 
 exports.ipdRecords = asyncHandler(async (req, res) => {
   res.json({
     success: true,
-    data: await mrd.listIpdRecords(requireHospitalId(req), req.query),
+    data: await mrd.listIpdRecords(requireHospitalId(req), req.query)
   });
 });
 
 exports.opdRecords = asyncHandler(async (req, res) => {
   res.json({
     success: true,
-    data: await mrd.listOpdRecords(requireHospitalId(req), req.query),
+    data: await mrd.listOpdRecords(requireHospitalId(req), req.query)
   });
 });
 
 exports.discharges = asyncHandler(async (req, res) => {
   res.json({
     success: true,
-    data: await mrd.listDischarges(requireHospitalId(req), req.query),
+    data: await mrd.listDischarges(requireHospitalId(req), req.query)
   });
 });
 
@@ -140,7 +141,7 @@ exports.discharges = asyncHandler(async (req, res) => {
 exports.incompleteRecords = asyncHandler(async (req, res) => {
   res.json({
     success: true,
-    data: await mrd.listIncompleteRecords(req, requireHospitalId(req), req.query),
+    data: await mrd.listIncompleteRecords(req, requireHospitalId(req), req.query)
   });
 });
 
@@ -149,13 +150,13 @@ exports.updateIncompleteReview = asyncHandler(async (req, res) => {
 
   const row = await mrd.models.MRDRecordReview.findOne({
     hospitalId,
-    admissionId: req.params.admissionId,
+    admissionId: req.params.admissionId
   });
 
   if (!row) {
     return res.status(404).json({
       success: false,
-      error: 'MRD review not found. Open/refresh the incomplete-record queue first.',
+      error: 'MRD review not found. Open/refresh the incomplete-record queue first.'
     });
   }
 
@@ -167,7 +168,7 @@ exports.updateIncompleteReview = asyncHandler(async (req, res) => {
     if (!deficiency) {
       return res.status(404).json({
         success: false,
-        error: 'Deficiency not found',
+        error: 'Deficiency not found'
       });
     }
 
@@ -215,13 +216,13 @@ exports.updateIncompleteReview = asyncHandler(async (req, res) => {
     encounterId: row.admissionId,
     afterSummary: {
       reviewStatus: row.reviewStatus,
-      openDeficiencies: row.deficiencies.filter((deficiency) => deficiency.status === 'open').length,
-    },
+      openDeficiencies: row.deficiencies.filter((deficiency) => deficiency.status === 'open').length
+    }
   });
 
   res.json({
     success: true,
-    data: row,
+    data: row
   });
 });
 
@@ -232,7 +233,7 @@ exports.updateIncompleteReview = asyncHandler(async (req, res) => {
 exports.documents = asyncHandler(async (req, res) => {
   res.json({
     success: true,
-    data: await mrd.listDocuments(requireHospitalId(req), req.query),
+    data: await mrd.listDocuments(requireHospitalId(req), req.query)
   });
 });
 
@@ -241,30 +242,9 @@ exports.documents = asyncHandler(async (req, res) => {
 // ============================================
 
 exports.fileTrackingList = asyncHandler(async (req, res) => {
-  const filter = listFilter(req);
-
-  if (req.query.status) {
-    filter.status = req.query.status;
-  }
-
-  if (req.query.patientId) {
-    filter.patientId = req.query.patientId;
-  }
-
-  if (req.query.overdue === 'true') {
-    filter.dueAt = { $lt: new Date() };
-  }
-
-  const data = await mrd.paged(
-    mrd.models.MRDFileTracking,
-    filter,
-    req.query,
-    ['patientId', 'admissionId', 'appointmentId', 'currentHolderUserId', 'currentHolderDepartmentId']
-  );
-
   res.json({
     success: true,
-    data,
+    data: await mrd.listFileTracking(requireHospitalId(req), req.query)
   });
 });
 
@@ -272,7 +252,7 @@ exports.fileTrackingCreate = asyncHandler(async (req, res) => {
   if (!req.body?.patientId) {
     return res.status(400).json({
       success: false,
-      error: 'patientId is required',
+      error: 'patientId is required'
     });
   }
 
@@ -280,7 +260,7 @@ exports.fileTrackingCreate = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     success: true,
-    data: row,
+    data: row
   });
 });
 
@@ -290,13 +270,13 @@ exports.fileTrackingMove = asyncHandler(async (req, res) => {
   if (!row) {
     return res.status(404).json({
       success: false,
-      error: 'Medical file not found',
+      error: 'Medical file not found'
     });
   }
 
   res.json({
     success: true,
-    data: row,
+    data: row
   });
 });
 
@@ -305,22 +285,9 @@ exports.fileTrackingMove = asyncHandler(async (req, res) => {
 // ============================================
 
 exports.birthDeathList = asyncHandler(async (req, res) => {
-  const filter = listFilter(req);
-
-  if (req.query.recordType) {
-    filter.recordType = req.query.recordType;
-  }
-
-  const data = await mrd.paged(
-    mrd.models.MRDBirthDeathRecord,
-    filter,
-    req.query,
-    ['patientId', 'motherPatientId', 'babyPatientId', 'admissionId', 'attendingDoctorId', 'departmentId', 'wardId', 'bedId']
-  );
-
   res.json({
     success: true,
-    data,
+    data: await mrd.listBirthDeath(requireHospitalId(req), req.query)
   });
 });
 
@@ -328,14 +295,14 @@ exports.birthDeathCreate = asyncHandler(async (req, res) => {
   if (!['birth', 'death'].includes(req.body?.recordType)) {
     return res.status(400).json({
       success: false,
-      error: 'recordType must be birth or death',
+      error: 'recordType must be birth or death'
     });
   }
 
   if (!req.body?.eventDateTime) {
     return res.status(400).json({
       success: false,
-      error: 'eventDateTime is required',
+      error: 'eventDateTime is required'
     });
   }
 
@@ -343,7 +310,7 @@ exports.birthDeathCreate = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     success: true,
-    data: row,
+    data: row
   });
 });
 
@@ -352,7 +319,7 @@ exports.birthDeathUpdate = asyncHandler(async (req, res) => {
 
   const body = {
     ...req.body,
-    updatedBy: req.user._id,
+    updatedBy: req.user._id
   };
 
   delete body.hospitalId;
@@ -368,7 +335,7 @@ exports.birthDeathUpdate = asyncHandler(async (req, res) => {
   if (!row) {
     return res.status(404).json({
       success: false,
-      error: 'Birth/death record not found',
+      error: 'Birth/death record not found'
     });
   }
 
@@ -381,13 +348,13 @@ exports.birthDeathUpdate = asyncHandler(async (req, res) => {
     patientId: row.patientId || row.babyPatientId || row.motherPatientId,
     afterSummary: {
       recordNumber: row.recordNumber,
-      registrationStatus: row.registrationStatus,
-    },
+      registrationStatus: row.registrationStatus
+    }
   });
 
   res.json({
     success: true,
-    data: row,
+    data: row
   });
 });
 
@@ -396,22 +363,9 @@ exports.birthDeathUpdate = asyncHandler(async (req, res) => {
 // ============================================
 
 exports.mlcList = asyncHandler(async (req, res) => {
-  const filter = listFilter(req);
-
-  if (req.query.status) {
-    filter.status = req.query.status;
-  }
-
-  const data = await mrd.paged(
-    mrd.models.MRDMedicoLegalRecord,
-    filter,
-    req.query,
-    ['patientId', 'admissionId', 'emergencyEncounterId']
-  );
-
   res.json({
     success: true,
-    data,
+    data: await mrd.listMlc(requireHospitalId(req), req.query)
   });
 });
 
@@ -419,7 +373,7 @@ exports.mlcCreate = asyncHandler(async (req, res) => {
   if (!req.body?.patientId) {
     return res.status(400).json({
       success: false,
-      error: 'patientId is required',
+      error: 'patientId is required'
     });
   }
 
@@ -427,7 +381,7 @@ exports.mlcCreate = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     success: true,
-    data: row,
+    data: row
   });
 });
 
@@ -436,7 +390,7 @@ exports.mlcUpdate = asyncHandler(async (req, res) => {
 
   const body = {
     ...req.body,
-    updatedBy: req.user._id,
+    updatedBy: req.user._id
   };
 
   delete body.hospitalId;
@@ -451,13 +405,13 @@ exports.mlcUpdate = asyncHandler(async (req, res) => {
   if (!row) {
     return res.status(404).json({
       success: false,
-      error: 'MLC record not found',
+      error: 'MLC record not found'
     });
   }
 
   res.json({
     success: true,
-    data: row,
+    data: row
   });
 });
 
@@ -466,26 +420,9 @@ exports.mlcUpdate = asyncHandler(async (req, res) => {
 // ============================================
 
 exports.certificateList = asyncHandler(async (req, res) => {
-  const filter = listFilter(req);
-
-  if (req.query.status) {
-    filter.status = req.query.status;
-  }
-
-  if (req.query.certificateType) {
-    filter.certificateType = req.query.certificateType;
-  }
-
-  const data = await mrd.paged(
-    mrd.models.MRDMedicalCertificate,
-    filter,
-    req.query,
-    ['patientId', 'admissionId', 'appointmentId', 'authorizedByDoctorId', 'authorizedByUserId']
-  );
-
   res.json({
     success: true,
-    data,
+    data: await mrd.listCertificates(requireHospitalId(req), req.query)
   });
 });
 
@@ -493,7 +430,7 @@ exports.certificateCreate = asyncHandler(async (req, res) => {
   if (!req.body?.patientId || !req.body?.certificateType) {
     return res.status(400).json({
       success: false,
-      error: 'patientId and certificateType are required',
+      error: 'patientId and certificateType are required'
     });
   }
 
@@ -501,7 +438,7 @@ exports.certificateCreate = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     success: true,
-    data: row,
+    data: row
   });
 });
 
@@ -510,7 +447,7 @@ exports.certificateUpdate = asyncHandler(async (req, res) => {
 
   const body = {
     ...req.body,
-    updatedBy: req.user._id,
+    updatedBy: req.user._id
   };
 
   delete body.hospitalId;
@@ -530,7 +467,7 @@ exports.certificateUpdate = asyncHandler(async (req, res) => {
   if (!row) {
     return res.status(404).json({
       success: false,
-      error: 'Medical certificate not found',
+      error: 'Medical certificate not found'
     });
   }
 
@@ -543,14 +480,68 @@ exports.certificateUpdate = asyncHandler(async (req, res) => {
     patientId: row.patientId,
     afterSummary: {
       certificateNumber: row.certificateNumber,
-      status: row.status,
-    },
+      status: row.status
+    }
   });
 
   res.json({
     success: true,
-    data: row,
+    data: row
   });
+});
+
+// ============================================
+// Export Section
+// ============================================
+
+exports.exportSection = asyncHandler(async (req, res) => {
+  const format = String(req.query.format || '').toLowerCase();
+
+  if (!['csv', 'xlsx', 'pdf', 'json'].includes(format)) {
+    return res.status(400).json({
+      success: false,
+      error: 'format must be csv, xlsx, pdf or json'
+    });
+  }
+
+  const hospitalId = requireHospitalId(req);
+
+  if (format === 'json') {
+    const Hospital = require('../models/Hospital');
+
+    const [dataset, hospital] = await Promise.all([
+      mrd.buildExportDataset(req, hospitalId, req.params.section, req.query),
+      Hospital.findById(hospitalId)
+        .select('name hospitalName address city state pinCode contact phone phoneNumber email logo')
+        .lean()
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        ...dataset,
+        hospital: hospital || {},
+        generatedAt: new Date().toISOString()
+      }
+    });
+  }
+
+  const rendered = await mrd.exportSection(
+    req,
+    hospitalId,
+    req.params.section,
+    format,
+    req.query
+  );
+
+  res.setHeader('Content-Type', rendered.mimeType);
+  res.setHeader(
+    'Content-Disposition',
+    `${format === 'pdf' ? 'inline' : 'attachment'}; filename="${rendered.filename}"`
+  );
+  res.setHeader('X-MRD-Row-Count', String(rendered.rowCount || 0));
+
+  res.send(rendered.output);
 });
 
 // ============================================
@@ -558,9 +549,21 @@ exports.certificateUpdate = asyncHandler(async (req, res) => {
 // ============================================
 
 exports.report = asyncHandler(async (req, res) => {
+  const result = await mrd.report(requireHospitalId(req), req.params.key, req.query);
+
+  const presentation = buildReportPresentation({
+    context: 'mrd',
+    section: 'reports',
+    key: req.params.key,
+    rows: result.rows || []
+  });
+
   res.json({
     success: true,
-    data: await mrd.report(requireHospitalId(req), req.params.key, req.query),
+    data: {
+      ...result,
+      presentation
+    }
   });
 });
 
@@ -578,8 +581,8 @@ exports.reportCatalog = asyncHandler(async (req, res) => {
       { key: 'birth-reports', label: 'Birth Reports' },
       { key: 'mlc-reports', label: 'MLC Reports' },
       { key: 'medico-report', label: 'Medico Report' },
-      { key: 'medical-file-tracking', label: 'Medical File Tracking Report' },
-    ],
+      { key: 'medical-file-tracking', label: 'Medical File Tracking Report' }
+    ]
   });
 });
 
@@ -593,7 +596,7 @@ exports.birthDeathPdf = asyncHandler(async (req, res) => {
   await pdf.birthDeathPdf({
     res,
     hospitalId: requireHospitalId(req),
-    id: req.params.id,
+    id: req.params.id
   });
 });
 
@@ -603,6 +606,6 @@ exports.certificatePdf = asyncHandler(async (req, res) => {
   await pdf.certificatePdf({
     res,
     hospitalId: requireHospitalId(req),
-    id: req.params.id,
+    id: req.params.id
   });
 });

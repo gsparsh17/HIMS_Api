@@ -1,4 +1,7 @@
 const mongoose = require('mongoose');
+const ExcelJS = require('exceljs');
+const { renderStructuredReportPdf } = require('./clinicalPdf.service');
+const { buildReportPresentation } = require('./reportPresentation.service');
 const IPDAdmission = require('../models/IPDAdmission');
 const Appointment = require('../models/Appointment');
 const Patient = require('../models/Patient');
@@ -13,6 +16,7 @@ const MRDBirthDeathRecord = require('../models/MRDBirthDeathRecord');
 const MRDMedicalCertificate = require('../models/MRDMedicalCertificate');
 const MRDMedicoLegalRecord = require('../models/MRDMedicoLegalRecord');
 const MRDRecordReview = require('../models/MRDRecordReview');
+const Hospital = require('../models/Hospital');
 const patientFileManifest = require('./patientFileManifest.service');
 const { appendDomainEvent } = require('./auditEvent.service');
 
@@ -410,7 +414,10 @@ async function listIncompleteRecords(req, hospitalId, query = {}) {
 // ============================================
 
 async function listDocuments(hospitalId, query = {}) {
-  const filter = { hospitalId };
+  const filter = {
+    hospitalId,
+    ...dateRange(query, 'documentDate'),
+  };
 
   if (query.patientId && mongoose.isValidObjectId(query.patientId)) {
     filter.patientId = query.patientId;
@@ -440,6 +447,112 @@ async function listDocuments(hospitalId, query = {}) {
 }
 
 // ============================================
+// File Tracking
+// ============================================
+
+async function listFileTracking(hospitalId, query = {}) {
+  const filter = {
+    hospitalId,
+    ...dateRange(query, 'updatedAt'),
+  };
+
+  if (query.status) {
+    filter.status = query.status;
+  }
+
+  if (query.patientId && mongoose.isValidObjectId(query.patientId)) {
+    filter.patientId = query.patientId;
+  }
+
+  if (query.overdue === 'true') {
+    filter.status = 'issued';
+    filter.dueAt = { $lt: new Date() };
+  }
+
+  return paged(MRDFileTracking, filter, query, [
+    'patientId',
+    'admissionId',
+    'appointmentId',
+    'currentHolderUserId',
+    'currentHolderDepartmentId',
+  ]);
+}
+
+// ============================================
+// Birth / Death Records
+// ============================================
+
+async function listBirthDeath(hospitalId, query = {}) {
+  const filter = {
+    hospitalId,
+    ...dateRange(query, 'eventDateTime'),
+  };
+
+  if (query.recordType) {
+    filter.recordType = query.recordType;
+  }
+
+  return paged(MRDBirthDeathRecord, filter, query, [
+    'patientId',
+    'motherPatientId',
+    'babyPatientId',
+    'admissionId',
+    'attendingDoctorId',
+    'departmentId',
+    'wardId',
+    'bedId',
+  ]);
+}
+
+// ============================================
+// Medico-Legal Records
+// ============================================
+
+async function listMlc(hospitalId, query = {}) {
+  const filter = {
+    hospitalId,
+    ...dateRange(query, 'registeredAt'),
+  };
+
+  if (query.status) {
+    filter.status = query.status;
+  }
+
+  return paged(MRDMedicoLegalRecord, filter, query, [
+    'patientId',
+    'admissionId',
+    'emergencyEncounterId',
+  ]);
+}
+
+// ============================================
+// Medical Certificates
+// ============================================
+
+async function listCertificates(hospitalId, query = {}) {
+  const filter = {
+    hospitalId,
+    ...dateRange(query, 'issueDate'),
+  };
+
+  if (query.status) {
+    filter.status = query.status;
+  }
+
+  if (query.certificateType) {
+    filter.certificateType = query.certificateType;
+  }
+
+  return paged(MRDMedicalCertificate, filter, query, [
+    'patientId',
+    'admissionId',
+    'appointmentId',
+    'authorizedByDoctorId',
+    'authorizedByUserId',
+  ]);
+}
+
+// ============================================
 // Number Generator
 // ============================================
 
@@ -448,7 +561,7 @@ function nextNumber(prefix) {
 }
 
 // ============================================
-// File Tracking
+// Create File Tracking
 // ============================================
 
 async function createFileTracking(req, hospitalId, body) {
@@ -475,6 +588,10 @@ async function createFileTracking(req, hospitalId, body) {
 
   return row;
 }
+
+// ============================================
+// Move File
+// ============================================
 
 async function moveFile(req, hospitalId, id, body) {
   const row = await MRDFileTracking.findOne({ _id: id, hospitalId });
@@ -575,7 +692,7 @@ async function moveFile(req, hospitalId, id, body) {
 }
 
 // ============================================
-// Birth / Death Records
+// Create Birth / Death
 // ============================================
 
 async function createBirthDeath(req, hospitalId, body) {
@@ -606,7 +723,7 @@ async function createBirthDeath(req, hospitalId, body) {
 }
 
 // ============================================
-// Medico-Legal Records
+// Create MLC
 // ============================================
 
 async function createMlc(req, hospitalId, body) {
@@ -635,7 +752,7 @@ async function createMlc(req, hospitalId, body) {
 }
 
 // ============================================
-// Medical Certificates
+// Create Certificate
 // ============================================
 
 async function createCertificate(req, hospitalId, body) {
@@ -1093,12 +1210,503 @@ async function report(hospitalId, key, query = {}) {
   throw Object.assign(new Error('Unknown MRD report'), { statusCode: 404 });
 }
 
+// ============================================
+// Export Helpers
+// ============================================
+
+const MRD_EXPORT_TITLES = {
+  'ipd-records': 'IPD Medical Record',
+  'opd-records': 'OPD Record',
+  discharges: 'Discharge Record',
+  'file-tracking': 'Medical File Tracking',
+  incomplete: 'Incomplete Record Management',
+  documents: 'Document Management',
+  'birth-death': 'Birth & Death Register',
+  mortality: 'Mortality Record',
+  mlc: 'MLC / Medico-Legal Record',
+  certificates: 'Medical Certificate Management',
+  archive: 'Record Scanning & Digital Archive',
+  reports: 'MRD Report',
+};
+
+const MRD_REPORT_TITLES = {
+  'admission-rate': 'Admission Rate',
+  'discharge-rate': 'Discharge Rate',
+  'admission-discharge-average': 'Admission / Discharge Average',
+  'average-length-of-stay': 'Average Length of Stay',
+  'bed-occupancy-rate': 'Bed Occupancy Rate',
+  'missing-discharge-summary': 'Missing Discharge Summary Details',
+  'mortality-rate': 'Mortality Rate',
+  'birth-reports': 'Birth Reports',
+  'mlc-reports': 'MLC Reports',
+  'medico-report': 'Medico Report',
+  'medical-file-tracking': 'Medical File Tracking Report',
+};
+
+function personLabel(value) {
+  if (!value) return '—';
+
+  return value.name ||
+    [value.salutation, value.first_name, value.middle_name, value.last_name, value.firstName, value.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim() ||
+    '—';
+}
+
+function referenceLabel(value) {
+  if (!value) return '—';
+
+  if (typeof value !== 'object') {
+    return String(value);
+  }
+
+  return value.name ||
+    value.wardName ||
+    value.roomNumber ||
+    value.bedNumber ||
+    value.code ||
+    value._id?.toString?.() ||
+    '—';
+}
+
+function formatExportDate(value, withTime = false) {
+  if (!value) return '—';
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return withTime
+    ? date.toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })
+    : date.toLocaleDateString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        dateStyle: 'medium',
+      });
+}
+
+function scalarExportValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return '—';
+  }
+
+  if (value instanceof Date) {
+    return formatExportDate(value, true);
+  }
+
+  if (typeof value === 'object') {
+    const label = personLabel(value);
+
+    if (label !== '—') {
+      return label;
+    }
+
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  return String(value);
+}
+
+function humanizeKey(key) {
+  return String(key || '')
+    .replace(/_/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function collectAll(loader, query = {}, maxRows = 10000) {
+  const rows = [];
+  let page = 1;
+  let total = Infinity;
+
+  while (rows.length < total && rows.length < maxRows) {
+    const result = await loader({ ...query, page, limit: 200 });
+    const batch = result?.rows || [];
+
+    rows.push(...batch);
+    total = Number(result?.total ?? rows.length);
+
+    if (!batch.length || page * 200 >= total) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  return rows.slice(0, maxRows);
+}
+
+function normalizeRecordRows(section, rows) {
+  if (section === 'ipd-records' || section === 'discharges') {
+    return rows.map((row) => ({
+      'IP No.': row.admissionNumber || '—',
+      UHID: row.uhid || row.patientId?.uhid || row.patientId?.patientId || '—',
+      Patient: row.patientName || personLabel(row.patientId),
+      'Admission Date': formatExportDate(row.admissionDate),
+      'Discharge Date': formatExportDate(row.dischargeDate),
+      Doctor: personLabel(row.primaryDoctorId),
+      Department: referenceLabel(row.departmentId),
+      Ward: referenceLabel(row.wardId),
+      Room: referenceLabel(row.roomId),
+      Bed: referenceLabel(row.bedId),
+      Status: row.status || '—',
+      ...(section === 'discharges' ? { Disposition: row.disposition || disposition(row) } : {}),
+    }));
+  }
+
+  if (section === 'opd-records') {
+    return rows.map((row) => ({
+      'OP / Token': row.token || row.serial_number || '—',
+      UHID: row.uhid || row.patient_id?.uhid || row.patient_id?.patientId || '—',
+      Patient: row.patientName || personLabel(row.patient_id),
+      'Visit Date': formatExportDate(row.appointment_date),
+      Doctor: personLabel(row.doctor_id),
+      Department: referenceLabel(row.department_id),
+      'Visit Type': row.appointment_type || '—',
+      Status: row.status || '—',
+    }));
+  }
+
+  if (section === 'incomplete') {
+    return rows.map((row) => ({
+      'IP No.': row.admissionNumber || '—',
+      UHID: row.uhid || '—',
+      Patient: row.patientName || '—',
+      'Discharge Date': formatExportDate(row.dischargeDate),
+      Doctor: personLabel(row.doctor),
+      Department: referenceLabel(row.department),
+      'Review Status': row.reviewStatus || '—',
+      'Open Deficiencies': row.missingCount ?? 0,
+      'Deficiency Details': (row.deficiencies || [])
+        .filter((d) => d.status === 'open')
+        .map((d) => `${d.title}${d.category ? ` (${d.category})` : ''}`)
+        .join('; ') || 'None',
+    }));
+  }
+
+  if (section === 'documents' || section === 'archive') {
+    return rows.map((row) => ({
+      Date: formatExportDate(row.documentDate || row.createdAt, true),
+      UHID: row.patientId?.uhid || row.patientId?.patientId || '—',
+      Patient: personLabel(row.patientId),
+      Document: row.title || '—',
+      Category: row.category || '—',
+      Type: row.documentType || '—',
+      Status: row.status || '—',
+      Author: row.authorName || personLabel(row.authorUserId),
+      File: row.fileUrl || '—',
+    }));
+  }
+
+  if (section === 'file-tracking') {
+    return rows.map((row) => ({
+      'MRD File No.': row.fileNumber || '—',
+      UHID: row.patientId?.uhid || row.patientId?.patientId || '—',
+      Patient: personLabel(row.patientId),
+      Type: row.recordType || '—',
+      'Current Holder': `${row.currentHolderType || ''}${row.currentHolderName ? ` - ${row.currentHolderName}` : ''}` || '—',
+      Status: row.status || '—',
+      Due: formatExportDate(row.dueAt),
+      'Last Updated': formatExportDate(row.updatedAt, true),
+    }));
+  }
+
+  if (section === 'birth-death' || section === 'mortality') {
+    return rows.map((row) => ({
+      'Record No.': row.recordNumber || '—',
+      Type: row.recordType || '—',
+      'Event Date / Time': formatExportDate(row.eventDateTime, true),
+      UHID: (row.patientId || row.babyPatientId || row.motherPatientId)?.uhid ||
+        (row.patientId || row.babyPatientId || row.motherPatientId)?.patientId || '—',
+      Patient: personLabel(row.patientId || row.babyPatientId || row.motherPatientId),
+      Gender: row.gender || '—',
+      'Cause of Death': row.causeOfDeath || '—',
+      Certificate: row.certificateNumber || '—',
+      Status: row.registrationStatus || '—',
+    }));
+  }
+
+  if (section === 'mlc') {
+    return rows.map((row) => ({
+      'MLC No.': row.caseNumber || '—',
+      UHID: row.patientId?.uhid || row.patientId?.patientId || '—',
+      Patient: personLabel(row.patientId),
+      'Case Type': row.caseType || '—',
+      Registered: formatExportDate(row.registeredAt, true),
+      'Police Station': row.policeStation || '—',
+      FIR: row.firNumber || '—',
+      Status: row.status || '—',
+    }));
+  }
+
+  if (section === 'certificates') {
+    return rows.map((row) => ({
+      'Certificate No.': row.certificateNumber || '—',
+      UHID: row.patientId?.uhid || row.patientId?.patientId || '—',
+      Patient: personLabel(row.patientId),
+      Type: row.certificateType || '—',
+      'Issue Date': formatExportDate(row.issueDate),
+      'Valid From': formatExportDate(row.validFrom),
+      'Valid To': formatExportDate(row.validTo),
+      'Authorized Doctor': personLabel(row.authorizedByDoctorId),
+      Status: row.status || '—',
+    }));
+  }
+
+  return rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row || {})
+        .filter(([key]) => !key.startsWith('_'))
+        .map(([key, value]) => [humanizeKey(key), scalarExportValue(value)])
+    )
+  );
+}
+
+// ============================================
+// Build Export Dataset
+// ============================================
+
+async function buildExportDataset(req, hospitalId, section, query = {}) {
+  if (!MRD_EXPORT_TITLES[section]) {
+    throw Object.assign(new Error('Unsupported MRD export section'), { statusCode: 400 });
+  }
+
+  let rows = [];
+  let metrics = {};
+  let title = MRD_EXPORT_TITLES[section];
+
+  if (section === 'ipd-records') {
+    rows = await collectAll((q) => listIpdRecords(hospitalId, q), query);
+  } else if (section === 'opd-records') {
+    rows = await collectAll((q) => listOpdRecords(hospitalId, q), query);
+  } else if (section === 'discharges') {
+    rows = await collectAll((q) => listDischarges(hospitalId, q), query);
+  } else if (section === 'incomplete') {
+    rows = await collectAll(
+      (q) => listIncompleteRecords(req, hospitalId, { ...q, onlyIncomplete: true }),
+      query
+    );
+  } else if (section === 'documents') {
+    rows = await collectAll((q) => listDocuments(hospitalId, q), query);
+  } else if (section === 'archive') {
+    rows = await collectAll((q) => listDocuments(hospitalId, { ...q, scanned: true }), query);
+  } else if (section === 'file-tracking') {
+    rows = await collectAll((q) => listFileTracking(hospitalId, q), query);
+  } else if (section === 'birth-death') {
+    rows = await collectAll((q) => listBirthDeath(hospitalId, q), query);
+  } else if (section === 'mortality') {
+    rows = await collectAll(
+      (q) => listBirthDeath(hospitalId, { ...q, recordType: 'death' }),
+      query
+    );
+  } else if (section === 'mlc') {
+    rows = await collectAll((q) => listMlc(hospitalId, q), query);
+  } else if (section === 'certificates') {
+    rows = await collectAll((q) => listCertificates(hospitalId, q), query);
+  } else if (section === 'reports') {
+    if (!query.reportKey || !MRD_REPORT_TITLES[query.reportKey]) {
+      throw Object.assign(new Error('reportKey is required for MRD report export'), {
+        statusCode: 400,
+      });
+    }
+
+    const result = await report(hospitalId, query.reportKey, query);
+    rows = result.rows || [];
+
+    metrics = Object.fromEntries(
+      Object.entries(result)
+        .filter(
+          ([key, value]) =>
+            !['key', 'rows', 'grain'].includes(key) &&
+            ['string', 'number', 'boolean'].includes(typeof value)
+        )
+        .map(([key, value]) => [humanizeKey(key), value])
+    );
+
+    title = MRD_REPORT_TITLES[query.reportKey];
+  }
+
+  const normalized = section === 'reports'
+    ? normalizeRecordRows('reports', rows)
+    : normalizeRecordRows(section, rows);
+
+  const presentation = buildReportPresentation({
+    context: 'mrd',
+    section: section === 'reports' ? 'reports' : section,
+    key: query.reportKey || section,
+    rows: normalized,
+  });
+
+  return {
+    section,
+    title,
+    rows: normalized,
+    presentation,
+    metrics: {
+      'Total Records': normalized.length,
+      ...metrics,
+    },
+    filters: {
+      from: query.from || '',
+      to: query.to || '',
+      period: query.grain || '',
+    },
+  };
+}
+
+// ============================================
+// Export Rendering
+// ============================================
+
+function csvEscape(value) {
+  return `"${String(value ?? '').replace(/"/g, '""')}"`;
+}
+
+function exportFilename(title, format) {
+  const safe = String(title || 'mrd-report')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return `${safe || 'mrd-report'}-${new Date().toISOString().slice(0, 10)}.${format}`;
+}
+
+async function renderExport(dataset, format, hospitalId) {
+  const hospital = await Hospital.findById(hospitalId)
+    .select('name hospitalName address city state pinCode contact phone phoneNumber email logo')
+    .lean();
+
+  const hospitalName = hospital?.hospitalName || hospital?.name || 'Hospital';
+  const exportRows = dataset.presentation?.rows || dataset.rows || [];
+  const exportColumns = dataset.presentation?.columns ||
+    [...new Set(exportRows.flatMap((row) => Object.keys(row || {})))]
+      .map((key) => ({ key, label: key }));
+
+  const columns = exportColumns.map((column) => column.label || column.key);
+  const metaRows = [
+    [hospitalName],
+    [dataset.title],
+    [`Period: ${dataset.filters.from || 'All'} to ${dataset.filters.to || 'All'}${dataset.filters.period ? ` | ${dataset.filters.period}` : ''}`],
+    [`Generated: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`],
+    ...Object.entries(dataset.metrics || {}).map(([key, value]) => [`${key}: ${value}`]),
+    [],
+  ];
+
+  const dataRows = [
+    columns,
+    ...exportRows.map((row) =>
+      exportColumns.map((column) => scalarExportValue(row[column.key || column]))
+    ),
+  ];
+
+  if (format === 'csv') {
+    const lines = [...metaRows, ...dataRows].map((row) => row.map(csvEscape).join(','));
+
+    return {
+      output: Buffer.from(`\ufeff${lines.join('\r\n')}`, 'utf8'),
+      filename: exportFilename(dataset.title, 'csv'),
+      mimeType: 'text/csv; charset=utf-8',
+      rowCount: dataset.rows.length,
+    };
+  }
+
+  if (format === 'xlsx') {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'MediQliq HMS';
+
+    const sheet = workbook.addWorksheet('MRD Report', {
+      views: [{ state: 'frozen', ySplit: metaRows.length + 1 }],
+    });
+
+    metaRows.forEach((row) => sheet.addRow(row));
+
+    const headerRow = sheet.addRow(columns);
+    headerRow.font = { bold: true };
+
+    exportRows.forEach((row) =>
+      sheet.addRow(exportColumns.map((column) => scalarExportValue(row[column.key || column])))
+    );
+
+    sheet.getRow(1).font = { bold: true, size: 14 };
+    sheet.getRow(2).font = { bold: true, size: 12 };
+
+    sheet.columns.forEach((column) => {
+      column.width = Math.min(
+        45,
+        Math.max(
+          12,
+          ...(column.values || []).map((value) => String(value ?? '').length + 2)
+        )
+      );
+    });
+
+    if (columns.length) {
+      sheet.autoFilter = {
+        from: { row: metaRows.length + 1, column: 1 },
+        to: { row: metaRows.length + 1, column: columns.length },
+      };
+    }
+
+    const output = Buffer.from(await workbook.xlsx.writeBuffer());
+
+    return {
+      output,
+      filename: exportFilename(dataset.title, 'xlsx'),
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      rowCount: dataset.rows.length,
+    };
+  }
+
+  // PDF
+  const output = await renderStructuredReportPdf({
+    hospital: hospital || {},
+    title: dataset.title,
+    subtitle: 'Medical Records Department',
+    filters: dataset.filters || {},
+    metrics: Object.entries(dataset.metrics || {}).map(([label, value]) => ({
+      label,
+      value,
+    })),
+    rows: exportRows,
+    columns: exportColumns,
+    generatedAt: new Date(),
+    footerLabel: 'MediQliq HMS · Medical Records Department report',
+    preparedBy: 'MRD Desk',
+  });
+
+  return {
+    output,
+    filename: exportFilename(dataset.title, 'pdf'),
+    mimeType: 'application/pdf',
+    rowCount: dataset.rows.length,
+  };
+}
+
+async function exportSection(req, hospitalId, section, format, query = {}) {
+  const dataset = await buildExportDataset(req, hospitalId, section, query);
+  return renderExport(dataset, format, hospitalId);
+}
+
 module.exports = {
   listIpdRecords,
   listOpdRecords,
   listDischarges,
   listIncompleteRecords,
   listDocuments,
+  listFileTracking,
+  listBirthDeath,
+  listMlc,
+  listCertificates,
   createFileTracking,
   moveFile,
   createBirthDeath,
@@ -1107,6 +1715,8 @@ module.exports = {
   summary,
   report,
   paged,
+  exportSection,
+  buildExportDataset,
   models: {
     MRDFileTracking,
     MRDBirthDeathRecord,

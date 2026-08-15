@@ -275,10 +275,6 @@ function oid(value) {
     : new mongoose.Types.ObjectId(value);
 }
 
-// ============================================
-// Date Helpers
-// ============================================
-
 const IST_OFFSET_MINUTES = 330;
 
 function asDate(value, endOfDay = false) {
@@ -1344,6 +1340,710 @@ async function pharmacyReport(hospitalId, filters = {}) {
 }
 
 // ============================================
+// Detail Limit
+// ============================================
+
+const DETAIL_LIMIT = 5000;
+
+// ============================================
+// Person/Patient Helpers
+// ============================================
+
+function personName(person) {
+  if (!person) return '—';
+
+  if (typeof person === 'string') return person;
+
+  return person.name ||
+    person.fullName ||
+    [
+      person.salutation,
+      person.first_name || person.firstName,
+      person.middle_name || person.middleName,
+      person.last_name || person.lastName
+    ].filter(Boolean).join(' ').trim() ||
+    '—';
+}
+
+function patientUhid(patient) {
+  return patient?.uhid || patient?.patientId || '—';
+}
+
+function departmentName(department) {
+  return department?.name || department?.departmentName || 'Unassigned';
+}
+
+function formatAgeGender(patient) {
+  let age = '';
+
+  if (patient?.dob) {
+    const dob = new Date(patient.dob);
+
+    if (!Number.isNaN(dob.getTime())) {
+      const now = new Date();
+      let years = now.getFullYear() - dob.getFullYear();
+      const month = now.getMonth() - dob.getMonth();
+
+      if (month < 0 || (month === 0 && now.getDate() < dob.getDate())) {
+        years -= 1;
+      }
+
+      age = `${Math.max(0, years)} Y`;
+    }
+  }
+
+  return [age, patient?.gender].filter(Boolean).join(' / ') || '—';
+}
+
+function normalizeAppointmentStatus(status) {
+  if (status === 'Completed') return 'Done';
+  if (status === 'Cancelled') return 'Cancelled';
+  return 'Pending';
+}
+
+// ============================================
+// Appointment Details
+// ============================================
+
+async function appointmentDetails(hospitalId, filters = {}, mode = 'all') {
+  const Appointment = model('Appointment');
+
+  if (!Appointment) {
+    return [];
+  }
+
+  const match = {
+    hospital_id: oid(hospitalId),
+    ...range('appointment_date', filters)
+  };
+
+  safeMatchId(match, 'doctor_id', filters.doctorId);
+  safeMatchId(match, 'department_id', filters.departmentId);
+
+  if (mode === 'cancelled') {
+    match.status = 'Cancelled';
+  }
+
+  if (mode === 'followup') {
+    match.appointment_type = 'follow-up';
+  }
+
+  const docs = await Appointment.find(match)
+    .populate('patient_id', 'uhid patientId salutation first_name middle_name last_name phone gender dob')
+    .populate('doctor_id', 'doctorId firstName lastName')
+    .populate('department_id', 'name code')
+    .sort({ appointment_date: 1, start_time: 1, serial_number: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  return docs.map((row) => ({
+    appointmentDate: row.appointment_date,
+    token: row.token || row.serial_number || '—',
+    uhid: patientUhid(row.patient_id),
+    patient: personName(row.patient_id),
+    mobile: row.patient_id?.phone || '—',
+    ageGender: formatAgeGender(row.patient_id),
+    visitType: row.appointment_type === 'follow-up' ? 'Revisit' : (row.appointment_type || 'New'),
+    visitMode: row.visit_mode || row.type || '—',
+    status: mode === 'visits' ? row.status : normalizeAppointmentStatus(row.status),
+    priority: row.priority || '—',
+    doctor: personName(row.doctor_id),
+    department: departmentName(row.department_id),
+    startTime: row.start_time,
+    endTime: row.end_time,
+    source: row.submissionSource || '—',
+    cancellationReason: row.cancellationReason || '—'
+  }));
+}
+
+// ============================================
+// IPD Details
+// ============================================
+
+async function ipdDetails(hospitalId, filters = {}, kind = 'admission') {
+  const Admission = model('IPDAdmission');
+
+  if (!Admission) {
+    return [];
+  }
+
+  const dateField = kind === 'discharge' || kind === 'death' || kind === 'medico'
+    ? 'dischargeDate'
+    : 'admissionDate';
+
+  const match = {
+    hospitalId: oid(hospitalId),
+    ...range(dateField, filters)
+  };
+
+  safeMatchId(match, 'primaryDoctorId', filters.doctorId);
+  safeMatchId(match, 'departmentId', filters.departmentId);
+
+  if (kind === 'discharge') {
+    match.status = { $in: ['Discharged', 'LAMA', 'DAMA', 'Expired'] };
+  }
+
+  if (kind === 'death') {
+    match.status = 'Expired';
+  }
+
+  if (kind === 'medico') {
+    match.$or = [
+      { status: { $in: ['LAMA', 'DAMA', 'Expired'] } },
+      { plannedDischargeType: 'TRANSFER' },
+      { dischargeReason: { $regex: /(refer|transfer|request|dor)/i } }
+    ];
+  }
+
+  const docs = await Admission.find(match)
+    .populate('patientId', 'uhid patientId salutation first_name middle_name last_name phone gender dob address city state')
+    .populate('primaryDoctorId', 'doctorId firstName lastName')
+    .populate('departmentId', 'name code')
+    .populate('wardId', 'name wardType type')
+    .populate('bedId', 'bedNumber bed_number')
+    .sort({ [dateField]: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  return docs.map((row) => {
+    const stayEnd = row.dischargeDate ? new Date(row.dischargeDate) : new Date();
+    const stayStart = row.admissionDate ? new Date(row.admissionDate) : null;
+
+    const lengthOfStay = stayStart && !Number.isNaN(stayStart.getTime()) && !Number.isNaN(stayEnd.getTime())
+      ? Math.max(1, Math.ceil((stayEnd - stayStart) / 86400000))
+      : '—';
+
+    const medicoStatus = (() => {
+      const text = `${row.status || ''} ${row.plannedDischargeType || ''} ${row.dischargeReason || ''}`.toUpperCase();
+
+      if (text.includes('LAMA')) return 'LAMA';
+      if (/DAMA|DOR|REQUEST/.test(text)) return 'DOR / DAMA';
+      if (/EXPIRED|DEATH/.test(text)) return 'Death';
+      if (/TRANSFER|REFER/.test(text)) return 'Referred';
+
+      return '—';
+    })();
+
+    return {
+      admissionNumber: row.admissionNumber || '—',
+      uhid: patientUhid(row.patientId),
+      patient: personName(row.patientId),
+      mobile: row.patientId?.phone || '—',
+      ageGender: formatAgeGender(row.patientId),
+      admissionDate: row.admissionDate,
+      dischargeDate: row.dischargeDate,
+      status: row.status || '—',
+      medicoStatus: kind === 'medico' ? medicoStatus : undefined,
+      doctor: personName(row.primaryDoctorId),
+      department: departmentName(row.departmentId),
+      ward: row.wardId?.name || '—',
+      bed: row.bedId?.bedNumber || row.bedId?.bed_number || '—',
+      patientType: row.patientType || row.patient_type || '—',
+      lengthOfStay,
+      dischargeReason: row.dischargeReason || '—'
+    };
+  });
+}
+
+// ============================================
+// Diagnostic Details
+// ============================================
+
+async function diagnosticDetails(name, hospitalId, filters = {}, tat = false) {
+  const Model = model(name);
+
+  if (!Model) {
+    return [];
+  }
+
+  const match = {
+    hospitalId: oid(hospitalId),
+    ...range('requestedDate', filters)
+  };
+
+  safeMatchId(match, 'doctorId', filters.doctorId);
+
+  const docs = await Model.find(match)
+    .populate('patientId', 'uhid patientId salutation first_name middle_name last_name phone gender dob')
+    .populate({
+      path: 'doctorId',
+      select: 'doctorId firstName lastName department',
+      populate: {
+        path: 'department',
+        select: 'name code'
+      }
+    })
+    .sort({ requestedDate: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  return docs
+    .filter((row) => {
+      if (!filters.departmentId) return true;
+      return String(row.doctorId?.department?._id || row.doctorId?.department || '') === String(filters.departmentId);
+    })
+    .filter((row) => !tat || row.releasedAt || row.reportedAt)
+    .map((row) => {
+      const completedAt = row.releasedAt || row.reportedAt;
+
+      const turnaroundMinutes = completedAt && row.requestedDate
+        ? Math.max(0, Math.round((new Date(completedAt) - new Date(row.requestedDate)) / 60000))
+        : '—';
+
+      return {
+        requestNumber: row.requestNumber || row.orderNumber || row.accessionNumber || '—',
+        uhid: patientUhid(row.patientId),
+        patient: personName(row.patientId),
+        requestedDate: row.requestedDate,
+        test: row.testName || row.serviceName || '—',
+        specimen: row.specimenType || row.specimen_type || row.sampleType || '—',
+        status: row.status || '—',
+        priority: row.priority || '—',
+        doctor: personName(row.doctorId),
+        department: departmentName(row.doctorId?.department),
+        sampleCollectedAt: row.sampleCollectedAt || row.collectedAt,
+        reportedAt: row.reportedAt,
+        releasedAt: row.releasedAt,
+        turnaroundMinutes
+      };
+    });
+}
+
+// ============================================
+// Billing Details
+// ============================================
+
+async function billingDetails(hospitalId, filters = {}, refundsOnly = false) {
+  const Invoice = model('Invoice');
+
+  if (!Invoice) {
+    return [];
+  }
+
+  const match = {
+    hospital_id: oid(hospitalId),
+    ...range('issue_date', filters)
+  };
+
+  if (refundsOnly) {
+    match.status = { $in: ['Refunded', 'Cancelled'] };
+  }
+
+  const docs = await Invoice.find(match)
+    .populate('patient_id', 'uhid patientId salutation first_name middle_name last_name phone gender dob')
+    .populate({
+      path: 'appointment_id',
+      select: 'token doctor_id department_id appointment_date',
+      populate: [
+        { path: 'doctor_id', select: 'doctorId firstName lastName' },
+        { path: 'department_id', select: 'name code' }
+      ]
+    })
+    .populate({
+      path: 'admission_id',
+      select: 'admissionNumber primaryDoctorId departmentId admissionDate',
+      populate: [
+        { path: 'primaryDoctorId', select: 'doctorId firstName lastName' },
+        { path: 'departmentId', select: 'name code' }
+      ]
+    })
+    .sort({ issue_date: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  return docs
+    .filter((row) => {
+      const doctor = row.appointment_id?.doctor_id || row.admission_id?.primaryDoctorId;
+      const department = row.appointment_id?.department_id || row.admission_id?.departmentId;
+
+      if (filters.doctorId && String(doctor?._id || doctor || '') !== String(filters.doctorId)) {
+        return false;
+      }
+
+      if (filters.departmentId && String(department?._id || department || '') !== String(filters.departmentId)) {
+        return false;
+      }
+
+      return true;
+    })
+    .map((row) => {
+      const doctor = row.appointment_id?.doctor_id || row.admission_id?.primaryDoctorId;
+      const department = row.appointment_id?.department_id || row.admission_id?.departmentId;
+
+      return {
+        issueDate: row.issue_date,
+        invoiceNumber: row.invoice_number || row.bill_number || '—',
+        encounterNumber: row.appointment_id?.token || row.admission_id?.admissionNumber || '—',
+        uhid: patientUhid(row.patient_id),
+        patient: personName(row.patient_id),
+        mobile: row.patient_id?.phone || '—',
+        invoiceType: row.invoice_type || '—',
+        status: row.status || '—',
+        total: Number(row.total || 0),
+        amountPaid: Number(row.amount_paid || 0),
+        balanceDue: Number(row.balance_due || 0),
+        discount: Number(row.discount || row.bill_discount_total || 0),
+        doctor: personName(doctor),
+        department: departmentName(department),
+        dueDate: row.due_date
+      };
+    });
+}
+
+// ============================================
+// OT Details
+// ============================================
+
+async function otDetails(hospitalId, filters = {}, utilisation = false) {
+  const OT = model('OTRequest');
+
+  if (!OT) {
+    return [];
+  }
+
+  const match = {
+    hospitalId: oid(hospitalId),
+    ...range('requestedDate', filters)
+  };
+
+  if (utilisation) {
+    match.completedAt = { $ne: null };
+  }
+
+  const docs = await OT.find(match)
+    .populate('patientId', 'uhid patientId salutation first_name middle_name last_name phone gender dob')
+    .populate({
+      path: 'doctorId',
+      select: 'doctorId firstName lastName department',
+      populate: {
+        path: 'department',
+        select: 'name code'
+      }
+    })
+    .populate({
+      path: 'primarySurgeonId',
+      select: 'doctorId firstName lastName department',
+      populate: {
+        path: 'department',
+        select: 'name code'
+      }
+    })
+    .populate('otRoomId', 'name roomName roomNumber')
+    .sort({ requestedDate: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  return docs
+    .filter((row) => {
+      const surgeon = row.primarySurgeonId || row.doctorId;
+      const department = surgeon?.department;
+
+      if (filters.doctorId && String(surgeon?._id || surgeon || '') !== String(filters.doctorId)) {
+        return false;
+      }
+
+      if (filters.departmentId && String(department?._id || department || '') !== String(filters.departmentId)) {
+        return false;
+      }
+
+      return true;
+    })
+    .map((row) => {
+      const surgeon = row.primarySurgeonId || row.doctorId;
+      const department = surgeon?.department;
+
+      const duration = row.startedAt && row.completedAt
+        ? Math.max(0, Math.round((new Date(row.completedAt) - new Date(row.startedAt)) / 60000))
+        : '—';
+
+      return {
+        requestNumber: row.requestNumber || '—',
+        uhid: patientUhid(row.patientId),
+        patient: personName(row.patientId),
+        requestedDate: row.requestedDate,
+        scheduledDate: row.scheduledDate || row.scheduledStart,
+        procedure: row.procedureName || row.procedure_performed || '—',
+        surgeon: personName(surgeon),
+        department: departmentName(department),
+        otRoom: row.otRoomId?.name || row.otRoomId?.roomName || row.otRoomId?.roomNumber || '—',
+        status: row.status || '—',
+        paymentStatus: row.paymentStatus || '—',
+        total: Number(row.total_cost || 0),
+        startedAt: row.startedAt,
+        completedAt: row.completedAt,
+        durationMinutes: duration
+      };
+    });
+}
+
+// ============================================
+// Procedure Details
+// ============================================
+
+async function procedureDetails(hospitalId, filters = {}) {
+  const Procedure = model('ProcedureRequest');
+
+  if (!Procedure) {
+    return [];
+  }
+
+  const match = {
+    hospitalId: oid(hospitalId),
+    ...range('requestedDate', filters)
+  };
+
+  safeMatchId(match, 'doctorId', filters.doctorId);
+
+  const docs = await Procedure.find(match)
+    .populate('patientId', 'uhid patientId salutation first_name middle_name last_name phone gender dob')
+    .populate({
+      path: 'doctorId',
+      select: 'doctorId firstName lastName department',
+      populate: {
+        path: 'department',
+        select: 'name code'
+      }
+    })
+    .sort({ requestedDate: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  return docs
+    .filter((row) => {
+      if (!filters.departmentId) return true;
+      return String(row.doctorId?.department?._id || row.doctorId?.department || '') === String(filters.departmentId);
+    })
+    .map((row) => ({
+      requestNumber: row.requestNumber || '—',
+      uhid: patientUhid(row.patientId),
+      patient: personName(row.patientId),
+      requestedDate: row.requestedDate,
+      scheduledDate: row.scheduledDate,
+      procedure: row.procedureName || '—',
+      status: row.status || '—',
+      doctor: personName(row.doctorId),
+      department: departmentName(row.doctorId?.department),
+      priority: row.priority || '—',
+      total: Number(row.cost || row.total_cost || 0)
+    }));
+}
+
+// ============================================
+// Pharmacy Details
+// ============================================
+
+async function pharmacyDetails(hospitalId, filters = {}) {
+  const Prescription = model('Prescription');
+
+  if (!Prescription) {
+    return [];
+  }
+
+  const docs = await Prescription.find({
+    hospitalId: oid(hospitalId),
+    ...range('issue_date', filters)
+  })
+    .populate('patient_id', 'uhid patientId salutation first_name middle_name last_name phone gender dob')
+    .populate('doctor_id', 'doctorId firstName lastName')
+    .sort({ issue_date: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  return docs.map((row) => ({
+    issueDate: row.issue_date,
+    prescriptionNumber: row.prescription_number || '—',
+    uhid: patientUhid(row.patient_id),
+    patient: personName(row.patient_id),
+    doctor: personName(row.doctor_id),
+    sourceType: row.source_type || '—',
+    status: row.status || '—',
+    itemCount: Array.isArray(row.items) ? row.items.length : 0,
+    dispensedItems: Array.isArray(row.items)
+      ? row.items.filter((item) => item.is_dispensed).length
+      : 0
+  }));
+}
+
+// ============================================
+// Follow-up Details
+// ============================================
+
+async function followupDetails(hospitalId, filters = {}) {
+  const opd = (await appointmentDetails(hospitalId, filters, 'followup'))
+    .map((row) => ({ ...row, careSetting: 'OPD Follow-up' }));
+
+  const Round = model('IPDRound');
+
+  if (!Round) {
+    return opd;
+  }
+
+  const match = {
+    hospitalId: oid(hospitalId),
+    ...range('roundDateTime', filters)
+  };
+
+  safeMatchId(match, 'doctorId', filters.doctorId);
+
+  const rounds = await Round.find(match)
+    .populate('doctorId', 'doctorId firstName lastName')
+    .populate({
+      path: 'admissionId',
+      select: 'admissionNumber patientId departmentId wardId bedId',
+      populate: [
+        { path: 'patientId', select: 'uhid patientId salutation first_name middle_name last_name phone gender dob' },
+        { path: 'departmentId', select: 'name code' },
+        { path: 'wardId', select: 'name' },
+        { path: 'bedId', select: 'bedNumber bed_number' }
+      ]
+    })
+    .sort({ roundDateTime: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  const ipd = rounds
+    .filter((row) => {
+      if (!filters.departmentId) return true;
+      return String(row.admissionId?.departmentId?._id || row.admissionId?.departmentId || '') === String(filters.departmentId);
+    })
+    .map((row) => ({
+      appointmentDate: row.roundDateTime,
+      token: row.admissionId?.admissionNumber || '—',
+      uhid: patientUhid(row.admissionId?.patientId),
+      patient: personName(row.admissionId?.patientId),
+      careSetting: 'IPD Follow-up / Round',
+      status: row.status || 'Completed',
+      doctor: personName(row.doctorId),
+      department: departmentName(row.admissionId?.departmentId),
+      ward: row.admissionId?.wardId?.name || '—',
+      bed: row.admissionId?.bedId?.bedNumber || row.admissionId?.bedId?.bed_number || '—'
+    }));
+
+  return [...opd, ...ipd].sort((a, b) =>
+    new Date(a.appointmentDate || 0) - new Date(b.appointmentDate || 0)
+  );
+}
+
+// ============================================
+// Newborn Details
+// ============================================
+
+async function newbornDetails(hospitalId, filters = {}) {
+  const Patient = model('Patient');
+
+  if (!Patient) {
+    return [];
+  }
+
+  const docs = await Patient.find({
+    hospitalId: oid(hospitalId),
+    ...range('dob', filters)
+  })
+    .select('uhid patientId salutation first_name middle_name last_name phone gender dob address city state createdAt')
+    .sort({ dob: 1, createdAt: 1 })
+    .limit(DETAIL_LIMIT)
+    .lean();
+
+  return docs.map((row) => ({
+    dateOfBirth: row.dob,
+    uhid: patientUhid(row),
+    patient: personName(row),
+    gender: row.gender || '—',
+    mobile: row.phone || '—',
+    address: [row.address, row.city, row.state].filter(Boolean).join(', ') || '—',
+    registeredAt: row.createdAt
+  }));
+}
+
+// ============================================
+// Detail Rows for Report
+// ============================================
+
+async function detailRowsForReport(key, hospitalId, filters = {}) {
+  if (key === 'opd-visits') {
+    return appointmentDetails(hospitalId, filters, 'visits');
+  }
+
+  if (key === 'opd-ipd-followup') {
+    return followupDetails(hospitalId, filters);
+  }
+
+  if (key === 'appointment-status' || key === 'opd') {
+    return appointmentDetails(hospitalId, filters, 'status');
+  }
+
+  if (key === 'opd-cancelled') {
+    return appointmentDetails(hospitalId, filters, 'cancelled');
+  }
+
+  if (key === 'ipd-admissions' || key === 'ipd') {
+    return ipdDetails(hospitalId, filters, 'admission');
+  }
+
+  if (key === 'ipd-discharges') {
+    return ipdDetails(hospitalId, filters, 'discharge');
+  }
+
+  if (key === 'ipd-bed-occupancy') {
+    return bedOccupancy(hospitalId);
+  }
+
+  if (key === 'ipd-newborn') {
+    return newbornDetails(hospitalId, filters);
+  }
+
+  if (key === 'ipd-deaths') {
+    return ipdDetails(hospitalId, filters, 'death');
+  }
+
+  if (key === 'ipd-medico-status') {
+    return ipdDetails(hospitalId, filters, 'medico');
+  }
+
+  if (key === 'lab-workload' || key === 'lab') {
+    return diagnosticDetails('LabRequest', hospitalId, filters, false);
+  }
+
+  if (key === 'lab-tat') {
+    return diagnosticDetails('LabRequest', hospitalId, filters, true);
+  }
+
+  if (key === 'radiology-workload' || key === 'radiology') {
+    return diagnosticDetails('RadiologyRequest', hospitalId, filters, false);
+  }
+
+  if (key === 'radiology-tat') {
+    return diagnosticDetails('RadiologyRequest', hospitalId, filters, true);
+  }
+
+  if (key === 'billing-revenue' || key === 'billing') {
+    return billingDetails(hospitalId, filters, false);
+  }
+
+  if (key === 'billing-refunds') {
+    return billingDetails(hospitalId, filters, true);
+  }
+
+  if (key === 'ot-cases' || key === 'ot') {
+    return otDetails(hospitalId, filters, false);
+  }
+
+  if (key === 'ot-utilisation') {
+    return otDetails(hospitalId, filters, true);
+  }
+
+  if (key === 'procedure-workload') {
+    return procedureDetails(hospitalId, filters);
+  }
+
+  if (key === 'pharmacy-activity' || key === 'pharmacy') {
+    return pharmacyDetails(hospitalId, filters);
+  }
+
+  return [];
+}
+
+// ============================================
 // Cards Helper
 // ============================================
 
@@ -1449,10 +2149,29 @@ async function buildOperationalReport(key, hospitalId, filters = {}) {
     return null;
   }
 
+  const summaryRows = rows;
+  let detailRows = [];
+
+  try {
+    detailRows = await detailRowsForReport(key, hospitalId, filters);
+  } catch (error) {
+    // Do not make an otherwise valid MIS summary fail because an optional detail
+    // projection encountered legacy data. The summary remains available and the
+    // API exposes the detail warning for support/audit visibility.
+    return {
+      cards: cardsFromRows(summaryRows, cardType),
+      rows: summaryRows,
+      summaryRows,
+      detailWarning: error.message,
+      series: { summary: summaryRows }
+    };
+  }
+
   return {
-    cards: cardsFromRows(rows, cardType),
-    rows,
-    series: { detail: rows }
+    cards: cardsFromRows(summaryRows, cardType),
+    rows: detailRows.length ? detailRows : summaryRows,
+    summaryRows,
+    series: { summary: summaryRows }
   };
 }
 
