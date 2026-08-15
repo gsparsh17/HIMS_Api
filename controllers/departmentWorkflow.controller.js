@@ -1,4 +1,5 @@
 const LabRequest = require('../models/LabRequest');
+const { groupLabRequests } = require('../services/labWorklistGrouping.service');
 const LabTest = require('../models/LabTest');
 const { queueNotification } = require('../services/nabhNotification.service');
 const RadiologyRequest = require('../models/RadiologyRequest');
@@ -20,6 +21,18 @@ function sendError(res, error) {
     success: false,
     error: error.message
   });
+}
+
+function safeScalarResult(value, fallback = '') {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'object') {
+    const error = new Error('Structured lab results must be submitted as manual_report.observations, not result_value');
+    error.statusCode = 400;
+    error.code = 'STRUCTURED_RESULT_REQUIRED';
+    throw error;
+  }
+  const text = String(value).trim();
+  return text === '[object Object]' ? fallback : text;
 }
 
 function pagination(req) {
@@ -111,32 +124,40 @@ async function radiologyById(req) {
 exports.labWorklist = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const { page, limit, skip } = pagination(req);
+    const { page, limit } = pagination(req);
     const filter = requestFilter(req, hospitalId);
 
-    const [items, total] = await Promise.all([
-      LabRequest.find(filter)
-        .populate('patientId', 'first_name last_name patientId uhid gender age')
-        .populate('doctorId', 'firstName lastName specialization')
-        .populate('admissionId', 'admissionNumber wardId roomId bedId coverageId')
-        .populate('labTestId', 'name test_name code category sampleType turnaroundTime')
-        .sort({ priority: -1, requestedDate: 1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      LabRequest.countDocuments(filter)
-    ]);
+    // Flat mode remains available for backward compatibility. The default is
+    // patient/request-centric and groups individual tests under one lab order.
+    const flat = req.query.flat === 'true';
+    if (flat) {
+      const skip = (page - 1) * limit;
+      const [items, total] = await Promise.all([
+        LabRequest.find(filter)
+          .populate('patientId', 'first_name last_name patientId uhid gender age phone')
+          .populate('doctorId', 'firstName lastName specialization')
+          .populate('admissionId', 'admissionNumber wardId roomId bedId coverageId')
+          .populate('labTestId', 'name code category specimen_type specimen_detail parameters normal_range units')
+          .sort({ priority: -1, requestedDate: 1 }).skip(skip).limit(limit).lean(),
+        LabRequest.countDocuments(filter)
+      ]);
+      return res.json({ success: true, grouped: false, items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
+    }
 
-    res.json({
-      success: true,
-      items,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
+    const all = await LabRequest.find(filter)
+      .populate('patientId', 'first_name last_name patientId uhid gender age phone')
+      .populate('doctorId', 'firstName lastName specialization')
+      .populate('admissionId', 'admissionNumber wardId roomId bedId coverageId')
+      .populate('labTestId', 'name code category specimen_type specimen_detail parameters normal_range units')
+      .sort({ priority: -1, requestedDate: 1 })
+      .limit(Number(process.env.LAB_WORKLIST_GROUPING_LIMIT || 5000))
+      .lean();
+
+    const groups = groupLabRequests(all);
+    const total = groups.length;
+    const skip = (page - 1) * limit;
+    const items = groups.slice(skip, skip + limit);
+    return res.json({ success: true, grouped: true, items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (e) {
     sendError(res, e);
   }
@@ -145,6 +166,14 @@ exports.labWorklist = async (req, res) => {
 exports.collectSpecimen = async (req, res) => {
   try {
     const { request, hospitalId } = await labById(req);
+
+    if (['Sample Collected', 'Received', 'Processing', 'Result Entered', 'Completed', 'Verified', 'Reported', 'Amended'].includes(request.status)) {
+      return res.status(200).json({ success: true, alreadyCollected: true, message: 'Specimen was already collected for this request', data: request });
+    }
+    const requestedCollectionKey = String(req.body.collectionEventKey || req.body.barcode || req.body.accessionNumber || '').trim();
+    if (requestedCollectionKey && request.collectionEventKey === requestedCollectionKey) {
+      return res.status(200).json({ success: true, alreadyCollected: true, message: 'Duplicate collection event ignored', data: request });
+    }
 
     // Collection is a normal operational entry point for newly ordered tests.
     // Preserve the formal NABH workflow by recording the required approval
@@ -162,6 +191,7 @@ exports.collectSpecimen = async (req, res) => {
     request.accessionNumber = req.body.accessionNumber ||
       request.accessionNumber ||
       `ACC-${Date.now()}`;
+    request.collectionEventKey = requestedCollectionKey || `COLLECT:${hospitalId}:${request._id}:${request.accessionNumber}`;
 
     request.specimen = {
       ...(request.specimen?.toObject?.() || request.specimen || {}),
@@ -240,9 +270,15 @@ exports.enterLabResults = async (req, res) => {
       return res.status(409).json({ success: false, error: 'Final reports are immutable. Use controlled amendment.' });
     }
 
-    request.result_value = req.body.result_value ?? request.result_value;
-    request.result_interpretation = req.body.result_interpretation ?? request.result_interpretation;
-    request.normal_range_used = req.body.normal_range_used ?? request.normal_range_used;
+    if (req.body.result_value !== undefined) {
+      request.result_value = safeScalarResult(req.body.result_value, request.result_value || '');
+    }
+    if (req.body.result_interpretation !== undefined) {
+      request.result_interpretation = safeScalarResult(req.body.result_interpretation, request.result_interpretation || '');
+    }
+    if (req.body.normal_range_used !== undefined) {
+      request.normal_range_used = safeScalarResult(req.body.normal_range_used, request.normal_range_used || '');
+    }
     request.is_abnormal = Boolean(req.body.is_abnormal);
     request.manual_report = req.body.manual_report || request.manual_report;
 

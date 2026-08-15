@@ -2,10 +2,13 @@ const express = require('express');
 const multer = require('multer');
 const router = express.Router();
 const controller = require('../controllers/tariff.controller');
-const { requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
+const { requireModuleAccess, requireAnyModuleAccess, requireActionPermission } = require('../middlewares/auth');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024, files: 1 } });
-const view = requireModuleAccess('masters_settings', 'view');
+const view = requireAnyModuleAccess([
+  { moduleKey: 'masters_settings', minimumAccess: 'view' },
+  { moduleKey: 'billing_finance', minimumAccess: 'view' },
+]);
 const manage = requireModuleAccess('masters_settings', 'manage');
 const pricingView = requireModuleAccess('billing_finance', 'view');
 

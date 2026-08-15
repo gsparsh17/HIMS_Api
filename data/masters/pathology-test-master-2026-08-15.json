@@ -1,0 +1,3801 @@
+{
+  "source": {
+    "filename": "Pathology test Department Wise.xlsx",
+    "sha256": "2659075278a4c5287cc13b32ffb0675220a18056f45a671de10e5e7b37bd362c",
+    "importVersion": "2026-08-15"
+  },
+  "records": [
+    {
+      "serialNumber": 1,
+      "mainService": "Microbiology",
+      "serviceName": "BLOOD CULTURE",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2,
+      "mainService": "Microbiology",
+      "serviceName": "ASCITIC BODY FLUID CULTURE & SENSITIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3,
+      "mainService": "Microbiology",
+      "serviceName": "CATHETER CULTURE & SENSTIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 4,
+      "mainService": "Microbiology",
+      "serviceName": "STOOL CULTURE & SENSTIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 5,
+      "mainService": "Microbiology",
+      "serviceName": "THROAT SWAB CULTURE & SENSTIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 6,
+      "mainService": "Microbiology",
+      "serviceName": "TRACHEAL SECRETIONS CULTURE & SENSTIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 7,
+      "mainService": "Microbiology",
+      "serviceName": "GRAM STAIN THROAT SWAB",
+      "amount": 100
+    },
+    {
+      "serialNumber": 8,
+      "mainService": "Microbiology",
+      "serviceName": "GRAMS  STAIN URINE",
+      "amount": 100
+    },
+    {
+      "serialNumber": 9,
+      "mainService": "Microbiology",
+      "serviceName": "PLEURAL BODY FLUID CULTURE & SENSITIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 10,
+      "mainService": "Microbiology",
+      "serviceName": "AFB STAIN URINE",
+      "amount": 195
+    },
+    {
+      "serialNumber": 11,
+      "mainService": "Microbiology",
+      "serviceName": "FUNGUS CULTURE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 12,
+      "mainService": "Immunology",
+      "serviceName": "TB PCR",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 13,
+      "mainService": "Microbiology",
+      "serviceName": "TB GOLD (INTERFERON GAMMA RELEASE ASSAY (IGRA))",
+      "amount": 2800
+    },
+    {
+      "serialNumber": 14,
+      "mainService": "Biochemistry",
+      "serviceName": "ALKALINE PHOSPHATASE",
+      "amount": 140
+    },
+    {
+      "serialNumber": 15,
+      "mainService": "Biochemistry",
+      "serviceName": "AFP (ALPHA FETO-PROTIEN)",
+      "amount": 800
+    },
+    {
+      "serialNumber": 16,
+      "mainService": "Biochemistry",
+      "serviceName": "ANA PROFILE",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 17,
+      "mainService": "Biochemistry",
+      "serviceName": "TOTAL BILIRUBIN",
+      "amount": 200
+    },
+    {
+      "serialNumber": 18,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM GLUCOSE PP",
+      "amount": 60
+    },
+    {
+      "serialNumber": 19,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM GLUCOSE RANDOM",
+      "amount": 60
+    },
+    {
+      "serialNumber": 20,
+      "mainService": "Biochemistry",
+      "serviceName": "CALCIUM - SERUM",
+      "amount": 195
+    },
+    {
+      "serialNumber": 21,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM T. CHOLESTROL",
+      "amount": 100
+    },
+    {
+      "serialNumber": 22,
+      "mainService": "Biochemistry",
+      "serviceName": "ELECTROLYTES  SERUM",
+      "amount": 450
+    },
+    {
+      "serialNumber": 23,
+      "mainService": "Haematology",
+      "serviceName": "FERRITIN",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 24,
+      "mainService": "Serology",
+      "serviceName": "FSH (FOLLICLE STIMULATING HORMONE)",
+      "amount": 500
+    },
+    {
+      "serialNumber": 25,
+      "mainService": "Biochemistry",
+      "serviceName": "G6PD (GLUCOSE 6 PHOSPHATE D HYDROGENAS)",
+      "amount": 1280
+    },
+    {
+      "serialNumber": 27,
+      "mainService": "Haematology",
+      "serviceName": "HB ELECTROPHORESIS",
+      "amount": 1100
+    },
+    {
+      "serialNumber": 28,
+      "mainService": "Biochemistry",
+      "serviceName": "IRON PROFILE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 29,
+      "mainService": "Biochemistry",
+      "serviceName": "LFT (LIVER FUNCTION TEST)",
+      "amount": 600
+    },
+    {
+      "serialNumber": 30,
+      "mainService": "Biochemistry",
+      "serviceName": "LIPASE - SERUM",
+      "amount": 815
+    },
+    {
+      "serialNumber": 31,
+      "mainService": "Biochemistry",
+      "serviceName": "LIPID PROFILE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 32,
+      "mainService": "Biochemistry",
+      "serviceName": "MICRO ALBUMIN - URINE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 33,
+      "mainService": "Biochemistry",
+      "serviceName": "MAGNESIUM",
+      "amount": 430
+    },
+    {
+      "serialNumber": 34,
+      "mainService": "Biochemistry",
+      "serviceName": "TOTAL PROTIENS",
+      "amount": 140
+    },
+    {
+      "serialNumber": 35,
+      "mainService": "Biochemistry",
+      "serviceName": "RFT (RENAL FUNCTION TEST)",
+      "amount": 500
+    },
+    {
+      "serialNumber": 36,
+      "mainService": "Biochemistry",
+      "serviceName": "AMYLASE  SERUM",
+      "amount": 620
+    },
+    {
+      "serialNumber": 37,
+      "mainService": "Immunology",
+      "serviceName": "PROTINE ELECTROPHORESIS",
+      "amount": 800
+    },
+    {
+      "serialNumber": 38,
+      "mainService": "Biochemistry",
+      "serviceName": "SGOT (AST)",
+      "amount": 150
+    },
+    {
+      "serialNumber": 39,
+      "mainService": "Biochemistry",
+      "serviceName": "SGPT (ALT)",
+      "amount": 150
+    },
+    {
+      "serialNumber": 40,
+      "mainService": "Serology",
+      "serviceName": "T3 (TOTAL TRI-IODOTHYRONINE)",
+      "amount": 300
+    },
+    {
+      "serialNumber": 41,
+      "mainService": "Serology",
+      "serviceName": "TESTOSTERONE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 42,
+      "mainService": "Immunology",
+      "serviceName": "THYROID PROFILE (T3,T4,TSH)",
+      "amount": 650
+    },
+    {
+      "serialNumber": 43,
+      "mainService": "Biochemistry",
+      "serviceName": "TSH",
+      "amount": 200
+    },
+    {
+      "serialNumber": 44,
+      "mainService": "Biochemistry",
+      "serviceName": "TTG",
+      "amount": 900
+    },
+    {
+      "serialNumber": 45,
+      "mainService": "Biochemistry",
+      "serviceName": "URIC ACID",
+      "amount": 150
+    },
+    {
+      "serialNumber": 46,
+      "mainService": "Immunology",
+      "serviceName": "ANTI PHOSPHO LIPID (IGG  and  IGM)",
+      "amount": 3000
+    },
+    {
+      "serialNumber": 47,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM ALBUMIN",
+      "amount": 150
+    },
+    {
+      "serialNumber": 48,
+      "mainService": "Immunology",
+      "serviceName": "VITAMIN D-3",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 49,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM GLOBULIN",
+      "amount": 150
+    },
+    {
+      "serialNumber": 50,
+      "mainService": "Biochemistry",
+      "serviceName": "SODIUM (NA+)",
+      "amount": 300
+    },
+    {
+      "serialNumber": 51,
+      "mainService": "Biochemistry",
+      "serviceName": "CHLORIDE (CL)",
+      "amount": 200
+    },
+    {
+      "serialNumber": 52,
+      "mainService": "Biochemistry",
+      "serviceName": "BILRUBIN INDIRECT  SERUM",
+      "amount": 130
+    },
+    {
+      "serialNumber": 53,
+      "mainService": "Biochemistry",
+      "serviceName": "CSF BODY FLUID BIOCHEMISTRY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 54,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM IRON",
+      "amount": 400
+    },
+    {
+      "serialNumber": 55,
+      "mainService": "Biochemistry",
+      "serviceName": "PROGESTERONE",
+      "amount": 950
+    },
+    {
+      "serialNumber": 56,
+      "mainService": "Biochemistry",
+      "serviceName": "TOTAL IRON BINDING CAPACITY (TIBC)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 57,
+      "mainService": "Biochemistry",
+      "serviceName": "ABG(ARTERIAL BLOOD GAS)",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 58,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM CREATININE KINASE (CK-NAC) CPK",
+      "amount": 430
+    },
+    {
+      "serialNumber": 59,
+      "mainService": "Serology",
+      "serviceName": "PRL (SERUM PROLACTIN)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 60,
+      "mainService": "Biochemistry",
+      "serviceName": "HDL CHOLESTEROL",
+      "amount": 249
+    },
+    {
+      "serialNumber": 61,
+      "mainService": "Biochemistry",
+      "serviceName": "ADA SERUM",
+      "amount": 700
+    },
+    {
+      "serialNumber": 62,
+      "mainService": "Serology",
+      "serviceName": "PCT (PROCALCITONIN)",
+      "amount": 1800
+    },
+    {
+      "serialNumber": 63,
+      "mainService": "Haematology",
+      "serviceName": "ICT ( INDIRECT COOMB ;S TEST )",
+      "amount": 600
+    },
+    {
+      "serialNumber": 64,
+      "mainService": "Haematology",
+      "serviceName": "BLOOD GROUP (ABO & RH FACTOR)",
+      "amount": 85
+    },
+    {
+      "serialNumber": 65,
+      "mainService": "Haematology",
+      "serviceName": "CBC - COMPLETE BLOOD COUNTS",
+      "amount": 245
+    },
+    {
+      "serialNumber": 66,
+      "mainService": "Haematology",
+      "serviceName": "DIFFRENTIAL LEUCOCYTE COUNT (DLC)",
+      "amount": 85
+    },
+    {
+      "serialNumber": 67,
+      "mainService": "Haematology",
+      "serviceName": "(HB)HAEMOGLOBIN",
+      "amount": 140
+    },
+    {
+      "serialNumber": 68,
+      "mainService": "Haematology",
+      "serviceName": "MCV",
+      "amount": 60
+    },
+    {
+      "serialNumber": 69,
+      "mainService": "Haematology",
+      "serviceName": "PERIPHERAL BLOOD SMEAR (PBF)",
+      "amount": 260
+    },
+    {
+      "serialNumber": 70,
+      "mainService": "Haematology",
+      "serviceName": "PCV",
+      "amount": 140
+    },
+    {
+      "serialNumber": 71,
+      "mainService": "Haematology",
+      "serviceName": "PLATLET COUNT",
+      "amount": 140
+    },
+    {
+      "serialNumber": 72,
+      "mainService": "Haematology",
+      "serviceName": "TOTAL LEUCOCYTE COUNT (TLC)",
+      "amount": 85
+    },
+    {
+      "serialNumber": 73,
+      "mainService": "Haematology",
+      "serviceName": "RBC.",
+      "amount": 60
+    },
+    {
+      "serialNumber": 74,
+      "mainService": "Haematology",
+      "serviceName": "PT - INR (PROTHROMBIN TIME)",
+      "amount": 280
+    },
+    {
+      "serialNumber": 75,
+      "mainService": "Haematology",
+      "serviceName": "APTT (ACTIVATED PARTIAL THROMBOPLASTIN TIME)",
+      "amount": 450
+    },
+    {
+      "serialNumber": 76,
+      "mainService": "Haematology",
+      "serviceName": "BONE MARROW ASPIRATION",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 77,
+      "mainService": "Haematology",
+      "serviceName": "LE CELL",
+      "amount": 500
+    },
+    {
+      "serialNumber": 78,
+      "mainService": "Haematology",
+      "serviceName": "RETICULOCYTE COUNT.",
+      "amount": 260
+    },
+    {
+      "serialNumber": 79,
+      "mainService": "Haematology",
+      "serviceName": "COAGULATION PROFILE",
+      "amount": 800
+    },
+    {
+      "serialNumber": 80,
+      "mainService": "Haematology",
+      "serviceName": "BLEEDING TIME AND CLOTTING TIME",
+      "amount": 120
+    },
+    {
+      "serialNumber": 81,
+      "mainService": "Haematology",
+      "serviceName": "MICROFILARIA ( CARD)",
+      "amount": 150
+    },
+    {
+      "serialNumber": 82,
+      "mainService": "Haematology",
+      "serviceName": "MICROFILERIA (SMEAR)",
+      "amount": 150
+    },
+    {
+      "serialNumber": 83,
+      "mainService": "Haematology",
+      "serviceName": "ESR (ERYTHROCYTE SEDIMENTATION RATE)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 84,
+      "mainService": "Haematology",
+      "serviceName": "CROSS MATCH",
+      "amount": 100
+    },
+    {
+      "serialNumber": 85,
+      "mainService": "Haematology",
+      "serviceName": "PS FOR MP",
+      "amount": 260
+    },
+    {
+      "serialNumber": 86,
+      "mainService": "Microbiology",
+      "serviceName": "URINE CULTURE & SENSTIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 87,
+      "mainService": "Microbiology",
+      "serviceName": "SPUTUM FOR AFB.",
+      "amount": 250
+    },
+    {
+      "serialNumber": 88,
+      "mainService": "Microbiology",
+      "serviceName": "CYTOLOGY-FLUID",
+      "amount": 400
+    },
+    {
+      "serialNumber": 89,
+      "mainService": "Microbiology",
+      "serviceName": "SPUTUM GRAM STAIN",
+      "amount": 150
+    },
+    {
+      "serialNumber": 90,
+      "mainService": "Serology",
+      "serviceName": "ASO - ANTI STREPTOLYSIN O",
+      "amount": 500
+    },
+    {
+      "serialNumber": 91,
+      "mainService": "Serology",
+      "serviceName": "MANTOUX TEST TUBERCULIN PPD 10TU",
+      "amount": 400
+    },
+    {
+      "serialNumber": 92,
+      "mainService": "Serology",
+      "serviceName": "TORCH - 8 IGG &IGM",
+      "amount": 2300
+    },
+    {
+      "serialNumber": 93,
+      "mainService": "Serology",
+      "serviceName": "V.D.R.L TEST",
+      "amount": 200
+    },
+    {
+      "serialNumber": 94,
+      "mainService": "Serology",
+      "serviceName": "WIDAL  TEST",
+      "amount": 215
+    },
+    {
+      "serialNumber": 95,
+      "mainService": "Serology",
+      "serviceName": "DENGUE NS1 ANTIGEN",
+      "amount": 1700
+    },
+    {
+      "serialNumber": 96,
+      "mainService": "Serology",
+      "serviceName": "VDRL",
+      "amount": 200
+    },
+    {
+      "serialNumber": 97,
+      "mainService": "Serology",
+      "serviceName": "HIV (TRI - DOT)",
+      "amount": 500
+    },
+    {
+      "serialNumber": 98,
+      "mainService": "Serology",
+      "serviceName": "HBsAg(AUSTRALIA ANTIGEN)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 99,
+      "mainService": "Serology",
+      "serviceName": "DENGUE PROFILE",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 100,
+      "mainService": "Serology",
+      "serviceName": "DENGUE IGG BY ELISA",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 101,
+      "mainService": "Urine examination",
+      "serviceName": "URINE ROUTINE EXAMINATION",
+      "amount": 100
+    },
+    {
+      "serialNumber": 102,
+      "mainService": "Urine examination",
+      "serviceName": "KETONE BODIES",
+      "amount": 100
+    },
+    {
+      "serialNumber": 103,
+      "mainService": "Urine examination",
+      "serviceName": "URINE BENCE JONES PROTEIN",
+      "amount": 150
+    },
+    {
+      "serialNumber": 104,
+      "mainService": "Urine examination",
+      "serviceName": "URINE UROBILINOGEN",
+      "amount": 100
+    },
+    {
+      "serialNumber": 203,
+      "mainService": "BIOPSIES",
+      "serviceName": "IRC",
+      "amount": 100
+    },
+    {
+      "serialNumber": 204,
+      "mainService": "BIOPSIES",
+      "serviceName": "UGIE",
+      "amount": 100
+    },
+    {
+      "serialNumber": 205,
+      "mainService": "BIOPSIES",
+      "serviceName": "Sigmoidscopy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 206,
+      "mainService": "BIOPSIES",
+      "serviceName": "Colonoscopy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 207,
+      "mainService": "BIOPSIES",
+      "serviceName": "Lymph Nodes",
+      "amount": 100
+    },
+    {
+      "serialNumber": 208,
+      "mainService": "BIOPSIES",
+      "serviceName": "Lipoma/Cystis/Ganglion",
+      "amount": 100
+    },
+    {
+      "serialNumber": 209,
+      "mainService": "BIOPSIES",
+      "serviceName": "Circumscision under LA",
+      "amount": 100
+    },
+    {
+      "serialNumber": 210,
+      "mainService": "BIOPSIES",
+      "serviceName": "D&C",
+      "amount": 100
+    },
+    {
+      "serialNumber": 211,
+      "mainService": "BIOPSIES",
+      "serviceName": "Ear Stitching one side",
+      "amount": 100
+    },
+    {
+      "serialNumber": 212,
+      "mainService": "BIOPSIES",
+      "serviceName": "Fibroadenoma Breast",
+      "amount": 100
+    },
+    {
+      "serialNumber": 253,
+      "mainService": "UROLOGY",
+      "serviceName": "PCNL",
+      "amount": 100
+    },
+    {
+      "serialNumber": 254,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP",
+      "amount": 100
+    },
+    {
+      "serialNumber": 255,
+      "mainService": "UROLOGY",
+      "serviceName": "TURBT",
+      "amount": 39000
+    },
+    {
+      "serialNumber": 256,
+      "mainService": "UROLOGY",
+      "serviceName": "URS",
+      "amount": 100
+    },
+    {
+      "serialNumber": 257,
+      "mainService": "UROLOGY",
+      "serviceName": "VIU",
+      "amount": 100
+    },
+    {
+      "serialNumber": 258,
+      "mainService": "Serology",
+      "serviceName": "VIRAL MARKER",
+      "amount": 1300
+    },
+    {
+      "serialNumber": 301,
+      "mainService": "Biochemistry",
+      "serviceName": "CEA",
+      "amount": 800
+    },
+    {
+      "serialNumber": 844,
+      "mainService": "UROLOGY",
+      "serviceName": "Operation for Cyst of Kidney, Deroofing/Marsupilisation",
+      "amount": 100
+    },
+    {
+      "serialNumber": 845,
+      "mainService": "UROLOGY",
+      "serviceName": "Bladder Tumour (Fulguration)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 846,
+      "mainService": "UROLOGY",
+      "serviceName": "Correction of Extrophy of Bladder",
+      "amount": 100
+    },
+    {
+      "serialNumber": 847,
+      "mainService": "UROLOGY",
+      "serviceName": "Cysto Gastrostomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 848,
+      "mainService": "UROLOGY",
+      "serviceName": "Cysto Jejunostomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 849,
+      "mainService": "UROLOGY",
+      "serviceName": "Dormia Extraction of Calculus",
+      "amount": 100
+    },
+    {
+      "serialNumber": 850,
+      "mainService": "UROLOGY",
+      "serviceName": "Drainage of Perinepheric - Abscess",
+      "amount": 100
+    },
+    {
+      "serialNumber": 851,
+      "mainService": "UROLOGY",
+      "serviceName": "Cystolithopexy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 852,
+      "mainService": "UROLOGY",
+      "serviceName": "Excision of Urethral Caruncle",
+      "amount": 100
+    },
+    {
+      "serialNumber": 853,
+      "mainService": "UROLOGY",
+      "serviceName": "Exploration of Epididymus (Unsuccesful -  Vasco vasectomy)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 854,
+      "mainService": "UROLOGY",
+      "serviceName": "Urachal Cyst",
+      "amount": 100
+    },
+    {
+      "serialNumber": 855,
+      "mainService": "UROLOGY",
+      "serviceName": "Hypospadias-Single Stage/Simple",
+      "amount": 100
+    },
+    {
+      "serialNumber": 856,
+      "mainService": "UROLOGY",
+      "serviceName": "Internal Urethrotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 857,
+      "mainService": "UROLOGY",
+      "serviceName": "Litholapaxy (Under LA)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 858,
+      "mainService": "UROLOGY",
+      "serviceName": "Trans Urethral Laser Lithotripsy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 859,
+      "mainService": "UROLOGY",
+      "serviceName": "Meatoplasty",
+      "amount": 100
+    },
+    {
+      "serialNumber": 860,
+      "mainService": "UROLOGY",
+      "serviceName": "Meatotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 861,
+      "mainService": "UROLOGY",
+      "serviceName": "Neoblastoma",
+      "amount": 100
+    },
+    {
+      "serialNumber": 862,
+      "mainService": "UROLOGY",
+      "serviceName": "Nephrolithotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 863,
+      "mainService": "UROLOGY",
+      "serviceName": "Nephropexy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 864,
+      "mainService": "UROLOGY",
+      "serviceName": "Nephrostomy/PCN",
+      "amount": 100
+    },
+    {
+      "serialNumber": 865,
+      "mainService": "UROLOGY",
+      "serviceName": "Operation for Double Ureter",
+      "amount": 100
+    },
+    {
+      "serialNumber": 866,
+      "mainService": "UROLOGY",
+      "serviceName": "Bladder Injury, Exploration & Repair",
+      "amount": 100
+    },
+    {
+      "serialNumber": 867,
+      "mainService": "UROLOGY",
+      "serviceName": "Post Urethral Valve Fulguration",
+      "amount": 100
+    },
+    {
+      "serialNumber": 868,
+      "mainService": "UROLOGY",
+      "serviceName": "Pyelolithotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 869,
+      "mainService": "UROLOGY",
+      "serviceName": "Reduction of Paraphimosis",
+      "amount": 100
+    },
+    {
+      "serialNumber": 870,
+      "mainService": "UROLOGY",
+      "serviceName": "Reimplantation of Urethra",
+      "amount": 100
+    },
+    {
+      "serialNumber": 871,
+      "mainService": "UROLOGY",
+      "serviceName": "Reimplantation of Bladder",
+      "amount": 100
+    },
+    {
+      "serialNumber": 872,
+      "mainService": "UROLOGY",
+      "serviceName": "Repair of Uretero Vaginal Fistula",
+      "amount": 100
+    },
+    {
+      "serialNumber": 873,
+      "mainService": "UROLOGY",
+      "serviceName": "Retropubic Prostatectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 874,
+      "mainService": "UROLOGY",
+      "serviceName": "Suprapubic Cystostomy - Open",
+      "amount": 100
+    },
+    {
+      "serialNumber": 875,
+      "mainService": "UROLOGY",
+      "serviceName": "SPC under LA",
+      "amount": 100
+    },
+    {
+      "serialNumber": 876,
+      "mainService": "UROLOGY",
+      "serviceName": "Trans Vesical Prostatectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 877,
+      "mainService": "UROLOGY",
+      "serviceName": "Transurethral Fulguration",
+      "amount": 100
+    },
+    {
+      "serialNumber": 878,
+      "mainService": "UROLOGY",
+      "serviceName": "Uretero Colic Anastomosis",
+      "amount": 100
+    },
+    {
+      "serialNumber": 879,
+      "mainService": "UROLOGY",
+      "serviceName": "Ureterolithotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 880,
+      "mainService": "UROLOGY",
+      "serviceName": "URSL - Unilateral",
+      "amount": 100
+    },
+    {
+      "serialNumber": 881,
+      "mainService": "UROLOGY",
+      "serviceName": "Urethral Dilatation",
+      "amount": 100
+    },
+    {
+      "serialNumber": 882,
+      "mainService": "UROLOGY",
+      "serviceName": "Ureteric Catheterization Cystoscopy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 883,
+      "mainService": "UROLOGY",
+      "serviceName": "Uretrostomy (Cutaneous)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 884,
+      "mainService": "UROLOGY",
+      "serviceName": "URS with Endolitholopexy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 885,
+      "mainService": "UROLOGY",
+      "serviceName": "URS with Lithotripsy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 886,
+      "mainService": "UROLOGY",
+      "serviceName": "URS+Cysto Lithotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 887,
+      "mainService": "UROLOGY",
+      "serviceName": "Vesico uretero Reflux - Bilateral",
+      "amount": 100
+    },
+    {
+      "serialNumber": 888,
+      "mainService": "UROLOGY",
+      "serviceName": "Vesico Uretero Reflux - Unilateral",
+      "amount": 100
+    },
+    {
+      "serialNumber": 889,
+      "mainService": "UROLOGY",
+      "serviceName": "V Y Plasty of Bladder Neck",
+      "amount": 100
+    },
+    {
+      "serialNumber": 890,
+      "mainService": "UROLOGY",
+      "serviceName": "Operation for ectopic ureter",
+      "amount": 100
+    },
+    {
+      "serialNumber": 891,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP + Cystolithotripsy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 892,
+      "mainService": "UROLOGY",
+      "serviceName": "Ureteroscopic removal of ureteric calculi",
+      "amount": 100
+    },
+    {
+      "serialNumber": 893,
+      "mainService": "UROLOGY",
+      "serviceName": "Ureteric Catheterization Cystoscopy+ Pyelolithotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 894,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP + Closure of Urinary Fistula",
+      "amount": 100
+    },
+    {
+      "serialNumber": 895,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP + Suprapubic Cystolithotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 896,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP + Vesicolithotripsy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 897,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP + Hernioplasty",
+      "amount": 100
+    },
+    {
+      "serialNumber": 898,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP with Repair of Urethra",
+      "amount": 100
+    },
+    {
+      "serialNumber": 899,
+      "mainService": "UROLOGY",
+      "serviceName": "VIU + Hydrocelectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 900,
+      "mainService": "UROLOGY",
+      "serviceName": "Open Cystolithotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 901,
+      "mainService": "UROLOGY",
+      "serviceName": "Cystoscopy with Bladder wash",
+      "amount": 100
+    },
+    {
+      "serialNumber": 902,
+      "mainService": "UROLOGY",
+      "serviceName": "Cystoscopy under GA",
+      "amount": 100
+    },
+    {
+      "serialNumber": 904,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1055,
+      "mainService": "Biochemistry",
+      "serviceName": "SICKLING TEST",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1501,
+      "mainService": "UROLOGY",
+      "serviceName": "Partial Cystectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1502,
+      "mainService": "UROLOGY",
+      "serviceName": "Nephro Uretrectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1503,
+      "mainService": "UROLOGY",
+      "serviceName": "PCNL (Percutaneous nephro lithotomy) - Biilateral",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1504,
+      "mainService": "UROLOGY",
+      "serviceName": "Nephrectomy for Renal tumor / Radical Nephrectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1505,
+      "mainService": "UROLOGY",
+      "serviceName": "Retroperitoneal Fibrosis - Renal",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1506,
+      "mainService": "UROLOGY",
+      "serviceName": "URS Extraction of Stone Ureter - Bilateral",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1507,
+      "mainService": "UROLOGY",
+      "serviceName": "Open Nephrolithotomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1508,
+      "mainService": "UROLOGY",
+      "serviceName": "Pyeloplasty",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1509,
+      "mainService": "UROLOGY",
+      "serviceName": "PCNL (Percutaneous Nephro Lithotomy)-Unilateral",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1510,
+      "mainService": "UROLOGY",
+      "serviceName": "ESWL (Extra carporial shock wave lithotripsy) for upto 1 cm stone (upto 2 sittings)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1511,
+      "mainService": "UROLOGY",
+      "serviceName": "DJ stent (One side)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1512,
+      "mainService": "UROLOGY",
+      "serviceName": "Urethroplasty for Stricture Diseases-End to end",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1513,
+      "mainService": "UROLOGY",
+      "serviceName": "Urethroplasty for Stricture Diseases-Johanson stage 1/2",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1514,
+      "mainService": "UROLOGY",
+      "serviceName": "Urethroplasty for Stricture Diseases-BMG onlay",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1515,
+      "mainService": "UROLOGY",
+      "serviceName": "Simple Nephrectomy",
+      "amount": 65000
+    },
+    {
+      "serialNumber": 1516,
+      "mainService": "UROLOGY",
+      "serviceName": "Lap. Nephrectomy Simple",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1517,
+      "mainService": "UROLOGY",
+      "serviceName": "Lap. Nephrectomy Radical",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1518,
+      "mainService": "UROLOGY",
+      "serviceName": "Lap. Partial Nephrectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1519,
+      "mainService": "UROLOGY",
+      "serviceName": "Retrograde Intrarenal Surgry with Laser Lithotripsy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1520,
+      "mainService": "UROLOGY",
+      "serviceName": "Surgery for Uretrorectal Fistula",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1521,
+      "mainService": "UROLOGY",
+      "serviceName": "Open surgery for Colovesical Fistula",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1522,
+      "mainService": "UROLOGY",
+      "serviceName": "Open Nephroureterectomy with bladder cuff excision",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1523,
+      "mainService": "UROLOGY",
+      "serviceName": "Laproscopic  Nephroureterectomy with bladder cuff excision",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1524,
+      "mainService": "UROLOGY",
+      "serviceName": "Open Ureterocalicostomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1525,
+      "mainService": "UROLOGY",
+      "serviceName": "Laproscopic Ureterocalicostomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1526,
+      "mainService": "UROLOGY",
+      "serviceName": "Laproscopic Heminephrectomy for Fusion Anomaly",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1527,
+      "mainService": "UROLOGY",
+      "serviceName": "Open ureteral reimplantation- Unilateral",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1528,
+      "mainService": "UROLOGY",
+      "serviceName": "Laproscopic Ureteal Reimplantation",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1529,
+      "mainService": "UROLOGY",
+      "serviceName": "Ureterolysis for Retroperitoneal Fibrosis",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1530,
+      "mainService": "UROLOGY",
+      "serviceName": "Open Augmentation Cystoplasty",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1531,
+      "mainService": "UROLOGY",
+      "serviceName": "Open Bladder Diverticulectomy with Ureteric Reimplantation",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1532,
+      "mainService": "UROLOGY",
+      "serviceName": "Open orchidectomy (Simple/Radical)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1533,
+      "mainService": "UROLOGY",
+      "serviceName": "Open ileal replacement for ureteric stricture",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1534,
+      "mainService": "UROLOGY",
+      "serviceName": "Open boari flap",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1535,
+      "mainService": "UROLOGY",
+      "serviceName": "Open ureterolysis",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1536,
+      "mainService": "UROLOGY",
+      "serviceName": "Open colovaginal fistula repair",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1537,
+      "mainService": "UROLOGY",
+      "serviceName": "Adrenalectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1538,
+      "mainService": "UROLOGY",
+      "serviceName": "Lap. Pyeloplasty",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1539,
+      "mainService": "UROLOGY",
+      "serviceName": "Radical Prostatectomy-Lap",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1540,
+      "mainService": "UROLOGY",
+      "serviceName": "Radical Cystectomy with neo Bladder",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1541,
+      "mainService": "UROLOGY",
+      "serviceName": "Radical Prostatectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1542,
+      "mainService": "UROLOGY",
+      "serviceName": "Radical Cystectomy with Ileal conduit/Ureterosigmoidostomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1543,
+      "mainService": "UROLOGY",
+      "serviceName": "PCNL (Percutaneous nephro lithotomy) - Unilateral Complex/Redo/Staghorn",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1544,
+      "mainService": "UROLOGY",
+      "serviceName": "VVF Repair/urithrovaginal fistula repair/Female Urethral Diverticulectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1545,
+      "mainService": "UROLOGY",
+      "serviceName": "Open ureteral reimplantation -Bilateral/Ureteral tailoring/redo",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1546,
+      "mainService": "UROLOGY",
+      "serviceName": "Hypospadias-Redo/Proximal/ Complex/ Epispadias",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1547,
+      "mainService": "UROLOGY",
+      "serviceName": "Partial Nephrectomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1548,
+      "mainService": "UROLOGY",
+      "serviceName": "TVT/TOT (Stress Urinary incontinence)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1549,
+      "mainService": "UROLOGY",
+      "serviceName": "AV Fistula-Brachiocephalic",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1550,
+      "mainService": "UROLOGY",
+      "serviceName": "ESWL (Extra carporial shock wave lithotripsy) for more than1 cm stone (upto 2 sittings)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1551,
+      "mainService": "UROLOGY",
+      "serviceName": "Perineal Urethrostomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1552,
+      "mainService": "UROLOGY",
+      "serviceName": "cutaneous Vesicostomy/Ureterostomy",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1553,
+      "mainService": "UROLOGY",
+      "serviceName": "Total Penectomy with groin dissection",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1554,
+      "mainService": "UROLOGY",
+      "serviceName": "Repair of Fracture penis/Priaprism",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1555,
+      "mainService": "UROLOGY",
+      "serviceName": "Drainage of Perinepheric Abscess - Exploration and Drainage",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1556,
+      "mainService": "UROLOGY",
+      "serviceName": "Vaso Vasostomy/ Vaso Epididymal Anastomosis",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1557,
+      "mainService": "UROLOGY",
+      "serviceName": "Partial Penectomy with groin dissection",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1558,
+      "mainService": "UROLOGY",
+      "serviceName": "Bilateral PCN",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1559,
+      "mainService": "UROLOGY",
+      "serviceName": "Hypospadias-Fistula Closure",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1560,
+      "mainService": "UROLOGY",
+      "serviceName": "DJ Stent (both side)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1561,
+      "mainService": "UROLOGY",
+      "serviceName": "BNI/TUIP",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1562,
+      "mainService": "UROLOGY",
+      "serviceName": "PCCL (Bladder stone)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1651,
+      "mainService": "Immunology",
+      "serviceName": "ANA TITER",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 1652,
+      "mainService": "Serology",
+      "serviceName": "ANA (ANTI NUCLEAR ANTIBODY)",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 1653,
+      "mainService": "Serology",
+      "serviceName": "ANC PROFILE",
+      "amount": 1400
+    },
+    {
+      "serialNumber": 1654,
+      "mainService": "Serology",
+      "serviceName": "P-ANCA",
+      "amount": 2250
+    },
+    {
+      "serialNumber": 1655,
+      "mainService": "Biochemistry",
+      "serviceName": "ANGIOTENSIN CONVERTING ENZYME (ACE)",
+      "amount": 1100
+    },
+    {
+      "serialNumber": 1656,
+      "mainService": "Serology",
+      "serviceName": "ANTI BETA 2 GLYCOPROTEIN IgG",
+      "amount": 700
+    },
+    {
+      "serialNumber": 1657,
+      "mainService": "Serology",
+      "serviceName": "ANTI CARDIOLIPIN ANTIBODY IgG",
+      "amount": 700
+    },
+    {
+      "serialNumber": 1658,
+      "mainService": "Biochemistry",
+      "serviceName": "ALBUMIN/CREATININE RATIO (URINE)",
+      "amount": 500
+    },
+    {
+      "serialNumber": 1659,
+      "mainService": "Serology",
+      "serviceName": "ANTI HAV IGM",
+      "amount": 700
+    },
+    {
+      "serialNumber": 1660,
+      "mainService": "Immunology",
+      "serviceName": "HBeAG  (Antigen)",
+      "amount": 700
+    },
+    {
+      "serialNumber": 1661,
+      "mainService": "Immunology",
+      "serviceName": "ANTI HBS ANTIBODY QUANTITATIVE",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 1662,
+      "mainService": "Serology",
+      "serviceName": "ANTI LKM",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 1663,
+      "mainService": "Serology",
+      "serviceName": "ANTI MITOCHANDRED",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 1664,
+      "mainService": "Serology",
+      "serviceName": "ANTI NUCLEAR ANTIBODY",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 1665,
+      "mainService": "Serology",
+      "serviceName": "ANTI PHOSPHOLIPID IGG ANTIBODIES, (ANTI PHOSPHOLIPID IGM ANTIBODIES)",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 1666,
+      "mainService": "Serology",
+      "serviceName": "Anti smooth muscle antibody",
+      "amount": 750
+    },
+    {
+      "serialNumber": 1667,
+      "mainService": "Serology",
+      "serviceName": "ANTI TPO",
+      "amount": 1100
+    },
+    {
+      "serialNumber": 1668,
+      "mainService": "Serology",
+      "serviceName": "ANTI TTG",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 1669,
+      "mainService": "Haematology",
+      "serviceName": "ANTIBODY TO HEPETITIS \" E\" VIRUS",
+      "amount": 800
+    },
+    {
+      "serialNumber": 1670,
+      "mainService": "Biochemistry",
+      "serviceName": "ASCITIC FLUID R/M",
+      "amount": 600
+    },
+    {
+      "serialNumber": 1671,
+      "mainService": "Biochemistry",
+      "serviceName": "BENCE JONES PROTEIN",
+      "amount": 150
+    },
+    {
+      "serialNumber": 1672,
+      "mainService": "Haematology",
+      "serviceName": "BETA HCG TITER",
+      "amount": 900
+    },
+    {
+      "serialNumber": 1676,
+      "mainService": "Histopathology",
+      "serviceName": "BILIRUBIN [TDI]",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 1677,
+      "mainService": "Histopathology",
+      "serviceName": "BIOPSY MEDIUM.",
+      "amount": 1600
+    },
+    {
+      "serialNumber": 1678,
+      "mainService": "Biochemistry",
+      "serviceName": "BLOOD SUGAR (FASTING)",
+      "amount": 85
+    },
+    {
+      "serialNumber": 1679,
+      "mainService": "Biochemistry",
+      "serviceName": "BLOOD SUGAR (PP)",
+      "amount": 85
+    },
+    {
+      "serialNumber": 1680,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM UREA",
+      "amount": 150
+    },
+    {
+      "serialNumber": 1681,
+      "mainService": "Biochemistry",
+      "serviceName": "BLOOD UREA NITROGEN (BUN)",
+      "amount": 130
+    },
+    {
+      "serialNumber": 1682,
+      "mainService": "Haematology",
+      "serviceName": "BONE MARROW ASPIRATION REPORT WITH PAS + IRON STAIN",
+      "amount": 4000
+    },
+    {
+      "serialNumber": 1684,
+      "mainService": "Haematology",
+      "serviceName": "BONE MARROW BIOPSY",
+      "amount": 500
+    },
+    {
+      "serialNumber": 1685,
+      "mainService": "Haematology",
+      "serviceName": "Bone marrow procedure",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 1686,
+      "mainService": "Histopathology",
+      "serviceName": "BRONCHIAL FLUID FOR CYTOLOGY",
+      "amount": 400
+    },
+    {
+      "serialNumber": 1687,
+      "mainService": "Microbiology",
+      "serviceName": "BRONCHIAL FLUID FOR KOH",
+      "amount": 400
+    },
+    {
+      "serialNumber": 1688,
+      "mainService": "Haematology",
+      "serviceName": "CA 125( Ovarian Cancer Marker)",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 1689,
+      "mainService": "Haematology",
+      "serviceName": "CA 15.3",
+      "amount": 1400
+    },
+    {
+      "serialNumber": 1690,
+      "mainService": "Biochemistry",
+      "serviceName": "CA 19.9",
+      "amount": 800
+    },
+    {
+      "serialNumber": 1691,
+      "mainService": "Haematology",
+      "serviceName": "CD4(Lymphocye Enumertaion,T-HELPER CELLS)",
+      "amount": 2200
+    },
+    {
+      "serialNumber": 1692,
+      "mainService": "Biochemistry",
+      "serviceName": "CERULOPLASMIN SERUM",
+      "amount": 700
+    },
+    {
+      "serialNumber": 1693,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM CHLORIDE",
+      "amount": 150
+    },
+    {
+      "serialNumber": 1694,
+      "mainService": "Haematology",
+      "serviceName": "CLOT RETRACTION TIME",
+      "amount": 300
+    },
+    {
+      "serialNumber": 1695,
+      "mainService": "Immunology",
+      "serviceName": "CMV IgG Ab TITRES",
+      "amount": 812
+    },
+    {
+      "serialNumber": 1696,
+      "mainService": "Immunology",
+      "serviceName": "CMV IgM Ab TITRES",
+      "amount": 812
+    },
+    {
+      "serialNumber": 1697,
+      "mainService": "Haematology",
+      "serviceName": "C-PEPTIDE",
+      "amount": 1100
+    },
+    {
+      "serialNumber": 1698,
+      "mainService": "Biochemistry",
+      "serviceName": "CPK-MB",
+      "amount": 800
+    },
+    {
+      "serialNumber": 1699,
+      "mainService": "Biochemistry",
+      "serviceName": "CSF EXAMINATION",
+      "amount": 645
+    },
+    {
+      "serialNumber": 1700,
+      "mainService": "Biochemistry",
+      "serviceName": "D- DIMER",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 1701,
+      "mainService": "Biochemistry",
+      "serviceName": "DIRECT COOMBS TEST",
+      "amount": 800
+    },
+    {
+      "serialNumber": 1702,
+      "mainService": "Serology",
+      "serviceName": "ECHINOCOCCUS IgG",
+      "amount": 900
+    },
+    {
+      "serialNumber": 1703,
+      "mainService": "Serology",
+      "serviceName": "ESTRADIOL,SERUM (E2)",
+      "amount": 900
+    },
+    {
+      "serialNumber": 1704,
+      "mainService": "Haematology",
+      "serviceName": "Factor V Lavel",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 1705,
+      "mainService": "Haematology",
+      "serviceName": "FIBRINOGEN DEGENERATION PRODUCTS",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 1706,
+      "mainService": "Microbiology",
+      "serviceName": "FLUID CULTURE & SENSITIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 1707,
+      "mainService": "Haematology",
+      "serviceName": "FLUID DLC",
+      "amount": 300
+    },
+    {
+      "serialNumber": 1710,
+      "mainService": "Microbiology",
+      "serviceName": "CENTRAL LINE TIP CULTURE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 1711,
+      "mainService": "Serology",
+      "serviceName": "FREE T3 (FREE TRI IODOTHYRONINE)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 1712,
+      "mainService": "Serology",
+      "serviceName": "FREE T4 (THYROXIN)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 1713,
+      "mainService": "Microbiology",
+      "serviceName": "FUNGAL STAIN",
+      "amount": 250
+    },
+    {
+      "serialNumber": 1714,
+      "mainService": "Biochemistry",
+      "serviceName": "GLUCOSE TOLERANCE TEST (GTT)",
+      "amount": 300
+    },
+    {
+      "serialNumber": 1715,
+      "mainService": "Serology",
+      "serviceName": "H1N1 INFUENZA PCR",
+      "amount": 5000
+    },
+    {
+      "serialNumber": 1716,
+      "mainService": "Biochemistry",
+      "serviceName": "HbA1c",
+      "amount": 600
+    },
+    {
+      "serialNumber": 1717,
+      "mainService": "Immunology",
+      "serviceName": "HBV DNA PCR",
+      "amount": 3500
+    },
+    {
+      "serialNumber": 1718,
+      "mainService": "Immunology",
+      "serviceName": "HBV DNA QUANTITATIVE",
+      "amount": 5200
+    },
+    {
+      "serialNumber": 1719,
+      "mainService": "Haematology",
+      "serviceName": "HIV VIRAL LOAD BY REAL TIME PCR",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 1720,
+      "mainService": "Haematology",
+      "serviceName": "HCV VIRAL LOAD REAL TIME PCR",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 1721,
+      "mainService": "Biochemistry",
+      "serviceName": "Hepatitis E Virus IgM Antibodies",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 1722,
+      "mainService": "Serology",
+      "serviceName": "CRP",
+      "amount": 250
+    },
+    {
+      "serialNumber": 1723,
+      "mainService": "Serology",
+      "serviceName": "HIV-1 ANTIBODIES (WESTERN BLOT)",
+      "amount": 3200
+    },
+    {
+      "serialNumber": 1724,
+      "mainService": "Immunology",
+      "serviceName": "HLA B 27",
+      "amount": 3000
+    },
+    {
+      "serialNumber": 1726,
+      "mainService": "Biochemistry",
+      "serviceName": "IONIZED CALCIUM",
+      "amount": 800
+    },
+    {
+      "serialNumber": 1727,
+      "mainService": "Urine examination",
+      "serviceName": "KETONE BODIES/ACETONE",
+      "amount": 100
+    },
+    {
+      "serialNumber": 1729,
+      "mainService": "Biochemistry",
+      "serviceName": "LDH (LACTATE DEHYDEROGENASE) SERUM",
+      "amount": 500
+    },
+    {
+      "serialNumber": 1730,
+      "mainService": "Haematology",
+      "serviceName": "L D L CHOLESTEROL",
+      "amount": 50
+    },
+    {
+      "serialNumber": 1731,
+      "mainService": "Serology",
+      "serviceName": "LUPUS ANTI COOGULANT SCREENING PROFILE",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 1732,
+      "mainService": "Serology",
+      "serviceName": "LH (LUTEINISING HORMONE)",
+      "amount": 500
+    },
+    {
+      "serialNumber": 1733,
+      "mainService": "Serology",
+      "serviceName": "MATERNAL SERUM SCREEN 3; TRIPLE TEST",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 1734,
+      "mainService": "Haematology",
+      "serviceName": "MONTOX TEST",
+      "amount": 350
+    },
+    {
+      "serialNumber": 1735,
+      "mainService": "Haematology",
+      "serviceName": "MP(CARD)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 1736,
+      "mainService": "Microbiology",
+      "serviceName": "MTB CULTURE",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 1737,
+      "mainService": "Microbiology",
+      "serviceName": "BRONCHIAL FLUID FOR ROUTINE MICROSCOPE",
+      "amount": 400
+    },
+    {
+      "serialNumber": 1738,
+      "mainService": "Immunology",
+      "serviceName": "MYOGLOBLIN FOR SERUM",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 1739,
+      "mainService": "Immunology",
+      "serviceName": "OLIGOCLONAL BANDS ( CSF)",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 1740,
+      "mainService": "Haematology",
+      "serviceName": "OSMOTIC FRAGSTITY",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 1741,
+      "mainService": "Serology",
+      "serviceName": "PARATHYROID HORMONE",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 1742,
+      "mainService": "Haematology",
+      "serviceName": "MTB PCR (ANY SAMPLE)",
+      "amount": 800
+    },
+    {
+      "serialNumber": 1744,
+      "mainService": "Haematology",
+      "serviceName": "PERIPHERAL SMEAR (GBP)",
+      "amount": 200
+    },
+    {
+      "serialNumber": 1745,
+      "mainService": "Biochemistry",
+      "serviceName": "PERITONIAL FLUID EXAMINATION",
+      "amount": 600
+    },
+    {
+      "serialNumber": 1748,
+      "mainService": "Microbiology",
+      "serviceName": "PLEURAL FLUID FOR A.F.B.",
+      "amount": 200
+    },
+    {
+      "serialNumber": 1749,
+      "mainService": "Haematology",
+      "serviceName": "PRO BNP",
+      "amount": 3500
+    },
+    {
+      "serialNumber": 1750,
+      "mainService": "Haematology",
+      "serviceName": "PROSTATE SPECIFIC ANTIGEN",
+      "amount": 800
+    },
+    {
+      "serialNumber": 1751,
+      "mainService": "Haematology",
+      "serviceName": "PROTEIN / CREATININE RATIO",
+      "amount": 500
+    },
+    {
+      "serialNumber": 1954,
+      "mainService": "Microbiology",
+      "serviceName": "KOH PREPARATION FOR FUNGUS",
+      "amount": 260
+    },
+    {
+      "serialNumber": 1955,
+      "mainService": "Microbiology",
+      "serviceName": "CONJUCTIVAL SWAB CULTURE & SENSTIVITY - CONVENTIONAL",
+      "amount": 600
+    },
+    {
+      "serialNumber": 1957,
+      "mainService": "Microbiology",
+      "serviceName": "PUS CULTURE & SENSTIVITY CONVENTIONAL",
+      "amount": 625
+    },
+    {
+      "serialNumber": 1958,
+      "mainService": "Microbiology",
+      "serviceName": "SPUTUM CULTURE & SENSITIVITY - CONVENTIONAL",
+      "amount": 710
+    },
+    {
+      "serialNumber": 1960,
+      "mainService": "Microbiology",
+      "serviceName": "VAGINAL SWAB, AEROBIC CULTURE & SENSITIVITY - CONVENTIONAL",
+      "amount": 620
+    },
+    {
+      "serialNumber": 1961,
+      "mainService": "Microbiology",
+      "serviceName": "PERITONEAL FLUID CULTURE & SENSITIVITY",
+      "amount": 625
+    },
+    {
+      "serialNumber": 1962,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM- CREATININE",
+      "amount": 130
+    },
+    {
+      "serialNumber": 1964,
+      "mainService": "Biochemistry",
+      "serviceName": "(RBS) RANDOM BLOOD SUGAR",
+      "amount": 85
+    },
+    {
+      "serialNumber": 1967,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM  TOTAL -CHOLESTEROL",
+      "amount": 170
+    },
+    {
+      "serialNumber": 1974,
+      "mainService": "Biochemistry",
+      "serviceName": "PHOSPHOROUS - SERUM",
+      "amount": 150
+    },
+    {
+      "serialNumber": 1981,
+      "mainService": "Microbiology",
+      "serviceName": "CSF CULTURE & SENSTIVITY - AUTOMATED",
+      "amount": 620
+    },
+    {
+      "serialNumber": 1982,
+      "mainService": "Haematology",
+      "serviceName": "ABSOLUTE EOSINOPHILE COUNT (AEC)",
+      "amount": 140
+    },
+    {
+      "serialNumber": 1986,
+      "mainService": "Serology",
+      "serviceName": "DENGUE ANTIBODY (IgM & IgG- FIA)",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 1987,
+      "mainService": "Serology",
+      "serviceName": "HIV I & II BY ELISA/CLIA",
+      "amount": 700
+    },
+    {
+      "serialNumber": 1988,
+      "mainService": "Serology",
+      "serviceName": "RA - FACTOR (RHEUMATOID FACTOR)  - QUALITATIVE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 1992,
+      "mainService": "Urine examination",
+      "serviceName": "24 HOUR URINE -PROTEIN",
+      "amount": 245
+    },
+    {
+      "serialNumber": 2159,
+      "mainService": "Histopathology",
+      "serviceName": "BIOPSY SMALL",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2160,
+      "mainService": "Histopathology",
+      "serviceName": "BIOPSY LARGE",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 2163,
+      "mainService": "Biochemistry",
+      "serviceName": "BILIRUBIN DIRECT",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2164,
+      "mainService": "Biochemistry",
+      "serviceName": "G6PD SCREENING",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2165,
+      "mainService": "Serology",
+      "serviceName": "HCV (Hepatitis C)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2166,
+      "mainService": "Biochemistry",
+      "serviceName": "TROP-T",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 2168,
+      "mainService": "Biochemistry",
+      "serviceName": "VITAMIN B-12",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2171,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM POTASSIUM",
+      "amount": 300
+    },
+    {
+      "serialNumber": 2175,
+      "mainService": "Serology",
+      "serviceName": "ANTI CCP -",
+      "amount": 1800
+    },
+    {
+      "serialNumber": 2393,
+      "mainService": "Microbiology",
+      "serviceName": "WOUND CULTURE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2394,
+      "mainService": "Biochemistry",
+      "serviceName": "AMH (Anti Mullerian hormone)",
+      "amount": 2100
+    },
+    {
+      "serialNumber": 2395,
+      "mainService": "Microbiology",
+      "serviceName": "TISSUE CULTURE & SENSITIVITY.",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2396,
+      "mainService": "Serology",
+      "serviceName": "B",
+      "amount": 1
+    },
+    {
+      "serialNumber": 2397,
+      "mainService": "Urine examination",
+      "serviceName": "URINE PROTEIN CREATININE RATIO",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2398,
+      "mainService": "Microbiology",
+      "serviceName": "ASPIRATED FLUID CULTURE & SENSITIVITY",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2401,
+      "mainService": "Microbiology",
+      "serviceName": "CB-NAAT",
+      "amount": 3500
+    },
+    {
+      "serialNumber": 2402,
+      "mainService": "Microbiology",
+      "serviceName": "ASPIRATION MATERIAL CULTURE AND SENSITIVITY",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2405,
+      "mainService": "Serology",
+      "serviceName": "HAV (Hepatitis A TOTAL)",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 2406,
+      "mainService": "Biochemistry",
+      "serviceName": "HAV -IGM (Hepatitis A )",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 2407,
+      "mainService": "Urine examination",
+      "serviceName": "URINE PREGNANCY TEST.",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2408,
+      "mainService": "Serology",
+      "serviceName": "AUTOIMMUNE ENCEPHALITIS PANEL",
+      "amount": 19000
+    },
+    {
+      "serialNumber": 2409,
+      "mainService": "Biochemistry",
+      "serviceName": "CSF (CEREBROSPINE FLUID )",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 2410,
+      "mainService": "Urine examination",
+      "serviceName": "UNINARY COPPER",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 2411,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM LACTATE",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 2439,
+      "mainService": "Biochemistry",
+      "serviceName": "AMMONIA TEST",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2440,
+      "mainService": "Serology",
+      "serviceName": "CRP QUANTITATIVE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2449,
+      "mainService": "Biochemistry",
+      "serviceName": "HOMOCYSTEINE.",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 2450,
+      "mainService": "Biochemistry",
+      "serviceName": "PERITONEAL FLUID EXAMINATION",
+      "amount": 1100
+    },
+    {
+      "serialNumber": 2451,
+      "mainService": "Immunology",
+      "serviceName": "ADA FOR PERITONEAL",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2452,
+      "mainService": "Microbiology",
+      "serviceName": "PERITONEAL FLUID FOR AFB",
+      "amount": 210
+    },
+    {
+      "serialNumber": 2455,
+      "mainService": "Biochemistry",
+      "serviceName": "URINE SPOT SODIUM",
+      "amount": 300
+    },
+    {
+      "serialNumber": 2460,
+      "mainService": "Haematology",
+      "serviceName": "PS FOR COMMENTS",
+      "amount": 200
+    },
+    {
+      "serialNumber": 2463,
+      "mainService": "Immunology",
+      "serviceName": "ADA FOR CSF",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2464,
+      "mainService": "Microbiology",
+      "serviceName": "CSF FLUID FOR AFB",
+      "amount": 210
+    },
+    {
+      "serialNumber": 2465,
+      "mainService": "Microbiology",
+      "serviceName": "CSF FLUID FOR GRAM",
+      "amount": 200
+    },
+    {
+      "serialNumber": 2466,
+      "mainService": "Immunology",
+      "serviceName": "ADA FOR ASCITIC",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2467,
+      "mainService": "Histopathology",
+      "serviceName": "CYTOLOGY -ASCITIC FLUID",
+      "amount": 785
+    },
+    {
+      "serialNumber": 2468,
+      "mainService": "Histopathology",
+      "serviceName": "ASCITIC FLUID FOR AFB",
+      "amount": 210
+    },
+    {
+      "serialNumber": 2469,
+      "mainService": "Histopathology",
+      "serviceName": "ASCITIC FLUID FOR GRAM STAIN",
+      "amount": 210
+    },
+    {
+      "serialNumber": 2523,
+      "mainService": "UROLOGY",
+      "serviceName": "Dilatation of Stricture Urethra",
+      "amount": 10000
+    },
+    {
+      "serialNumber": 2524,
+      "mainService": "UROLOGY",
+      "serviceName": "DJ Stent Removal under GA",
+      "amount": 8000
+    },
+    {
+      "serialNumber": 2525,
+      "mainService": "UROLOGY",
+      "serviceName": "Cystoscopy + DJ Stenting - Unilateral",
+      "amount": 18800
+    },
+    {
+      "serialNumber": 2526,
+      "mainService": "UROLOGY",
+      "serviceName": "Cystoscopy + DJ Stenting - Bilateral",
+      "amount": 24400
+    },
+    {
+      "serialNumber": 2527,
+      "mainService": "UROLOGY",
+      "serviceName": "ESWL Upto 2.0 cm Rs. 1000/mm there after",
+      "amount": 10000
+    },
+    {
+      "serialNumber": 2528,
+      "mainService": "UROLOGY",
+      "serviceName": "URSL+DJ Stenting-Unilateral",
+      "amount": 18800
+    },
+    {
+      "serialNumber": 2529,
+      "mainService": "UROLOGY",
+      "serviceName": "Nephrectomy (Simple)",
+      "amount": 33800
+    },
+    {
+      "serialNumber": 2530,
+      "mainService": "UROLOGY",
+      "serviceName": "Operation for Torsion of Testis",
+      "amount": 13500
+    },
+    {
+      "serialNumber": 2532,
+      "mainService": "UROLOGY",
+      "serviceName": "Cystoscopy+PCNL+Dj Stenting - Bilateral",
+      "amount": 31500
+    },
+    {
+      "serialNumber": 2534,
+      "mainService": "UROLOGY",
+      "serviceName": "Cystoscopy + RIRS+Dj Stenting-Bilateral",
+      "amount": 47300
+    },
+    {
+      "serialNumber": 2536,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP (Non laser)",
+      "amount": 26300
+    },
+    {
+      "serialNumber": 2537,
+      "mainService": "UROLOGY",
+      "serviceName": "TURP (HoLEP)",
+      "amount": 34100
+    },
+    {
+      "serialNumber": 2538,
+      "mainService": "UROLOGY",
+      "serviceName": "Meatotomy (Day care)",
+      "amount": 13000
+    },
+    {
+      "serialNumber": 2539,
+      "mainService": "UROLOGY",
+      "serviceName": "Orchidectomy - Unilateral",
+      "amount": 15000
+    },
+    {
+      "serialNumber": 2540,
+      "mainService": "UROLOGY",
+      "serviceName": "Orchidectomy - Bilateral",
+      "amount": 22500
+    },
+    {
+      "serialNumber": 2541,
+      "mainService": "UROLOGY",
+      "serviceName": "Regular Reuse Haemodialysis",
+      "amount": 1400
+    },
+    {
+      "serialNumber": 2542,
+      "mainService": "UROLOGY",
+      "serviceName": "Regular Single Use (New Dialyzer) Dialysis",
+      "amount": 1800
+    },
+    {
+      "serialNumber": 2543,
+      "mainService": "Serology",
+      "serviceName": "ENTEROCHECK-WB",
+      "amount": 550
+    },
+    {
+      "serialNumber": 2544,
+      "mainService": "Serology",
+      "serviceName": "SYPHICHECK-WB",
+      "amount": 300
+    },
+    {
+      "serialNumber": 2545,
+      "mainService": "Biochemistry",
+      "serviceName": "ANTI HBC TOTAL",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 2546,
+      "mainService": "Microbiology",
+      "serviceName": "COVID RTPCR",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2551,
+      "mainService": "Immunology",
+      "serviceName": "ADA FOR PLEURAL FLUID",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2552,
+      "mainService": "Histopathology",
+      "serviceName": "PLEURAL  FLUID FOR GRAM STAIN",
+      "amount": 210
+    },
+    {
+      "serialNumber": 2554,
+      "mainService": "Biochemistry",
+      "serviceName": "URINE FOR MYOGLOBIN",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 2555,
+      "mainService": "Microbiology",
+      "serviceName": "SPUTUM  FOR FUNGUS",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2563,
+      "mainService": "Serology",
+      "serviceName": "CHIKUNGUNYA IGM",
+      "amount": 950
+    },
+    {
+      "serialNumber": 2564,
+      "mainService": "Serology",
+      "serviceName": "CHIKUNGUNYA IGG",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2565,
+      "mainService": "Biochemistry",
+      "serviceName": "TROP-I\n(Colloidal Gold)\n(Immunochromatography)",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 2566,
+      "mainService": "Immunology",
+      "serviceName": "ANTI DS DNA",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2567,
+      "mainService": "Immunology",
+      "serviceName": "SERUM CORTISOL.",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2568,
+      "mainService": "Biochemistry",
+      "serviceName": "MLPA",
+      "amount": 7500
+    },
+    {
+      "serialNumber": 2569,
+      "mainService": "Serology",
+      "serviceName": "COMPLEMENT 3 (C3)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2570,
+      "mainService": "Microbiology",
+      "serviceName": "CRYPTOCOCCAL ANTIGEN",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 2571,
+      "mainService": "Microbiology",
+      "serviceName": "CRYPTOCOCCUS (INDIA-INK STAINING)",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2581,
+      "mainService": "Immunology",
+      "serviceName": "IgE Total",
+      "amount": 950
+    },
+    {
+      "serialNumber": 2582,
+      "mainService": "Serology",
+      "serviceName": "IL-6 (INTERLEUKIN)",
+      "amount": 2600
+    },
+    {
+      "serialNumber": 2583,
+      "mainService": "Microbiology",
+      "serviceName": "ANCILLARY CHARGES",
+      "amount": 1300
+    },
+    {
+      "serialNumber": 2585,
+      "mainService": "Serology",
+      "serviceName": "LEPTOSPIRA IgM.",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2586,
+      "mainService": "Microbiology",
+      "serviceName": "COVID ANTIGEN",
+      "amount": 200
+    },
+    {
+      "serialNumber": 2587,
+      "mainService": "Microbiology",
+      "serviceName": "SWAB CULTURE FOR SKIN SIDE",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2678,
+      "mainService": "UROLOGY",
+      "serviceName": "PCNL- UNILATERAL",
+      "amount": 52000
+    },
+    {
+      "serialNumber": 2679,
+      "mainService": "UROLOGY",
+      "serviceName": "PCNL- BILATERAL",
+      "amount": 58500
+    },
+    {
+      "serialNumber": 2680,
+      "mainService": "UROLOGY",
+      "serviceName": "PYELOPLASTY OPEN UNILATERAL",
+      "amount": 45500
+    },
+    {
+      "serialNumber": 2681,
+      "mainService": "UROLOGY",
+      "serviceName": "PYELOPLASTY OPEN BILATERAL",
+      "amount": 52000
+    },
+    {
+      "serialNumber": 2682,
+      "mainService": "UROLOGY",
+      "serviceName": "PYELOPLASTY LAP BILATERAL",
+      "amount": 58500
+    },
+    {
+      "serialNumber": 2683,
+      "mainService": "UROLOGY",
+      "serviceName": "TRANSURETHRAL RESECTION OF PROSTATE (TURP)",
+      "amount": 52000
+    },
+    {
+      "serialNumber": 2684,
+      "mainService": "UROLOGY",
+      "serviceName": "BIPOLAR TURP/TURIS/PLASMA VAPORIZATION",
+      "amount": 60000
+    },
+    {
+      "serialNumber": 2685,
+      "mainService": "UROLOGY",
+      "serviceName": "HOLEP/GREEN LASER PROSTECTOMY",
+      "amount": 84500
+    },
+    {
+      "serialNumber": 2686,
+      "mainService": "UROLOGY",
+      "serviceName": "THERAPEUTIC CYSTOSCOPY",
+      "amount": 19000
+    },
+    {
+      "serialNumber": 2687,
+      "mainService": "UROLOGY",
+      "serviceName": "CYSTOSCOPY + URSL WITH   DJ STENTING",
+      "amount": 52000
+    },
+    {
+      "serialNumber": 2688,
+      "mainService": "UROLOGY",
+      "serviceName": "LAP NEPHRECTOMY",
+      "amount": 91000
+    },
+    {
+      "serialNumber": 2689,
+      "mainService": "UROLOGY",
+      "serviceName": "ORCHIDECTOMY-UNILATERAL",
+      "amount": 32500
+    },
+    {
+      "serialNumber": 2690,
+      "mainService": "UROLOGY",
+      "serviceName": "ORCHIDECTOMY-BILATERAL",
+      "amount": 39000
+    },
+    {
+      "serialNumber": 2691,
+      "mainService": "UROLOGY",
+      "serviceName": "ESWL",
+      "amount": 32500
+    },
+    {
+      "serialNumber": 2692,
+      "mainService": "UROLOGY",
+      "serviceName": "THERAPEUTIC URS UNILATERAL",
+      "amount": 32500
+    },
+    {
+      "serialNumber": 2693,
+      "mainService": "UROLOGY",
+      "serviceName": "THERAPEUTIC URS- BILATERAL",
+      "amount": 39000
+    },
+    {
+      "serialNumber": 2694,
+      "mainService": "UROLOGY",
+      "serviceName": "URS LASER LITHOTRIPSY-UNILATERAL",
+      "amount": 55000
+    },
+    {
+      "serialNumber": 2695,
+      "mainService": "UROLOGY",
+      "serviceName": "URS LASER LITHOTRIPSY-BILATERAL",
+      "amount": 67000
+    },
+    {
+      "serialNumber": 2696,
+      "mainService": "UROLOGY",
+      "serviceName": "RETROGRADE INTRARENAL SURGERY (RIRS)+DJ STENTING -UNILATERAL",
+      "amount": 56000
+    },
+    {
+      "serialNumber": 2697,
+      "mainService": "UROLOGY",
+      "serviceName": "Retrograde Intrarenal Surgery (RIRS)+DJ Stenting -Bilateral",
+      "amount": 62000
+    },
+    {
+      "serialNumber": 2698,
+      "mainService": "UROLOGY",
+      "serviceName": "SURGERY FOR STAGHORN CALCULUS, NEPHROLITHOTOMY & PYLOLITHOTOMY",
+      "amount": 65000
+    },
+    {
+      "serialNumber": 2699,
+      "mainService": "UROLOGY",
+      "serviceName": "UV FISTULA REPAIR",
+      "amount": 52000
+    },
+    {
+      "serialNumber": 2700,
+      "mainService": "UROLOGY",
+      "serviceName": "URETHROPLASTY/VIU",
+      "amount": 45500
+    },
+    {
+      "serialNumber": 2716,
+      "mainService": "Immunology",
+      "serviceName": "ENA PROFILE QUANTITATIVE",
+      "amount": 11000
+    },
+    {
+      "serialNumber": 2721,
+      "mainService": "Biochemistry",
+      "serviceName": "CSF MEASLES IGG",
+      "amount": 2800
+    },
+    {
+      "serialNumber": 2722,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM MEASLES IGG",
+      "amount": 2800
+    },
+    {
+      "serialNumber": 2723,
+      "mainService": "Bacteriology",
+      "serviceName": "PUS FOR AFB",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2724,
+      "mainService": "Serology",
+      "serviceName": "COVID ANTIBODY IgG",
+      "amount": 1700
+    },
+    {
+      "serialNumber": 2726,
+      "mainService": "Serology",
+      "serviceName": "RA-FACTOR (QUANTITATIVE)",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2727,
+      "mainService": "Biochemistry",
+      "serviceName": "SEMEN ANALYSIS.",
+      "amount": 200
+    },
+    {
+      "serialNumber": 2738,
+      "mainService": "Biochemistry",
+      "serviceName": "PLASMA METANEPHRINES",
+      "amount": 3000
+    },
+    {
+      "serialNumber": 2739,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM ALDESTRONE",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 2743,
+      "mainService": "Serology",
+      "serviceName": "COMPLEMENT 4 (C4)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2744,
+      "mainService": "Serology",
+      "serviceName": "Anti ds-DNA Antibody",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2745,
+      "mainService": "Serology",
+      "serviceName": "LEPTOSPIRA IgG.",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2746,
+      "mainService": "Immunology",
+      "serviceName": "SCRUB TYPHUS",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 2747,
+      "mainService": "Immunology",
+      "serviceName": "WEIL FELIX  TEST",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2748,
+      "mainService": "Immunology",
+      "serviceName": "HSV PCR",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 2750,
+      "mainService": "Microbiology",
+      "serviceName": "ET SECRETION GRAM STAIN",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2751,
+      "mainService": "Microbiology",
+      "serviceName": "TRACHEAL SECRETION  FOR AFB",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2752,
+      "mainService": "Microbiology",
+      "serviceName": "LIVER ASPIRATION R/M & CS",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2753,
+      "mainService": "Microbiology",
+      "serviceName": "SURGICAL SERUM ASPIRATION R/M & CS",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2755,
+      "mainService": "Microbiology",
+      "serviceName": "BRONCHIAL FLUID FOR CULTURE AND SENSITIVITY",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2756,
+      "mainService": "Microbiology",
+      "serviceName": "BRONCHIAL FLUID FOR GRAM STAIN",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2757,
+      "mainService": "Microbiology",
+      "serviceName": "BRONCHIAL FLUID FOR AFB",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2758,
+      "mainService": "Haematology",
+      "serviceName": "TONGUE SMEAR GRAM STAIN",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2759,
+      "mainService": "Microbiology",
+      "serviceName": "TONGUE CULTURE & SENSTIVITY",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2761,
+      "mainService": "Urine examination",
+      "serviceName": "URINE POTASSIUM",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2762,
+      "mainService": "Haematology",
+      "serviceName": "CD3/CD4/CD8",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2763,
+      "mainService": "Immunology",
+      "serviceName": "ANTI HBe ANTIBODY",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2768,
+      "mainService": "Biochemistry",
+      "serviceName": "AMYLASE (BODY FLUID)",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2772,
+      "mainService": "Immunology",
+      "serviceName": "PLAP(PLACENTAL ALKALINE PHOSPHATASE)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2776,
+      "mainService": "Immunology",
+      "serviceName": "HOMOCYSTEINE LEVEL",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2777,
+      "mainService": "Immunology",
+      "serviceName": "LUPUS ANTICOAGULANT.",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2778,
+      "mainService": "Immunology",
+      "serviceName": "PROTIEN S",
+      "amount": 1700
+    },
+    {
+      "serialNumber": 2779,
+      "mainService": "Immunology",
+      "serviceName": "PROTIEN C",
+      "amount": 1700
+    },
+    {
+      "serialNumber": 2780,
+      "mainService": "Immunology",
+      "serviceName": "FACTOR V MUTATION",
+      "amount": 2700
+    },
+    {
+      "serialNumber": 2782,
+      "mainService": "Urine examination",
+      "serviceName": "URINE FOR FAT GLOBULIN",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2786,
+      "mainService": "Serology",
+      "serviceName": "C-ANCA",
+      "amount": 2250
+    },
+    {
+      "serialNumber": 2788,
+      "mainService": "Microbiology",
+      "serviceName": "DRAIN  TIP CULTURE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2789,
+      "mainService": "Microbiology",
+      "serviceName": "WOUND R/M EXAMINATION",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2790,
+      "mainService": "Haematology",
+      "serviceName": "PS FOR MALIGNANT CELL",
+      "amount": 3000
+    },
+    {
+      "serialNumber": 2793,
+      "mainService": "Immunology",
+      "serviceName": "PCR-ABL",
+      "amount": 8000
+    },
+    {
+      "serialNumber": 2795,
+      "mainService": "Microbiology",
+      "serviceName": "PUS R/M EXAMINATION",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2796,
+      "mainService": "Serology",
+      "serviceName": "ANTI BETA 2 GLYCOPROTEIN IgM",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2797,
+      "mainService": "Serology",
+      "serviceName": "ANTI CARDIOLIPIN ANTIBODY IgM",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2802,
+      "mainService": "Immunology",
+      "serviceName": "SERUM iPTH.",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 2884,
+      "mainService": "Microbiology",
+      "serviceName": "ENDOTRACHEAL TUBE TIP CULTURE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2885,
+      "mainService": "Histopathology",
+      "serviceName": "RT. PELVIC LYMPH NODES",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2886,
+      "mainService": "Histopathology",
+      "serviceName": "LT. PELVIC LYMPH NODES",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2887,
+      "mainService": "Histopathology",
+      "serviceName": "WERTHEIM HYSTERECTOMY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2889,
+      "mainService": "Microbiology",
+      "serviceName": "PUS GRAM STAIN",
+      "amount": 210
+    },
+    {
+      "serialNumber": 2891,
+      "mainService": "Microbiology",
+      "serviceName": "BRAIN FLUID CULTURE & SENSITIVITY",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2896,
+      "mainService": "Biochemistry",
+      "serviceName": "URINE OSMOLALITY",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2897,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM OSMOLALITY",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2899,
+      "mainService": "Biochemistry",
+      "serviceName": "TSH (ULTRASENSITIVE",
+      "amount": 200
+    },
+    {
+      "serialNumber": 2900,
+      "mainService": "Histopathology",
+      "serviceName": "ACCESSORY BREAST TISSUE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2901,
+      "mainService": "Histopathology",
+      "serviceName": "HEMI THYROIDECTOMY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2904,
+      "mainService": "Histopathology",
+      "serviceName": "CT GUIDED BIOPSY",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2907,
+      "mainService": "Microbiology",
+      "serviceName": "TESTICULAR CORD TISSUE CULTURE & SENSITIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2908,
+      "mainService": "Microbiology",
+      "serviceName": "RIGHT DRAIN FLUID",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2909,
+      "mainService": "Microbiology",
+      "serviceName": "LEFT DRAIN FLUID",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2910,
+      "mainService": "Histopathology",
+      "serviceName": "IHC MARKER",
+      "amount": 8000
+    },
+    {
+      "serialNumber": 2911,
+      "mainService": "Biochemistry",
+      "serviceName": "BODY FLUID FOR LIPASE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2912,
+      "mainService": "Immunology",
+      "serviceName": "MAGNESIUM HPLC",
+      "amount": 550
+    },
+    {
+      "serialNumber": 2914,
+      "mainService": "Biochemistry",
+      "serviceName": "SAAG CALCULATION",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2921,
+      "mainService": "Microbiology",
+      "serviceName": "BAl FLUID ROUTINE MICROSCOPY",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2922,
+      "mainService": "Microbiology",
+      "serviceName": "BAl FLUID AFB",
+      "amount": 210
+    },
+    {
+      "serialNumber": 2923,
+      "mainService": "Microbiology",
+      "serviceName": "BAl FLUID CULTURE AND SENSITIVITY",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2924,
+      "mainService": "Biochemistry",
+      "serviceName": "BAl FLUID ADA",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2925,
+      "mainService": "Microbiology",
+      "serviceName": "BAl FLUID AFB STAIN",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2926,
+      "mainService": "Microbiology",
+      "serviceName": "BAl FLUID  GRAM STAIN",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2927,
+      "mainService": "Microbiology",
+      "serviceName": "BAL FLUID FOR AFB CULTURE AND SENSITIVITY",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2928,
+      "mainService": "Microbiology",
+      "serviceName": "BAL FLUID FOR GRAM STAIN  CULTURE AND SENSITIVITY",
+      "amount": 100
+    },
+    {
+      "serialNumber": 2929,
+      "mainService": "Microbiology",
+      "serviceName": "PLEURAL FLUID FOR TB CULTURE",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 2930,
+      "mainService": "Microbiology",
+      "serviceName": "BAL FLUID FOR CB-NET",
+      "amount": 3500
+    },
+    {
+      "serialNumber": 2931,
+      "mainService": "Microbiology",
+      "serviceName": "BAl FLUID FOR CYTOLOGY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2932,
+      "mainService": "Histopathology",
+      "serviceName": "TISSUE ROUTINE MICROSCOPIC",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2933,
+      "mainService": "Microbiology",
+      "serviceName": "WOUND TISSUE CULTURE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2935,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM PLA2 R ANTIBODY QUANTITATIVE",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 2936,
+      "mainService": "Immunology",
+      "serviceName": "HSV 1&2 DNA QUANTITATIVE PCR",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 2937,
+      "mainService": "Microbiology",
+      "serviceName": "FLUID FOR ADA",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2938,
+      "mainService": "Microbiology",
+      "serviceName": "FLUID FOR CULTURE AND SENSITIVITY",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2939,
+      "mainService": "Biochemistry",
+      "serviceName": "FLUID FOR ROUTINE EXAMINATION",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2940,
+      "mainService": "Immunology",
+      "serviceName": "FLUID FOR BLISTER",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2941,
+      "mainService": "Serology",
+      "serviceName": "TESTOSTERONE - TOTAL",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2943,
+      "mainService": "Microbiology",
+      "serviceName": "CYSTIC FLUID FOR CULTURE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2944,
+      "mainService": "Microbiology",
+      "serviceName": "ABDOMINAL FLUID CULTURE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2945,
+      "mainService": "Microbiology",
+      "serviceName": "DRAIN CULTURE",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2946,
+      "mainService": "Histopathology",
+      "serviceName": "IHC FOR ER/PR/HER/KI67",
+      "amount": 5000
+    },
+    {
+      "serialNumber": 2947,
+      "mainService": "Biochemistry",
+      "serviceName": "CSF NOSE SIDE FLUID",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2948,
+      "mainService": "Biochemistry",
+      "serviceName": "BILE FLUID EXAMINATION",
+      "amount": 600
+    },
+    {
+      "serialNumber": 2949,
+      "mainService": "Biochemistry",
+      "serviceName": "BILE FLUID FOR ADA",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2950,
+      "mainService": "Microbiology",
+      "serviceName": "AEROBIC SPUTUM CULTURE",
+      "amount": 700
+    },
+    {
+      "serialNumber": 2951,
+      "mainService": "Microbiology",
+      "serviceName": "AEROBIC, ANAEROBIC AND FUNGAL CULTURE",
+      "amount": 3200
+    },
+    {
+      "serialNumber": 2956,
+      "mainService": "Urine examination",
+      "serviceName": "URINE CALCIUM",
+      "amount": 200
+    },
+    {
+      "serialNumber": 2957,
+      "mainService": "Urine examination",
+      "serviceName": "URINE CHLORIDE",
+      "amount": 200
+    },
+    {
+      "serialNumber": 2958,
+      "mainService": "Haematology",
+      "serviceName": "ADRENO CORTICOTROPHIC HORMONEACTH (ACTH).",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2959,
+      "mainService": "Biochemistry",
+      "serviceName": "URINE CORTISOL",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2960,
+      "mainService": "Microbiology",
+      "serviceName": "CBD FLUID CULTURE & SENSITIVITY",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2964,
+      "mainService": "Biochemistry",
+      "serviceName": "ERYTHROPOIETIN",
+      "amount": 1000
+    },
+    {
+      "serialNumber": 2965,
+      "mainService": "Biochemistry",
+      "serviceName": "JAK2 MUTATION DETECTION PCR",
+      "amount": 7500
+    },
+    {
+      "serialNumber": 2968,
+      "mainService": "Biochemistry",
+      "serviceName": "AMA-M2",
+      "amount": 3400
+    },
+    {
+      "serialNumber": 2970,
+      "mainService": "Immunology",
+      "serviceName": "TSH RECEPTOR ANTIBODY",
+      "amount": 2200
+    },
+    {
+      "serialNumber": 2975,
+      "mainService": "Microbiology",
+      "serviceName": "INFLUENZA PANEL",
+      "amount": 9800
+    },
+    {
+      "serialNumber": 2976,
+      "mainService": "Immunology",
+      "serviceName": "NMO (NEUROMYELITIS OPTICA)",
+      "amount": 9800
+    },
+    {
+      "serialNumber": 2977,
+      "mainService": "Biochemistry",
+      "serviceName": "ANTI MEASELS ANTIBODY IgG",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 2978,
+      "mainService": "Biochemistry",
+      "serviceName": "MOTILITY",
+      "amount": 50
+    },
+    {
+      "serialNumber": 2979,
+      "mainService": "Biochemistry",
+      "serviceName": "DUAL MARKER.",
+      "amount": 1600
+    },
+    {
+      "serialNumber": 2981,
+      "mainService": "Serology",
+      "serviceName": "HEPATITIS C VIRUS (HCV ANTIBODY) ELISA",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2983,
+      "mainService": "Biochemistry",
+      "serviceName": "INSULIN LEVEL",
+      "amount": 400
+    },
+    {
+      "serialNumber": 2984,
+      "mainService": "Microbiology",
+      "serviceName": "AFB CULTURE",
+      "amount": 800
+    },
+    {
+      "serialNumber": 2988,
+      "mainService": "Biochemistry",
+      "serviceName": "MICRO PROTEIN URINE (RANDOM)",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2990,
+      "mainService": "Biochemistry",
+      "serviceName": "SPINAL FLUID",
+      "amount": 500
+    },
+    {
+      "serialNumber": 2991,
+      "mainService": "Immunology",
+      "serviceName": "Immunoglobulin G (IgG)",
+      "amount": 550
+    },
+    {
+      "serialNumber": 2993,
+      "mainService": "Serology",
+      "serviceName": "HBcAg",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 2995,
+      "mainService": "Biochemistry",
+      "serviceName": "CSF NEURO VIRUS PANEL",
+      "amount": 13000
+    },
+    {
+      "serialNumber": 2996,
+      "mainService": "Biochemistry",
+      "serviceName": "CSF TB PCR",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 2997,
+      "mainService": "Biochemistry",
+      "serviceName": "CSF NMO MUG PANEL",
+      "amount": 12500
+    },
+    {
+      "serialNumber": 2998,
+      "mainService": "Serology",
+      "serviceName": "DENGUE PROFILE ELISA",
+      "amount": 1700
+    },
+    {
+      "serialNumber": 2999,
+      "mainService": "Microbiology",
+      "serviceName": "SEPTICEMIA BY SEQUENCING",
+      "amount": 11000
+    },
+    {
+      "serialNumber": 3000,
+      "mainService": "Microbiology",
+      "serviceName": "TROPICAL FEVER BY SEQUENCING",
+      "amount": 7000
+    },
+    {
+      "serialNumber": 3002,
+      "mainService": "Biochemistry",
+      "serviceName": "MYELOMA PROFILE",
+      "amount": 4000
+    },
+    {
+      "serialNumber": 3003,
+      "mainService": "Microbiology",
+      "serviceName": "INVOLUCRUM BONE CULTURE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3006,
+      "mainService": "Bacteriology",
+      "serviceName": "VIRAL PANEL",
+      "amount": 100
+    },
+    {
+      "serialNumber": 3007,
+      "mainService": "Bacteriology",
+      "serviceName": "BACTERIAL PANEL",
+      "amount": 100
+    },
+    {
+      "serialNumber": 3008,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM BETA GALACTOMANNAN LEVEL",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 3009,
+      "mainService": "Biochemistry",
+      "serviceName": "Allergy Profile",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 3010,
+      "mainService": "Microbiology",
+      "serviceName": "MOLECULAR GENETIC BCR/ABL QUANTITATIVE RT-PCR",
+      "amount": 6000
+    },
+    {
+      "serialNumber": 3011,
+      "mainService": "Haematology",
+      "serviceName": "SEPSIS PANEL",
+      "amount": 10000
+    },
+    {
+      "serialNumber": 3012,
+      "mainService": "Biochemistry",
+      "serviceName": "FLUID CREATININE",
+      "amount": 130
+    },
+    {
+      "serialNumber": 3013,
+      "mainService": "Biochemistry",
+      "serviceName": "FLUID TRIGLYCERIDE",
+      "amount": 130
+    },
+    {
+      "serialNumber": 3014,
+      "mainService": "Microbiology",
+      "serviceName": "URINE CULTURE MIC",
+      "amount": 800
+    },
+    {
+      "serialNumber": 3015,
+      "mainService": "Microbiology",
+      "serviceName": "ADA FOR SPUTUM",
+      "amount": 700
+    },
+    {
+      "serialNumber": 3018,
+      "mainService": "Biochemistry",
+      "serviceName": "SLA PANEL",
+      "amount": 2200
+    },
+    {
+      "serialNumber": 3019,
+      "mainService": "Microbiology",
+      "serviceName": "ANAEROBIC PUS CULTURE",
+      "amount": 1150
+    },
+    {
+      "serialNumber": 3021,
+      "mainService": "Microbiology",
+      "serviceName": "ANAEROBIC URINE CULTURE",
+      "amount": 800
+    },
+    {
+      "serialNumber": 3022,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM COPPER",
+      "amount": 500
+    },
+    {
+      "serialNumber": 3023,
+      "mainService": "Biochemistry",
+      "serviceName": "SERUM NMO MUJ PANEL",
+      "amount": 7800
+    },
+    {
+      "serialNumber": 3024,
+      "mainService": "Microbiology",
+      "serviceName": "DIALYSIS LINE TIP CULTURE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3026,
+      "mainService": "Biochemistry",
+      "serviceName": "TROP - I QUANTITATIVE",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 3028,
+      "mainService": "Immunology",
+      "serviceName": "HBc -IgM",
+      "amount": 800
+    },
+    {
+      "serialNumber": 3029,
+      "mainService": "Immunology",
+      "serviceName": "HEV IgM",
+      "amount": 900
+    },
+    {
+      "serialNumber": 3030,
+      "mainService": "Microbiology",
+      "serviceName": "C/S AEROBIC URINE - MIC",
+      "amount": 900
+    },
+    {
+      "serialNumber": 3031,
+      "mainService": "Biochemistry",
+      "serviceName": "VITAMIN B6",
+      "amount": 3000
+    },
+    {
+      "serialNumber": 3032,
+      "mainService": "Biochemistry",
+      "serviceName": "GFR (GLOMERULAR FILTRATION RATE)",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3033,
+      "mainService": "Histopathology",
+      "serviceName": "CANCER BIOPSY",
+      "amount": 5000
+    },
+    {
+      "serialNumber": 3034,
+      "mainService": "Histopathology",
+      "serviceName": "EXTRA LARGE BIOPSY",
+      "amount": 3500
+    },
+    {
+      "serialNumber": 3035,
+      "mainService": "Immunology",
+      "serviceName": "Anti Smooth Muscle Antibody (ASMA)(F-Actin Antobody)",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 3036,
+      "mainService": "Immunology",
+      "serviceName": "MENINGEOENCEPHALITIS PANEL",
+      "amount": 10800
+    },
+    {
+      "serialNumber": 3039,
+      "mainService": "Histopathology",
+      "serviceName": "BONE MARROW EXAMINATION PANEL 2",
+      "amount": 3500
+    },
+    {
+      "serialNumber": 3041,
+      "mainService": "Immunology",
+      "serviceName": "ANTI MITOCHONDRIAL ANTIBODY",
+      "amount": 700
+    },
+    {
+      "serialNumber": 3045,
+      "mainService": "Microbiology",
+      "serviceName": "FILARIA ANTIBODIES PANEL IgG & IgM",
+      "amount": 2200
+    },
+    {
+      "serialNumber": 3048,
+      "mainService": "Serology",
+      "serviceName": "ANTI HEPATITIS A VIRUS (ANTI HAV) - IgG",
+      "amount": 1200
+    },
+    {
+      "serialNumber": 3049,
+      "mainService": "Microbiology",
+      "serviceName": "AFB DRUG SUSCEPTIBILITY PANAL 1ST AND 2ND LINE PANEL 10 DRUGS",
+      "amount": 9000
+    },
+    {
+      "serialNumber": 3050,
+      "mainService": "Immunology",
+      "serviceName": "TREPONEMA PALLIDUM HEMAGGLUTINATION (TPHA)",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3052,
+      "mainService": "Immunology",
+      "serviceName": "HEPATITIS B  (HBsAg) ELISA",
+      "amount": 500
+    },
+    {
+      "serialNumber": 3054,
+      "mainService": "Immunology",
+      "serviceName": "MTB DNA PCR (WB-EDTA)",
+      "amount": 3000
+    },
+    {
+      "serialNumber": 3055,
+      "mainService": "Microbiology",
+      "serviceName": "SYNOVIAL FLUID CULTURE & SENSITIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3056,
+      "mainService": "Biochemistry",
+      "serviceName": "SYNOVIAL FLUID R/M",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3057,
+      "mainService": "Immunology",
+      "serviceName": "ASPERGILLUS FEMIGATUS IgG",
+      "amount": 1300
+    },
+    {
+      "serialNumber": 3058,
+      "mainService": "Immunology",
+      "serviceName": "ASPERGILLUS FEMIGATUS IgM",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 3059,
+      "mainService": "Immunology",
+      "serviceName": "TISSUE TRANSGLUTAMINASE ANTIBODY IGA (TTG IGA)",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 3060,
+      "mainService": "Immunology",
+      "serviceName": "PLA2 RECEPTOR ANTIBODY",
+      "amount": 5500
+    },
+    {
+      "serialNumber": 3138,
+      "mainService": "Serology",
+      "serviceName": "HIV I & II (TRI-DOT)",
+      "amount": 100
+    },
+    {
+      "serialNumber": 3140,
+      "mainService": "Serology",
+      "serviceName": "TBPCR (WHOLE BLOOD)",
+      "amount": 3200
+    },
+    {
+      "serialNumber": 3155,
+      "mainService": "Immunology",
+      "serviceName": "ANTI-MUSK ANTIBODIES",
+      "amount": 1500
+    },
+    {
+      "serialNumber": 3156,
+      "mainService": "Biochemistry",
+      "serviceName": "ACETYL CHOLINE RECEPTOR ANTIBODY",
+      "amount": 2200
+    },
+    {
+      "serialNumber": 3160,
+      "mainService": "Immunology",
+      "serviceName": "SERUM FREE LIGHT CHAIN",
+      "amount": 2000
+    },
+    {
+      "serialNumber": 3161,
+      "mainService": "Immunology",
+      "serviceName": "IMMUNOFIXATION ELECTROPHORESIS",
+      "amount": 4500
+    },
+    {
+      "serialNumber": 3162,
+      "mainService": "Biochemistry",
+      "serviceName": "LDH (LACTATE  DEHYDROGENASE) BODY FLUID",
+      "amount": 500
+    },
+    {
+      "serialNumber": 3163,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR- TBPCR",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 3164,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR CBNAAT",
+      "amount": 2500
+    },
+    {
+      "serialNumber": 3165,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR AFB STAIN",
+      "amount": 250
+    },
+    {
+      "serialNumber": 3166,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR GRAM STAIN",
+      "amount": 250
+    },
+    {
+      "serialNumber": 3167,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR CYTOLOGY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3168,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR FUNGUL STAIN",
+      "amount": 250
+    },
+    {
+      "serialNumber": 3169,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR ROUTINE EXAMINATION",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3170,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR CULTURE",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3171,
+      "mainService": "Microbiology",
+      "serviceName": "PERINEPHRIC FLUID FOR ADA",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3188,
+      "mainService": "Biochemistry",
+      "serviceName": "SPOT -URINE PROTEIN/CREATININE RATIO",
+      "amount": 300
+    },
+    {
+      "serialNumber": 3191,
+      "mainService": "Microbiology",
+      "serviceName": "BILE FLUID CULTURE & SENSITIVITY",
+      "amount": 600
+    },
+    {
+      "serialNumber": 3194,
+      "mainService": "Urine examination",
+      "serviceName": "URINE FOR TOXICOLOGY (DRUG OF ABUSE PANEL 9)",
+      "amount": 5750
+    },
+    {
+      "serialNumber": 3209,
+      "mainService": "Serology",
+      "serviceName": "CLOSTRIDIUM DIFFICILE ANTIGEN STOOL",
+      "amount": 3500
+    }
+  ]
+}

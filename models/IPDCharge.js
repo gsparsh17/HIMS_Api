@@ -15,7 +15,7 @@ const ipdChargeSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
   chargeType: {
     type: String,
-    enum: ['Bed', 'Doctor Visit', 'Nursing', 'Procedure', 'Lab Test', 'Pharmacy', 'Surgery', 'Equipment', 'Consultation', 'Emergency', 'Miscellaneous', 'Discount', 'Tax'],
+    enum: ['Bed', 'Doctor Visit', 'RMO / Duty Doctor', 'Nursing', 'Procedure', 'Lab Test', 'Radiology', 'Pharmacy', 'Surgery', 'Equipment', 'Consultation', 'Emergency', 'Miscellaneous', 'Discount', 'Tax'],
     required: true
   },
   adjustmentType: { type: String, enum: ['CHARGE', 'DISCOUNT', 'TAX', 'WAIVER'], default: 'CHARGE' },
@@ -52,7 +52,7 @@ const ipdChargeSchema = new mongoose.Schema({
 
   sourceModule: {
     type: String,
-    enum: ['Admission', 'Lab', 'Pharmacy', 'Procedure', 'Manual', 'Bed', 'DoctorRound', 'OT', 'Radiology', 'Billing', 'Discharge'],
+    enum: ['Admission', 'Lab', 'Pharmacy', 'Procedure', 'Manual', 'Bed', 'RecurringDaily', 'DoctorRound', 'OT', 'Radiology', 'Billing', 'Discharge'],
     required: true
   },
   sourceId: { type: mongoose.Schema.Types.ObjectId },

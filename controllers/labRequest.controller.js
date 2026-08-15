@@ -30,7 +30,9 @@ const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require
 
 const cleanText = (value, fallback = '') => {
   if (value === null || value === undefined) return fallback;
-  return String(value).trim();
+  if (typeof value === 'object') return fallback;
+  const text = String(value).trim();
+  return text === '[object Object]' ? fallback : text;
 };
 
 const toObservation = (item = {}) => ({
@@ -64,7 +66,11 @@ const toObservation = (item = {}) => ({
   unit: cleanText(item.unit || item.units),
   method: cleanText(item.method),
   instrument: cleanText(item.instrument),
-  comments: cleanText(item.comments)
+  comments: cleanText(item.comments),
+  remarks: cleanText(item.remarks || item.comment),
+  isAbnormal: Boolean(item.isAbnormal || item.abnormal || /^(h|l|high|low|abnormal|positive|reactive)$/i.test(cleanText(item.printedFlag || item.derivedFlag || item.flag))),
+  isCritical: Boolean(item.isCritical || item.critical || /critical|very high|very low/i.test(cleanText(item.printedFlag || item.derivedFlag || item.flag))),
+  criticalReason: cleanText(item.criticalReason || item.critical_reason)
 });
 
 const toNarrativeSection = (section = {}, index = 0) => ({
@@ -355,13 +361,26 @@ exports.saveManualReport = async (req, res) => {
 
     const template = getTemplate(req.body.templateId || request.reportTemplateId)
       || matchTemplate(request.testName, request.testCode, request.reportTemplateId);
-    if (!template) {
-      return res.status(400).json({ error: 'Select a valid structured report template' });
+    const labTest = await LabTest.findOne({ _id: request.labTestId, hospitalId: request.hospitalId }).lean();
+    const masterParameters = Array.isArray(labTest?.parameters) ? labTest.parameters.filter((p) => p.active !== false) : [];
+    if (!template && !masterParameters.length && !(Array.isArray(req.body.observations) && req.body.observations.length)) {
+      return res.status(400).json({ error: 'This test needs a structured report template or parameter master before result entry' });
     }
 
+    const parameterObservations = masterParameters.map((p) => ({
+      analyteCode: p.code,
+      name: p.name,
+      resultType: p.resultType,
+      unit: p.unit,
+      referenceLow: p.referenceLow,
+      referenceHigh: p.referenceHigh,
+      referenceText: p.referenceText,
+      criticalLow: p.criticalLow,
+      criticalHigh: p.criticalHigh
+    }));
     const sourceObservations = Array.isArray(req.body.observations) && req.body.observations.length
       ? req.body.observations
-      : template.observations;
+      : (template?.observations?.length ? template.observations : parameterObservations);
     if (sourceObservations.length > 250) {
       return res.status(400).json({ error: 'A laboratory report cannot contain more than 250 observations' });
     }
@@ -375,7 +394,7 @@ exports.saveManualReport = async (req, res) => {
 
     const sourceNarratives = Array.isArray(req.body.narrativeSections)
       ? req.body.narrativeSections
-      : template.narrativeSections || [];
+      : template?.narrativeSections || [];
     const narrativeSections = sourceNarratives.map(toNarrativeSection);
     const completedAt = new Date();
 
@@ -386,19 +405,19 @@ exports.saveManualReport = async (req, res) => {
     request.report_mime_type = undefined;
     request.report_file_size = undefined;
     request.manual_report = {
-      templateId: template.id,
-      templateNumber: template.number,
+      templateId: template?.id || request.reportTemplateId || '',
+      templateNumber: template?.number || '',
       templateVersion: catalogVersion,
-      templateName: cleanText(req.body.templateName, template.name),
-      specimenType: cleanText(req.body.specimenType, template.specimen),
-      instrument: cleanText(req.body.instrument, template.instrument),
+      templateName: cleanText(req.body.templateName, template?.name || labTest?.report_template_name || request.testName),
+      specimenType: cleanText(req.body.specimenType, template?.specimen || labTest?.specimen_detail || labTest?.specimen_type || ''),
+      instrument: cleanText(req.body.instrument, template?.instrument || ''),
       observations,
       narrativeSections,
       // Reference/interpretation tables come from the server-controlled template catalog.
-      additionalTables: template.additionalTables || [],
+      additionalTables: template?.additionalTables || [],
       technicianNotes: cleanText(req.body.technicianNotes || req.body.notes),
       pathologistNotes: cleanText(req.body.pathologistNotes),
-      disclaimer: cleanText(template.disclaimer),
+      disclaimer: cleanText(template?.disclaimer),
       reportedAt: completedAt,
       reportedBy: req.user?._id
     };
@@ -411,18 +430,18 @@ exports.saveManualReport = async (req, res) => {
       .map((section) => `${section.label}: ${section.text}`)
       .join('\n');
     request.normal_range_used = observations.map((item) => item.referenceText).filter(Boolean).join('; ');
-    request.is_abnormal = observations.some((item) => /^(h|l|high|low|abnormal|positive|reactive|critical|very high|very low)$/i.test(item.printedFlag || item.derivedFlag));
+    request.is_abnormal = observations.some((item) => item.isAbnormal || item.isCritical || /^(h|l|high|low|abnormal|positive|reactive|critical|very high|very low)$/i.test(item.printedFlag || item.derivedFlag));
     request.technician_notes = cleanText(req.body.technicianNotes || req.body.notes, request.technician_notes || '');
     request.pathologist_notes = cleanText(req.body.pathologistNotes, request.pathologist_notes || '');
     request.status = 'Result Entered';
     request.processing_completed_at = completedAt;
     await request.save();
     await rememberRequestPayerContextUsage({
-      hospitalId,
-      patientId,
-      payerContext,
+      hospitalId: request.hospitalId,
+      patientId: request.patientId,
+      payerContext: request.payerContext,
       source: 'LAB',
-      encounterId: admissionId || appointmentId || request._id,
+      encounterId: request.admissionId || request.appointmentId || request._id,
       userId: req.user?._id,
       usedAt: request.createdAt || new Date()
     });
@@ -466,7 +485,8 @@ exports.createLabRequest = async (req, res) => {
     const {
       sourceType = 'IPD', admissionId, appointmentId, prescriptionId,
       patientId, doctorId, labTestId, clinical_indication,
-      clinical_history, priority, scheduledDate, patient_notes, coverage
+      clinical_history, priority, scheduledDate, patient_notes, coverage,
+      orderGroupId, orderNumber, requestGroupKey
     } = req.body;
 
     if (!patientId || !doctorId || !labTestId) {
@@ -542,8 +562,17 @@ exports.createLabRequest = async (req, res) => {
       rememberSource: 'LAB'
     });
 
+    const groupMinute = new Date().toISOString().slice(0, 16);
+    const derivedGroupKey = requestGroupKey || orderNumber ||
+      (prescriptionId ? `RX:${prescriptionId}` :
+        appointmentId ? `APT:${appointmentId}:${groupMinute}` :
+          admissionId ? `IPD:${admissionId}:${groupMinute}` : `WALKIN:${patientId}:${groupMinute}`);
+
     const request = new LabRequest({
       hospitalId,
+      orderGroupId: orderGroupId || null,
+      orderNumber: orderNumber || '',
+      requestGroupKey: derivedGroupKey,
       sourceType: normalizedSource === 'EMERGENCY' ? 'Emergency' : normalizedSource,
       admissionId: admissionId || null,
       appointmentId: appointmentId || null,
@@ -734,8 +763,15 @@ exports.addTestResults = async (req, res) => {
       return res.status(404).json({ error: 'Lab request not found' });
     }
 
-    request.result_value = result_value || '';
-    request.result_interpretation = result_interpretation || '';
+    if (result_value !== undefined && result_value !== null && typeof result_value === 'object') {
+      return res.status(400).json({
+        error: 'Structured lab results must be submitted through observations, not result_value',
+        code: 'STRUCTURED_RESULT_REQUIRED'
+      });
+    }
+
+    request.result_value = cleanText(result_value);
+    request.result_interpretation = cleanText(result_interpretation);
     if (technician_notes) request.technician_notes = technician_notes;
     if (pathologist_notes) request.pathologist_notes = pathologist_notes;
     
@@ -835,6 +871,46 @@ exports.downloadReport = async (req, res) => {
   } catch (error) {
     console.error('Error downloading report:', error);
     res.status(500).json({ error: error.message });
+  }
+};
+
+
+// Released/final reports only. This is the backend source for Pathology -> Reports.
+exports.getReleasedReports = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 20)));
+    const filter = {
+      hospitalId,
+      status: { $in: ['Reported', 'Amended'] },
+      'reportFinalisation.isFinal': true
+    };
+    if (req.query.patientId) filter.patientId = req.query.patientId;
+    if (req.query.startDate || req.query.endDate) {
+      filter['reportFinalisation.finalisedAt'] = {};
+      if (req.query.startDate) filter['reportFinalisation.finalisedAt'].$gte = new Date(req.query.startDate);
+      if (req.query.endDate) filter['reportFinalisation.finalisedAt'].$lte = new Date(req.query.endDate);
+    }
+    const [items, total] = await Promise.all([
+      LabRequest.find(filter)
+        .populate('patientId', 'first_name last_name patientId uhid gender age phone')
+        .populate('doctorId', 'firstName lastName specialization')
+        .populate('labTestId', 'code name category specimen_type specimen_detail parameters normal_range units')
+        .populate('verifiedBy', 'designation employeeId')
+        .sort({ 'reportFinalisation.finalisedAt': -1, verifiedAt: -1 })
+        .skip((page - 1) * limit).limit(limit).lean(),
+      LabRequest.countDocuments(filter)
+    ]);
+    const data = items.map((row) => ({
+      ...row,
+      previewUrl: `/api/lab/requests/${row._id}/report.pdf`,
+      downloadUrl: `/api/lab/requests/${row._id}/report.pdf`
+    }));
+    return res.json({ success: true, data, page, limit, total, totalPages: Math.ceil(total / limit) });
+  } catch (error) {
+    console.error('Error fetching released lab reports:', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 

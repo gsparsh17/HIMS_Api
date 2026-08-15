@@ -280,6 +280,7 @@ function mountHospitalRoutes() {
 
   app.use('/api/documents', require('./routes/document.routes.js'));
   app.use('/api/mis', require('./routes/mis.routes.js'));
+  app.use('/api/mrd', require('./routes/mrd.routes.js'));
   app.use('/api/approvals', require('./routes/approval.routes.js'));
   app.use('/api', require('./routes/userAccess.routes'));
 

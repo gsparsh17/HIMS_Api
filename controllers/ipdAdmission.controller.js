@@ -35,6 +35,9 @@ const { quotePricing: quoteAdmissionPricing2026 } = require('../services/pricing
 const { buildPatientFileDto: buildPatientFileDto2026 } = require('../services/ipdPatientFileDto.service');
 const { assertPatientReadyForContext } = require('../services/patientRegistration.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
+const { bedOccupancyData } = require('../services/ipdAccommodationPrint.service');
+const { DAILY_TARIFF_CODES, wardEntitlementFrom } = require('../services/hospitalTariff.service');
+const { dateKeyInTimeZone, ensureAdmissionDailyCharges } = require('../services/ipdRecurringCharge.service');
 
 function activeAdmissionFilter2026() {
   return {
@@ -125,6 +128,10 @@ async function createInitialCharge2026({
   internalServiceModel,
   internalServiceId,
   externalCode,
+  wardEntitlement,
+  serviceDate = new Date(),
+  idempotencyKey,
+  chargeDateKey,
   session,
   isBilled = false,
   invoiceId
@@ -133,12 +140,13 @@ async function createInitialCharge2026({
     hospitalId,
     admissionId: admission._id,
     coverage,
-    serviceDate: new Date(),
+    serviceDate,
     chargeType,
     serviceType,
     internalServiceModel,
     internalServiceId,
     externalCode,
+    wardEntitlement,
     standardAmount: Number(rate || 0),
     quantity: 1
   });
@@ -159,8 +167,9 @@ async function createInitialCharge2026({
     isBilled,
     invoiceId,
     addedBy,
-    chargeDate: new Date(),
-    chargeDateKey: new Date().toISOString().slice(0, 10),
+    chargeDate: serviceDate,
+    chargeDateKey: chargeDateKey || dateKeyInTimeZone(serviceDate),
+    idempotencyKey,
     pricingSnapshot: normalizedPricingSnapshot2026(quote),
     patientLiability: Number(quote.amounts?.patientLiability || 0),
     sponsorLiability: Number(quote.amounts?.sponsorLiability || 0),
@@ -583,7 +592,8 @@ exports.createAdmission = async (req, res) => {
           serviceType: 'bed',
           internalServiceModel: 'Bed',
           internalServiceId: bed._id,
-          externalCode: bed.bedCode,
+          externalCode: DAILY_TARIFF_CODES.bed,
+          wardEntitlement: wardEntitlementFrom(bed.bedType),
           standardAmount: dailyBedCharge,
           quantity: 1,
           serviceDate: new Date()
@@ -603,6 +613,8 @@ exports.createAdmission = async (req, res) => {
           createdBy: req.user?._id
         }], { session });
 
+        const initialBedChargeDate = admission.admissionDate || new Date();
+        const initialBedChargeKey = dateKeyInTimeZone(initialBedChargeDate);
         const bedCharge = await createInitialCharge2026({
           hospitalId,
           admission,
@@ -616,7 +628,11 @@ exports.createAdmission = async (req, res) => {
           serviceType: 'bed',
           internalServiceModel: 'Bed',
           internalServiceId: bed._id,
-          externalCode: bed.bedCode,
+          externalCode: DAILY_TARIFF_CODES.bed,
+          wardEntitlement: wardEntitlementFrom(bed.bedType),
+          serviceDate: initialBedChargeDate,
+          chargeDateKey: initialBedChargeKey,
+          idempotencyKey: `daily:${hospitalId}:${admission._id}:${initialBedChargeKey}:bed`,
           session
         });
 
@@ -731,6 +747,34 @@ exports.createAdmission = async (req, res) => {
         { session }
       );
     });
+
+    // Post the recurring accommodation-day charge set immediately after commit.
+    // The idempotency keys reuse the admission-day bed charge above, so this adds
+    // Nursing and RMO/Duty Doctor (and any missed back-dated days) without double billing.
+    try {
+      const dailyCatchup = await ensureAdmissionDailyCharges(admission._id, new Date(), req.user);
+      const createdDaily = dailyCatchup.charges.filter((charge) =>
+        charge?.sourceModule === 'RecurringDaily' && !charges.some((existing) => String(existing?._id) === String(charge?._id))
+      );
+      charges.push(...createdDaily);
+
+      if (createdDaily.length) {
+        const activeCharges = await IPDCharge.find({
+          hospitalId: admission.hospitalId,
+          admissionId: admission._id,
+          status: { $nin: ['VOIDED', 'CANCELLED'] }
+        }).lean();
+        admission.totalBillAmount = activeCharges.reduce((sum, charge) => sum + Number(charge.netAmount ?? charge.amount ?? 0), 0);
+        admission.patientReceivable = Math.max(0, activeCharges.reduce((sum, charge) => sum + Number(charge.patientLiability || 0), 0) - Number(admission.paidAmount || 0) - Number(req.body.advanceAmount || 0));
+        admission.sponsorReceivable = activeCharges.reduce((sum, charge) => sum + Number(charge.sponsorLiability || 0), 0);
+        admission.dueAmount = admission.patientReceivable;
+        admission.nonAdmissibleAmount = activeCharges.reduce((sum, charge) => sum + Number(charge.nonAdmissibleAmount || 0), 0);
+        await admission.save();
+      }
+    } catch (dailyChargeError) {
+      console.error('IPD recurring charge catch-up after admission failed:', dailyChargeError);
+      // Admission remains valid; running-bill/discharge catch-up will retry idempotently.
+    }
 
     // Preserve legacy paid-fee receipt generation after the operational transaction.
     const invoices = [];
@@ -1709,3 +1753,20 @@ exports.getPendingPharmacyClearance = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+exports.getBedOccupancyReport = async (req, res) => {
+  try {
+    const hospitalId = requireAdmissionHospitalId(req);
+    const [data, hospital] = await Promise.all([
+      bedOccupancyData({
+        hospitalId,
+        asOn: req.query.asOn || new Date()
+      }),
+      Hospital.findById(hospitalId).select('hospitalName name address city state pinCode contact phone email logo licenseNumber registrationNumber').lean()
+    ]);
+    res.json({ success: true, ...data, hospital: hospital || null });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+};
+

@@ -24,12 +24,12 @@ const {
 } = require('../controllers/medicine.controller');
 
 // Apply authentication and base permission to all routes
-// router.use(protect, requireModuleAccess('masters.medicine', 'view'));
+router.use(protect, requireModuleAccess('masters.medicine', 'view'));
 
 // ============== BASIC CRUD ROUTES ==============
 router.post(
   '/',
-  // requireModuleAccess('masters.medicine', 'edit'),
+  requireModuleAccess('masters.medicine', 'edit'),
   addMedicine
 );
 
@@ -46,13 +46,13 @@ router.get('/:id', getMedicineById);
 
 router.put(
   '/:id',
-  // requireModuleAccess('masters.medicine', 'edit'),
+  requireModuleAccess('masters.medicine', 'edit'),
   updateMedicine
 );
 
 router.delete(
   '/:id',
-  // requireModuleAccess('masters.medicine', 'edit'),
+  requireModuleAccess('masters.medicine', 'edit'),
   deleteMedicine
 );
 
@@ -66,7 +66,7 @@ router.get('/gst/export', exportGSTData);
 // Bulk update GST rates for multiple medicines
 router.post(
   '/gst/bulk-update',
-  // requireModuleAccess('masters.medicine', 'edit'),
+  requireModuleAccess('masters.medicine', 'edit'),
   bulkUpdateGST
 );
 

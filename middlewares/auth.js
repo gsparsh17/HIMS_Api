@@ -247,6 +247,59 @@ exports.requireModuleAccess = (moduleKey, minimumAccess = "view") => (
   });
 };
 
+
+/**
+ * Allow access when the user satisfies any one of the supplied main-module
+ * requirements. This is used for read-only cross-module reference data such
+ * as payer/rate-card lookups that operational Finance users need to inspect
+ * while master-data mutations remain restricted to Masters & Settings.
+ */
+exports.requireAnyModuleAccess = (requirements = []) => (req, res, next) => {
+  if (!req.user) {
+    return res
+      .status(401)
+      .json({ success: false, error: "User not authenticated" });
+  }
+
+  if (isPermissionCheckDisabled()) {
+    req.modulePermission = {
+      moduleKey: "any",
+      mainModuleKey: "any",
+      access: "manage",
+    };
+    return next();
+  }
+
+  const normalizedRequirements = Array.isArray(requirements) ? requirements : [];
+  for (const requirement of normalizedRequirements) {
+    const moduleKey = typeof requirement === "string"
+      ? requirement
+      : requirement?.moduleKey;
+    const requested = typeof requirement === "string"
+      ? "view"
+      : (requirement?.minimumAccess || requirement?.access || "view");
+    if (!moduleKey) continue;
+
+    const permission = accessForRequestedModule(req.user, moduleKey);
+    const required = requested === "edit" ? "manage" : requested;
+    if (ACCESS_ORDER[permission.access] >= ACCESS_ORDER[required]) {
+      req.modulePermission = permission;
+      return next();
+    }
+  }
+
+  return res.status(403).json({
+    success: false,
+    error: "Required module access not granted",
+    requirements: normalizedRequirements.map((requirement) => ({
+      moduleKey: typeof requirement === "string" ? requirement : requirement?.moduleKey,
+      required: typeof requirement === "string"
+        ? "view"
+        : (requirement?.minimumAccess || requirement?.access || "view"),
+    })),
+  });
+};
+
 // ===================================================================
 // NEW: Action-based permission functions for the frontend user access
 // management system

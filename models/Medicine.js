@@ -36,11 +36,20 @@ const medicineSchema = new mongoose.Schema({
   compositions: [compositionSchema],
   composition_keywords: [{ type: String, trim: true, lowercase: true, index: true }],
   manufacturer: { type: String, trim: true },
+  dosage_form: { type: String, trim: true, index: true },
+  manufacturer_brand_owner: { type: String, trim: true },
+  masterSource: {
+    key: { type: String, trim: true },
+    version: { type: String, trim: true },
+    serialNumber: Number,
+    checksum: String,
+    importedAt: Date
+  },
 
   // ========== TAX INFORMATION (Source of Truth) ==========
   hsn_code: {
     type: String,
-    required: true,
+    required: false,
     trim: true,
     index: true,
     validate: {
@@ -52,7 +61,7 @@ const medicineSchema = new mongoose.Schema({
   },
   gst_rate: {
     type: Number,
-    required: true,
+    required: false,
     default: 0,
     min: 0,
     max: 100,
@@ -63,6 +72,13 @@ const medicineSchema = new mongoose.Schema({
       },
       message: 'GST rate must be one of: 0, 5, 12, 18, 28'
     }
+  },
+
+  taxComplianceStatus: {
+    type: String,
+    enum: ['verified', 'pending', 'not_applicable'],
+    default: 'verified',
+    index: true
   },
 
   // Track GST changes for audit
@@ -142,15 +158,22 @@ medicineSchema.pre('save', async function (next) {
     this.min_stock_level_base_units = this.min_stock_level;
   }
 
+  if (!this.manufacturer_brand_owner && this.manufacturer) this.manufacturer_brand_owner = this.manufacturer;
+  if (!this.manufacturer && this.manufacturer_brand_owner) this.manufacturer = this.manufacturer_brand_owner;
+
   // Sync high-risk / high-alert flags with medicationSafety
   if (this.is_high_risk || this.is_high_alert) {
     if (!this.medicationSafety) this.medicationSafety = {};
     this.medicationSafety.highRisk = true;
+    this.medicationSafety.requiresDoubleCheck = true;
     this.is_high_risk = true;
     this.is_high_alert = true;
+    this.prescription_required = true;
   } else if (this.medicationSafety?.highRisk) {
     this.is_high_risk = true;
     this.is_high_alert = true;
+    this.medicationSafety.requiresDoubleCheck = true;
+    this.prescription_required = true;
   }
 
   // Sync capex vs non-capex item type

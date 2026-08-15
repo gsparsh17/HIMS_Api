@@ -27,6 +27,18 @@ const {
 
 const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || 'hims_access_token';
 
+
+function dashboardForRole(role) {
+  const normalized = String(role || '').toLowerCase();
+  if (['store', 'store_manager', 'inventory_manager'].includes(normalized)) return 'store';
+  if (['hr', 'hr_manager'].includes(normalized)) return 'hr';
+  if (['accountant', 'insurance_desk'].includes(normalized)) return 'finance';
+  // Equipment management is implemented inside Store Operations; there is no
+  // standalone /dashboard/equipment page in the current frontend.
+  if (normalized === 'equipment_manager') return 'store';
+  return null;
+}
+
 function setAuthCookie(res, token) {
   res.cookie(AUTH_COOKIE_NAME, token, {
     httpOnly: true,
@@ -175,7 +187,7 @@ exports.demoLogin = async (req, res) => {
         const hrProfile = await HRStaffProfile.findOne({ email: targetUser.email });
         response.employeeId = hrProfile?._id;
         response.employeeCode = hrProfile?.employee_code;
-        response.dashboard = ["store", "store_manager", "inventory_manager"].includes(targetUser.role) ? "store" : ["hr", "hr_manager"].includes(targetUser.role) ? "hr" : "equipment";
+        response.dashboard = dashboardForRole(targetUser.role);
       }
       else if (targetUser.role === "pharmacy") {
         const pharmacy = await Pharmacy.findOne({ email: targetUser.email });
@@ -360,9 +372,7 @@ async function enrichLoginResponse(user, hospital, tokenClaims = {}) {
     const profile = await HRStaffProfile.findOne({ email: user.email });
     response.employeeId = profile?._id;
     response.employeeCode = profile?.employee_code;
-    response.dashboard = ['store', 'store_manager', 'inventory_manager'].includes(user.role) ? 'store'
-      : ['hr', 'hr_manager'].includes(user.role) ? 'hr'
-        : 'equipment';
+    response.dashboard = dashboardForRole(user.role);
   } else if (user.role === 'pharmacy') {
     const pharmacy = await Pharmacy.findOne({ email: user.email });
     response.pharmacyId = pharmacy?._id;

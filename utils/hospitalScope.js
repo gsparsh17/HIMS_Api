@@ -1,16 +1,56 @@
+const mongoose = require('mongoose');
+
 function unwrapId(value) {
-  if (!value) return null;
-  if (value?._id) return value._id;
-  if (
-    typeof value === 'object' &&
-    Object.prototype.hasOwnProperty.call(value, 'id') &&
-    typeof value.id === 'string'
-  ) {
-    return value.id;
+  if (value === null || value === undefined || value === '') return null;
+
+  if (typeof value === 'object') {
+    if (value?._id !== undefined && value?._id !== value) return unwrapId(value._id);
+    if (Object.prototype.hasOwnProperty.call(value, '$oid')) return unwrapId(value.$oid);
+    if (
+      Object.prototype.hasOwnProperty.call(value, 'id') &&
+      typeof value.id === 'string'
+    ) {
+      return unwrapId(value.id);
+    }
+    return value;
   }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    // Legacy/imported Extended JSON occasionally persisted the whole
+    // {"$oid":"..."} object as a string. Accept it at read boundaries so
+    // old rows cannot crash tenant-scoped queries.
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && parsed.$oid) {
+          return unwrapId(parsed.$oid);
+        }
+      } catch {
+        // Keep the original value; callers that require ObjectId validity
+        // will reject it explicitly.
+      }
+    }
+
+    // Also tolerate common textual ObjectId("...") exports.
+    const objectIdMatch = trimmed.match(/^ObjectId\s*\(\s*["']?([a-fA-F0-9]{24})["']?\s*\)$/);
+    if (objectIdMatch) return objectIdMatch[1];
+
+    return trimmed;
+  }
+
   return value;
 }
 
+function normalizeObjectId(value) {
+  const unwrapped = unwrapId(value);
+  if (!unwrapped || !mongoose.isValidObjectId(unwrapped)) return null;
+  return unwrapped instanceof mongoose.Types.ObjectId
+    ? unwrapped
+    : new mongoose.Types.ObjectId(String(unwrapped));
+}
 
 function userHospitalId(user) {
   return unwrapId(
@@ -82,6 +122,7 @@ function requestHospitalId(req, { required = true } = {}) {
 
 module.exports = {
   unwrapId,
+  normalizeObjectId,
   userHospitalId,
   assertUserHospital,
   assertSameHospital,

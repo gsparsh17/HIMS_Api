@@ -16,6 +16,7 @@ const claimService = require('./claim.service');
 const Hospital = require('../models/Hospital');
 const { userHospitalId } = require('../utils/hospitalScope');
 const { syncChargesInvoiced } = require('./sourceBillingSync.service');
+const { ensureAdmissionDailyCharges } = require('./ipdRecurringCharge.service');
 
 const ACTIVE_CHARGE_FILTER = {
   $or: [
@@ -540,6 +541,7 @@ async function listBillingAdmissions(user, query = {}) {
 }
 
 async function getRunningBill(admissionId, user) {
+  await ensureAdmissionDailyCharges(admissionId, new Date(), user);
   const snapshot = await calculateAdmissionFinancials(admissionId, { user });
 
   const admission = await IPDAdmission.findOne({
@@ -1028,6 +1030,7 @@ async function voidCharge(admissionId, chargeId, payload, user) {
 }
 
 async function previewIPDInvoice(admissionId, payload = {}, user) {
+  await ensureAdmissionDailyCharges(admissionId, payload.throughDate || new Date(), user);
   const admission = await findAdmission(admissionId, null, user);
   const requested = Array.isArray(payload.chargeIds) ? [...new Set(payload.chargeIds.map(String))] : [];
   const filter = { hospitalId: admission.hospitalId, admissionId, ...UNBILLED_CHARGE_FILTER };
@@ -1044,6 +1047,7 @@ async function previewIPDInvoice(admissionId, payload = {}, user) {
 }
 
 async function issueIPDInvoice(admissionId, payload = {}, user) {
+  await ensureAdmissionDailyCharges(admissionId, payload.throughDate || new Date(), user);
   const invoiceKind = payload.invoiceKind === 'final' ? 'IPD Final' : 'IPD Interim';
 
   return runFinancialTransaction(async (session) => {
@@ -2027,6 +2031,7 @@ async function getFinancialLedger(admissionId, user) {
 }
 
 async function getFinancialClearance(admissionId, user) {
+  await ensureAdmissionDailyCharges(admissionId, new Date(), user);
   const snapshot = await calculateAdmissionFinancials(admissionId, { user });
   const admission = snapshot.admission;
 

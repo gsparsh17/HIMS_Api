@@ -1,0 +1,344 @@
+{
+  "source": {
+    "importVersion": "2026-08-15",
+    "description": "User-approved clinical and non-medical department master"
+  },
+  "records": [
+    {
+      "serialNumber": 1,
+      "name": "General Medicine",
+      "departmentType": "Clinical",
+      "majorFunction": "Diagnosis & treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 2,
+      "name": "General Surgery",
+      "departmentType": "Clinical",
+      "majorFunction": "Surgical treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 3,
+      "name": "Orthopedics & Joint Replacement",
+      "departmentType": "Clinical",
+      "majorFunction": "Bone, joint & fracture treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 4,
+      "name": "Obstetrics & Gynecology",
+      "departmentType": "Clinical",
+      "majorFunction": "Pregnancy, delivery & women's health",
+      "clinical": true
+    },
+    {
+      "serialNumber": 5,
+      "name": "Pediatrics",
+      "departmentType": "Clinical",
+      "majorFunction": "Child healthcare",
+      "clinical": true
+    },
+    {
+      "serialNumber": 6,
+      "name": "ENT",
+      "departmentType": "Clinical",
+      "majorFunction": "Ear, nose & throat treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 7,
+      "name": "Ophthalmology",
+      "departmentType": "Clinical",
+      "majorFunction": "Eye treatment & surgery",
+      "clinical": true
+    },
+    {
+      "serialNumber": 8,
+      "name": "Cardiology",
+      "departmentType": "Clinical",
+      "majorFunction": "Heart-related treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 9,
+      "name": "CTVS",
+      "departmentType": "Clinical",
+      "majorFunction": "Cardiothoracic & vascular surgery",
+      "clinical": true
+    },
+    {
+      "serialNumber": 10,
+      "name": "Neurology",
+      "departmentType": "Clinical",
+      "majorFunction": "Nervous system treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 11,
+      "name": "Neurosurgery",
+      "departmentType": "Clinical",
+      "majorFunction": "Brain & spine surgery",
+      "clinical": true
+    },
+    {
+      "serialNumber": 12,
+      "name": "Urology",
+      "departmentType": "Clinical",
+      "majorFunction": "Urinary system treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 13,
+      "name": "Nephrology",
+      "departmentType": "Clinical",
+      "majorFunction": "Kidney diseases",
+      "clinical": true
+    },
+    {
+      "serialNumber": 14,
+      "name": "Gastroenterology",
+      "departmentType": "Clinical",
+      "majorFunction": "Digestive system treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 15,
+      "name": "Pulmonology / Chest Medicine",
+      "departmentType": "Clinical",
+      "majorFunction": "Respiratory diseases",
+      "clinical": true
+    },
+    {
+      "serialNumber": 16,
+      "name": "Oncology",
+      "departmentType": "Clinical",
+      "majorFunction": "Cancer treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 17,
+      "name": "Plastic Surgery",
+      "departmentType": "Clinical",
+      "majorFunction": "Reconstructive & plastic surgery",
+      "clinical": true
+    },
+    {
+      "serialNumber": 18,
+      "name": "Psychiatry",
+      "departmentType": "Clinical",
+      "majorFunction": "Mental healthcare",
+      "clinical": true
+    },
+    {
+      "serialNumber": 19,
+      "name": "Dermatology",
+      "departmentType": "Clinical",
+      "majorFunction": "Skin diseases",
+      "clinical": true
+    },
+    {
+      "serialNumber": 20,
+      "name": "Dentistry",
+      "departmentType": "Clinical",
+      "majorFunction": "Dental treatment",
+      "clinical": true
+    },
+    {
+      "serialNumber": 21,
+      "name": "Physiotherapy",
+      "departmentType": "Clinical",
+      "majorFunction": "Rehabilitation",
+      "clinical": true
+    },
+    {
+      "serialNumber": 1,
+      "name": "Hospital Administration",
+      "departmentType": "Administration",
+      "majorFunction": "Overall hospital management",
+      "clinical": false
+    },
+    {
+      "serialNumber": 2,
+      "name": "Reception",
+      "departmentType": "Front Office",
+      "majorFunction": "Patient registration & appointments",
+      "clinical": false
+    },
+    {
+      "serialNumber": 3,
+      "name": "Finance & Accounts",
+      "departmentType": "Finance",
+      "majorFunction": "Financial management",
+      "clinical": false
+    },
+    {
+      "serialNumber": 4,
+      "name": "Billing",
+      "departmentType": "Finance",
+      "majorFunction": "Patient billing & receipts",
+      "clinical": false
+    },
+    {
+      "serialNumber": 5,
+      "name": "Insurance / TPA",
+      "departmentType": "Finance",
+      "majorFunction": "Insurance & claims",
+      "clinical": false
+    },
+    {
+      "serialNumber": 6,
+      "name": "Human Resource",
+      "departmentType": "HR",
+      "majorFunction": "Employee management",
+      "clinical": false
+    },
+    {
+      "serialNumber": 7,
+      "name": "IT",
+      "departmentType": "IT",
+      "majorFunction": "HMS, network & IT infrastructure",
+      "clinical": false
+    },
+    {
+      "serialNumber": 8,
+      "name": "Medical Records (MRD)",
+      "departmentType": "Administration",
+      "majorFunction": "Medical records management",
+      "clinical": false
+    },
+    {
+      "serialNumber": 9,
+      "name": "MIS",
+      "departmentType": "Administration",
+      "majorFunction": "Reports & analytics",
+      "clinical": false
+    },
+    {
+      "serialNumber": 10,
+      "name": "Purchase / Procurement",
+      "departmentType": "Procurement",
+      "majorFunction": "Purchasing materials",
+      "clinical": false
+    },
+    {
+      "serialNumber": 11,
+      "name": "Inventory / Stores",
+      "departmentType": "Inventory",
+      "majorFunction": "Stock management",
+      "clinical": false
+    },
+    {
+      "serialNumber": 12,
+      "name": "Pharmacy",
+      "departmentType": "Support",
+      "majorFunction": "Medicine dispensing & stock",
+      "clinical": false
+    },
+    {
+      "serialNumber": 13,
+      "name": "Housekeeping",
+      "departmentType": "Support",
+      "majorFunction": "Cleaning & hygiene",
+      "clinical": false
+    },
+    {
+      "serialNumber": 14,
+      "name": "Maintenance",
+      "departmentType": "Engineering",
+      "majorFunction": "Electrical, plumbing, HVAC, civil",
+      "clinical": false
+    },
+    {
+      "serialNumber": 15,
+      "name": "Biomedical Engineering",
+      "departmentType": "Engineering",
+      "majorFunction": "Medical equipment maintenance",
+      "clinical": false
+    },
+    {
+      "serialNumber": 16,
+      "name": "Security",
+      "departmentType": "Support",
+      "majorFunction": "Hospital security",
+      "clinical": false
+    },
+    {
+      "serialNumber": 17,
+      "name": "Laundry",
+      "departmentType": "Support",
+      "majorFunction": "Linen & laundry",
+      "clinical": false
+    },
+    {
+      "serialNumber": 18,
+      "name": "Dietary / Kitchen",
+      "departmentType": "Support",
+      "majorFunction": "Patient & staff food",
+      "clinical": false
+    },
+    {
+      "serialNumber": 19,
+      "name": "CSSD",
+      "departmentType": "Support",
+      "majorFunction": "Instrument sterilization",
+      "clinical": false
+    },
+    {
+      "serialNumber": 20,
+      "name": "Ambulance",
+      "departmentType": "Support",
+      "majorFunction": "Patient transportation",
+      "clinical": false
+    },
+    {
+      "serialNumber": 21,
+      "name": "Mortuary",
+      "departmentType": "Support",
+      "majorFunction": "Mortuary services",
+      "clinical": false
+    },
+    {
+      "serialNumber": 22,
+      "name": "Waste Management",
+      "departmentType": "Support",
+      "majorFunction": "Biomedical & general waste",
+      "clinical": false
+    },
+    {
+      "serialNumber": 23,
+      "name": "Fire & Safety",
+      "departmentType": "Safety",
+      "majorFunction": "Fire & emergency safety",
+      "clinical": false
+    },
+    {
+      "serialNumber": 24,
+      "name": "Marketing",
+      "departmentType": "Administration",
+      "majorFunction": "Hospital promotion & marketing",
+      "clinical": false
+    },
+    {
+      "serialNumber": 25,
+      "name": "Legal & Compliance",
+      "departmentType": "Administration",
+      "majorFunction": "Legal & regulatory compliance",
+      "clinical": false
+    },
+    {
+      "serialNumber": 26,
+      "name": "Quality / NABH",
+      "departmentType": "Quality",
+      "majorFunction": "Quality & accreditation",
+      "clinical": false
+    },
+    {
+      "serialNumber": 27,
+      "name": "Transport",
+      "departmentType": "Support",
+      "majorFunction": "Internal/external transportation",
+      "clinical": false
+    }
+  ]
+}

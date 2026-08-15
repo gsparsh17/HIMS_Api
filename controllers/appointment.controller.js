@@ -18,6 +18,8 @@ const { assertPatientReadyForContext } = require('../services/patientRegistratio
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { createEncounterCoverage } = require('../services/coverage.service');
 const AdmissionCoverage = require('../models/AdmissionCoverage');
+const HRStaffProfile = require('../models/HRStaffProfile');
+const StaffAvailability = require('../models/StaffAvailability');
 const { rememberDeclaredPreference } = require('../services/patientCoveragePreference.service');
 async function notifyAppointment(appointmentOrId, eventType, userId, extra = {}, hospitalId = null) {
   const appointment = typeof appointmentOrId === 'string'
@@ -62,6 +64,90 @@ async function notifyAppointment(appointmentOrId, eventType, userId, extra = {},
     { $addToSet: { notificationDeliveryIds: delivery._id } }
   );
   return delivery;
+}
+
+function startRoleAllowed(user) {
+  return ['admin', 'mediqliq_super_admin', 'doctor'].includes(String(user?.role || '').toLowerCase());
+}
+
+async function guardConsultationStart({ hospitalId, appointment, doctorId, user }) {
+  if (!startRoleAllowed(user)) {
+    const error = new Error('Only the assigned doctor or an administrator may start a consultation');
+    error.statusCode = 403;
+    error.code = 'CONSULTATION_START_FORBIDDEN';
+    throw error;
+  }
+  const resolvedDoctorId = doctorId || appointment.doctor_id;
+  const [patient, doctor, activeOther, profile] = await Promise.all([
+    Patient.findOne({ _id: appointment.patient_id, hospitalId }).select('_id patientId uhid').lean(),
+    Doctor.findOne({ _id: resolvedDoctorId, hospitalId }).select('_id user_id firstName lastName').lean(),
+    Appointment.findOne({
+      hospital_id: hospitalId,
+      doctor_id: resolvedDoctorId,
+      status: 'In Progress',
+      _id: { $ne: appointment._id }
+    }).select('_id patient_id actual_start_time').lean(),
+    HRStaffProfile.findOne({
+      hospital_id: hospitalId,
+      $or: [{ doctor_id: resolvedDoctorId }, { source_model: 'Doctor', source_id: resolvedDoctorId }]
+    }).select('_id availability_status availability_note').lean()
+  ]);
+  if (!patient) {
+    const error = new Error('Appointment patient is not mapped to this hospital');
+    error.statusCode = 409;
+    error.code = 'APPOINTMENT_PATIENT_MAPPING_INVALID';
+    throw error;
+  }
+  if (!doctor) {
+    const error = new Error('Appointment doctor is not mapped to this hospital');
+    error.statusCode = 409;
+    error.code = 'APPOINTMENT_DOCTOR_MAPPING_INVALID';
+    throw error;
+  }
+  if (String(user?.role || '').toLowerCase() === 'doctor' && doctor.user_id && String(doctor.user_id) !== String(user?._id)) {
+    const error = new Error('Doctors may start only their own assigned appointments');
+    error.statusCode = 403;
+    error.code = 'APPOINTMENT_DOCTOR_MISMATCH';
+    throw error;
+  }
+  const blocked = new Set(['on_leave', 'off_duty', 'unavailable', 'in_ot']);
+  if (profile && blocked.has(String(profile.availability_status || '').toLowerCase())) {
+    const error = new Error(`Doctor is currently ${String(profile.availability_status).replaceAll('_', ' ')}`);
+    error.statusCode = 409;
+    error.code = 'DOCTOR_UNAVAILABLE';
+    error.details = { availability: profile.availability_status, note: profile.availability_note || '' };
+    throw error;
+  }
+  if (activeOther) {
+    const error = new Error('Doctor already has an active consultation');
+    error.statusCode = 409;
+    error.code = 'DOCTOR_ALREADY_IN_CONSULTATION';
+    error.details = { activeAppointmentId: activeOther._id };
+    throw error;
+  }
+  return { doctor, profile };
+}
+
+async function setDoctorOpdAvailability({ hospitalId, doctorId, status, userId, note }) {
+  const profile = await HRStaffProfile.findOne({
+    hospital_id: hospitalId,
+    $or: [{ doctor_id: doctorId }, { source_model: 'Doctor', source_id: doctorId }]
+  });
+  if (!profile) return null;
+  profile.availability_status = status;
+  profile.availability_note = note || profile.availability_note;
+  await profile.save();
+  await StaffAvailability.create({
+    employee_id: profile._id,
+    user_id: profile.user_id,
+    status,
+    current_location: status === 'in_opd' ? 'OPD' : undefined,
+    valid_from: new Date(),
+    note,
+    hospital_id: hospitalId,
+    updated_by: userId
+  });
+  return profile;
 }
 
 async function recalculateQueue({ hospitalId, departmentId, date }) {
@@ -1424,9 +1510,25 @@ exports.checkInAppointment = async (req, res) => {
 exports.startConsultation = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    const current = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
+    if (!current) return res.status(404).json({ error: 'Appointment not found' });
+    if (current.status === 'Cancelled' || current.status === 'Completed') {
+      return res.status(409).json({ error: `${current.status} appointments cannot be started`, code: 'INVALID_APPOINTMENT_STATE' });
+    }
+    if (current.status === 'In Progress') {
+      return res.json({
+        success: true,
+        message: 'Consultation is already active',
+        appointment: current,
+        encounter: { type: 'OPD', id: current._id, status: 'active' },
+        alreadyStarted: true
+      });
+    }
+
+    await guardConsultationStart({ hospitalId, appointment: current, user: req.user });
     const startedAt = new Date();
     const appointment = await Appointment.findOneAndUpdate(
-      { _id: req.params.id, hospital_id: hospitalId, status: { $nin: ['Cancelled', 'Completed'] } },
+      { _id: current._id, hospital_id: hospitalId, status: 'Scheduled' },
       {
         $set: {
           status: 'In Progress',
@@ -1436,16 +1538,24 @@ exports.startConsultation = async (req, res) => {
       },
       { new: true, runValidators: true }
     );
-    if (!appointment) return res.status(404).json({ error: 'Appointment not found or cannot be started' });
+    if (!appointment) return res.status(409).json({ error: 'Appointment state changed before consultation could start', code: 'APPOINTMENT_STATE_CONFLICT' });
     await updateCalendarAppointmentStatus(appointment, 'In Progress');
-    await recalculateQueue({
+    await recalculateQueue({ hospitalId, departmentId: appointment.department_id, date: appointment.appointment_date });
+    await setDoctorOpdAvailability({
       hospitalId,
-      departmentId: appointment.department_id,
-      date: appointment.appointment_date
+      doctorId: appointment.doctor_id,
+      status: 'in_opd',
+      userId: req.user?._id,
+      note: `Active OPD consultation ${appointment._id}`
     });
-    return res.json({ message: 'Consultation started', appointment });
+    return res.json({
+      success: true,
+      message: 'Consultation started',
+      appointment,
+      encounter: { type: 'OPD', id: appointment._id, patientId: appointment.patient_id, status: 'active', startedAt }
+    });
   } catch (error) {
-    return res.status(400).json({ error: error.message });
+    return res.status(error.statusCode || 400).json({ success: false, error: error.message, code: error.code, details: error.details });
   }
 };
 
@@ -1598,6 +1708,9 @@ exports.updateAppointment = async (req, res) => {
     ]);
     if (!doctorRecord) return res.status(404).json({ error: 'Doctor not found for this hospital' });
     if (!departmentRecord) return res.status(404).json({ error: 'Department not found for this hospital' });
+    if (targetStatus === 'In Progress' && appointment.status !== 'In Progress') {
+      await guardConsultationStart({ hospitalId, appointment, doctorId: targetDoctorId, user: req.user });
+    }
 
     const calendar = await Calendar.findOne({ hospitalId });
     if (!calendar) return res.status(404).json({ error: 'Calendar not found' });
@@ -1773,6 +1886,13 @@ exports.updateAppointment = async (req, res) => {
       await calendar.save();
     } catch (calendarError) {
       throw calendarError;
+    }
+
+    if (targetStatus === 'In Progress') {
+      await setDoctorOpdAvailability({ hospitalId, doctorId: targetDoctorId, status: 'in_opd', userId: req.user?._id, note: `Active OPD consultation ${appointment._id}` });
+    } else if (targetStatus === 'Completed' && appointment.status === 'Completed') {
+      const anotherActive = await Appointment.exists({ hospital_id: hospitalId, doctor_id: targetDoctorId, status: 'In Progress', _id: { $ne: appointment._id } });
+      if (!anotherActive) await setDoctorOpdAvailability({ hospitalId, doctorId: targetDoctorId, status: 'available', userId: req.user?._id, note: 'OPD consultation completed' });
     }
 
     await Promise.all([

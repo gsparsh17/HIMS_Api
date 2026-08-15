@@ -48,13 +48,25 @@ exports.createImagingTest = async (req, res) => {
     } = req.body;
 
     if (!code || !name || !category) {
-      return res.status(400).json({ error: 'Code, name, and category are required' });
+      return res.status(400).json({ success: false, code: 'IMAGING_TEST_VALIDATION_FAILED', error: 'Code, name, and category are required', fields: ['code', 'name', 'category'] });
+    }
+    const numericPrice = Number(base_price ?? 0);
+    if (!Number.isFinite(numericPrice) || numericPrice < 0) {
+      return res.status(400).json({ success: false, code: 'IMAGING_TEST_PRICE_INVALID', error: 'Base price must be a non-negative number', field: 'base_price' });
+    }
+    if (!Boolean(template_only) && (is_billable === undefined || Boolean(is_billable)) && numericPrice === 0 && !Boolean(allow_zero_price)) {
+      return res.status(422).json({
+        success: false,
+        code: 'IMAGING_TEST_PRICE_REQUIRED',
+        error: 'Active billable imaging tests require a positive cash price. Set allow_zero_price=true only for an explicitly approved zero-price service.',
+        field: 'base_price'
+      });
     }
 
     const hospitalId = requireHospitalId(req);
     const existing = await ImagingTest.findOne({ hospitalId, code: code.toUpperCase() });
     if (existing) {
-      return res.status(400).json({ error: 'Imaging test with this code already exists' });
+      return res.status(409).json({ success: false, code: 'IMAGING_TEST_CODE_EXISTS', error: 'Imaging test with this code already exists', field: 'code' });
     }
 
     const imagingTest = new ImagingTest({
@@ -68,7 +80,7 @@ exports.createImagingTest = async (req, res) => {
       contrast_required: contrast_required || false,
       contrast_details: contrast_details || '',
       turnaround_time_hours: turnaround_time_hours || 24,
-      base_price: base_price || 0,
+      base_price: numericPrice,
       insurance_coverage: insurance_coverage || 'Partial',
       template_only: Boolean(template_only), is_billable: is_billable === undefined ? !template_only : Boolean(is_billable),
       allow_zero_price: Boolean(allow_zero_price), canonical_test_id: canonical_test_id || undefined,
@@ -81,7 +93,8 @@ exports.createImagingTest = async (req, res) => {
   } catch (error) {
     console.error('Error creating imaging test:', error);
     const status = ['ValidationError','CastError'].includes(error?.name) ? 400 : 500;
-    res.status(status).json({ error: error.message });
+    const fields = error?.errors ? Object.fromEntries(Object.entries(error.errors).map(([field, issue]) => [field, issue.message])) : undefined;
+    res.status(status).json({ success: false, code: error?.name === 'ValidationError' ? 'IMAGING_TEST_VALIDATION_FAILED' : 'IMAGING_TEST_CREATE_FAILED', error: error.message, fields });
   }
 };
 
@@ -130,7 +143,9 @@ exports.updateImagingTest = async (req, res) => {
     res.json({ success: true, data: test });
   } catch (error) {
     console.error('Error updating imaging test:', error);
-    res.status(500).json({ error: error.message });
+    const status = ['ValidationError','CastError'].includes(error?.name) ? 400 : 500;
+    const fields = error?.errors ? Object.fromEntries(Object.entries(error.errors).map(([field, issue]) => [field, issue.message])) : undefined;
+    res.status(status).json({ success: false, code: error?.name === 'ValidationError' ? 'IMAGING_TEST_VALIDATION_FAILED' : 'IMAGING_TEST_UPDATE_FAILED', error: error.message, fields });
   }
 };
 

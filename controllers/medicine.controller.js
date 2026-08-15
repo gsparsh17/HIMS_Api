@@ -4,6 +4,17 @@ const mongoose = require('mongoose');
 const Medicine = require('../models/Medicine');
 const MedicineBatch = require('../models/MedicineBatch');
 const EmergencyMedicationChecklist = require('../models/EmergencyMedicationChecklist');
+const { requestHospitalId } = require('../utils/hospitalScope');
+
+
+
+function hospitalIdFor(req) {
+  return requestHospitalId(req);
+}
+
+function medicineScope(req, extra = {}) {
+  return { hospitalId: hospitalIdFor(req), ...extra };
+}
 
 // Helper function to validate GST rate (India specific)
 const validateGSTRate = (rate) => {
@@ -32,60 +43,97 @@ const getUserId = (req) => {
   return req.user?._id || req.user?.id || null;
 };
 
-// Add new medicine with tax validation
+// Add new medicine with source-master and tax-compliance support
 exports.addMedicine = async (req, res) => {
   try {
-    // Validate HSN code is required
-    if (!req.body.hsn_code) {
+    const body = { ...req.body };
+
+    body.hospitalId = hospitalIdFor(req);
+    body.generic_name = String(body.generic_name || body.genericSaltName || body.generic_salt_name || '').trim();
+    body.brand = String(body.brand || body.brand_name || '').trim();
+    body.name = String(body.name || body.brand || body.generic_name || '').trim();
+    body.dosage_form = String(body.dosage_form || body.dosageForm || body.category || '').trim();
+    body.category = String(body.category || body.dosage_form || 'Medicine').trim();
+    body.manufacturer_brand_owner = String(
+      body.manufacturer_brand_owner || body.manufacturerBrandOwner || body.manufacturer || ''
+    ).trim();
+    body.manufacturer = String(body.manufacturer || body.manufacturer_brand_owner || '').trim();
+
+    if (!body.name) {
       return res.status(400).json({
-        error: 'HSN code is required for GST compliance'
+        error: 'Medicine name, brand name, or generic/salt name is required',
+        message: 'Medicine name, brand name, or generic/salt name is required'
       });
     }
 
-    // Validate HSN code format
-    if (!validateHSNCode(req.body.hsn_code)) {
-      return res.status(400).json({
-        error: 'HSN code must be 4-8 digits'
+    const explicitHSN = body.hsn_code !== undefined && body.hsn_code !== null && String(body.hsn_code).trim() !== '';
+    const explicitGST = body.gst_rate !== undefined && body.gst_rate !== null && String(body.gst_rate).trim() !== '';
+
+    // The clinical medicine master supplied by hospitals may not contain tax fields.
+    // Missing tax metadata is therefore recorded as pending instead of blocking creation.
+    if (explicitHSN) {
+      if (!validateHSNCode(String(body.hsn_code))) {
+        return res.status(400).json({
+          error: 'HSN code must be 4-8 digits',
+          message: 'HSN code must be 4-8 digits'
+        });
+      }
+      body.hsn_code = String(body.hsn_code).trim().toUpperCase();
+    } else {
+      delete body.hsn_code;
+    }
+
+    if (explicitGST) {
+      if (!validateGSTRate(body.gst_rate)) {
+        return res.status(400).json({
+          error: 'GST rate must be one of: 0, 5, 12, 18, 28',
+          message: 'GST rate must be one of: 0, 5, 12, 18, 28'
+        });
+      }
+      body.gst_rate = parseFloat(body.gst_rate);
+    } else {
+      body.gst_rate = 0;
+    }
+
+    body.taxComplianceStatus = explicitHSN && explicitGST ? 'verified' : 'pending';
+    body.gst_history = Array.isArray(body.gst_history) ? body.gst_history : [];
+    if (explicitHSN || explicitGST) {
+      body.gst_history.push({
+        hsn_code: body.hsn_code || '',
+        gst_rate: body.gst_rate,
+        effective_from: new Date(),
+        reason: explicitHSN && explicitGST ? 'Initial setup' : 'Partial tax metadata captured',
+        changed_by: getUserId(req)
       });
     }
 
-    req.body.hsn_code = req.body.hsn_code.trim().toUpperCase();
-
-    // Validate GST rate
-    if (req.body.gst_rate === undefined || req.body.gst_rate === null) {
-      return res.status(400).json({
-        error: 'GST rate is required'
-      });
+    const sourceHighRisk = body.is_high_risk === true || body.is_high_alert === true ||
+      body.highRiskHighAlert === true || body.high_risk_high_alert === true;
+    if (sourceHighRisk) {
+      body.is_high_risk = true;
+      body.is_high_alert = true;
+      body.prescription_required = true;
+      body.medicationSafety = {
+        ...(body.medicationSafety || {}),
+        highRisk: true,
+        requiresDoubleCheck: true
+      };
     }
 
-    if (!validateGSTRate(req.body.gst_rate)) {
-      return res.status(400).json({
-        error: 'GST rate must be one of: 0, 5, 12, 18, 28'
-      });
-    }
-
-    req.body.gst_rate = parseFloat(req.body.gst_rate);
-
-    // Initialize GST history
-    req.body.gst_history = [{
-      hsn_code: req.body.hsn_code,
-      gst_rate: req.body.gst_rate,
-      effective_from: new Date(),
-      reason: 'Initial setup',
-      changed_by: getUserId(req)
-    }];
-
-    const medicine = new Medicine(req.body);
+    const medicine = new Medicine(body);
     await medicine.save();
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'Medicine added successfully',
+      message: body.taxComplianceStatus === 'pending'
+        ? 'Medicine added successfully. Tax metadata is pending verification.'
+        : 'Medicine added successfully',
       medicine
     });
   } catch (err) {
-    res.status(400).json({
-      error: err.message
+    return res.status(400).json({
+      error: err.message,
+      message: err.message
     });
   }
 };
@@ -93,7 +141,7 @@ exports.addMedicine = async (req, res) => {
 // Get all medicines with stock and tax info
 exports.getAllMedicines = async (req, res) => {
   try {
-    const filter = { is_active: true };
+    const filter = medicineScope(req, { is_active: true });
     if (req.query.item_type === 'capex') {
       filter.$or = [{ item_type: 'capex' }, { is_capex: true }, { item_type: { $exists: false } }];
     } else if (req.query.item_type === 'non_capex') {
@@ -163,7 +211,7 @@ exports.getAllMedicines = async (req, res) => {
 // Get single medicine with stock details and tax info
 exports.getMedicineById = async (req, res) => {
   try {
-    const medicine = await Medicine.findById(req.params.id);
+    const medicine = await Medicine.findOne(medicineScope(req, { _id: req.params.id }));
 
     if (!medicine) {
       return res.status(404).json({
@@ -224,7 +272,7 @@ exports.getMedicineById = async (req, res) => {
 // Update medicine with tax validation and history tracking
 exports.updateMedicine = async (req, res) => {
   try {
-    const medicine = await Medicine.findById(req.params.id);
+    const medicine = await Medicine.findOne(medicineScope(req, { _id: req.params.id }));
 
     if (!medicine) {
       return res.status(404).json({
@@ -258,6 +306,43 @@ exports.updateMedicine = async (req, res) => {
       req.body.gst_rate = parseFloat(req.body.gst_rate);
     }
 
+    // Normalize master-data aliases and medication-safety flags for findOneAndUpdate,
+    // because Mongoose pre('save') hooks do not run for this operation.
+    if (req.body.dosage_form !== undefined && req.body.category === undefined) {
+      req.body.category = req.body.dosage_form || medicine.category;
+    }
+    if (req.body.category !== undefined && req.body.dosage_form === undefined) {
+      req.body.dosage_form = req.body.category || medicine.dosage_form;
+    }
+    if (req.body.manufacturer_brand_owner !== undefined && req.body.manufacturer === undefined) {
+      req.body.manufacturer = req.body.manufacturer_brand_owner;
+    }
+    if (req.body.manufacturer !== undefined && req.body.manufacturer_brand_owner === undefined) {
+      req.body.manufacturer_brand_owner = req.body.manufacturer;
+    }
+
+    const highRiskWasExplicit = req.body.is_high_risk !== undefined || req.body.is_high_alert !== undefined;
+    if (highRiskWasExplicit) {
+      const highRisk = Boolean(req.body.is_high_risk || req.body.is_high_alert);
+      req.body.is_high_risk = highRisk;
+      req.body.is_high_alert = highRisk;
+      req.body.prescription_required = highRisk ? true : (req.body.prescription_required ?? medicine.prescription_required);
+      req.body.medicationSafety = {
+        ...(medicine.medicationSafety?.toObject?.() || medicine.medicationSafety || {}),
+        ...(req.body.medicationSafety || {}),
+        highRisk,
+        requiresDoubleCheck: highRisk
+      };
+    }
+
+    const effectiveHsn = req.body.hsn_code !== undefined ? req.body.hsn_code : medicine.hsn_code;
+    const effectiveGst = req.body.gst_rate !== undefined ? req.body.gst_rate : medicine.gst_rate;
+    if (validateHSNCode(effectiveHsn) && validateGSTRate(effectiveGst)) {
+      req.body.taxComplianceStatus = 'verified';
+    } else if (req.body.hsn_code !== undefined || req.body.gst_rate !== undefined) {
+      req.body.taxComplianceStatus = 'pending';
+    }
+
     // If tax changed, add to history
     if (taxChanged) {
       const historyEntry = {
@@ -271,8 +356,8 @@ exports.updateMedicine = async (req, res) => {
       req.body.gst_history = [...(medicine.gst_history || []), historyEntry];
     }
 
-    const updatedMedicine = await Medicine.findByIdAndUpdate(
-      req.params.id,
+    const updatedMedicine = await Medicine.findOneAndUpdate(
+      medicineScope(req, { _id: req.params.id }),
       req.body,
       {
         new: true,
@@ -297,8 +382,8 @@ exports.updateMedicine = async (req, res) => {
 // Delete medicine (soft delete)
 exports.deleteMedicine = async (req, res) => {
   try {
-    const medicine = await Medicine.findByIdAndUpdate(
-      req.params.id,
+    const medicine = await Medicine.findOneAndUpdate(
+      medicineScope(req, { _id: req.params.id }),
       { is_active: false },
       { new: true }
     );
@@ -324,12 +409,14 @@ exports.getExpiredMedicines = async (req, res) => {
   try {
     const today = new Date();
 
+    const medicineIds = await Medicine.find(medicineScope(req, { is_active: true })).distinct('_id');
     const batches = await MedicineBatch
       .find({
+        medicine_id: { $in: medicineIds },
         expiry_date: { $lt: today },
         quantity: { $gt: 0 }
       })
-      .populate('medicine_id', 'name hsn_code gst_rate');
+      .populate('medicine_id', 'name generic_name brand dosage_form manufacturer manufacturer_brand_owner hsn_code gst_rate is_high_risk is_high_alert medicationSafety');
 
     res.json(batches);
   } catch (err) {
@@ -345,6 +432,7 @@ exports.getLowStockMedicines = async (req, res) => {
     const threshold = parseInt(req.query.threshold) || 10;
 
     const medicines = await Medicine.aggregate([
+      { $match: { hospitalId: hospitalIdFor(req) } },
       {
         $lookup: {
           from: 'medicinebatches',
@@ -414,6 +502,7 @@ exports.searchMedicines = async (req, res) => {
       .limit(Number(limit));
 
     const medicineQuery = {
+      hospitalId: hospitalIdFor(req),
       is_active: true,
       $or: [
         { name: { $regex: escapedTerm, $options: 'i' } },
@@ -433,7 +522,7 @@ exports.searchMedicines = async (req, res) => {
     const medicines = await Medicine
       .find(medicineQuery)
       .limit(Number(limit))
-      .select('name generic_name composition compositions brand strength category hsn_code gst_rate base_unit pack_unit units_per_pack allow_loose_sale min_stock_level location prescription_required is_high_risk is_high_alert medicationSafety is_own_brand manufacturer')
+      .select('name generic_name composition compositions brand strength category dosage_form manufacturer manufacturer_brand_owner hsn_code gst_rate taxComplianceStatus base_unit pack_unit units_per_pack allow_loose_sale min_stock_level location prescription_required is_high_risk is_high_alert medicationSafety is_own_brand masterSource')
       .lean();
 
     if (includeBatches === 'false') {
@@ -507,6 +596,7 @@ exports.getMedicinesByHSN = async (req, res) => {
 
     const medicines = await Medicine
       .find({
+        hospitalId: hospitalIdFor(req),
         hsn_code: { $regex: new RegExp(`^${hsnCode}$`, 'i') },
         is_active: true
       })
@@ -541,10 +631,11 @@ exports.getGSTSummary = async (req, res) => {
 
     // Aggregate GST by HSN code
     const gstSummary = await Medicine.aggregate([
+      { $match: { hospitalId: hospitalIdFor(req) } },
       { $match: matchStage },
       {
         $match: {
-          hsn_code: { $ne: null, $ne: '' }
+          hsn_code: { $type: 'string', $nin: ['', null] }
         }
       },
       {
@@ -570,6 +661,7 @@ exports.getGSTSummary = async (req, res) => {
 
     // Calculate GST rate distribution
     const rateDistribution = await Medicine.aggregate([
+      { $match: { hospitalId: hospitalIdFor(req) } },
       { $match: matchStage },
       {
         $group: {
@@ -588,24 +680,29 @@ exports.getGSTSummary = async (req, res) => {
     ]);
 
     // Get medicines without HSN (non-compliant)
+    const scopedMatch = { hospitalId: hospitalIdFor(req), ...matchStage };
     const missingHSN = await Medicine.countDocuments({
-      ...matchStage,
+      ...scopedMatch,
       $or: [
-        { hsn_code: { $eq: null, $eq: '' } },
+        { hsn_code: null },
+        { hsn_code: '' },
         { hsn_code: { $exists: false } }
       ]
     });
 
-    // Get medicines with invalid GST rates
+    // Get medicines with invalid or unverified GST rates within this hospital.
     const invalidGST = await Medicine.countDocuments({
-      ...matchStage,
-      gst_rate: { $nin: [0, 5, 12, 18, 28] }
+      ...scopedMatch,
+      $or: [
+        { gst_rate: { $nin: [0, 5, 12, 18, 28] } },
+        { taxComplianceStatus: 'pending' }
+      ]
     });
 
     res.json({
       success: true,
       summary: {
-        total_medicines: await Medicine.countDocuments(matchStage),
+        total_medicines: await Medicine.countDocuments(scopedMatch),
         total_medicines_with_gst: gstSummary.reduce((sum, item) => sum + item.medicine_count, 0),
         unique_hsn_codes: gstSummary.length,
         medicines_missing_hsn: missingHSN,
@@ -653,7 +750,7 @@ exports.bulkUpdateGST = async (req, res) => {
           continue;
         }
 
-        const medicine = await Medicine.findById(medicineId);
+        const medicine = await Medicine.findOne(medicineScope(req, { _id: medicineId }));
 
         if (!medicine) {
           errors.push({
@@ -691,6 +788,12 @@ exports.bulkUpdateGST = async (req, res) => {
           updateData.gst_rate = parseFloat(gst_rate);
         }
 
+        const effectiveHsn = updateData.hsn_code !== undefined ? updateData.hsn_code : medicine.hsn_code;
+        const effectiveGst = updateData.gst_rate !== undefined ? updateData.gst_rate : medicine.gst_rate;
+        updateData.taxComplianceStatus = validateHSNCode(effectiveHsn) && validateGSTRate(effectiveGst)
+          ? 'verified'
+          : 'pending';
+
         // Track tax change in history
         if ((updateData.hsn_code && updateData.hsn_code !== medicine.hsn_code) ||
           (updateData.gst_rate !== undefined && updateData.gst_rate !== medicine.gst_rate)) {
@@ -705,8 +808,8 @@ exports.bulkUpdateGST = async (req, res) => {
           updateData.gst_history = [...(medicine.gst_history || []), historyEntry];
         }
 
-        const updatedMedicine = await Medicine.findByIdAndUpdate(
-          medicineId,
+        const updatedMedicine = await Medicine.findOneAndUpdate(
+          medicineScope(req, { _id: medicineId }),
           updateData,
           { new: true }
         );
@@ -744,8 +847,8 @@ exports.bulkUpdateGST = async (req, res) => {
 exports.exportGSTData = async (req, res) => {
   try {
     const medicines = await Medicine
-      .find({ is_active: true })
-      .select('name brand hsn_code gst_rate composition category manufacturer')
+      .find(medicineScope(req, { is_active: true }))
+      .select('name generic_name brand dosage_form hsn_code gst_rate taxComplianceStatus composition category manufacturer manufacturer_brand_owner is_high_risk is_high_alert')
       .sort({ hsn_code: 1, name: 1 })
       .lean();
 
@@ -795,7 +898,7 @@ exports.getMedicineTaxHistory = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const medicine = await Medicine.findById(id)
+    const medicine = await Medicine.findOne(medicineScope(req, { _id: id }))
       .select('name hsn_code gst_rate gst_history');
 
     if (!medicine) {
@@ -839,23 +942,26 @@ exports.getMedicineTaxHistory = async (req, res) => {
 // Get GST compliant medicines (for reporting)
 exports.getGSTCompliantMedicines = async (req, res) => {
   try {
-    const compliant = await Medicine
-      .find({
-        is_active: true,
-        hsn_code: { $ne: null, $ne: '' },
-        gst_rate: { $in: [0, 5, 12, 18, 28] }
-      })
-      .countDocuments();
+    const hospitalId = hospitalIdFor(req);
+    const compliant = await Medicine.countDocuments({
+      hospitalId,
+      is_active: true,
+      hsn_code: { $type: 'string', $nin: ['', null] },
+      gst_rate: { $in: [0, 5, 12, 18, 28] },
+      taxComplianceStatus: { $ne: 'pending' }
+    });
 
-    const nonCompliant = await Medicine
-      .find({
-        is_active: true,
-        $or: [
-          { hsn_code: { $eq: null, $eq: '' } },
-          { gst_rate: { $nin: [0, 5, 12, 18, 28] } }
-        ]
-      })
-      .countDocuments();
+    const nonCompliant = await Medicine.countDocuments({
+      hospitalId,
+      is_active: true,
+      $or: [
+        { hsn_code: null },
+        { hsn_code: '' },
+        { hsn_code: { $exists: false } },
+        { gst_rate: { $nin: [0, 5, 12, 18, 28] } },
+        { taxComplianceStatus: 'pending' }
+      ]
+    });
 
     const total = compliant + nonCompliant;
 
@@ -877,7 +983,7 @@ exports.getGSTCompliantMedicines = async (req, res) => {
 
 exports.getFormulary = async (req, res) => {
   try {
-    const hid = req.user?.hospital_id;
+    const hid = hospitalIdFor(req);
     const search = String(req.query.search || '').trim();
 
     const filter = {
@@ -936,7 +1042,7 @@ exports.getEmergencyStock = async (req, res) => {
   try {
     const medicines = await Medicine
       .find({
-        hospitalId: req.user?.hospital_id,
+        hospitalId: hospitalIdFor(req),
         is_active: true,
         'medicationSafety.emergencyMedicine': true
       })
@@ -991,7 +1097,7 @@ exports.createEmergencyChecklist = async (req, res) => {
 
         medicine = await Medicine.findOne({
           _id: raw.medicineId,
-          hospitalId: req.user?.hospital_id
+          hospitalId: hospitalIdFor(req)
         });
 
         if (!medicine) {
@@ -1029,7 +1135,7 @@ exports.createEmergencyChecklist = async (req, res) => {
     const complete = items.every((x) => x.complete === true);
 
     const row = await EmergencyMedicationChecklist.create({
-      hospitalId: req.user.hospital_id,
+      hospitalId: hospitalIdFor(req),
       location: req.body.location,
       checklistDate: req.body.checklistDate || new Date(),
       items,
@@ -1052,7 +1158,7 @@ exports.createEmergencyChecklist = async (req, res) => {
 
 exports.listEmergencyChecklists = async (req, res) => {
   const f = {
-    hospitalId: req.user.hospital_id
+    hospitalId: hospitalIdFor(req)
   };
 
   if (req.query.location) {
@@ -1074,7 +1180,7 @@ exports.listEmergencyChecklists = async (req, res) => {
 // Get all distinct categories across active medicines & items
 exports.getCategories = async (req, res) => {
   try {
-    const rawCategories = await Medicine.distinct('category', { is_active: true });
+    const rawCategories = await Medicine.distinct('category', medicineScope(req, { is_active: true }));
     const cleanCategories = Array.from(
       new Set(rawCategories.filter(Boolean).map(c => String(c).trim()))
     ).sort((a, b) => a.localeCompare(b));

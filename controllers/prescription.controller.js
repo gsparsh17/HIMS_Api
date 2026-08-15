@@ -14,30 +14,36 @@ const ProcedureRequest = require('../models/ProcedureRequest');
 const Pharmacy = require('../models/Pharmacy');
 const Procedure = require('../models/Procedure');
 const Hospital = require('../models/Hospital');
+const FinancialTransaction = require('../models/FinancialTransaction');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const SafetyPolicy = require('../models/SafetyPolicy');
-const { generatePrescriptionPdf } = require('../services/clinicalPdf.service');
+const { generatePrescriptionPdf, generateOpdSlipPdf } = require('../services/clinicalPdf.service');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
+const { requestHospitalId } = require('../utils/hospitalScope');
 
 
 
 // ============== HELPER FUNCTIONS ==============
 
 // Create Lab Requests from prescription
-async function createLabRequests(prescription, labTestRequests, userId, sourceType, admissionId = null) {
+async function createLabRequests(prescription, labTestRequests, userId, sourceType, admissionId = null, hospitalId = null) {
   const createdRequests = [];
 
   for (const labReq of labTestRequests) {
     let labTest = null;
-    if (labReq.lab_test_id) labTest = await LabTest.findById(labReq.lab_test_id);
-    else if (labReq.lab_test_code) labTest = await LabTest.findOne({ code: labReq.lab_test_code });
+    if (labReq.lab_test_id) labTest = await LabTest.findOne({ _id: labReq.lab_test_id, hospitalId });
+    else if (labReq.lab_test_code) labTest = await LabTest.findOne({ hospitalId, code: labReq.lab_test_code });
 
     if (!labTest) continue;
 
     const labRequest = new LabRequest({
+      hospitalId,
       requestNumber: `LAB-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      orderGroupId: prescription._id,
+      orderNumber: prescription.prescription_number || undefined,
+      requestGroupKey: `RX:${prescription._id}`,
       sourceType: sourceType || 'OPD',
       admissionId: admissionId || null,
       appointmentId: prescription.appointment_id || null,
@@ -76,17 +82,18 @@ async function createLabRequests(prescription, labTestRequests, userId, sourceTy
 }
 
 // Create Radiology Requests from prescription
-async function createRadiologyRequests(prescription, radiologyRequests, userId, sourceType, admissionId = null) {
+async function createRadiologyRequests(prescription, radiologyRequests, userId, sourceType, admissionId = null, hospitalId = null) {
   const createdRequests = [];
 
   for (const radReq of radiologyRequests) {
     let imagingTest = null;
-    if (radReq.imaging_test_id) imagingTest = await ImagingTest.findById(radReq.imaging_test_id);
-    else if (radReq.imaging_test_code) imagingTest = await ImagingTest.findOne({ code: radReq.imaging_test_code });
+    if (radReq.imaging_test_id) imagingTest = await ImagingTest.findOne({ _id: radReq.imaging_test_id, hospitalId });
+    else if (radReq.imaging_test_code) imagingTest = await ImagingTest.findOne({ hospitalId, code: radReq.imaging_test_code });
 
     if (!imagingTest) continue;
 
     const radiologyRequest = new RadiologyRequest({
+      hospitalId,
       requestNumber: `RAD-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       sourceType: sourceType || 'OPD',
       admissionId: admissionId || null,
@@ -125,17 +132,18 @@ async function createRadiologyRequests(prescription, radiologyRequests, userId, 
 }
 
 // Create Procedure Requests from prescription
-async function createProcedureRequests(prescription, procedureRequests, userId, sourceType, admissionId = null) {
+async function createProcedureRequests(prescription, procedureRequests, userId, sourceType, admissionId = null, hospitalId = null) {
   const createdRequests = [];
 
   for (const procReq of procedureRequests) {
     let procedure = null;
-    if (procReq.procedure_id) procedure = await Procedure.findById(procReq.procedure_id);
-    else if (procReq.procedure_code) procedure = await Procedure.findOne({ code: procReq.procedure_code });
+    if (procReq.procedure_id) procedure = await Procedure.findOne({ _id: procReq.procedure_id, hospitalId });
+    else if (procReq.procedure_code) procedure = await Procedure.findOne({ hospitalId, code: procReq.procedure_code });
 
     if (!procedure) continue;
 
     const procedureRequest = new ProcedureRequest({
+      hospitalId,
       requestNumber: `PROC-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       sourceType: sourceType || 'OPD',
       admissionId: admissionId || null,
@@ -265,6 +273,47 @@ async function createPharmacyRequest(medication, requestedQuantity = null) {
   }
 }
 
+
+async function prescriptionTenant(req, prescription, { notFound = false } = {}) {
+  const hospitalId = requestHospitalId(req);
+  const patientId = prescription?.patient_id?._id || prescription?.patient_id;
+  if (!patientId) {
+    const error = new Error('Prescription patient is missing');
+    error.statusCode = 400;
+    throw error;
+  }
+  const patient = await Patient.findOne({ _id: patientId, hospitalId }).select('_id hospitalId allergies').lean();
+  if (!patient) {
+    const error = new Error(notFound ? 'Prescription not found' : 'Cross-hospital prescription access is not permitted');
+    error.statusCode = notFound ? 404 : 403;
+    throw error;
+  }
+  return { hospitalId, patient };
+}
+
+async function validatePrescriptionActors(req, { hospitalId, patientId, doctorId, appointmentId }) {
+  const [patient, doctor] = await Promise.all([
+    Patient.findOne({ _id: patientId, hospitalId }).select('_id hospitalId allergies').lean(),
+    Doctor.findOne({ _id: doctorId, hospitalId }).select('_id hospitalId user_id email').lean()
+  ]);
+  if (!patient) { const error = new Error('Patient not found for this hospital'); error.statusCode = 404; throw error; }
+  if (!doctor) { const error = new Error('Doctor not found for this hospital'); error.statusCode = 404; throw error; }
+  if (req.user?.role === 'doctor') {
+    const ownsDoctor = (doctor.user_id && String(doctor.user_id) === String(req.user._id)) ||
+      (doctor.email && req.user.email && String(doctor.email).toLowerCase() === String(req.user.email).toLowerCase());
+    if (!ownsDoctor) { const error = new Error('Doctors may create prescriptions only under their own doctor profile'); error.statusCode = 403; throw error; }
+  }
+  let appointment = null;
+  if (appointmentId) {
+    appointment = await Appointment.findOne({ _id: appointmentId, hospital_id: hospitalId }).select('_id patient_id doctor_id hospital_id').lean();
+    if (!appointment) { const error = new Error('Appointment not found for this hospital'); error.statusCode = 404; throw error; }
+    if (String(appointment.patient_id) !== String(patientId) || String(appointment.doctor_id) !== String(doctorId)) {
+      const error = new Error('Appointment, patient and doctor do not match'); error.statusCode = 409; throw error;
+    }
+  }
+  return { patient, doctor, appointment };
+}
+
 exports.createPrescription = async (req, res) => {
   try {
     const {
@@ -305,12 +354,19 @@ exports.createPrescription = async (req, res) => {
     const selectedMedicineIds = Array.isArray(items)
       ? items.map((x) => x.medicine_id).filter(Boolean)
       : [];
+    const prescriptionHospitalId = requestHospitalId(req);
+    const prescriptionActors = await validatePrescriptionActors(req, {
+      hospitalId: prescriptionHospitalId,
+      patientId: patient_id,
+      doctorId: doctor_id,
+      appointmentId: appointment_id
+    });
     const selectedMedicines = selectedMedicineIds.length
-      ? await Medicine.find({ _id: { $in: selectedMedicineIds } }).select('name generic_name medicationSafety').lean()
+      ? await Medicine.find({ _id: { $in: selectedMedicineIds }, hospitalId: prescriptionHospitalId }).select('name generic_name brand dosage_form manufacturer manufacturer_brand_owner is_high_risk is_high_alert prescription_required medicationSafety').lean()
       : [];
     const medicineSafetyById = new Map(selectedMedicines.map((x) => [String(x._id), x]));
     const antimicrobialPolicy = await SafetyPolicy.findOne({
-      hospitalId: req.user?.hospital_id,
+      hospitalId: prescriptionHospitalId,
       policyType: 'antimicrobial_usage',
       active: true,
       $or: [{ effectiveTo: null }, { effectiveTo: { $exists: false } }, { effectiveTo: { $gte: new Date() } }]
@@ -404,8 +460,7 @@ exports.createPrescription = async (req, res) => {
     // round when the caller does not send it explicitly.
     let resolvedAllergySnapshot = String(allergy_snapshot || '').trim();
     if (!resolvedAllergySnapshot && patient_id) {
-      const patient = await Patient.findById(patient_id).select('allergies').lean();
-      resolvedAllergySnapshot = String(patient?.allergies || '').trim();
+      resolvedAllergySnapshot = String(prescriptionActors?.patient?.allergies || '').trim();
     }
 
     let resolvedPainScore = pain_score;
@@ -422,6 +477,7 @@ exports.createPrescription = async (req, res) => {
 
     // Create prescription first
     const prescription = new Prescription({
+      hospitalId: prescriptionHospitalId,
       patient_id,
       doctor_id,
       appointment_id: appointment_id || null,
@@ -456,19 +512,19 @@ exports.createPrescription = async (req, res) => {
     // Create Lab Requests
     const createdLabRequests = await createLabRequests(
       prescription, lab_test_requests, req.user?._id,
-      source_type || 'OPD', ipd_admission_id || null
+      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId
     );
 
     // Create Radiology Requests
     const createdRadiologyRequests = await createRadiologyRequests(
       prescription, radiology_test_requests, req.user?._id,
-      source_type || 'OPD', ipd_admission_id || null
+      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId
     );
 
     // Create Procedure Requests
     const createdProcedureRequests = await createProcedureRequests(
       prescription, procedure_requests, req.user?._id,
-      source_type || 'OPD', ipd_admission_id || null
+      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId
     );
 
     // Update prescription with request IDs
@@ -741,10 +797,71 @@ exports.downloadBlankPrescriptionPdfByAppointment = async (req, res) => {
   }
 };
 
-// Generate the hospital prescription template as a two-page PDF.
+// Generate the supplied OPD slip / prescription format through the shared
+// clinical PDF renderer. Data loading stays in the controller; visual rendering
+// stays in clinicalPdf.service.js so prescription documents share one PDF stack.
+exports.downloadOpdSlipPdf = async (req, res) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const prescription = await Prescription.findOne({ _id: req.params.id, hospitalId })
+      .populate('patient_id', 'hospitalId salutation first_name middle_name last_name patientId uhid phone dob gender address city state zipCode allergies medical_history')
+      .populate({
+        path: 'doctor_id',
+        select: 'firstName lastName specialization department hospitalId',
+        populate: { path: 'department', select: 'name' }
+      })
+      .populate('appointment_id', 'hospital_id token serial_number appointment_date created_at department_id')
+      .populate('created_by', 'firstName lastName name email')
+      .lean();
+
+    if (!prescription) return res.status(404).json({ success: false, error: 'OPD prescription/slip not found for this hospital' });
+
+    const date = prescription.appointment_id?.appointment_date || prescription.createdAt || prescription.issue_date;
+    const receiptQuery = {
+      hospitalId,
+      patientId: prescription.patient_id?._id,
+      sourceModule: 'OPD',
+      transactionType: 'RECEIPT',
+      status: 'POSTED'
+    };
+    if (date) {
+      const d = new Date(date);
+      const from = new Date(d); from.setHours(0, 0, 0, 0);
+      const to = new Date(d); to.setHours(23, 59, 59, 999);
+      receiptQuery.postedAt = { $gte: from, $lte: to };
+    }
+
+    const [hospital, vitals, receipt] = await Promise.all([
+      Hospital.findById(hospitalId).lean(),
+      Vital.findOne({
+        $or: [
+          { prescription_id: prescription._id },
+          ...(prescription.appointment_id?._id ? [{ appointment_id: prescription.appointment_id._id }] : [])
+        ]
+      }).sort({ recorded_at: -1, createdAt: -1 }).lean(),
+      prescription.patient_id?._id
+        ? FinancialTransaction.findOne(receiptQuery).sort({ postedAt: -1 }).select('transactionNumber').lean()
+        : null
+    ]);
+
+    return generateOpdSlipPdf({
+      res,
+      prescription,
+      hospital,
+      vitals,
+      receipt,
+      printedBy: req.user
+    });
+  } catch (err) {
+    console.error('Error generating OPD slip PDF:', err);
+    if (!res.headersSent) return res.status(err.statusCode || 500).json({ success: false, error: err.message });
+    return undefined;
+  }
+};
+
 exports.downloadPrescriptionPdf = async (req, res) => {
   try {
-    const prescription = await Prescription.findById(req.params.id)
+    const prescription = await Prescription.findOne({ _id: req.params.id, hospitalId: requestHospitalId(req) })
       .populate('patient_id', 'salutation first_name middle_name last_name patientId uhid phone dob gender address city state zipCode allergies medical_history registered_at patient_type')
       .populate({
         path: 'doctor_id',
@@ -775,7 +892,7 @@ exports.downloadPrescriptionPdf = async (req, res) => {
 // Get the prescription linked to a specific appointment.
 exports.getPrescriptionByAppointmentId = async (req, res) => {
   try {
-    const prescription = await Prescription.findOne({ appointment_id: req.params.appointmentId })
+    const prescription = await Prescription.findOne({ appointment_id: req.params.appointmentId, hospitalId: requestHospitalId(req) })
       .populate('patient_id', 'first_name last_name patientId phone dob gender allergies')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
@@ -808,7 +925,7 @@ exports.getPrescriptionByAppointmentId = async (req, res) => {
 // Get prescription by ID (with populated requests and admission details)
 exports.getPrescriptionById = async (req, res) => {
   try {
-    const prescription = await Prescription.findById(req.params.id)
+    const prescription = await Prescription.findOne({ _id: req.params.id, hospitalId: requestHospitalId(req) })
       .populate('patient_id', 'first_name last_name patientId phone dob gender')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('ipd_medication_ids', 'medicineName dosage frequency status')
@@ -871,7 +988,7 @@ exports.getAllPrescriptions = async (req, res) => {
       endDate
     } = req.query;
 
-    const filter = {};
+    const filter = { hospitalId: requestHospitalId(req) };
     if (patient_id) filter.patient_id = patient_id;
     if (doctor_id) filter.doctor_id = doctor_id;
     if (source_type) filter.source_type = source_type;
@@ -951,7 +1068,10 @@ exports.getPrescriptionsByPatientId = async (req, res) => {
     const { patientId } = req.params;
     const { status, page = 1, limit = 10 } = req.query;
 
-    const filter = { patient_id: patientId };
+    const hospitalId = requestHospitalId(req);
+    const patientExists = await Patient.exists({ _id: patientId, hospitalId });
+    if (!patientExists) return res.status(404).json({ error: 'Patient not found' });
+    const filter = { hospitalId, patient_id: patientId };
     if (status) filter.status = status;
 
     const prescriptions = await Prescription.find(filter)
@@ -1016,8 +1136,12 @@ exports.getPrescriptionsByPatientId = async (req, res) => {
 exports.getIPDPrescriptions = async (req, res) => {
   try {
     const { admissionId } = req.params;
+    const hospitalId = requestHospitalId(req);
+    const admissionExists = await IPDAdmission.exists({ _id: admissionId, hospitalId });
+    if (!admissionExists) return res.status(404).json({ error: 'IPD admission not found' });
 
     const prescriptions = await Prescription.find({
+      hospitalId,
       ipd_admission_id: admissionId,
       source_type: 'IPD'
     })
@@ -1030,7 +1154,7 @@ exports.getIPDPrescriptions = async (req, res) => {
 
     // ========== FIX: Get admission details ==========
     const IPDAdmission = require('../models/IPDAdmission');
-    const admission = await IPDAdmission.findById(admissionId)
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId })
       .populate('wardId', 'name code')
       .populate('bedId', 'bedNumber name')
       .populate('roomId', 'room_number')
@@ -1085,6 +1209,7 @@ exports.getActivePrescriptions = async (req, res) => {
     const { page = 1, limit = 10, patient_id } = req.query;
 
     const filter = {
+      hospitalId: requestHospitalId(req),
       status: 'Active',
       issue_date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
     };
@@ -1167,7 +1292,8 @@ async function reconcilePrescriptionRequests({
   createRequests,
   updateExisting,
   toEmbedded,
-  userId
+  userId,
+  hospitalId
 }) {
   const existingEmbedded = Array.isArray(prescription[embeddedField])
     ? prescription[embeddedField].map(embeddedRequestObject)
@@ -1217,7 +1343,8 @@ async function reconcilePrescriptionRequests({
     newIncoming,
     userId,
     prescription.source_type || 'OPD',
-    prescription.ipd_admission_id || null
+    prescription.ipd_admission_id || null,
+    hospitalId
   );
 
   if (removedIds.length) {
@@ -1308,8 +1435,9 @@ function normaliseUpdatedMedicationItems(existingPrescription, incomingItems) {
 // Update prescription
 exports.updatePrescription = async (req, res) => {
   try {
-    const prescription = await Prescription.findById(req.params.id);
+    const prescription = await Prescription.findOne({ _id: req.params.id, hospitalId: requestHospitalId(req) });
     if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
+    const { hospitalId: prescriptionHospitalId } = await prescriptionTenant(req, prescription, { notFound: true });
 
     const createdAt = prescription.createdAt || prescription.issue_date;
     if (!createdAt || Date.now() - new Date(createdAt).getTime() > PRESCRIPTION_EDIT_WINDOW_MS) {
@@ -1382,11 +1510,12 @@ exports.updatePrescription = async (req, res) => {
         RequestModel: LabRequest,
         createRequests: createLabRequests,
         userId: req.user?._id,
+        hospitalId: prescriptionHospitalId,
         updateExisting: async (requestDocument, item) => {
           const labTestId = item.lab_test_id || requestDocument.labTestId;
           const labTest = labTestId
-            ? await LabTest.findById(labTestId)
-            : await LabTest.findOne({ code: item.lab_test_code });
+            ? await LabTest.findOne({ _id: labTestId, hospitalId: prescriptionHospitalId })
+            : await LabTest.findOne({ hospitalId: prescriptionHospitalId, code: item.lab_test_code });
           if (!labTest) {
             const error = new Error(`Lab test not found: ${item.lab_test_code || item.lab_test_name}`);
             error.statusCode = 400;
@@ -1429,11 +1558,12 @@ exports.updatePrescription = async (req, res) => {
         RequestModel: RadiologyRequest,
         createRequests: createRadiologyRequests,
         userId: req.user?._id,
+        hospitalId: prescriptionHospitalId,
         updateExisting: async (requestDocument, item) => {
           const imagingTestId = item.imaging_test_id || requestDocument.imagingTestId;
           const imagingTest = imagingTestId
-            ? await ImagingTest.findById(imagingTestId)
-            : await ImagingTest.findOne({ code: item.imaging_test_code });
+            ? await ImagingTest.findOne({ _id: imagingTestId, hospitalId: prescriptionHospitalId })
+            : await ImagingTest.findOne({ hospitalId: prescriptionHospitalId, code: item.imaging_test_code });
           if (!imagingTest) {
             const error = new Error(`Imaging test not found: ${item.imaging_test_code || item.imaging_test_name}`);
             error.statusCode = 400;
@@ -1476,11 +1606,12 @@ exports.updatePrescription = async (req, res) => {
         RequestModel: ProcedureRequest,
         createRequests: createProcedureRequests,
         userId: req.user?._id,
+        hospitalId: prescriptionHospitalId,
         updateExisting: async (requestDocument, item) => {
           const procedureId = item.procedure_id || requestDocument.procedureId;
           const procedure = procedureId
-            ? await Procedure.findById(procedureId)
-            : await Procedure.findOne({ code: item.procedure_code });
+            ? await Procedure.findOne({ _id: procedureId, hospitalId: prescriptionHospitalId })
+            : await Procedure.findOne({ hospitalId: prescriptionHospitalId, code: item.procedure_code });
           if (!procedure) {
             const error = new Error(`Procedure not found: ${item.procedure_code || item.procedure_name}`);
             error.statusCode = 400;
@@ -1543,11 +1674,10 @@ exports.updatePrescription = async (req, res) => {
 exports.deletePrescription = async (req, res) => {
   try {
     const { id } = req.params;
-    const prescription = await Prescription.findByIdAndDelete(id);
-
-    if (!prescription) {
-      return res.status(404).json({ error: 'Prescription not found' });
-    }
+    const prescription = await Prescription.findOne({ _id: id, hospitalId: requestHospitalId(req) });
+    if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
+    await prescriptionTenant(req, prescription, { notFound: true });
+    await Prescription.deleteOne({ _id: prescription._id });
 
     res.json({
       success: true,
@@ -1565,10 +1695,11 @@ exports.dispenseMedication = async (req, res) => {
     const { prescriptionId, itemIndex } = req.params;
     const { dispensed_quantity, batch_id } = req.body;
 
-    const prescription = await Prescription.findById(prescriptionId);
+    const prescription = await Prescription.findOne({ _id: prescriptionId, hospitalId: requestHospitalId(req) });
     if (!prescription) {
       return res.status(404).json({ error: 'Prescription not found' });
     }
+    await prescriptionTenant(req, prescription, { notFound: true });
 
     if (itemIndex >= prescription.items.length) {
       return res.status(400).json({ error: 'Invalid item index' });
@@ -1616,7 +1747,10 @@ exports.getPrescriptionsByDoctorId = async (req, res) => {
     const { doctorId } = req.params;
     const { status, page = 1, limit = 10 } = req.query;
 
-    const filter = { doctor_id: doctorId };
+    const hospitalId = requestHospitalId(req);
+    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId });
+    if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
+    const filter = { hospitalId, doctor_id: doctorId };
     if (status) filter.status = status;
 
     const prescriptions = await Prescription.find(filter)

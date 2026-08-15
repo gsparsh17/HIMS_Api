@@ -1,0 +1,481 @@
+{
+  "source": {
+    "filename": "Hospital_Basic_Tariff_List.docx",
+    "sha256": "10ae516c4da453117660db7dfea7d9105893da41de68453b94e45f7a543a2c20",
+    "importVersion": "2026-08-15",
+    "title": "Hospital Basic Tariff List"
+  },
+  "effectiveFrom": "2026-08-15",
+  "currency": "INR",
+  "primaryServices": [
+    {
+      "serialNumber": 1,
+      "particular": "Bed Charges / Day",
+      "rates": {
+        "general": 1700.0,
+        "private": 3500.0,
+        "deluxe": 4500.0,
+        "icu": 4300.0
+      }
+    },
+    {
+      "serialNumber": 2,
+      "particular": "Nursing Charges / Day",
+      "rates": {
+        "general": 300.0,
+        "private": 500.0,
+        "deluxe": 600.0,
+        "icu": 600.0
+      }
+    },
+    {
+      "serialNumber": 3,
+      "particular": "RMO Charges / Day",
+      "rates": {
+        "general": 200.0,
+        "private": 300.0,
+        "deluxe": 300.0,
+        "icu": 500.0
+      }
+    },
+    {
+      "serialNumber": 4,
+      "particular": "Specialist Consultation / Visit",
+      "rates": {
+        "general": 500.0,
+        "private": 750.0,
+        "deluxe": 750.0,
+        "icu": 1000.0
+      }
+    },
+    {
+      "serialNumber": 5,
+      "particular": "Super Specialist Consultation / Visit",
+      "rates": {
+        "general": 1000.0,
+        "private": 1000.0,
+        "deluxe": 1000.0,
+        "icu": 1500.0
+      }
+    },
+    {
+      "serialNumber": 6,
+      "particular": "USG Routine Pregnancy",
+      "rates": {
+        "general": 1200.0,
+        "private": 1200.0,
+        "deluxe": 1200.0,
+        "icu": 1200.0
+      }
+    },
+    {
+      "serialNumber": 7,
+      "particular": "USG KUB",
+      "rates": {
+        "general": 1200.0,
+        "private": 1200.0,
+        "deluxe": 1200.0,
+        "icu": 1200.0
+      }
+    },
+    {
+      "serialNumber": 8,
+      "particular": "USG Renal KUB",
+      "rates": {
+        "general": 1200.0,
+        "private": 1200.0,
+        "deluxe": 1200.0,
+        "icu": 1200.0
+      }
+    },
+    {
+      "serialNumber": 9,
+      "particular": "USG Routine Pregnancy",
+      "rates": {
+        "general": 1200.0,
+        "private": 1200.0,
+        "deluxe": 1200.0,
+        "icu": 1200.0
+      }
+    },
+    {
+      "serialNumber": 10,
+      "particular": "USG Guided",
+      "rates": {
+        "general": 2500.0,
+        "private": 2500.0,
+        "deluxe": 2500.0,
+        "icu": 2500.0
+      }
+    },
+    {
+      "serialNumber": 11,
+      "particular": "USG TVS",
+      "rates": {
+        "general": 1200.0,
+        "private": 1200.0,
+        "deluxe": 1200.0,
+        "icu": 1200.0
+      }
+    },
+    {
+      "serialNumber": 12,
+      "particular": "X-Ray Chest PA",
+      "rates": {
+        "general": 335.0,
+        "private": 335.0,
+        "deluxe": 335.0,
+        "icu": 335.0
+      }
+    },
+    {
+      "serialNumber": 13,
+      "particular": "X-Ray 1 Film",
+      "rates": {
+        "general": 360.0,
+        "private": 360.0,
+        "deluxe": 360.0,
+        "icu": 360.0
+      }
+    },
+    {
+      "serialNumber": 14,
+      "particular": "X-Ray 2 Film",
+      "rates": {
+        "general": 620.0,
+        "private": 620.0,
+        "deluxe": 620.0,
+        "icu": 620.0
+      }
+    },
+    {
+      "serialNumber": 15,
+      "particular": "ECG",
+      "rates": {
+        "general": 320.0,
+        "private": 320.0,
+        "deluxe": 360.0,
+        "icu": 360.0
+      }
+    },
+    {
+      "serialNumber": 16,
+      "particular": "Large Dressing",
+      "rates": {
+        "general": 800.0,
+        "private": 800.0,
+        "deluxe": 800.0,
+        "icu": 800.0
+      }
+    },
+    {
+      "serialNumber": 17,
+      "particular": "Small Dressing",
+      "rates": {
+        "general": 300.0,
+        "private": 300.0,
+        "deluxe": 300.0,
+        "icu": 300.0
+      }
+    },
+    {
+      "serialNumber": 18,
+      "particular": "Major Dressing",
+      "rates": {
+        "general": 1500.0,
+        "private": 1500.0,
+        "deluxe": 1500.0,
+        "icu": 1500.0
+      }
+    },
+    {
+      "serialNumber": 19,
+      "particular": "Medium Dressing",
+      "rates": {
+        "general": 500.0,
+        "private": 500.0,
+        "deluxe": 500.0,
+        "icu": 500.0
+      }
+    },
+    {
+      "serialNumber": 20,
+      "particular": "Echo",
+      "rates": {
+        "general": 2000.0,
+        "private": 2000.0,
+        "deluxe": 2000.0,
+        "icu": 2000.0
+      }
+    },
+    {
+      "serialNumber": 21,
+      "particular": "Chemotherapy Infusion",
+      "rates": {
+        "general": 1500.0,
+        "private": 1500.0,
+        "deluxe": 1500.0,
+        "icu": 1500.0
+      }
+    },
+    {
+      "serialNumber": 22,
+      "particular": "Fluid Tapping Ascitic (Diagnostic)",
+      "rates": {
+        "general": 1500.0,
+        "private": 1500.0,
+        "deluxe": 1500.0,
+        "icu": 1500.0
+      }
+    },
+    {
+      "serialNumber": 23,
+      "particular": "Intubation",
+      "rates": {
+        "general": 1500.0,
+        "private": 1500.0,
+        "deluxe": 1500.0,
+        "icu": 1500.0
+      }
+    },
+    {
+      "serialNumber": 24,
+      "particular": "MLC Charges",
+      "rates": {
+        "general": 1000.0,
+        "private": 1000.0,
+        "deluxe": 1000.0,
+        "icu": 1000.0
+      }
+    },
+    {
+      "serialNumber": 25,
+      "particular": "Monitor Charges",
+      "rates": {
+        "general": 400.0,
+        "private": 400.0,
+        "deluxe": 400.0,
+        "icu": 500.0
+      }
+    },
+    {
+      "serialNumber": 26,
+      "particular": "Oxygen - Per Hour",
+      "rates": {
+        "general": 100.0,
+        "private": 100.0,
+        "deluxe": 100.0,
+        "icu": 100.0
+      }
+    },
+    {
+      "serialNumber": 27,
+      "particular": "Syringe Pump - P/T",
+      "rates": {
+        "general": 300.0,
+        "private": 300.0,
+        "deluxe": 300.0,
+        "icu": 300.0
+      }
+    },
+    {
+      "serialNumber": 28,
+      "particular": "Ryles Tube Insertion",
+      "rates": {
+        "general": 500.0,
+        "private": 500.0,
+        "deluxe": 500.0,
+        "icu": 500.0
+      }
+    },
+    {
+      "serialNumber": 29,
+      "particular": "Foley's Catheterization",
+      "rates": {
+        "general": 250.0,
+        "private": 250.0,
+        "deluxe": 250.0,
+        "icu": 250.0
+      }
+    },
+    {
+      "serialNumber": 30,
+      "particular": "Central Line Insertion - Adult",
+      "rates": {
+        "general": 1500.0,
+        "private": 1500.0,
+        "deluxe": 1500.0,
+        "icu": 1500.0
+      }
+    },
+    {
+      "serialNumber": 31,
+      "particular": "Injection Charges",
+      "rates": {
+        "general": 100.0,
+        "private": 100.0,
+        "deluxe": 100.0,
+        "icu": 100.0
+      }
+    },
+    {
+      "serialNumber": 32,
+      "particular": "Ventilator - Per Day (Adult/Paediatric)",
+      "rates": {
+        "general": 4000.0,
+        "private": 4000.0,
+        "deluxe": 4000.0,
+        "icu": 4000.0
+      }
+    },
+    {
+      "serialNumber": 33,
+      "particular": "BiPAP",
+      "rates": {
+        "general": 3000.0,
+        "private": 3000.0,
+        "deluxe": 3000.0,
+        "icu": 3000.0
+      }
+    },
+    {
+      "serialNumber": 34,
+      "particular": "CBC",
+      "rates": {
+        "general": 245.0,
+        "private": 245.0,
+        "deluxe": 280.0,
+        "icu": 280.0
+      }
+    },
+    {
+      "serialNumber": 35,
+      "particular": "RFT",
+      "rates": {
+        "general": 500.0,
+        "private": 500.0,
+        "deluxe": 575.0,
+        "icu": 575.0
+      }
+    },
+    {
+      "serialNumber": 36,
+      "particular": "LFT",
+      "rates": {
+        "general": 600.0,
+        "private": 600.0,
+        "deluxe": 690.0,
+        "icu": 690.0
+      }
+    },
+    {
+      "serialNumber": 37,
+      "particular": "HIV",
+      "rates": {
+        "general": 500.0,
+        "private": 500.0,
+        "deluxe": 575.0,
+        "icu": 575.0
+      }
+    },
+    {
+      "serialNumber": 38,
+      "particular": "HBsAg",
+      "rates": {
+        "general": 400.0,
+        "private": 400.0,
+        "deluxe": 460.0,
+        "icu": 460.0
+      }
+    },
+    {
+      "serialNumber": 39,
+      "particular": "HCV",
+      "rates": {
+        "general": 400.0,
+        "private": 400.0,
+        "deluxe": 460.0,
+        "icu": 460.0
+      }
+    },
+    {
+      "serialNumber": 40,
+      "particular": "Blood Group",
+      "rates": {
+        "general": 85.0,
+        "private": 85.0,
+        "deluxe": 100.0,
+        "icu": 100.0
+      }
+    },
+    {
+      "serialNumber": 41,
+      "particular": "Urine Routine Examination",
+      "rates": {
+        "general": 100.0,
+        "private": 100.0,
+        "deluxe": 110.0,
+        "icu": 110.0
+      }
+    },
+    {
+      "serialNumber": 42,
+      "particular": "Electrolyte",
+      "rates": {
+        "general": 385.0,
+        "private": 385.0,
+        "deluxe": 440.0,
+        "icu": 440.0
+      }
+    },
+    {
+      "serialNumber": 43,
+      "particular": "Prothrombin Time",
+      "rates": {
+        "general": 280.0,
+        "private": 280.0,
+        "deluxe": 325.0,
+        "icu": 325.0
+      }
+    },
+    {
+      "serialNumber": 44,
+      "particular": "ABG",
+      "rates": {
+        "general": 1500.0,
+        "private": 1500.0,
+        "deluxe": 1500.0,
+        "icu": 1500.0
+      }
+    }
+  ],
+  "otCharges": [
+    {
+      "serialNumber": 1,
+      "particular": "O.T. Charges G.A. (Per Hour)",
+      "hourlyRates": [
+        4000.0,
+        3500.0,
+        3000.0
+      ]
+    },
+    {
+      "serialNumber": 2,
+      "particular": "O.T. Charges S.A. (Per Hour)",
+      "hourlyRates": [
+        3000.0,
+        2500.0,
+        2000.0
+      ]
+    },
+    {
+      "serialNumber": 3,
+      "particular": "O.T. Charges L.A. (Per Hour)",
+      "hourlyRates": [
+        2000.0,
+        2000.0,
+        2000.0
+      ]
+    }
+  ]
+}

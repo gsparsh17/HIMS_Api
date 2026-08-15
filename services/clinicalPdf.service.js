@@ -1194,4 +1194,156 @@ function generatePrescriptionPdf({ res, prescription, hospital, vitals }) {
   doc.end();
 }
 
-module.exports = { generateLabReportPdf, generatePrescriptionPdf };
+
+function userDisplayName(user) {
+  if (!user) return '-';
+  const output = [user.firstName || user.first_name, user.lastName || user.last_name].filter(Boolean).join(' ');
+  return output || text(user.name || user.email, '-');
+}
+
+function drawOpdField(doc, label, value, x, y, labelWidth = mm(27), width = mm(86)) {
+  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(7).text(`${label}:`, x, y, {
+    width: labelWidth,
+    continued: true,
+    lineBreak: false
+  });
+  doc.font('Helvetica').text(` ${text(value, '-')}`, { width: width - labelWidth, ellipsis: true });
+}
+
+function vitalDisplay(vitals, key, suffix = '') {
+  const value = vitals?.[key];
+  return value === null || value === undefined || value === '' ? '-' : `${value}${suffix}`;
+}
+
+function drawOpdMedicationTable(doc, prescription, y) {
+  const left = PAGE.margin;
+  const totalWidth = PAGE.width - PAGE.margin * 2;
+  const widths = [mm(8), mm(66), mm(24), mm(25), mm(18), totalWidth - mm(141)];
+  const labels = ['#', 'Medicine', 'Dose', 'Frequency', 'Days', 'Instructions'];
+  let x = left;
+  labels.forEach((label, index) => {
+    doc.rect(x, y, widths[index], mm(8)).fillAndStroke(COLORS.header, COLORS.ink);
+    doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(6.4).text(label, x + 2, y + mm(2.2), {
+      width: widths[index] - 4,
+      align: 'center',
+      lineBreak: false
+    });
+    x += widths[index];
+  });
+  y += mm(8);
+  const items = Array.isArray(prescription.items) ? prescription.items : [];
+  if (!items.length) {
+    doc.rect(left, y, totalWidth, mm(12)).strokeColor(COLORS.ink).stroke();
+    doc.fillColor(COLORS.muted).font('Helvetica').fontSize(7).text('No medicines documented.', left + 4, y + mm(3), { width: totalWidth - 8 });
+    return y + mm(12);
+  }
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index] || {};
+    const medicine = [item.medicine_name, item.generic_name && item.generic_name !== item.medicine_name ? `(${item.generic_name})` : ''].filter(Boolean).join(' ');
+    const values = [index + 1, medicine, item.dosage || '-', item.frequency || '-', item.duration || '-', item.instructions || '-'];
+    const height = Math.max(mm(9), Math.min(mm(18), Math.max(...values.map((value, col) => doc.heightOfString(String(value), { width: widths[col] - 5 }))) + mm(3)));
+    if (y + height > CONTENT_BOTTOM - mm(10)) {
+      doc.addPage();
+      y = PAGE.margin;
+      x = left;
+      labels.forEach((label, col) => {
+        doc.rect(x, y, widths[col], mm(8)).fillAndStroke(COLORS.header, COLORS.ink);
+        doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(6.4).text(label, x + 2, y + mm(2.2), { width: widths[col] - 4, align: 'center', lineBreak: false });
+        x += widths[col];
+      });
+      y += mm(8);
+    }
+    x = left;
+    values.forEach((value, col) => {
+      doc.rect(x, y, widths[col], height).lineWidth(0.35).strokeColor(COLORS.ink).stroke();
+      doc.fillColor(COLORS.ink).font(col === 1 ? 'Helvetica-Bold' : 'Helvetica').fontSize(6.4).text(String(value), x + 2, y + mm(2), {
+        width: widths[col] - 4,
+        height: height - mm(3),
+        align: col === 0 ? 'center' : 'left',
+        ellipsis: true
+      });
+      x += widths[col];
+    });
+    y += height;
+  }
+  return y;
+}
+
+function generateOpdSlipPdf({ res, prescription, hospital, vitals, receipt, printedBy }) {
+  const patient = prescription.patient_id || {};
+  const doctor = prescription.doctor_id || {};
+  const appointment = prescription.appointment_id || {};
+  const token = appointment.token || appointment.serial_number || prescription.prescription_number || prescription._id;
+  const filename = `opd-slip-${text(token, 'prescription')}.pdf`;
+  configureResponse(res, filename);
+  const doc = createDocument();
+  doc.pipe(res);
+
+  drawDocumentHeader(
+    doc,
+    hospital,
+    'OPD SLIP / PRESCRIPTION',
+    doctor.department?.name || doctor.specialization || 'Out Patient Department',
+    { barcodeValue: prescription.prescription_number || token }
+  );
+
+  const left = PAGE.margin;
+  const width = PAGE.width - PAGE.margin * 2;
+  const half = width / 2;
+  let y = doc.y;
+  drawOpdField(doc, 'Patient Name', fullName(patient), left, y, mm(29), half - mm(3));
+  drawOpdField(doc, 'Age / Sex', `${calculateAge(patient.dob)} / ${text(patient.gender, '-')}`, left + half, y, mm(24), half); y += mm(7);
+  drawOpdField(doc, 'Consultant', fullName(doctor, 'Dr. '), left, y, mm(29), half - mm(3));
+  drawOpdField(doc, 'Mobile No.', patient.phone, left + half, y, mm(24), half); y += mm(7);
+  drawOpdField(doc, 'Department', doctor.department?.name || doctor.specialization, left, y, mm(29), half - mm(3));
+  drawOpdField(doc, 'Token No.', appointment.token || appointment.serial_number, left + half, y, mm(24), half); y += mm(7);
+  drawOpdField(doc, 'Address', [text(patient.address), patient.city, patient.state, patient.zipCode].filter(Boolean).join(', '), left, y, mm(29), width); y += mm(10);
+
+  const vitalsY = y;
+  doc.rect(left, vitalsY, width, mm(25)).lineWidth(0.4).strokeColor(COLORS.ink).stroke();
+  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(7).text('VITALS', left + 4, vitalsY + 4);
+  const vitalItems = [
+    ['BP', vitals?.bp || '-'],
+    ['SpO2', vitalDisplay(vitals, 'spo2', '%')],
+    ['Pulse', vitalDisplay(vitals, 'pulse', '/min')],
+    ['RR', vitalDisplay(vitals, 'respiratory_rate', '/min')],
+    ['RBS', vitalDisplay(vitals, 'random_blood_sugar')],
+    ['Temp', vitalDisplay(vitals, 'temperature')],
+    ['Height', vitalDisplay(vitals, 'height', ' cm')],
+    ['Weight', vitalDisplay(vitals, 'weight', ' kg')]
+  ];
+  const cellWidth = width / 4;
+  vitalItems.forEach(([label, value], index) => {
+    const row = Math.floor(index / 4);
+    const col = index % 4;
+    drawOpdField(doc, label, value, left + col * cellWidth + 4, vitalsY + mm(8) + row * mm(7), mm(11), cellWidth - 6);
+  });
+  y = vitalsY + mm(29);
+
+  const opDate = appointment.appointment_date || prescription.createdAt || prescription.issue_date;
+  drawOpdField(doc, 'Receipt No.', receipt?.transactionNumber, left, y, mm(29), half - mm(3));
+  drawOpdField(doc, 'OP Date', formatDate(opDate, true), left + half, y, mm(24), half); y += mm(7);
+  drawOpdField(doc, 'OP No.', appointment.token || prescription.prescription_number, left, y, mm(29), half - mm(3));
+  drawOpdField(doc, 'OP Slip UHID No.', patient.uhid || patient.patientId, left + half, y, mm(35), half); y += mm(7);
+  drawOpdField(doc, 'Printed By', userDisplayName(printedBy), left, y, mm(29), half - mm(3));
+  drawOpdField(doc, 'Created By', userDisplayName(prescription.created_by), left + half, y, mm(24), half); y += mm(10);
+
+  doc.moveTo(left, y).lineTo(left + width, y).lineWidth(0.5).strokeColor(COLORS.ink).stroke();
+  y += mm(3);
+  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(7.5).text('Diagnosis / Clinical Notes', left, y, { width });
+  y += mm(5);
+  const diagnosis = prescription.diagnosis || prescription.provisional_diagnosis || '';
+  const diagnosisHeight = Math.max(mm(9), Math.min(mm(20), doc.heightOfString(text(diagnosis, '-'), { width }) + mm(2)));
+  doc.font('Helvetica').fontSize(7).text(text(diagnosis, '-'), left, y, { width, height: diagnosisHeight, ellipsis: true });
+  y += diagnosisHeight + mm(3);
+
+  doc.font('Helvetica-Bold').fontSize(7.5).text('Prescription', left, y, { width });
+  y += mm(5);
+  y = drawOpdMedicationTable(doc, prescription, y);
+  y += mm(5);
+  doc.fillColor(COLORS.ink).font('Helvetica').fontSize(7).text('Doctor Signature: ______________________________', left + width - mm(78), Math.min(y, CONTENT_BOTTOM - mm(8)), { width: mm(78), align: 'right' });
+  addPageFooters(doc, 'Computer-generated OPD slip / prescription', { blueRule: true });
+  doc.end();
+}
+
+module.exports = { generateLabReportPdf, generatePrescriptionPdf, generateOpdSlipPdf };

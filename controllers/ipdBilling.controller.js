@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const IPDCharge = require('../models/IPDCharge');
 const finance = require('../services/ipdFinancial.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
+const recurringCharges = require('../services/ipdRecurringCharge.service');
 
 function handleError(res, error) {
   console.error('IPD billing error:', error);
@@ -147,3 +148,28 @@ exports.voidCharge = async (req, res) => {
     res.json({ success: true, message: 'Charge voided successfully', charge });
   } catch (error) { handleError(res, error); }
 };
+
+exports.catchUpDailyCharges = async (req, res) => {
+  try {
+    requireObjectId(req.params.admissionId, 'admissionId');
+    const result = await recurringCharges.ensureAdmissionDailyCharges(
+      req.params.admissionId,
+      req.body?.throughDate || new Date(),
+      req.user
+    );
+    res.status(result.created > 0 ? 201 : 200).json({ success: true, ...result });
+  } catch (error) { handleError(res, error); }
+};
+
+exports.catchUpHospitalDailyCharges = async (req, res) => {
+  try {
+    const result = await recurringCharges.runDailyChargeCatchup({
+      hospitalId: requireHospitalId(req),
+      throughDate: req.body?.throughDate || new Date(),
+      user: req.user,
+      limit: req.body?.limit || 1000
+    });
+    res.json({ success: true, ...result });
+  } catch (error) { handleError(res, error); }
+};
+

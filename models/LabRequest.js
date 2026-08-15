@@ -16,7 +16,11 @@ const labObservationSchema = new mongoose.Schema({
   unit: { type: String, trim: true },
   method: { type: String, trim: true },
   instrument: { type: String, trim: true },
-  comments: { type: String, trim: true }
+  comments: { type: String, trim: true },
+  remarks: { type: String, trim: true },
+  isAbnormal: { type: Boolean, default: false },
+  isCritical: { type: Boolean, default: false },
+  criticalReason: { type: String, trim: true }
 }, { _id: false });
 
 const labNarrativeSectionSchema = new mongoose.Schema({
@@ -49,6 +53,9 @@ const labRequestSchema = new mongoose.Schema({
   requestNumber: {
     type: String,
   },
+  orderGroupId: { type: mongoose.Schema.Types.ObjectId, index: true },
+  orderNumber: { type: String, trim: true, index: true },
+  requestGroupKey: { type: String, trim: true, index: true },
   deskCheckoutKey: {
     type: String,
     trim: true
@@ -157,6 +164,7 @@ const labRequestSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  collectionEventKey: { type: String, trim: true, index: true, sparse: true },
   
   // Processing
   processing_started_at: {
@@ -400,6 +408,9 @@ labRequestSchema.methods.checkAbnormal = function(value) {
 
 // Indexes
 labRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
+labRequestSchema.index({ hospitalId: 1, orderNumber: 1, patientId: 1 });
+labRequestSchema.index({ hospitalId: 1, requestGroupKey: 1, patientId: 1 });
+labRequestSchema.index({ hospitalId: 1, collectionEventKey: 1 }, { unique: true, sparse: true });
 labRequestSchema.index({ doctorId: 1, status: 1 });
 labRequestSchema.index({ status: 1, scheduledDate: 1 });
 labRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });

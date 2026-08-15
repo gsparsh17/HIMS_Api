@@ -1,5 +1,22 @@
 const mongoose = require('mongoose');
 
+const labParameterSchema = new mongoose.Schema({
+  code: { type: String, trim: true },
+  name: { type: String, required: true, trim: true },
+  resultType: { type: String, enum: ['numeric', 'text', 'boolean'], default: 'text' },
+  unit: { type: String, trim: true },
+  referenceText: { type: String, trim: true },
+  referenceLow: { type: String, trim: true },
+  referenceHigh: { type: String, trim: true },
+  criticalLow: { type: String, trim: true },
+  criticalHigh: { type: String, trim: true },
+  sex: { type: String, enum: ['any', 'male', 'female', 'other'], default: 'any' },
+  minAgeYears: Number,
+  maxAgeYears: Number,
+  sortOrder: { type: Number, default: 0 },
+  active: { type: Boolean, default: true }
+}, { _id: false });
+
 const BROAD_SPECIMEN_TYPES = ['Blood', 'Urine', 'Stool', 'CSF', 'Sputum', 'Tissue', 'Swab', 'Body Fluid', 'Semen', 'Other', 'Not Applicable'];
 
 const labTestSchema = new mongoose.Schema({
@@ -13,6 +30,15 @@ const labTestSchema = new mongoose.Schema({
     index: true
   },
   subCategory: { type: String, trim: true },
+  main_service: { type: String, trim: true, index: true },
+  parameters: [labParameterSchema],
+  masterSource: {
+    key: { type: String, trim: true },
+    version: { type: String, trim: true },
+    serialNumber: Number,
+    checksum: String,
+    importedAt: Date
+  },
   description: { type: String, trim: true },
   aliases: [{ type: String, trim: true }],
   service_domain: { type: String, enum: ['laboratory'], default: 'laboratory', immutable: true },

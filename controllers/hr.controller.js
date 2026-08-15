@@ -211,18 +211,41 @@ function roleFromStaffType(staffType, designation = '') {
   return 'staff';
 }
 
+function profileStaffTypeFromRole(role) {
+  const normalized = String(role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const direct = new Set([
+    'doctor', 'nurse', 'staff', 'admin', 'hr', 'store', 'pharmacy',
+    'pathology_staff', 'radiology_staff', 'ot_staff', 'receptionist',
+    'registrar', 'accountant', 'insurance_desk', 'bed_manager', 'housekeeping'
+  ]);
+  if (direct.has(normalized)) return normalized;
+  if (normalized === 'hr_manager') return 'hr';
+  if (['store_manager', 'inventory_manager', 'equipment_manager'].includes(normalized)) return 'store';
+  if (normalized === 'mediqliq_super_admin') return 'admin';
+  return 'staff';
+}
 
 
-async function ensureDepartment(body) {
-  if (body.department) return body.department;
+async function ensureDepartment(body, hospitalId) {
+  if (!hospitalId) throw new Error('Hospital context is required to resolve a department');
+  if (body.department) {
+    const existingById = await Department.findOne({ _id: body.department, hospitalId });
+    if (!existingById) {
+      const error = new Error('Department does not belong to this hospital');
+      error.statusCode = 400;
+      throw error;
+    }
+    return existingById._id;
+  }
   if (body.department_name) {
-    const existing = await Department.findOne({ name: new RegExp(`^${body.department_name}$`, 'i') });
+    const escaped = String(body.department_name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const existing = await Department.findOne({ hospitalId, name: new RegExp(`^${escaped}$`, 'i') });
     if (existing) return existing._id;
-    const created = await Department.create({ name: body.department_name });
+    const created = await Department.create({ hospitalId, name: body.department_name });
     return created._id;
   }
-  let department = await Department.findOne({ name: /^General$/i });
-  if (!department) department = await Department.create({ name: 'General' });
+  let department = await Department.findOne({ hospitalId, name: /^General$/i });
+  if (!department) department = await Department.create({ hospitalId, name: 'General', departmentType: 'Clinical', clinical: true });
   return department._id;
 }
 
@@ -554,7 +577,7 @@ exports.createEmployee = async (req, res) => {
     const staffType = String(body.staff_type || body.staffType || 'staff').toLowerCase();
     const designation = body.designation || body.role || staffType;
     const userRole = body.user_role || roleFromStaffType(staffType, designation);
-    const departmentId = await ensureDepartment({ ...body, department_name: body.department_name || body.departmentName });
+    const departmentId = await ensureDepartment({ ...body, department_name: body.department_name || body.departmentName }, hospitalId);
     const existingUser = await User.findOne({ email: body.email });
     const user = await createOrUpdateUser({ body: { ...body, hospital_id: hospitalId, full_name: fullName }, role: userRole, existingUser });
     const { firstName, lastName } = splitName(fullName);
@@ -717,7 +740,8 @@ exports.updateEmployee = async (req, res) => {
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
     const body = req.body;
-    const departmentId = body.department || (body.department_name ? await ensureDepartment(body) : employee.department);
+    const hospitalId = await resolveHospitalId(req);
+    const departmentId = (body.department || body.department_name) ? await ensureDepartment(body, hospitalId) : employee.department;
     const fullName = body.full_name || body.fullName || employee.full_name;
     const { firstName, lastName } = splitName(fullName);
 
@@ -2214,7 +2238,7 @@ async function resolveSelfEmployee(req) {
       const y = new Date().getFullYear();
       const rand = Math.random().toString(36).slice(2, 7).toUpperCase();
       const employeeCode = `EMP-${y}-${rand}`;
-      const staffType = String(req.user.role || 'staff').toLowerCase();
+      const staffType = profileStaffTypeFromRole(req.user.role);
 
       employee = await HRStaffProfile.create({
         user_id: req.user._id,

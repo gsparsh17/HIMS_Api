@@ -495,12 +495,25 @@ function normalizeNursingPayload(input = {}) {
   }
 
   // ========== CARE PLAN ==========
-  if (input.carePlanText) {
+  if (Array.isArray(input.nursingCarePlan)) {
+    patch.nursingCarePlan = input.nursingCarePlan.map((row = {}) => ({
+      assessment: safeText(row.assessment),
+      supportiveData: safeText(row.supportiveData || row.supportive_data),
+      diagnosis: safeText(row.diagnosis || row.nursingDiagnosis),
+      selected: row.selected !== false,
+      goalsOutcomes: safeText(row.goalsOutcomes || row.goals_outcomes || row.outcomeCriteria),
+      interventionPlan: safeText(row.interventionPlan || row.nursingInterventions || row.actions),
+      rationale: safeText(row.rationale || row.scientificPrinciples),
+      evaluation: safeText(row.evaluation || row.observationsConclusions),
+      remarks: safeText(row.remarks)
+    })).filter((row) => Object.entries(row).some(([key, value]) => key !== 'selected' && typeof value === 'string' && value.trim()));
+  } else if (input.carePlanText) {
+    // Legacy clients are still accepted without collapsing newer structured rows.
     patch.nursingCarePlan = [{
-      diagnosis: 'Nursing care plan',
-      selected: true,
-      interventionPlan: input.carePlanText,
-      remarks: ''
+      assessment: '', supportiveData: '',
+      diagnosis: 'Nursing care plan', selected: true,
+      goalsOutcomes: '', interventionPlan: safeText(input.carePlanText),
+      rationale: '', evaluation: '', remarks: ''
     }];
   }
 
@@ -576,7 +589,7 @@ exports.getDoctorInitialAssessment = async (req, res) => {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const assessment = await IPDInitialAssessment.findOne({
       admissionId: admission._id,
-      // hospitalId: admission.hospitalId || admission.hospital_id
+      hospitalId: admission.hospitalId || admission.hospital_id
     });
 
     res.json({ success: true, assessment });
@@ -590,7 +603,7 @@ exports.getNursingAdmissionAssessment = async (req, res) => {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const assessment = await IPDNursingAdmissionAssessment.findOne({
       admissionId: admission._id,
-      // hospitalId: admission.hospitalId || admission.hospital_id
+      hospitalId: admission.hospitalId || admission.hospital_id
     });
 
     res.json({ success: true, assessment });
@@ -1004,7 +1017,7 @@ exports.getVitals = async (req, res) => {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const q = {
       admissionId: admission._id,
-      // hospitalId: admission.hospitalId || admission.hospital_id
+      hospitalId: admission.hospitalId || admission.hospital_id
     };
 
     if (req.query.chartDate) q.chartDate = req.query.chartDate;
@@ -1141,7 +1154,7 @@ exports.printDoctorInitialAssessment = async (req, res) => {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const assessment = await IPDInitialAssessment.findOne({
       admissionId: admission._id,
-      // hospitalId: admission.hospitalId || admission.hospital_id
+      hospitalId: admission.hospitalId || admission.hospital_id
     }).lean();
 
     res.json({
@@ -1163,7 +1176,7 @@ exports.printNursingAdmissionAssessment = async (req, res) => {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const assessment = await IPDNursingAdmissionAssessment.findOne({
       admissionId: admission._id,
-      // hospitalId: admission.hospitalId || admission.hospital_id
+      hospitalId: admission.hospitalId || admission.hospital_id
     }).lean();
 
     res.json({
@@ -1240,7 +1253,7 @@ exports.printRounds = async (req, res) => {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const filter = {
       admissionId: admission._id,
-      // hospitalId: admission.hospitalId || admission.hospital_id
+      hospitalId: admission.hospitalId || admission.hospital_id
     };
 
     // ✅ Build date filter only if both from and to are provided and have values
@@ -1278,7 +1291,7 @@ exports.printRounds = async (req, res) => {
     if (rounds.length === 0) {
       const allRounds = await IPDRound.find({
         admissionId: admission._id,
-        // hospitalId: admission.hospitalId || admission.hospital_id
+        hospitalId: admission.hospitalId || admission.hospital_id
       }).lean();
       console.log(`📊 Total rounds in DB for this admission: ${allRounds.length}`);
       if (allRounds.length > 0) {
@@ -1302,3 +1315,4 @@ exports.printRounds = async (req, res) => {
     res.status(error.status || 500).json({ success: false, message: error.message });
   }
 };
+

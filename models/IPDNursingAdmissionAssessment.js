@@ -141,10 +141,15 @@ const nursingAdmissionAssessmentSchema = new mongoose.Schema({
     other: yesNoDetailsSchema
   },
   nursingCarePlan: [{
-    diagnosis: String,
+    assessment: { type: String, trim: true },
+    supportiveData: { type: String, trim: true },
+    diagnosis: { type: String, trim: true },
     selected: Boolean,
-    interventionPlan: String,
-    remarks: String
+    goalsOutcomes: { type: String, trim: true },
+    interventionPlan: { type: String, trim: true },
+    rationale: { type: String, trim: true },
+    evaluation: { type: String, trim: true },
+    remarks: { type: String, trim: true }
   }],
 
   assessmentAt: { type: Date, default: Date.now },

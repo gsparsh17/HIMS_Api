@@ -313,121 +313,50 @@ const HRStaffProfile = require('../models/HRStaffProfile');
 exports.quickPunch = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const { deviceUserCode, employeeCode, employeeId, direction, deviceCode } = req.body;
 
-    let employee = null;
-
-    if (employeeId) {
-      employee = await HRStaffProfile.findOne({ _id: employeeId, hospital_id: hospitalId });
-    }
-
-    if (!employee && employeeCode) {
-      employee = await HRStaffProfile.findOne({ employee_code: String(employeeCode).trim(), hospital_id: hospitalId });
-    }
-
-    if (!employee && deviceUserCode) {
-      const mapping = await BiometricEmployeeMap.findOne({
-        hospitalId,
-        deviceUserCode: String(deviceUserCode).trim(),
-        active: true
+    // IMPORTANT: browser/UI selection is not biometric proof. Production must
+    // use the signed device /ingest endpoint. Never auto-create a device and
+    // never mark an employee biometric-verified from a client-side button.
+    if (!(process.env.NODE_ENV !== 'production' && process.env.ALLOW_BIOMETRIC_SIMULATION === 'true')) {
+      return res.status(409).json({
+        success: false,
+        code: 'BIOMETRIC_DEVICE_VERIFICATION_REQUIRED',
+        error: 'Biometric verification requires a configured device. Use the signed biometric device ingest flow.',
+        deviceAvailable: false
       });
-      if (mapping?.employeeId) {
-        employee = await HRStaffProfile.findById(mapping.employeeId);
-      } else {
-        employee = await HRStaffProfile.findOne({
+    }
+
+    const { employeeCode, employeeId, deviceUserCode, direction } = req.body || {};
+    const employee = employeeId
+      ? await HRStaffProfile.findOne({ _id: employeeId, hospital_id: hospitalId })
+      : await HRStaffProfile.findOne({
           hospital_id: hospitalId,
           $or: [
-            { employee_code: String(deviceUserCode).trim() },
-            { phone: String(deviceUserCode).trim() }
+            ...(employeeCode ? [{ employee_code: String(employeeCode).trim() }] : []),
+            ...(deviceUserCode ? [{ employee_code: String(deviceUserCode).trim() }, { phone: String(deviceUserCode).trim() }] : [])
           ]
         });
-      }
-    }
+    if (!employee) return res.status(404).json({ success: false, error: 'Employee profile not found' });
 
-    if (!employee && req.user) {
-      employee = await HRStaffProfile.findOne({
-        $or: [
-          { user_id: req.user._id },
-          ...(req.user.staff_profile_id ? [{ _id: req.user.staff_profile_id }] : [])
-        ]
-      });
-    }
-
-    if (!employee) {
-      return res.status(404).json({
-        success: false,
-        error: 'Employee profile not found. Please select or enroll employee.'
-      });
-    }
-
-    let device = null;
-    if (deviceCode) {
-      device = await BiometricDevice.findOne({ code: deviceCode, hospitalId });
-    }
-    if (!device) {
-      device = await BiometricDevice.findOne({ hospitalId, status: 'active' });
-    }
-    if (!device) {
-      device = await BiometricDevice.create({
-        hospitalId,
-        code: 'BIO-MAIN-01',
-        vendor: 'MediQliq Biometric Scanner',
-        model: 'USB-Bridge-v1',
-        location: 'Main Entrance / Pharmacy Desk',
-        status: 'active',
-        auth: { keyId: `bio_${Date.now()}`, secretHash: 'default' },
-        createdBy: req.user._id,
-        updatedBy: req.user._id
-      });
-    }
-
-    const userCode = deviceUserCode || employee.employee_code || String(employee._id);
-    await BiometricEmployeeMap.findOneAndUpdate(
-      { hospitalId, deviceId: device._id, deviceUserCode: userCode },
-      { $set: { employeeId: employee._id, active: true, mappedBy: req.user._id, mappedAt: new Date() } },
-      { upsert: true, new: true }
-    );
-
-    const now = new Date();
     const punch = await AttendancePunch.create({
       hospitalId,
-      deviceId: device._id,
       employeeId: employee._id,
-      deviceUserCode: userCode,
-      timestamp: now,
+      deviceUserCode: String(deviceUserCode || employee.employee_code || employee._id),
+      timestamp: new Date(),
       direction: direction || 'unknown',
-      source: 'biometric',
-      rawEventId: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      validationStatus: 'valid',
-      raw: { scannedBy: req.user?._id, method: 'biometric_scanner' }
+      source: 'manual_import',
+      rawEventId: `simulation_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      validationStatus: 'exception',
+      validationMessage: 'Development simulation only; not valid biometric verification',
+      raw: { simulatedBy: req.user?._id, simulation: true }
     });
 
-    const attendance = await reconcilePunches({
-      hospitalId,
-      employeeIds: [employee._id],
-      from: now,
-      to: now,
-      actorUserId: req.user?._id
-    });
-
-    res.json({
-      success: true,
-      message: `Biometric attendance recorded for ${employee.full_name}`,
-      action: punch.direction === 'in' ? 'Check In' : punch.direction === 'out' ? 'Check Out' : 'Attendance Punch',
-      employee: {
-        _id: employee._id,
-        full_name: employee.full_name,
-        employee_code: employee.employee_code,
-        staff_type: employee.staff_type,
-        department_name: employee.department_name || employee.department?.name || 'General'
-      },
-      punch: {
-        timestamp: punch.timestamp,
-        direction: punch.direction,
-        deviceId: device._id,
-        deviceCode: device.code
-      },
-      attendance
+    return res.status(202).json({
+      success: false,
+      simulationRecorded: true,
+      biometricVerified: false,
+      message: 'Development simulation recorded as an exception. Attendance was not marked biometric-verified.',
+      punch
     });
   } catch (e) {
     fail(res, e);

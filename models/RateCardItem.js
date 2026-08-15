@@ -61,11 +61,19 @@ const rateCardItemSchema = new mongoose.Schema({
       general: Number,
       semiPrivate: Number,
       private: Number,
+      deluxe: Number,
       icu: Number,
       dayCare: Number,
       notApplicable: Number
     }
   },
+  timeSlabs: [{
+    sequence: Number,
+    fromHour: Number,
+    toHour: Number,
+    amount: Number,
+    unit: { type: String, enum: ['hour', 'day', 'visit', 'procedure'], default: 'hour' }
+  }],
   patientShare: {
     mode: { type: String, enum: ['coverage_default', 'percentage', 'fixed', 'sponsor_cap', 'patient_full'], default: 'coverage_default' },
     percentage: { type: Number, min: 0, max: 100 },

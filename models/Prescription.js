@@ -114,6 +114,7 @@ const procedureRequestSchema = new mongoose.Schema({
 
 const prescriptionSchema = new mongoose.Schema({
   prescription_number: { type: String, unique: true },
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
 
   // Patient & Doctor
   patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true },
@@ -199,6 +200,7 @@ prescriptionSchema.virtual('is_fully_dispensed').get(function () {
 });
 
 // Indexes
+prescriptionSchema.index({ hospitalId: 1, patient_id: 1, issue_date: -1 });
 prescriptionSchema.index({ patient_id: 1, issue_date: -1 });
 prescriptionSchema.index({ doctor_id: 1, issue_date: -1 });
 prescriptionSchema.index({ prescription_number: 1 });

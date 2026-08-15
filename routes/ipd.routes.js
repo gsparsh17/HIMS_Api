@@ -103,6 +103,7 @@ router.get(
   clinical.printNursingAdmissionAssessment
 );
 
+
 // ============== VITALS ==============
 router.post(
   '/vitals',
@@ -187,6 +188,8 @@ router.get(
 router.get('/admissions/stats/by-doctor', admissions.getAdmissionStatsByDoctor);
 router.get('/admissions/stats/by-ward', admissions.getAdmissionStatsByWard);
 router.get('/admissions/today-schedule', admissions.getAdmissionTodaySchedule);
+
+router.get('/reports/bed-occupancy', admissions.getBedOccupancyReport);
 
 router.get(
   '/admissions/:id',
@@ -577,6 +580,20 @@ router.get(
   // requireModuleAccess('ipd.patient_file', 'view'),
   requireModuleAccess('billing_finance', 'view'),
   billing.getRunningBill
+);
+
+router.post(
+  '/billing/admission/:admissionId/daily-charges/catch-up',
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_create', 'billing_edit']),
+  billing.catchUpDailyCharges
+);
+
+router.post(
+  '/billing/daily-charges/catch-up',
+  requireModuleAccess('billing_finance', 'manage'),
+  requireAnyActionPermission(['billing_create', 'billing_edit']),
+  billing.catchUpHospitalDailyCharges
 );
 
 router.post(

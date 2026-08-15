@@ -15,7 +15,7 @@ function populate(query) {
 
 function errorResponse(res, error) {
   const statusCode = error.statusCode || (error.code === 11000 ? 409 : 500);
-  return res.status(statusCode).json({ success: false, error: error.message });
+  return res.status(statusCode).json({ success: false, error: error.message, message: error.message, ...(error.errors ? { errors: Object.fromEntries(Object.entries(error.errors).map(([key, value]) => [key, value.message])) } : {}) });
 }
 
 exports.getAllStaff = async (req, res) => {

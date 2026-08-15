@@ -1,0 +1,4009 @@
+{
+  "source": {
+    "filename": "Hospital_Pharmacy Medicine_Master.xlsx",
+    "sha256": "b17a76baa06cf8f6aef4bc27ba21d3921bb818a96e7b29d401369ebc65708ec6",
+    "importVersion": "2026-08-15"
+  },
+  "records": [
+    {
+      "serialNumber": 1,
+      "genericSaltName": "Paracetamol",
+      "brandName": "Crocin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 2,
+      "genericSaltName": "Ibuprofen",
+      "brandName": "Brufen",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 3,
+      "genericSaltName": "Diclofenac",
+      "brandName": "Voveran",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 4,
+      "genericSaltName": "Aceclofenac",
+      "brandName": "Zerodol",
+      "manufacturerBrandOwner": "Ipca",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 5,
+      "genericSaltName": "Etoricoxib",
+      "brandName": "Nucoxia",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 6,
+      "genericSaltName": "Tramadol",
+      "brandName": "Tramazac",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 7,
+      "genericSaltName": "Pantoprazole",
+      "brandName": "Pantocid",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 8,
+      "genericSaltName": "Rabeprazole",
+      "brandName": "Razo",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 9,
+      "genericSaltName": "Omeprazole",
+      "brandName": "Omez",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 10,
+      "genericSaltName": "Esomeprazole",
+      "brandName": "Nexpro",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 11,
+      "genericSaltName": "Ondansetron",
+      "brandName": "Ondem",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 12,
+      "genericSaltName": "Domperidone",
+      "brandName": "Domstal",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 13,
+      "genericSaltName": "Metoclopramide",
+      "brandName": "Perinorm",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 14,
+      "genericSaltName": "Cetirizine",
+      "brandName": "Cetzine",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 15,
+      "genericSaltName": "Levocetirizine",
+      "brandName": "Levocet",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 16,
+      "genericSaltName": "Montelukast",
+      "brandName": "Montair",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 17,
+      "genericSaltName": "Metformin",
+      "brandName": "Glycomet",
+      "manufacturerBrandOwner": "USV",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 18,
+      "genericSaltName": "Glimepiride",
+      "brandName": "Amaryl",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 19,
+      "genericSaltName": "Dapagliflozin",
+      "brandName": "Forxiga",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 20,
+      "genericSaltName": "Empagliflozin",
+      "brandName": "Jardiance",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 21,
+      "genericSaltName": "Sitagliptin",
+      "brandName": "Januvia",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 22,
+      "genericSaltName": "Amlodipine",
+      "brandName": "Amlong",
+      "manufacturerBrandOwner": "Micro Labs",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 23,
+      "genericSaltName": "Telmisartan",
+      "brandName": "Telmikind",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 24,
+      "genericSaltName": "Losartan",
+      "brandName": "Losar",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 25,
+      "genericSaltName": "Ramipril",
+      "brandName": "Cardace",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 26,
+      "genericSaltName": "Atorvastatin",
+      "brandName": "Atorva",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 27,
+      "genericSaltName": "Rosuvastatin",
+      "brandName": "Rosuvas",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 28,
+      "genericSaltName": "Aspirin",
+      "brandName": "Ecosprin",
+      "manufacturerBrandOwner": "USV",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 29,
+      "genericSaltName": "Clopidogrel",
+      "brandName": "Clopilet",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 30,
+      "genericSaltName": "Warfarin",
+      "brandName": "Coumadin",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "IV",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 31,
+      "genericSaltName": "Apixaban",
+      "brandName": "Eliquis",
+      "manufacturerBrandOwner": "BMS/Pfizer",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 32,
+      "genericSaltName": "Rivaroxaban",
+      "brandName": "Xarelto",
+      "manufacturerBrandOwner": "Bayer",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 33,
+      "genericSaltName": "Amoxicillin + Clavulanate",
+      "brandName": "Augmentin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 34,
+      "genericSaltName": "Azithromycin",
+      "brandName": "Azithral",
+      "manufacturerBrandOwner": "Alembic",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 35,
+      "genericSaltName": "Cefixime",
+      "brandName": "Taxim-O",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 36,
+      "genericSaltName": "Cefuroxime",
+      "brandName": "Ceftum",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 37,
+      "genericSaltName": "Ciprofloxacin",
+      "brandName": "Cifran",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 38,
+      "genericSaltName": "Levofloxacin",
+      "brandName": "Levoflox",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 39,
+      "genericSaltName": "Doxycycline",
+      "brandName": "Doxy-1",
+      "manufacturerBrandOwner": "FDC",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 40,
+      "genericSaltName": "Metronidazole",
+      "brandName": "Flagyl",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 41,
+      "genericSaltName": "Fluconazole",
+      "brandName": "Forcan",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 42,
+      "genericSaltName": "Acyclovir",
+      "brandName": "Zovirax",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 43,
+      "genericSaltName": "Oseltamivir",
+      "brandName": "Fluvir",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 44,
+      "genericSaltName": "Salbutamol",
+      "brandName": "Asthalin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 45,
+      "genericSaltName": "Budesonide",
+      "brandName": "Budecort",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 46,
+      "genericSaltName": "Tiotropium",
+      "brandName": "Spiriva",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 47,
+      "genericSaltName": "Lactulose",
+      "brandName": "Duphalac",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 48,
+      "genericSaltName": "Bisacodyl",
+      "brandName": "Dulcolax",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 49,
+      "genericSaltName": "ORS",
+      "brandName": "Electral",
+      "manufacturerBrandOwner": "FDC",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 50,
+      "genericSaltName": "Calcium + Vitamin D3",
+      "brandName": "Shelcal",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 51,
+      "genericSaltName": "Cholecalciferol",
+      "brandName": "Uprise-D3",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 52,
+      "genericSaltName": "Methylcobalamin",
+      "brandName": "Methycobal",
+      "manufacturerBrandOwner": "Eisai",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 53,
+      "genericSaltName": "Tranexamic Acid",
+      "brandName": "Pause",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 54,
+      "genericSaltName": "Iron Sucrose",
+      "brandName": "Venofer",
+      "manufacturerBrandOwner": "Vifor/Fresenius Kabi",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 55,
+      "genericSaltName": "Ferric Carboxymaltose",
+      "brandName": "Ferinject",
+      "manufacturerBrandOwner": "Vifor",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 56,
+      "genericSaltName": "Insulin Regular",
+      "brandName": "Actrapid",
+      "manufacturerBrandOwner": "Novo Nordisk",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 57,
+      "genericSaltName": "Insulin Glargine",
+      "brandName": "Lantus",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 58,
+      "genericSaltName": "Insulin Aspart",
+      "brandName": "NovoRapid",
+      "manufacturerBrandOwner": "Novo Nordisk",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 59,
+      "genericSaltName": "Insulin Lispro",
+      "brandName": "Humalog",
+      "manufacturerBrandOwner": "Eli Lilly",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 60,
+      "genericSaltName": "Heparin",
+      "brandName": "Heparin",
+      "manufacturerBrandOwner": "Gland Pharma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 61,
+      "genericSaltName": "Enoxaparin",
+      "brandName": "Clexane",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 62,
+      "genericSaltName": "Ceftriaxone",
+      "brandName": "Monocef",
+      "manufacturerBrandOwner": "Aristo",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 63,
+      "genericSaltName": "Piperacillin + Tazobactam",
+      "brandName": "Tazact",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 64,
+      "genericSaltName": "Meropenem",
+      "brandName": "Meronem",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 65,
+      "genericSaltName": "Vancomycin",
+      "brandName": "Vanlid",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 66,
+      "genericSaltName": "Amikacin",
+      "brandName": "Amikacin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 67,
+      "genericSaltName": "Gentamicin",
+      "brandName": "Genticyn",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 68,
+      "genericSaltName": "Ondansetron",
+      "brandName": "Ondem",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 69,
+      "genericSaltName": "Dexamethasone",
+      "brandName": "Dexona",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 70,
+      "genericSaltName": "Hydrocortisone",
+      "brandName": "Solu-Cortef",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 71,
+      "genericSaltName": "Methylprednisolone",
+      "brandName": "Solu-Medrol",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 72,
+      "genericSaltName": "Furosemide",
+      "brandName": "Lasix",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 73,
+      "genericSaltName": "Adrenaline",
+      "brandName": "Adrenaline",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 74,
+      "genericSaltName": "Noradrenaline",
+      "brandName": "Noradrenaline",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 75,
+      "genericSaltName": "Dopamine",
+      "brandName": "Dopamine",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 76,
+      "genericSaltName": "Dobutamine",
+      "brandName": "Dobutamine",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 77,
+      "genericSaltName": "Amiodarone",
+      "brandName": "Cordarone",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 78,
+      "genericSaltName": "Digoxin",
+      "brandName": "Lanoxin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 79,
+      "genericSaltName": "Potassium Chloride",
+      "brandName": "KCl",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 80,
+      "genericSaltName": "Magnesium Sulfate",
+      "brandName": "MgSO4",
+      "manufacturerBrandOwner": "Samarth",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 81,
+      "genericSaltName": "Calcium Gluconate",
+      "brandName": "Calcium Gluconate",
+      "manufacturerBrandOwner": "Aculife",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 82,
+      "genericSaltName": "Morphine",
+      "brandName": "Morphine",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 83,
+      "genericSaltName": "Fentanyl",
+      "brandName": "Sublimaze",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 84,
+      "genericSaltName": "Midazolam",
+      "brandName": "Dormicum",
+      "manufacturerBrandOwner": "Roche",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 85,
+      "genericSaltName": "Propofol",
+      "brandName": "Diprivan",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 86,
+      "genericSaltName": "Ketamine",
+      "brandName": "Ketalar",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 87,
+      "genericSaltName": "Rocuronium",
+      "brandName": "Esmeron",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 88,
+      "genericSaltName": "Vecuronium",
+      "brandName": "Norcuron",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 89,
+      "genericSaltName": "Atracurium",
+      "brandName": "Atracurium",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 90,
+      "genericSaltName": "Alteplase",
+      "brandName": "Actilyse",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 91,
+      "genericSaltName": "Tenecteplase",
+      "brandName": "Metalyse",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 92,
+      "genericSaltName": "Mannitol",
+      "brandName": "Osmitrol",
+      "manufacturerBrandOwner": "Baxter",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 93,
+      "genericSaltName": "Sodium Chloride 0.9%",
+      "brandName": "NS",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 94,
+      "genericSaltName": "Dextrose + Sodium Chloride",
+      "brandName": "DNS",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 95,
+      "genericSaltName": "Ringer Lactate",
+      "brandName": "RL",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 96,
+      "genericSaltName": "Dextrose 5%",
+      "brandName": "D5",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 97,
+      "genericSaltName": "Dextrose 10%",
+      "brandName": "D10",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 98,
+      "genericSaltName": "Human Albumin",
+      "brandName": "Alburel",
+      "manufacturerBrandOwner": "CSL Behring",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 99,
+      "genericSaltName": "Mupirocin",
+      "brandName": "T-Bact",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 100,
+      "genericSaltName": "Clotrimazole",
+      "brandName": "Candid",
+      "manufacturerBrandOwner": "Glenmark",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 101,
+      "genericSaltName": "Ketoconazole",
+      "brandName": "Nizral",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 102,
+      "genericSaltName": "Terbinafine",
+      "brandName": "Lamisil",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 103,
+      "genericSaltName": "Fusidic Acid",
+      "brandName": "Fucidin",
+      "manufacturerBrandOwner": "LEO Pharma",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 104,
+      "genericSaltName": "Silver Sulfadiazine",
+      "brandName": "Silvadene",
+      "manufacturerBrandOwner": "RPG Life Sciences",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 105,
+      "genericSaltName": "Betamethasone",
+      "brandName": "Betnovate",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 106,
+      "genericSaltName": "Clobetasol",
+      "brandName": "Tenovate",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 107,
+      "genericSaltName": "Adapalene",
+      "brandName": "Adaferin",
+      "manufacturerBrandOwner": "Galderma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 108,
+      "genericSaltName": "Benzoyl Peroxide",
+      "brandName": "Benzac",
+      "manufacturerBrandOwner": "Galderma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 109,
+      "genericSaltName": "Diclofenac topical",
+      "brandName": "Voveran Gel",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 110,
+      "genericSaltName": "Heparinoid topical",
+      "brandName": "Thrombophob",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 111,
+      "genericSaltName": "Lidocaine",
+      "brandName": "Xylocaine",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 112,
+      "genericSaltName": "Povidone Iodine",
+      "brandName": "Betadine",
+      "manufacturerBrandOwner": "Win-Medicare",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 113,
+      "genericSaltName": "Tacrolimus",
+      "brandName": "Tacroz",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 114,
+      "genericSaltName": "Nitroglycerin",
+      "brandName": "Nitroderm TTS",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 115,
+      "genericSaltName": "Diclofenac patch",
+      "brandName": "Flector",
+      "manufacturerBrandOwner": "IBSA",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 116,
+      "genericSaltName": "Estradiol",
+      "brandName": "Estraderm",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 117,
+      "genericSaltName": "Nicotine",
+      "brandName": "Nicorette",
+      "manufacturerBrandOwner": "Johnson & Johnson",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 118,
+      "genericSaltName": "Levosalbutamol",
+      "brandName": "Levolin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 119,
+      "genericSaltName": "Ipratropium",
+      "brandName": "Ipravent",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 120,
+      "genericSaltName": "Ipratropium + Salbutamol",
+      "brandName": "Duolin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 121,
+      "genericSaltName": "Budesonide + Formoterol",
+      "brandName": "Foracort",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 122,
+      "genericSaltName": "Fluticasone + Salmeterol",
+      "brandName": "Seroflo",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 123,
+      "genericSaltName": "Pantoprazole + Domperidone",
+      "brandName": "Pantocid DSR",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 124,
+      "genericSaltName": "Telmisartan + Amlodipine",
+      "brandName": "Telmikind-AM",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 125,
+      "genericSaltName": "Metformin + Glimepiride",
+      "brandName": "Amaryl M",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 126,
+      "genericSaltName": "Clopidogrel + Aspirin",
+      "brandName": "Clopilet A",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 127,
+      "genericSaltName": "Montelukast + Levocetirizine",
+      "brandName": "Montair-LC",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 128,
+      "genericSaltName": "Pregabalin",
+      "brandName": "Lyrica",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 129,
+      "genericSaltName": "Gabapentin",
+      "brandName": "Neurontin",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 130,
+      "genericSaltName": "Duloxetine",
+      "brandName": "Cymbalta",
+      "manufacturerBrandOwner": "Eli Lilly",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 131,
+      "genericSaltName": "Escitalopram",
+      "brandName": "Nexito",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 132,
+      "genericSaltName": "Sertraline",
+      "brandName": "Serta",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 133,
+      "genericSaltName": "Quetiapine",
+      "brandName": "Qutan",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 134,
+      "genericSaltName": "Olanzapine",
+      "brandName": "Oleanz",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 135,
+      "genericSaltName": "Phenytoin",
+      "brandName": "Eptoin",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 136,
+      "genericSaltName": "Levetiracetam",
+      "brandName": "Levera",
+      "manufacturerBrandOwner": "Intas",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 137,
+      "genericSaltName": "Sodium Valproate",
+      "brandName": "Encorate",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 138,
+      "genericSaltName": "Carbamazepine",
+      "brandName": "Tegretol",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 139,
+      "genericSaltName": "Allopurinol",
+      "brandName": "Zyloric",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 140,
+      "genericSaltName": "Febuxostat",
+      "brandName": "Feburic",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 141,
+      "genericSaltName": "Tamsulosin",
+      "brandName": "Urimax",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 142,
+      "genericSaltName": "Finasteride",
+      "brandName": "Finpecia",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 143,
+      "genericSaltName": "Ursodeoxycholic Acid",
+      "brandName": "Udiliv",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 144,
+      "genericSaltName": "Rifaximin",
+      "brandName": "Rifagut",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 145,
+      "genericSaltName": "Mesalamine",
+      "brandName": "Mesacol",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 146,
+      "genericSaltName": "Probiotic",
+      "brandName": "Darolac",
+      "manufacturerBrandOwner": "Aristo",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 147,
+      "genericSaltName": "Zinc Sulfate",
+      "brandName": "Z&D",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 148,
+      "genericSaltName": "Vitamin C",
+      "brandName": "Limcee",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 149,
+      "genericSaltName": "Folic Acid",
+      "brandName": "Folvite",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 150,
+      "genericSaltName": "Aminophylline",
+      "brandName": "Aminophylline",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 151,
+      "genericSaltName": "Oxytocin",
+      "brandName": "Syntocinon",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "RL",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 152,
+      "genericSaltName": "Carboprost",
+      "brandName": "Hemabate",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 153,
+      "genericSaltName": "Methotrexate",
+      "brandName": "Folitrax",
+      "manufacturerBrandOwner": "Ipca",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 154,
+      "genericSaltName": "Cyclophosphamide",
+      "brandName": "Endoxan",
+      "manufacturerBrandOwner": "Baxter",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 155,
+      "genericSaltName": "Doxorubicin",
+      "brandName": "Adriamycin",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 156,
+      "genericSaltName": "Cisplatin",
+      "brandName": "Cisplatin",
+      "manufacturerBrandOwner": "Fresenius Kabi",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 157,
+      "genericSaltName": "Carboplatin",
+      "brandName": "Carboplatin",
+      "manufacturerBrandOwner": "Fresenius Kabi",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 158,
+      "genericSaltName": "Paclitaxel",
+      "brandName": "Paclitaxel",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 159,
+      "genericSaltName": "Docetaxel",
+      "brandName": "Taxotere",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 160,
+      "genericSaltName": "Filgrastim",
+      "brandName": "Neupogen",
+      "manufacturerBrandOwner": "Amgen",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 161,
+      "genericSaltName": "Epoetin Alfa",
+      "brandName": "Eprex",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 162,
+      "genericSaltName": "Darbepoetin Alfa",
+      "brandName": "Aranesp",
+      "manufacturerBrandOwner": "Amgen",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 163,
+      "genericSaltName": "Denosumab",
+      "brandName": "Prolia",
+      "manufacturerBrandOwner": "Amgen",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 164,
+      "genericSaltName": "Zoledronic Acid",
+      "brandName": "Aclasta",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 165,
+      "genericSaltName": "Rabies Vaccine",
+      "brandName": "Rabipur",
+      "manufacturerBrandOwner": "Bavarian Nordic",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 166,
+      "genericSaltName": "Hepatitis B Vaccine",
+      "brandName": "Engerix-B",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 167,
+      "genericSaltName": "Tetanus Toxoid",
+      "brandName": "TT",
+      "manufacturerBrandOwner": "Serum Institute",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 168,
+      "genericSaltName": "Influenza Vaccine",
+      "brandName": "Vaxigrip",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 169,
+      "genericSaltName": "Pneumococcal Vaccine",
+      "brandName": "Pneumovax 23",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 170,
+      "genericSaltName": "Moxifloxacin ophthalmic",
+      "brandName": "Moxicip",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 171,
+      "genericSaltName": "Ofloxacin ophthalmic",
+      "brandName": "Oflox",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 172,
+      "genericSaltName": "Tobramycin ophthalmic",
+      "brandName": "Tobrex",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 173,
+      "genericSaltName": "Latanoprost",
+      "brandName": "Xalatan",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 174,
+      "genericSaltName": "Timolol",
+      "brandName": "Timoptic",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 175,
+      "genericSaltName": "Brimonidine",
+      "brandName": "Alphagan",
+      "manufacturerBrandOwner": "AbbVie",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 176,
+      "genericSaltName": "Dorzolamide + Timolol",
+      "brandName": "Cosopt",
+      "manufacturerBrandOwner": "Merck",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 177,
+      "genericSaltName": "Carboxymethylcellulose",
+      "brandName": "Refresh Liquigel",
+      "manufacturerBrandOwner": "AbbVie",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 178,
+      "genericSaltName": "Tropicamide",
+      "brandName": "Mydriacyl",
+      "manufacturerBrandOwner": "Alcon",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 179,
+      "genericSaltName": "Ketorolac ophthalmic",
+      "brandName": "Acular",
+      "manufacturerBrandOwner": "Allergan",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 180,
+      "genericSaltName": "Nystatin",
+      "brandName": "Nystatin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 181,
+      "genericSaltName": "Permethrin",
+      "brandName": "Permite",
+      "manufacturerBrandOwner": "Permacure",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 182,
+      "genericSaltName": "Mometasone",
+      "brandName": "Elocon",
+      "manufacturerBrandOwner": "Merck",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 183,
+      "genericSaltName": "Urea",
+      "brandName": "Ureaderm",
+      "manufacturerBrandOwner": "Glenmark",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 184,
+      "genericSaltName": "Lactic Acid + Urea",
+      "brandName": "Lacsoft",
+      "manufacturerBrandOwner": "Ajanta",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 185,
+      "genericSaltName": "Clindamycin topical",
+      "brandName": "Clindac-A",
+      "manufacturerBrandOwner": "Galderma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 186,
+      "genericSaltName": "Metronidazole topical",
+      "brandName": "Metrogyl",
+      "manufacturerBrandOwner": "J.B. Chemicals",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 187,
+      "genericSaltName": "Sertaconazole",
+      "brandName": "Onabet",
+      "manufacturerBrandOwner": "Glenmark",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 188,
+      "genericSaltName": "Luliconazole",
+      "brandName": "Lulicon",
+      "manufacturerBrandOwner": "Glenmark",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 189,
+      "genericSaltName": "Sodium Citrate",
+      "brandName": "Citralka",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 190,
+      "genericSaltName": "Potassium Citrate",
+      "brandName": "Potrate",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 191,
+      "genericSaltName": "Sucralfate",
+      "brandName": "Sucral-O",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 192,
+      "genericSaltName": "Racecadotril",
+      "brandName": "Redotril",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 193,
+      "genericSaltName": "Loperamide",
+      "brandName": "Eldoper",
+      "manufacturerBrandOwner": "Micro Labs",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 194,
+      "genericSaltName": "Sennosides",
+      "brandName": "Senokot",
+      "manufacturerBrandOwner": "Reckitt",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 195,
+      "genericSaltName": "Polyethylene Glycol",
+      "brandName": "Peglec",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 196,
+      "genericSaltName": "Dicyclomine",
+      "brandName": "Cyclopam",
+      "manufacturerBrandOwner": "Indoco",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 197,
+      "genericSaltName": "Drotaverine",
+      "brandName": "Drotin",
+      "manufacturerBrandOwner": "J.B. Chemicals",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 198,
+      "genericSaltName": "Hyoscine Butylbromide",
+      "brandName": "Buscopan",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 199,
+      "genericSaltName": "Baclofen",
+      "brandName": "Lioresal",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 200,
+      "genericSaltName": "Tizanidine",
+      "brandName": "Sirdalud",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 201,
+      "genericSaltName": "Thiocolchicoside",
+      "brandName": "Myoril",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 202,
+      "genericSaltName": "Sildenafil",
+      "brandName": "Viagra",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 203,
+      "genericSaltName": "Tadalafil",
+      "brandName": "Cialis",
+      "manufacturerBrandOwner": "Eli Lilly",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 204,
+      "genericSaltName": "Levothyroxine",
+      "brandName": "Thyronorm",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 205,
+      "genericSaltName": "Prednisolone",
+      "brandName": "Wysolone",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 206,
+      "genericSaltName": "Deflazacort",
+      "brandName": "Defcort",
+      "manufacturerBrandOwner": "Macleods",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 207,
+      "genericSaltName": "Paracetamol",
+      "brandName": "Crocin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 208,
+      "genericSaltName": "Ibuprofen",
+      "brandName": "Brufen",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 209,
+      "genericSaltName": "Diclofenac",
+      "brandName": "Voveran",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 210,
+      "genericSaltName": "Aceclofenac",
+      "brandName": "Zerodol",
+      "manufacturerBrandOwner": "Ipca",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 211,
+      "genericSaltName": "Etoricoxib",
+      "brandName": "Nucoxia",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 212,
+      "genericSaltName": "Tramadol",
+      "brandName": "Tramazac",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 213,
+      "genericSaltName": "Pantoprazole",
+      "brandName": "Pantocid",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 214,
+      "genericSaltName": "Rabeprazole",
+      "brandName": "Razo",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 215,
+      "genericSaltName": "Omeprazole",
+      "brandName": "Omez",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 216,
+      "genericSaltName": "Esomeprazole",
+      "brandName": "Nexpro",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 217,
+      "genericSaltName": "Ondansetron",
+      "brandName": "Ondem",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 218,
+      "genericSaltName": "Domperidone",
+      "brandName": "Domstal",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 219,
+      "genericSaltName": "Metoclopramide",
+      "brandName": "Perinorm",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 220,
+      "genericSaltName": "Cetirizine",
+      "brandName": "Cetzine",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 221,
+      "genericSaltName": "Levocetirizine",
+      "brandName": "Levocet",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 222,
+      "genericSaltName": "Montelukast",
+      "brandName": "Montair",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 223,
+      "genericSaltName": "Metformin",
+      "brandName": "Glycomet",
+      "manufacturerBrandOwner": "USV",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 224,
+      "genericSaltName": "Glimepiride",
+      "brandName": "Amaryl",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 225,
+      "genericSaltName": "Dapagliflozin",
+      "brandName": "Forxiga",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 226,
+      "genericSaltName": "Empagliflozin",
+      "brandName": "Jardiance",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 227,
+      "genericSaltName": "Sitagliptin",
+      "brandName": "Januvia",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 228,
+      "genericSaltName": "Amlodipine",
+      "brandName": "Amlong",
+      "manufacturerBrandOwner": "Micro Labs",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 229,
+      "genericSaltName": "Telmisartan",
+      "brandName": "Telmikind",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 230,
+      "genericSaltName": "Losartan",
+      "brandName": "Losar",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 231,
+      "genericSaltName": "Ramipril",
+      "brandName": "Cardace",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 232,
+      "genericSaltName": "Atorvastatin",
+      "brandName": "Atorva",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 233,
+      "genericSaltName": "Rosuvastatin",
+      "brandName": "Rosuvas",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 234,
+      "genericSaltName": "Aspirin",
+      "brandName": "Ecosprin",
+      "manufacturerBrandOwner": "USV",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 235,
+      "genericSaltName": "Clopidogrel",
+      "brandName": "Clopilet",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 236,
+      "genericSaltName": "Warfarin",
+      "brandName": "Coumadin",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "RL",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 237,
+      "genericSaltName": "Apixaban",
+      "brandName": "Eliquis",
+      "manufacturerBrandOwner": "BMS/Pfizer",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 238,
+      "genericSaltName": "Rivaroxaban",
+      "brandName": "Xarelto",
+      "manufacturerBrandOwner": "Bayer",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 239,
+      "genericSaltName": "Amoxicillin + Clavulanate",
+      "brandName": "Augmentin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 240,
+      "genericSaltName": "Azithromycin",
+      "brandName": "Azithral",
+      "manufacturerBrandOwner": "Alembic",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 241,
+      "genericSaltName": "Cefixime",
+      "brandName": "Taxim-O",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 242,
+      "genericSaltName": "Cefuroxime",
+      "brandName": "Ceftum",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 243,
+      "genericSaltName": "Ciprofloxacin",
+      "brandName": "Cifran",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 244,
+      "genericSaltName": "Levofloxacin",
+      "brandName": "Levoflox",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 245,
+      "genericSaltName": "Doxycycline",
+      "brandName": "Doxy-1",
+      "manufacturerBrandOwner": "FDC",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 246,
+      "genericSaltName": "Metronidazole",
+      "brandName": "Flagyl",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 247,
+      "genericSaltName": "Fluconazole",
+      "brandName": "Forcan",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 248,
+      "genericSaltName": "Acyclovir",
+      "brandName": "Zovirax",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 249,
+      "genericSaltName": "Oseltamivir",
+      "brandName": "Fluvir",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 250,
+      "genericSaltName": "Salbutamol",
+      "brandName": "Asthalin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 251,
+      "genericSaltName": "Budesonide",
+      "brandName": "Budecort",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 252,
+      "genericSaltName": "Tiotropium",
+      "brandName": "Spiriva",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 253,
+      "genericSaltName": "Lactulose",
+      "brandName": "Duphalac",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 254,
+      "genericSaltName": "Bisacodyl",
+      "brandName": "Dulcolax",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 255,
+      "genericSaltName": "ORS",
+      "brandName": "Electral",
+      "manufacturerBrandOwner": "FDC",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 256,
+      "genericSaltName": "Calcium + Vitamin D3",
+      "brandName": "Shelcal",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 257,
+      "genericSaltName": "Cholecalciferol",
+      "brandName": "Uprise-D3",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 258,
+      "genericSaltName": "Methylcobalamin",
+      "brandName": "Methycobal",
+      "manufacturerBrandOwner": "Eisai",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 259,
+      "genericSaltName": "Tranexamic Acid",
+      "brandName": "Pause",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 260,
+      "genericSaltName": "Iron Sucrose",
+      "brandName": "Venofer",
+      "manufacturerBrandOwner": "Vifor/Fresenius Kabi",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 261,
+      "genericSaltName": "Ferric Carboxymaltose",
+      "brandName": "Ferinject",
+      "manufacturerBrandOwner": "Vifor",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 262,
+      "genericSaltName": "Insulin Regular",
+      "brandName": "Actrapid",
+      "manufacturerBrandOwner": "Novo Nordisk",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 263,
+      "genericSaltName": "Insulin Glargine",
+      "brandName": "Lantus",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 264,
+      "genericSaltName": "Insulin Aspart",
+      "brandName": "NovoRapid",
+      "manufacturerBrandOwner": "Novo Nordisk",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 265,
+      "genericSaltName": "Insulin Lispro",
+      "brandName": "Humalog",
+      "manufacturerBrandOwner": "Eli Lilly",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 266,
+      "genericSaltName": "Heparin",
+      "brandName": "Heparin",
+      "manufacturerBrandOwner": "Gland Pharma",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 267,
+      "genericSaltName": "Enoxaparin",
+      "brandName": "Clexane",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 268,
+      "genericSaltName": "Ceftriaxone",
+      "brandName": "Monocef",
+      "manufacturerBrandOwner": "Aristo",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 269,
+      "genericSaltName": "Piperacillin + Tazobactam",
+      "brandName": "Tazact",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 270,
+      "genericSaltName": "Meropenem",
+      "brandName": "Meronem",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 271,
+      "genericSaltName": "Vancomycin",
+      "brandName": "Vanlid",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 272,
+      "genericSaltName": "Amikacin",
+      "brandName": "Amikacin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 273,
+      "genericSaltName": "Gentamicin",
+      "brandName": "Genticyn",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 274,
+      "genericSaltName": "Ondansetron",
+      "brandName": "Ondem",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 275,
+      "genericSaltName": "Dexamethasone",
+      "brandName": "Dexona",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 276,
+      "genericSaltName": "Hydrocortisone",
+      "brandName": "Solu-Cortef",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 277,
+      "genericSaltName": "Methylprednisolone",
+      "brandName": "Solu-Medrol",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 278,
+      "genericSaltName": "Furosemide",
+      "brandName": "Lasix",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 279,
+      "genericSaltName": "Adrenaline",
+      "brandName": "Adrenaline",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 280,
+      "genericSaltName": "Noradrenaline",
+      "brandName": "Noradrenaline",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 281,
+      "genericSaltName": "Dopamine",
+      "brandName": "Dopamine",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 282,
+      "genericSaltName": "Dobutamine",
+      "brandName": "Dobutamine",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 283,
+      "genericSaltName": "Amiodarone",
+      "brandName": "Cordarone",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 284,
+      "genericSaltName": "Digoxin",
+      "brandName": "Lanoxin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 285,
+      "genericSaltName": "Potassium Chloride",
+      "brandName": "KCl",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "IV",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 286,
+      "genericSaltName": "Magnesium Sulfate",
+      "brandName": "MgSO4",
+      "manufacturerBrandOwner": "Samarth",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 287,
+      "genericSaltName": "Calcium Gluconate",
+      "brandName": "Calcium Gluconate",
+      "manufacturerBrandOwner": "Aculife",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 288,
+      "genericSaltName": "Morphine",
+      "brandName": "Morphine",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 289,
+      "genericSaltName": "Fentanyl",
+      "brandName": "Sublimaze",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 290,
+      "genericSaltName": "Midazolam",
+      "brandName": "Dormicum",
+      "manufacturerBrandOwner": "Roche",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 291,
+      "genericSaltName": "Propofol",
+      "brandName": "Diprivan",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 292,
+      "genericSaltName": "Ketamine",
+      "brandName": "Ketalar",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 293,
+      "genericSaltName": "Rocuronium",
+      "brandName": "Esmeron",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 294,
+      "genericSaltName": "Vecuronium",
+      "brandName": "Norcuron",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 295,
+      "genericSaltName": "Atracurium",
+      "brandName": "Atracurium",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 296,
+      "genericSaltName": "Alteplase",
+      "brandName": "Actilyse",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 297,
+      "genericSaltName": "Tenecteplase",
+      "brandName": "Metalyse",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 298,
+      "genericSaltName": "Mannitol",
+      "brandName": "Osmitrol",
+      "manufacturerBrandOwner": "Baxter",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 299,
+      "genericSaltName": "Sodium Chloride 0.9%",
+      "brandName": "NS",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 300,
+      "genericSaltName": "Dextrose + Sodium Chloride",
+      "brandName": "DNS",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 301,
+      "genericSaltName": "Ringer Lactate",
+      "brandName": "RL",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 302,
+      "genericSaltName": "Dextrose 5%",
+      "brandName": "D5",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 303,
+      "genericSaltName": "Dextrose 10%",
+      "brandName": "D10",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 304,
+      "genericSaltName": "Human Albumin",
+      "brandName": "Alburel",
+      "manufacturerBrandOwner": "CSL Behring",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 305,
+      "genericSaltName": "Mupirocin",
+      "brandName": "T-Bact",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 306,
+      "genericSaltName": "Clotrimazole",
+      "brandName": "Candid",
+      "manufacturerBrandOwner": "Glenmark",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 307,
+      "genericSaltName": "Ketoconazole",
+      "brandName": "Nizral",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 308,
+      "genericSaltName": "Terbinafine",
+      "brandName": "Lamisil",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 309,
+      "genericSaltName": "Fusidic Acid",
+      "brandName": "Fucidin",
+      "manufacturerBrandOwner": "LEO Pharma",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 310,
+      "genericSaltName": "Silver Sulfadiazine",
+      "brandName": "Silvadene",
+      "manufacturerBrandOwner": "RPG Life Sciences",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 311,
+      "genericSaltName": "Betamethasone",
+      "brandName": "Betnovate",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 312,
+      "genericSaltName": "Clobetasol",
+      "brandName": "Tenovate",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 313,
+      "genericSaltName": "Adapalene",
+      "brandName": "Adaferin",
+      "manufacturerBrandOwner": "Galderma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 314,
+      "genericSaltName": "Benzoyl Peroxide",
+      "brandName": "Benzac",
+      "manufacturerBrandOwner": "Galderma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 315,
+      "genericSaltName": "Diclofenac topical",
+      "brandName": "Voveran Gel",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 316,
+      "genericSaltName": "Heparinoid topical",
+      "brandName": "Thrombophob",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 317,
+      "genericSaltName": "Lidocaine",
+      "brandName": "Xylocaine",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 318,
+      "genericSaltName": "Povidone Iodine",
+      "brandName": "Betadine",
+      "manufacturerBrandOwner": "Win-Medicare",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 319,
+      "genericSaltName": "Tacrolimus",
+      "brandName": "Tacroz",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 320,
+      "genericSaltName": "Nitroglycerin",
+      "brandName": "Nitroderm TTS",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 321,
+      "genericSaltName": "Diclofenac patch",
+      "brandName": "Flector",
+      "manufacturerBrandOwner": "IBSA",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 322,
+      "genericSaltName": "Estradiol",
+      "brandName": "Estraderm",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 323,
+      "genericSaltName": "Nicotine",
+      "brandName": "Nicorette",
+      "manufacturerBrandOwner": "Johnson & Johnson",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 324,
+      "genericSaltName": "Levosalbutamol",
+      "brandName": "Levolin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 325,
+      "genericSaltName": "Ipratropium",
+      "brandName": "Ipravent",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 326,
+      "genericSaltName": "Ipratropium + Salbutamol",
+      "brandName": "Duolin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 327,
+      "genericSaltName": "Budesonide + Formoterol",
+      "brandName": "Foracort",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 328,
+      "genericSaltName": "Fluticasone + Salmeterol",
+      "brandName": "Seroflo",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 329,
+      "genericSaltName": "Pantoprazole + Domperidone",
+      "brandName": "Pantocid DSR",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 330,
+      "genericSaltName": "Telmisartan + Amlodipine",
+      "brandName": "Telmikind-AM",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 331,
+      "genericSaltName": "Metformin + Glimepiride",
+      "brandName": "Amaryl M",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 332,
+      "genericSaltName": "Clopidogrel + Aspirin",
+      "brandName": "Clopilet A",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 333,
+      "genericSaltName": "Montelukast + Levocetirizine",
+      "brandName": "Montair-LC",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 334,
+      "genericSaltName": "Pregabalin",
+      "brandName": "Lyrica",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 335,
+      "genericSaltName": "Gabapentin",
+      "brandName": "Neurontin",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 336,
+      "genericSaltName": "Duloxetine",
+      "brandName": "Cymbalta",
+      "manufacturerBrandOwner": "Eli Lilly",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 337,
+      "genericSaltName": "Escitalopram",
+      "brandName": "Nexito",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 338,
+      "genericSaltName": "Sertraline",
+      "brandName": "Serta",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 339,
+      "genericSaltName": "Quetiapine",
+      "brandName": "Qutan",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 340,
+      "genericSaltName": "Olanzapine",
+      "brandName": "Oleanz",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 341,
+      "genericSaltName": "Phenytoin",
+      "brandName": "Eptoin",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 342,
+      "genericSaltName": "Levetiracetam",
+      "brandName": "Levera",
+      "manufacturerBrandOwner": "Intas",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 343,
+      "genericSaltName": "Sodium Valproate",
+      "brandName": "Encorate",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 344,
+      "genericSaltName": "Carbamazepine",
+      "brandName": "Tegretol",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 345,
+      "genericSaltName": "Allopurinol",
+      "brandName": "Zyloric",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 346,
+      "genericSaltName": "Febuxostat",
+      "brandName": "Feburic",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 347,
+      "genericSaltName": "Tamsulosin",
+      "brandName": "Urimax",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 348,
+      "genericSaltName": "Finasteride",
+      "brandName": "Finpecia",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 349,
+      "genericSaltName": "Ursodeoxycholic Acid",
+      "brandName": "Udiliv",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 350,
+      "genericSaltName": "Rifaximin",
+      "brandName": "Rifagut",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 351,
+      "genericSaltName": "Mesalamine",
+      "brandName": "Mesacol",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 352,
+      "genericSaltName": "Probiotic",
+      "brandName": "Darolac",
+      "manufacturerBrandOwner": "Aristo",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 353,
+      "genericSaltName": "Zinc Sulfate",
+      "brandName": "Z&D",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 354,
+      "genericSaltName": "Vitamin C",
+      "brandName": "Limcee",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 355,
+      "genericSaltName": "Folic Acid",
+      "brandName": "Folvite",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 356,
+      "genericSaltName": "Aminophylline",
+      "brandName": "Aminophylline",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 357,
+      "genericSaltName": "Oxytocin",
+      "brandName": "Syntocinon",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 358,
+      "genericSaltName": "Carboprost",
+      "brandName": "Hemabate",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 359,
+      "genericSaltName": "Methotrexate",
+      "brandName": "Folitrax",
+      "manufacturerBrandOwner": "Ipca",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 360,
+      "genericSaltName": "Cyclophosphamide",
+      "brandName": "Endoxan",
+      "manufacturerBrandOwner": "Baxter",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 361,
+      "genericSaltName": "Doxorubicin",
+      "brandName": "Adriamycin",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 362,
+      "genericSaltName": "Cisplatin",
+      "brandName": "Cisplatin",
+      "manufacturerBrandOwner": "Fresenius Kabi",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 363,
+      "genericSaltName": "Carboplatin",
+      "brandName": "Carboplatin",
+      "manufacturerBrandOwner": "Fresenius Kabi",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 364,
+      "genericSaltName": "Paclitaxel",
+      "brandName": "Paclitaxel",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 365,
+      "genericSaltName": "Docetaxel",
+      "brandName": "Taxotere",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 366,
+      "genericSaltName": "Filgrastim",
+      "brandName": "Neupogen",
+      "manufacturerBrandOwner": "Amgen",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 367,
+      "genericSaltName": "Epoetin Alfa",
+      "brandName": "Eprex",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 368,
+      "genericSaltName": "Darbepoetin Alfa",
+      "brandName": "Aranesp",
+      "manufacturerBrandOwner": "Amgen",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 369,
+      "genericSaltName": "Denosumab",
+      "brandName": "Prolia",
+      "manufacturerBrandOwner": "Amgen",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 370,
+      "genericSaltName": "Zoledronic Acid",
+      "brandName": "Aclasta",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 371,
+      "genericSaltName": "Rabies Vaccine",
+      "brandName": "Rabipur",
+      "manufacturerBrandOwner": "Bavarian Nordic",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 372,
+      "genericSaltName": "Hepatitis B Vaccine",
+      "brandName": "Engerix-B",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 373,
+      "genericSaltName": "Tetanus Toxoid",
+      "brandName": "TT",
+      "manufacturerBrandOwner": "Serum Institute",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 374,
+      "genericSaltName": "Influenza Vaccine",
+      "brandName": "Vaxigrip",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 375,
+      "genericSaltName": "Pneumococcal Vaccine",
+      "brandName": "Pneumovax 23",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 376,
+      "genericSaltName": "Moxifloxacin ophthalmic",
+      "brandName": "Moxicip",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 377,
+      "genericSaltName": "Ofloxacin ophthalmic",
+      "brandName": "Oflox",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 378,
+      "genericSaltName": "Tobramycin ophthalmic",
+      "brandName": "Tobrex",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 379,
+      "genericSaltName": "Latanoprost",
+      "brandName": "Xalatan",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 380,
+      "genericSaltName": "Timolol",
+      "brandName": "Timoptic",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 381,
+      "genericSaltName": "Brimonidine",
+      "brandName": "Alphagan",
+      "manufacturerBrandOwner": "AbbVie",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 382,
+      "genericSaltName": "Dorzolamide + Timolol",
+      "brandName": "Cosopt",
+      "manufacturerBrandOwner": "Merck",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 383,
+      "genericSaltName": "Carboxymethylcellulose",
+      "brandName": "Refresh Liquigel",
+      "manufacturerBrandOwner": "AbbVie",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 384,
+      "genericSaltName": "Tropicamide",
+      "brandName": "Mydriacyl",
+      "manufacturerBrandOwner": "Alcon",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 385,
+      "genericSaltName": "Ketorolac ophthalmic",
+      "brandName": "Acular",
+      "manufacturerBrandOwner": "Allergan",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 386,
+      "genericSaltName": "Nystatin",
+      "brandName": "Nystatin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 387,
+      "genericSaltName": "Permethrin",
+      "brandName": "Permite",
+      "manufacturerBrandOwner": "Permacure",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 388,
+      "genericSaltName": "Mometasone",
+      "brandName": "Elocon",
+      "manufacturerBrandOwner": "Merck",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 389,
+      "genericSaltName": "Urea",
+      "brandName": "Ureaderm",
+      "manufacturerBrandOwner": "Glenmark",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 390,
+      "genericSaltName": "Lactic Acid + Urea",
+      "brandName": "Lacsoft",
+      "manufacturerBrandOwner": "Ajanta",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 391,
+      "genericSaltName": "Clindamycin topical",
+      "brandName": "Clindac-A",
+      "manufacturerBrandOwner": "Galderma",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 392,
+      "genericSaltName": "Metronidazole topical",
+      "brandName": "Metrogyl",
+      "manufacturerBrandOwner": "J.B. Chemicals",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 393,
+      "genericSaltName": "Sertaconazole",
+      "brandName": "Onabet",
+      "manufacturerBrandOwner": "Glenmark",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 394,
+      "genericSaltName": "Luliconazole",
+      "brandName": "Lulicon",
+      "manufacturerBrandOwner": "Glenmark",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 395,
+      "genericSaltName": "Sodium Citrate",
+      "brandName": "Citralka",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 396,
+      "genericSaltName": "Potassium Citrate",
+      "brandName": "Potrate",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 397,
+      "genericSaltName": "Sucralfate",
+      "brandName": "Sucral-O",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 398,
+      "genericSaltName": "Racecadotril",
+      "brandName": "Redotril",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 399,
+      "genericSaltName": "Loperamide",
+      "brandName": "Eldoper",
+      "manufacturerBrandOwner": "Micro Labs",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 400,
+      "genericSaltName": "Sennosides",
+      "brandName": "Senokot",
+      "manufacturerBrandOwner": "Reckitt",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 401,
+      "genericSaltName": "Polyethylene Glycol",
+      "brandName": "Peglec",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 402,
+      "genericSaltName": "Dicyclomine",
+      "brandName": "Cyclopam",
+      "manufacturerBrandOwner": "Indoco",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 403,
+      "genericSaltName": "Drotaverine",
+      "brandName": "Drotin",
+      "manufacturerBrandOwner": "J.B. Chemicals",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 404,
+      "genericSaltName": "Hyoscine Butylbromide",
+      "brandName": "Buscopan",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 405,
+      "genericSaltName": "Baclofen",
+      "brandName": "Lioresal",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 406,
+      "genericSaltName": "Tizanidine",
+      "brandName": "Sirdalud",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 407,
+      "genericSaltName": "Thiocolchicoside",
+      "brandName": "Myoril",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 408,
+      "genericSaltName": "Sildenafil",
+      "brandName": "Viagra",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 409,
+      "genericSaltName": "Tadalafil",
+      "brandName": "Cialis",
+      "manufacturerBrandOwner": "Eli Lilly",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 410,
+      "genericSaltName": "Levothyroxine",
+      "brandName": "Thyronorm",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 411,
+      "genericSaltName": "Prednisolone",
+      "brandName": "Wysolone",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 412,
+      "genericSaltName": "Deflazacort",
+      "brandName": "Defcort",
+      "manufacturerBrandOwner": "Macleods",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 413,
+      "genericSaltName": "Paracetamol",
+      "brandName": "Crocin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 414,
+      "genericSaltName": "Ibuprofen",
+      "brandName": "Brufen",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 415,
+      "genericSaltName": "Diclofenac",
+      "brandName": "Voveran",
+      "manufacturerBrandOwner": "Novartis",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 416,
+      "genericSaltName": "Aceclofenac",
+      "brandName": "Zerodol",
+      "manufacturerBrandOwner": "Ipca",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 417,
+      "genericSaltName": "Etoricoxib",
+      "brandName": "Nucoxia",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 418,
+      "genericSaltName": "Tramadol",
+      "brandName": "Tramazac",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 419,
+      "genericSaltName": "Pantoprazole",
+      "brandName": "Pantocid",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 420,
+      "genericSaltName": "Rabeprazole",
+      "brandName": "Razo",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 421,
+      "genericSaltName": "Omeprazole",
+      "brandName": "Omez",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 422,
+      "genericSaltName": "Esomeprazole",
+      "brandName": "Nexpro",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 423,
+      "genericSaltName": "Ondansetron",
+      "brandName": "Ondem",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 424,
+      "genericSaltName": "Domperidone",
+      "brandName": "Domstal",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 425,
+      "genericSaltName": "Metoclopramide",
+      "brandName": "Perinorm",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 426,
+      "genericSaltName": "Cetirizine",
+      "brandName": "Cetzine",
+      "manufacturerBrandOwner": "Dr. Reddy's",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 427,
+      "genericSaltName": "Levocetirizine",
+      "brandName": "Levocet",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 428,
+      "genericSaltName": "Montelukast",
+      "brandName": "Montair",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 429,
+      "genericSaltName": "Metformin",
+      "brandName": "Glycomet",
+      "manufacturerBrandOwner": "USV",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 430,
+      "genericSaltName": "Glimepiride",
+      "brandName": "Amaryl",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 431,
+      "genericSaltName": "Dapagliflozin",
+      "brandName": "Forxiga",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 432,
+      "genericSaltName": "Empagliflozin",
+      "brandName": "Jardiance",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 433,
+      "genericSaltName": "Sitagliptin",
+      "brandName": "Januvia",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 434,
+      "genericSaltName": "Amlodipine",
+      "brandName": "Amlong",
+      "manufacturerBrandOwner": "Micro Labs",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 435,
+      "genericSaltName": "Telmisartan",
+      "brandName": "Telmikind",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 436,
+      "genericSaltName": "Losartan",
+      "brandName": "Losar",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 437,
+      "genericSaltName": "Ramipril",
+      "brandName": "Cardace",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 438,
+      "genericSaltName": "Atorvastatin",
+      "brandName": "Atorva",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 439,
+      "genericSaltName": "Rosuvastatin",
+      "brandName": "Rosuvas",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 440,
+      "genericSaltName": "Aspirin",
+      "brandName": "Ecosprin",
+      "manufacturerBrandOwner": "USV",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 441,
+      "genericSaltName": "Clopidogrel",
+      "brandName": "Clopilet",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 442,
+      "genericSaltName": "Warfarin",
+      "brandName": "Coumadin",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 443,
+      "genericSaltName": "Apixaban",
+      "brandName": "Eliquis",
+      "manufacturerBrandOwner": "BMS/Pfizer",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 444,
+      "genericSaltName": "Rivaroxaban",
+      "brandName": "Xarelto",
+      "manufacturerBrandOwner": "Bayer",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 445,
+      "genericSaltName": "Amoxicillin + Clavulanate",
+      "brandName": "Augmentin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 446,
+      "genericSaltName": "Azithromycin",
+      "brandName": "Azithral",
+      "manufacturerBrandOwner": "Alembic",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 447,
+      "genericSaltName": "Cefixime",
+      "brandName": "Taxim-O",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 448,
+      "genericSaltName": "Cefuroxime",
+      "brandName": "Ceftum",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 449,
+      "genericSaltName": "Ciprofloxacin",
+      "brandName": "Cifran",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 450,
+      "genericSaltName": "Levofloxacin",
+      "brandName": "Levoflox",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 451,
+      "genericSaltName": "Doxycycline",
+      "brandName": "Doxy-1",
+      "manufacturerBrandOwner": "FDC",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 452,
+      "genericSaltName": "Metronidazole",
+      "brandName": "Flagyl",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 453,
+      "genericSaltName": "Fluconazole",
+      "brandName": "Forcan",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 454,
+      "genericSaltName": "Acyclovir",
+      "brandName": "Zovirax",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 455,
+      "genericSaltName": "Oseltamivir",
+      "brandName": "Fluvir",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "IV",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 456,
+      "genericSaltName": "Salbutamol",
+      "brandName": "Asthalin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 457,
+      "genericSaltName": "Budesonide",
+      "brandName": "Budecort",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 458,
+      "genericSaltName": "Tiotropium",
+      "brandName": "Spiriva",
+      "manufacturerBrandOwner": "Boehringer Ingelheim",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 459,
+      "genericSaltName": "Lactulose",
+      "brandName": "Duphalac",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 460,
+      "genericSaltName": "Bisacodyl",
+      "brandName": "Dulcolax",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 461,
+      "genericSaltName": "ORS",
+      "brandName": "Electral",
+      "manufacturerBrandOwner": "FDC",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 462,
+      "genericSaltName": "Calcium + Vitamin D3",
+      "brandName": "Shelcal",
+      "manufacturerBrandOwner": "Torrent",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 463,
+      "genericSaltName": "Cholecalciferol",
+      "brandName": "Uprise-D3",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 464,
+      "genericSaltName": "Methylcobalamin",
+      "brandName": "Methycobal",
+      "manufacturerBrandOwner": "Eisai",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 465,
+      "genericSaltName": "Tranexamic Acid",
+      "brandName": "Pause",
+      "manufacturerBrandOwner": "Mankind",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 466,
+      "genericSaltName": "Iron Sucrose",
+      "brandName": "Venofer",
+      "manufacturerBrandOwner": "Vifor/Fresenius Kabi",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 467,
+      "genericSaltName": "Ferric Carboxymaltose",
+      "brandName": "Ferinject",
+      "manufacturerBrandOwner": "Vifor",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 468,
+      "genericSaltName": "Insulin Regular",
+      "brandName": "Actrapid",
+      "manufacturerBrandOwner": "Novo Nordisk",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 469,
+      "genericSaltName": "Insulin Glargine",
+      "brandName": "Lantus",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 470,
+      "genericSaltName": "Insulin Aspart",
+      "brandName": "NovoRapid",
+      "manufacturerBrandOwner": "Novo Nordisk",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 471,
+      "genericSaltName": "Insulin Lispro",
+      "brandName": "Humalog",
+      "manufacturerBrandOwner": "Eli Lilly",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 472,
+      "genericSaltName": "Heparin",
+      "brandName": "Heparin",
+      "manufacturerBrandOwner": "Gland Pharma",
+      "dosageForm": "IV",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 473,
+      "genericSaltName": "Enoxaparin",
+      "brandName": "Clexane",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 474,
+      "genericSaltName": "Ceftriaxone",
+      "brandName": "Monocef",
+      "manufacturerBrandOwner": "Aristo",
+      "dosageForm": "RL",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 475,
+      "genericSaltName": "Piperacillin + Tazobactam",
+      "brandName": "Tazact",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 476,
+      "genericSaltName": "Meropenem",
+      "brandName": "Meronem",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 477,
+      "genericSaltName": "Vancomycin",
+      "brandName": "Vanlid",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 478,
+      "genericSaltName": "Amikacin",
+      "brandName": "Amikacin",
+      "manufacturerBrandOwner": "Cipla",
+      "dosageForm": "Capsule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 479,
+      "genericSaltName": "Gentamicin",
+      "brandName": "Genticyn",
+      "manufacturerBrandOwner": "Abbott",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 480,
+      "genericSaltName": "Ondansetron",
+      "brandName": "Ondem",
+      "manufacturerBrandOwner": "Alkem",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 481,
+      "genericSaltName": "Dexamethasone",
+      "brandName": "Dexona",
+      "manufacturerBrandOwner": "Zydus",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 482,
+      "genericSaltName": "Hydrocortisone",
+      "brandName": "Solu-Cortef",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 483,
+      "genericSaltName": "Methylprednisolone",
+      "brandName": "Solu-Medrol",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 484,
+      "genericSaltName": "Furosemide",
+      "brandName": "Lasix",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "Cream",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 485,
+      "genericSaltName": "Adrenaline",
+      "brandName": "Adrenaline",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Gel",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 486,
+      "genericSaltName": "Noradrenaline",
+      "brandName": "Noradrenaline",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Ointment",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 487,
+      "genericSaltName": "Dopamine",
+      "brandName": "Dopamine",
+      "manufacturerBrandOwner": "Neon",
+      "dosageForm": "Powder",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 488,
+      "genericSaltName": "Dobutamine",
+      "brandName": "Dobutamine",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Respule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 489,
+      "genericSaltName": "Amiodarone",
+      "brandName": "Cordarone",
+      "manufacturerBrandOwner": "Sanofi",
+      "dosageForm": "IV",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 490,
+      "genericSaltName": "Digoxin",
+      "brandName": "Lanoxin",
+      "manufacturerBrandOwner": "GSK",
+      "dosageForm": "DNS",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 491,
+      "genericSaltName": "Potassium Chloride",
+      "brandName": "KCl",
+      "manufacturerBrandOwner": "B. Braun",
+      "dosageForm": "RL",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 492,
+      "genericSaltName": "Magnesium Sulfate",
+      "brandName": "MgSO4",
+      "manufacturerBrandOwner": "Samarth",
+      "dosageForm": "Drop",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 493,
+      "genericSaltName": "Calcium Gluconate",
+      "brandName": "Calcium Gluconate",
+      "manufacturerBrandOwner": "Aculife",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 494,
+      "genericSaltName": "Morphine",
+      "brandName": "Morphine",
+      "manufacturerBrandOwner": "Sun Pharma",
+      "dosageForm": "Tablet",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 495,
+      "genericSaltName": "Fentanyl",
+      "brandName": "Sublimaze",
+      "manufacturerBrandOwner": "Janssen",
+      "dosageForm": "Patch",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 496,
+      "genericSaltName": "Midazolam",
+      "brandName": "Dormicum",
+      "manufacturerBrandOwner": "Roche",
+      "dosageForm": "Injection",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 497,
+      "genericSaltName": "Propofol",
+      "brandName": "Diprivan",
+      "manufacturerBrandOwner": "AstraZeneca",
+      "dosageForm": "Ampoule",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 498,
+      "genericSaltName": "Ketamine",
+      "brandName": "Ketalar",
+      "manufacturerBrandOwner": "Pfizer",
+      "dosageForm": "Vial",
+      "highRiskHighAlert": false
+    },
+    {
+      "serialNumber": 499,
+      "genericSaltName": "Rocuronium",
+      "brandName": "Esmeron",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Syrup",
+      "highRiskHighAlert": true
+    },
+    {
+      "serialNumber": 500,
+      "genericSaltName": "Vecuronium",
+      "brandName": "Norcuron",
+      "manufacturerBrandOwner": "MSD",
+      "dosageForm": "Sachet",
+      "highRiskHighAlert": true
+    }
+  ]
+}

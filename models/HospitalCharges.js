@@ -18,11 +18,12 @@ const hospitalChargesSchema = new mongoose.Schema({
     consultationFee: { type: Number, default: 0 },
     roomCharges: [
       {
-        type: { type: String, enum: ['General', 'Semi-Private', 'Private', 'ICU'], required: true },
+        type: { type: String, enum: ['General', 'Semi-Private', 'Private', 'Deluxe', 'ICU'], required: true },
         chargePerDay: { type: Number, required: true }
       }
     ],
     nursingCharges: { type: Number, default: 0 },
+    rmoDutyDoctorCharges: { type: Number, default: 0 },
     otCharges: { type: Number, default: 0 },
     discountType: { type: String, enum: ['Percentage', 'Fixed'], default: 'Fixed' },
     discountValue: { type: Number, default: 0 },

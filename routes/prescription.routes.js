@@ -43,17 +43,18 @@ router.get('/opd/patient/:patientId/for-ipd', prescriptionController.getOPDPresc
 router.get('/ipd/admission/:admissionId', prescriptionController.getIPDPrescriptions);
 
 // ============== STANDARD CRUD ROUTES ==============
-router.post('/', validatePrescriptionMedicationFlow, prescriptionController.createPrescription);
+router.post('/', authorize('admin', 'mediqliq_super_admin', 'doctor'), validatePrescriptionMedicationFlow, prescriptionController.createPrescription);
 router.get('/', prescriptionController.getAllPrescriptions);
 router.get('/active', prescriptionController.getActivePrescriptions);
 router.get('/patient/:patientId', prescriptionController.getPrescriptionsByPatientId);
 router.get('/doctor/:doctorId', prescriptionController.getPrescriptionsByDoctorId);
 router.get('/appointment/:appointmentId', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff'), prescriptionController.getPrescriptionByAppointmentId);
 router.get('/appointment/:appointmentId/blank-print', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist'), prescriptionController.downloadBlankPrescriptionPdfByAppointment);
+router.get('/:id/opd-slip.pdf', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist'), prescriptionController.downloadOpdSlipPdf);
 router.get('/:id/print', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff'), prescriptionController.downloadPrescriptionPdf);
 router.get('/:id', prescriptionController.getPrescriptionById);
 router.put('/:id', protect, authorize('admin', 'doctor'), prescriptionController.updatePrescription);
-router.put('/:prescriptionId/dispense/:itemIndex', prescriptionController.dispenseMedication);
-router.delete('/:id', prescriptionController.deletePrescription);
+router.put('/:prescriptionId/dispense/:itemIndex', authorize('admin', 'mediqliq_super_admin', 'pharmacy'), prescriptionController.dispenseMedication);
+router.delete('/:id', authorize('admin', 'mediqliq_super_admin', 'doctor'), prescriptionController.deletePrescription);
 
 module.exports = router;

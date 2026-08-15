@@ -26,6 +26,7 @@ function exactWardRate(item, wardEntitlement) {
     general: 'general',
     semi_private: 'semiPrivate',
     private: 'private',
+    deluxe: 'deluxe',
     icu: 'icu',
     day_care: 'dayCare',
     not_applicable: 'notApplicable'

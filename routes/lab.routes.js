@@ -62,6 +62,7 @@ router.post('/requests/:id/release', ...manage, workflow.releaseLab);
 router.post('/requests/:id/amend', ...manage, governance.amendLabReport);
 router.post('/requests/:id/repeat', ...manage, governance.repeatLabTest);
 router.get('/dashboard/stats', ...view, workflow.labStats);
+router.get('/reports/released', ...view, controller.getReleasedReports);
 
 // Backward-compatible protected endpoints
 router.post('/requests', ...order, controller.createLabRequest);

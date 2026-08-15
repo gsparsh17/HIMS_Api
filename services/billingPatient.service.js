@@ -5,6 +5,7 @@ const IPDAdmission = require('../models/IPDAdmission');
 const Patient = require('../models/Patient');
 const FinancialTransaction = require('../models/FinancialTransaction');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
+const Hospital = require('../models/Hospital');
 
 const asNumber = (value) => {
   const parsed = Number(value);
@@ -218,7 +219,10 @@ async function listPatientBillingSummaries({ hospitalId, type = 'all', search = 
 }
 
 async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) {
-  const patient = await Patient.findOne({ _id: patientId, hospitalId }).lean();
+  const [patient, hospital] = await Promise.all([
+    Patient.findOne({ _id: patientId, hospitalId }).lean(),
+    Hospital.findById(hospitalId).select('hospitalName name address city state pinCode contact phone email logo').lean()
+  ]);
   if (!patient) {
     const error = new Error('Patient not found');
     error.statusCode = 404;
@@ -266,7 +270,11 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) 
     Bill.find(billFilter).sort({ generated_at: -1, createdAt: -1 }).lean(),
     Invoice.find(invoiceFilter).sort({ issue_date: -1, created_at: -1 }).lean(),
     admissionId ? IPDCharge.find(chargeFilter).sort({ chargeDate: 1, createdAt: 1 }).lean() : Promise.resolve([]),
-    FinancialTransaction.find(transactionFilter).sort({ createdAt: 1 }).lean(),
+    FinancialTransaction.find(transactionFilter)
+      .populate('invoiceId', 'invoice_number bill_number invoice_type admission_id appointment_id status issue_date created_at createdAt')
+      .populate('admissionId', 'admissionNumber admissionDate dischargeDate status departmentId primaryDoctorId wardId bedId')
+      .populate('createdBy', 'name firstName lastName first_name last_name')
+      .sort({ createdAt: 1 }).lean(),
     PatientAdvanceLedger.find(advanceFilter).sort({ createdAt: 1 }).lean()
   ]);
 
@@ -496,6 +504,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) 
 
   return {
     patient,
+    hospital,
     admission,
     bills,
     invoices,

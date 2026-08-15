@@ -43,6 +43,27 @@ const departmentSchema = new mongoose.Schema(
     active: {
       type: Boolean,
       default: true
+    },
+    departmentType: {
+      type: String,
+      trim: true,
+      index: true
+    },
+    majorFunction: {
+      type: String,
+      trim: true
+    },
+    clinical: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    aliases: [{ type: String, trim: true }],
+    masterSource: {
+      key: { type: String, trim: true },
+      version: { type: String, trim: true },
+      serialNumber: Number,
+      importedAt: Date
     }
   },
   {

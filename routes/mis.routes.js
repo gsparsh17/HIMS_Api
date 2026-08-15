@@ -3,7 +3,7 @@ const controller = require('../controllers/mis.controller');
 const { protect, authorize } = require('../middlewares/auth');
 const router = express.Router();
 
-router.use(protect, authorize('admin', 'mediqliq_super_admin', 'doctor', 'staff', 'nurse', 'ot_staff', 'store', 'store_manager', 'inventory_manager', 'accountant', 'hr', 'hr_manager', 'pathology_staff', 'radiology_staff', 'pharmacy'));
+router.use(protect, authorize('admin', 'mediqliq_super_admin', 'doctor', 'staff', 'registrar', 'receptionist', 'nurse', 'ot_staff', 'store', 'store_manager', 'inventory_manager', 'accountant', 'insurance_desk', 'hr', 'hr_manager', 'pathology_staff', 'radiology_staff', 'pharmacy'));
 router.get('/catalog', controller.catalog);
 router.post('/query', controller.query);
 router.get('/reports/:key', controller.run);

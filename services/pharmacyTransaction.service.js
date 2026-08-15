@@ -246,16 +246,16 @@ function normalizeAdvanceDepositPayments(payload = {}) {
   });
 }
 
-async function resolvePatientContext({ patientId, admissionId, prescriptionId, explicit = {} }) {
+async function resolvePatientContext({ hospitalId, patientId, admissionId, prescriptionId, explicit = {} }) {
   const [patient, admission, prescription] = await Promise.all([
-    patientId ? mongoose.model('Patient').findById(patientId).lean() : null,
-    admissionId ? IPDAdmission.findById(admissionId).populate('primaryDoctorId', 'firstName lastName name').lean() : null,
-    prescriptionId ? Prescription.findById(prescriptionId).populate('doctor_id', 'firstName lastName name').lean() : null
+    patientId ? mongoose.model('Patient').findOne({ _id: patientId, hospitalId }).lean() : null,
+    admissionId ? IPDAdmission.findOne({ _id: admissionId, hospitalId }).populate('primaryDoctorId', 'firstName lastName name').lean() : null,
+    prescriptionId ? Prescription.findOne({ _id: prescriptionId, hospitalId }).populate('doctor_id', 'firstName lastName name').lean() : null
   ]);
 
   const doctorId = objectIdOrUndefined(explicit.doctor_id || explicit.doctorId || prescription?.doctor_id?._id || admission?.primaryDoctorId?._id);
   let doctor = prescription?.doctor_id || admission?.primaryDoctorId || null;
-  if (!doctor && doctorId) doctor = await Doctor.findById(doctorId).select('firstName lastName name').lean();
+  if (!doctor && doctorId) doctor = await Doctor.findOne({ _id: doctorId, hospitalId }).select('firstName lastName name').lean();
 
   const doctorName = normalizeText(explicit.doctor_name || explicit.doctorName || doctor?.name || [doctor?.firstName, doctor?.lastName].filter(Boolean).join(' '));
   const patientName = normalizeText(explicit.customer_name || explicit.customerName || [patient?.salutation, patient?.first_name, patient?.middle_name, patient?.last_name].filter(Boolean).join(' '));
@@ -1126,7 +1126,10 @@ async function createUnifiedSale(payload, req = {}) {
   const patientId = objectIdOrUndefined(payload.patient_id || payload.patientId);
   const admissionId = objectIdOrUndefined(payload.admission_id || payload.admissionId);
   const prescriptionId = objectIdOrUndefined(payload.prescription_id || payload.prescriptionId);
-  const context = await resolvePatientContext({ patientId, admissionId, prescriptionId, explicit: payload });
+  const context = await resolvePatientContext({ hospitalId, patientId, admissionId, prescriptionId, explicit: payload });
+  if (patientId && !context.patient) { const error = new Error('Patient not found for this hospital'); error.statusCode = 404; error.code = 'PHARMACY_PATIENT_NOT_FOUND'; throw error; }
+  if (admissionId && !context.admission) { const error = new Error('IPD admission not found for this hospital'); error.statusCode = 404; error.code = 'PHARMACY_ADMISSION_NOT_FOUND'; throw error; }
+  if (prescriptionId && !context.prescription) { const error = new Error('Prescription not found for this hospital'); error.statusCode = 404; error.code = 'PHARMACY_PRESCRIPTION_NOT_FOUND'; throw error; }
   const appointmentId = objectIdOrUndefined(payload.appointment_id || payload.appointmentId || context.prescription?.appointment_id);
 
   // Pharmacy Advance deposits are not payments against this bill. They are
@@ -1210,6 +1213,32 @@ async function createUnifiedSale(payload, req = {}) {
     billDiscount: payload.discount || 0,
     billDiscountType: payload.discount_type || payload.discountType || 'percentage'
   });
+
+  // Enforce the medicine master's dispensing controls at the API boundary.
+  // A walk-in/direct sale cannot bypass prescription_required/high-risk flags.
+  const crossHospitalItem = items.find((item) => item._medicine?.hospitalId && String(item._medicine.hospitalId) !== String(hospitalId));
+  if (crossHospitalItem) {
+    const error = new Error(`Medicine ${crossHospitalItem.medicine_name} does not belong to this hospital`);
+    error.statusCode = 403;
+    error.code = 'CROSS_HOSPITAL_MEDICINE';
+    throw error;
+  }
+  const prescriptionControlledItems = items.filter((item) =>
+    item._medicine?.prescription_required === true ||
+    item._medicine?.is_high_risk === true ||
+    item._medicine?.is_high_alert === true ||
+    item._medicine?.medicationSafety?.highRisk === true
+  );
+  const hasLinkedClinicalOrder = Boolean(prescriptionId) ||
+    (prescriptionControlledItems.length > 0 && prescriptionControlledItems.every((item) => item.ipd_medication_chart_id));
+  if (prescriptionControlledItems.length && !hasLinkedClinicalOrder) {
+    const error = new Error(`A valid doctor prescription/IPD medication order is required before dispensing: ${prescriptionControlledItems.map((item) => item.medicine_name).join(', ')}`);
+    error.statusCode = 422;
+    error.code = 'PRESCRIPTION_REQUIRED_FOR_DISPENSING';
+    error.details = { medicineIds: prescriptionControlledItems.map((item) => item.medicine_id), medicines: prescriptionControlledItems.map((item) => item.medicine_name) };
+    throw error;
+  }
+  const saleRequiresPrescription = prescriptionControlledItems.length > 0;
 
   // ✅ Validate IPD medication items (only if they have chart IDs)
   const preparedIpdItems = await validateAndPrepareIpdMedicationSale({
@@ -1345,6 +1374,7 @@ async function createUnifiedSale(payload, req = {}) {
       admission_id: admissionId,
       appointment_id: appointmentId,
       prescription_id: prescriptionId,
+      prescription_required: saleRequiresPrescription,
       doctor_id: context.doctorId,
       doctor_name: context.doctorName,
       uhid: context.uhid,
@@ -1733,6 +1763,7 @@ async function createUnifiedSale(payload, req = {}) {
     admission_id: admissionId,
     appointment_id: appointmentId,
     prescription_id: prescriptionId,
+    prescription_required: saleRequiresPrescription,
     doctor_id: context.doctorId,
     doctor_name: context.doctorName,
     uhid: context.uhid,

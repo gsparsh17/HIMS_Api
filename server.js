@@ -68,6 +68,11 @@ const startServer = async () => {
       startNabhJobs();
     }
 
+    if (abdmConfig.isHospital) {
+      const { startIPDRecurringChargeJob } = require('./jobs/ipdRecurringChargeJob');
+      startIPDRecurringChargeJob();
+    }
+
     const shutdown = (signal) => {
       console.log(`\n${signal} received. Closing HTTP server...`);
       server.close(() => process.exit(0));

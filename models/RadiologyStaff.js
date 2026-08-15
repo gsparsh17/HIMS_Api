@@ -18,7 +18,7 @@ const radiologyStaffSchema = new mongoose.Schema({
   },
   specializations: [{
     type: String,
-    enum: ['X-Ray', 'CT Scan', 'MRI', 'Ultrasound', 'Mammography', 'Interventional Radiology', 'Nuclear Medicine']
+    enum: ['X-Ray', 'CT Scan', 'MRI', 'Ultrasound', 'Mammography', 'Interventional Radiology', 'Nuclear Medicine', 'Fluoroscopy', 'Angiography', 'DEXA Scan', 'PET Scan']
   }],
   qualification: {
     type: String,

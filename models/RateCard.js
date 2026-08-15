@@ -13,11 +13,11 @@ const rateCardSchema = new mongoose.Schema({
   applicability: {
     cityTiers: [{ type: String, enum: ['I', 'II', 'III', 'X', 'Y', 'Z'] }],
     accreditations: [{ type: String, enum: ['non_nabh_non_nabl', 'nabh_nabl', 'super_speciality'] }],
-    wardEntitlements: [{ type: String, enum: ['general', 'semi_private', 'private', 'icu', 'day_care', 'not_applicable'] }]
+    wardEntitlements: [{ type: String, enum: ['general', 'semi_private', 'private', 'deluxe', 'icu', 'day_care', 'not_applicable'] }]
   },
   rules: {
     baseWard: { type: String, default: 'semi_private' },
-    wardFactors: { type: Map, of: Number, default: () => ({ general: 0.95, semi_private: 1, private: 1.05 }) },
+    wardFactors: { type: Map, of: Number, default: () => ({ general: 0.95, semi_private: 1, private: 1.05, deluxe: 1.1, icu: 1.2 }) },
     accreditationFactors: { type: Map, of: Number, default: () => ({ non_nabh_non_nabl: 0.85, nabh_nabl: 1, super_speciality: 1.15 }) },
     cityTierFactors: { type: Map, of: Number, default: () => ({ I: 1, II: 0.9, III: 0.8 }) },
     sameOtSession: { type: [Number], default: [1, 0.5, 0.25] },
