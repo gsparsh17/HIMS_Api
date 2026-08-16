@@ -137,7 +137,11 @@ exports.abdmRecord = async (req, res) => {
   } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 };
 async function patientAbdmAction(req, action, { resourceId, lockerId, body, query } = {}) {
-  return withPatientAccessToken(req.patient._id, token => masterRequest('/internal/abdm/m3/action', { method: 'POST', body: { action, authToken: token, resourceId, lockerId, body, query } }));
+  return withPatientAccessToken(
+    req.patient._id,
+    token => masterRequest('/internal/abdm/m3/action', { method: 'POST', body: { action, authToken: token, resourceId, lockerId, body, query } }),
+    { sessionKind: 'PHR_APP' }
+  );
 }
 exports.subscriptionRequests = async (req, res) => { try { const r = await patientAbdmAction(req, 'PATIENT_SUBSCRIPTION_REQUESTS', { query: req.query }); res.json({ success: true, data: r.data, requestId: r.requestId }); } catch (e) { res.status(e.statusCode || 400).json({ success: false, error: e.message }); } };
 exports.approveSubscription = async (req, res) => { try { const r = await patientAbdmAction(req, 'APPROVE_SUBSCRIPTION', { resourceId: req.params.id, body: req.body }); res.status(202).json({ success: true, data: r.data, requestId: r.requestId }); } catch (e) { res.status(e.statusCode || 400).json({ success: false, error: e.message }); } };

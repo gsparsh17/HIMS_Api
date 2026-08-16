@@ -16,7 +16,6 @@ const schema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Patient',
       required: true,
-      unique: true,
       index: true
     },
     hospitalId: {
@@ -36,6 +35,7 @@ const schema = new mongoose.Schema(
   { timestamps: true }
 );
 
+schema.index({ patientId: 1, sessionKind: 1 }, { unique: true });
 schema.index({ purgeAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model('AbdmCredential', schema);

@@ -21,6 +21,7 @@ const {
   withPatientAccessToken,
   clearPatientSession
 } = require('../services/abdmCredential.service');
+const { resolveVerifiedM1Profile } = require('../services/abdmM1ProfileAuth.service');
 const {
   consentEvidence,
   createTransaction,
@@ -139,7 +140,7 @@ function registrationModeForMethod(method, currentMode) {
   return current || 'none';
 }
 
-async function saveVerifiedProfile({ patient, profile, tokens, method, userId }) {
+async function saveVerifiedProfile({ patient, profile, tokens, method, userId, sessionKind = 'ABHA_PROFILE' }) {
   await assertAbhaIsAvailable(patient, profile);
   let assessment;
   try {
@@ -201,7 +202,7 @@ async function saveVerifiedProfile({ patient, profile, tokens, method, userId })
   };
   Object.keys(update).forEach((key) => update[key] === undefined && delete update[key]);
   const saved = await Patient.findByIdAndUpdate(patient._id, { $set: update }, { new: true });
-  await storePatientSession({ patient: saved, tokens, updatedBy: userId });
+  await storePatientSession({ patient: saved, tokens, updatedBy: userId, sessionKind });
   return saved;
 }
 
@@ -336,7 +337,7 @@ exports.enrolByAadhaarOtp = async (req, res) => {
       isNew: data.isNew,
       patientId: saved._id,
       abha: safeAbha(saved),
-      credential: await getPatientSessionStatus(saved._id)
+      credential: await getPatientSessionStatus(saved._id, 'ABHA_PROFILE')
     });
   } catch (error) {
     if (transaction) await recordAttempt(transaction, error).catch(() => { });
@@ -572,15 +573,18 @@ exports.verifyExistingAbhaFace = async (req, res) => {
       scope: transaction.metadata?.loginScope || ['abha-login', 'aadhaar-face-verify'],
       authData: { authMethods: ['face_auth'], face: { txnId: transaction.txnId } }
     });
-    const profile = extractProfile(data);
-    const tokens = extractTokens(data);
-    if (!(profile.ABHANumber || profile.abhaNumber || getAbhaAddress(profile)) || !tokens.token) {
-      const error = new Error('ABDM Face Auth completed but did not return a final ABHA profile/token');
-      error.statusCode = 502;
-      error.details = data;
-      throw error;
-    }
-    const saved = await saveVerifiedProfile({ patient, profile, tokens, method: 'ABDM_FACE_QR_LOGIN', userId: req.user._id });
+    // M1 Find-ABHA authentication returns the final X/R session first; the
+    // canonical profile is then fetched from /v3/profile/account using X-token.
+    // Do not route this selected-index M1 flow through PHR-style Verify User.
+    const { profile, tokens } = await resolveVerifiedM1Profile(data);
+    const saved = await saveVerifiedProfile({
+      patient,
+      profile,
+      tokens,
+      method: 'ABDM_FACE_QR_LOGIN',
+      userId: req.user._id,
+      sessionKind: 'ABHA_PROFILE'
+    });
     await markCompleted(transaction, { faceQr: true });
     return res.json({ success: true, message: data.message || 'Existing ABHA verified with Face Authentication', abha: safeAbha(saved) });
   } catch (error) {
@@ -616,19 +620,24 @@ exports.verifyExistingAbhaOtp = async (req, res) => {
       error.statusCode = 400;
       throw error;
     }
+    // This is the documented M1 Find-ABHA selected-index flow:
+    // search -> request OTP -> verify -> final X/R session -> profile/account.
+    // It is intentionally separate from the PHR user-selection flow.
+    const { profile, tokens } = await resolveVerifiedM1Profile(data);
     const saved = await saveVerifiedProfile({
       patient,
-      profile: extractProfile(data),
-      tokens: extractTokens(data),
+      profile,
+      tokens,
       method: 'ABDM_EXISTING_ABHA_OTP',
-      userId: req.user._id
+      userId: req.user._id,
+      sessionKind: 'ABHA_PROFILE'
     });
     await markCompleted(transaction);
     return res.json({
       success: true,
       message: data.message,
       abha: safeAbha(saved),
-      credential: await getPatientSessionStatus(saved._id)
+      credential: await getPatientSessionStatus(saved._id, 'ABHA_PROFILE')
     });
   } catch (error) {
     if (transaction) await recordAttempt(transaction, error).catch(() => { });
@@ -739,7 +748,7 @@ async function patientProfileRequest(patient, operation, options = {}) {
   return withPatientAccessToken(
     patient._id,
     (token) => operation(token),
-    { updatedBy: options.updatedBy }
+    { updatedBy: options.updatedBy, sessionKind: 'ABHA_PROFILE' }
   );
 }
 
@@ -861,11 +870,11 @@ exports.logoutProfile = async (req, res) => {
         }),
       { updatedBy: req.user._id, requireEligible: false }
     );
-    await clearPatientSession(patient._id);
+    await clearPatientSession(patient._id, 'ABHA_PROFILE');
     return res.json({ success: true, message: 'ABHA profile session logged out' });
   } catch (error) {
     if (error.code === 'ABHA_REAUTH_REQUIRED') {
-      await clearPatientSession(req.params.patientId).catch(() => { });
+      await clearPatientSession(req.params.patientId, 'ABHA_PROFILE').catch(() => { });
       return res.json({ success: true, message: 'ABHA profile session was already expired' });
     }
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
@@ -991,7 +1000,7 @@ exports.getPatientAbha = async (req, res) => {
       success: true,
       patientId: patient._id,
       abha: safeAbha(patient),
-      credential: await getPatientSessionStatus(patient._id)
+      credential: await getPatientSessionStatus(patient._id, 'ABHA_PROFILE')
     });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ success: false, code: error.code, error: error.message });

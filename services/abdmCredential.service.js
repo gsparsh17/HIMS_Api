@@ -5,6 +5,7 @@ const { encryptJson, decryptJson } = require('./abdmVault.service');
 const ACCESS_TOKEN_FALLBACK_SECONDS = 1800;
 const TOKEN_EXPIRY_SKEW_MS = 60 * 1000;
 const refreshLocks = new Map();
+const DEFAULT_SESSION_KIND = 'ABHA_PROFILE';
 
 function positiveNumber(...values) {
   for (const value of values) {
@@ -161,7 +162,7 @@ async function persistPatientSession({
   tokens,
   updatedBy,
   existingSession,
-  sessionKind
+  sessionKind = DEFAULT_SESSION_KIND
 }) {
   const mergedTokens = {
     ...tokens,
@@ -197,7 +198,7 @@ async function persistPatientSession({
   );
 
   const record = await AbdmCredential.findOneAndUpdate(
-    { patientId },
+    { patientId, sessionKind },
     {
       patientId,
       hospitalId,
@@ -205,7 +206,7 @@ async function persistPatientSession({
       accessExpiresAt: session.accessExpiresAt,
       refreshExpiresAt: session.refreshExpiresAt,
       purgeAt: session.refreshExpiresAt || session.accessExpiresAt,
-      sessionKind: sessionKind || existingSession?.sessionKind || 'ABHA_PROFILE',
+      sessionKind,
       scopes: Array.isArray(session.scopes)
         ? session.scopes
         : String(session.scopes || '')
@@ -222,7 +223,7 @@ async function persistPatientSession({
   return record;
 }
 
-async function storePatientSession({ patient, tokens, updatedBy, sessionKind = 'ABHA_PROFILE' }) {
+async function storePatientSession({ patient, tokens, updatedBy, sessionKind = DEFAULT_SESSION_KIND }) {
   return persistPatientSession({
     patientId: patient._id,
     hospitalId: patient.hospitalId,
@@ -232,14 +233,14 @@ async function storePatientSession({ patient, tokens, updatedBy, sessionKind = '
   });
 }
 
-async function getCredentialRecord(patientId) {
-  return AbdmCredential.findOne({ patientId }).select(
+async function getCredentialRecord(patientId, sessionKind = DEFAULT_SESSION_KIND) {
+  return AbdmCredential.findOne({ patientId, sessionKind }).select(
     '+encryptedSession +encryptedSession.ciphertext +encryptedSession.iv +encryptedSession.tag'
   );
 }
 
-async function getPatientSession(patientId) {
-  const record = await getCredentialRecord(patientId);
+async function getPatientSession(patientId, sessionKind = DEFAULT_SESSION_KIND) {
+  const record = await getCredentialRecord(patientId, sessionKind);
   if (!record) return null;
 
   const session = decryptJson(
@@ -252,12 +253,12 @@ async function getPatientSession(patientId) {
     accessExpiresAt: record.accessExpiresAt,
     refreshExpiresAt: record.refreshExpiresAt,
     scopes: record.scopes,
-    sessionKind: record.sessionKind || 'ABHA_PROFILE'
+    sessionKind: record.sessionKind || sessionKind
   };
 }
 
-async function getPatientSessionStatus(patientId) {
-  const record = await AbdmCredential.findOne({ patientId })
+async function getPatientSessionStatus(patientId, sessionKind = DEFAULT_SESSION_KIND) {
+  const record = await AbdmCredential.findOne({ patientId, sessionKind })
     .select('accessExpiresAt refreshExpiresAt')
     .lean();
   if (!record) {
@@ -272,13 +273,15 @@ async function getPatientSessionStatus(patientId) {
   return sessionStatusFromDates(record);
 }
 
-function reauthenticationRequiredError(status, cause) {
-  const error = new Error(
-    'The ABDM profile session cannot be renewed. Authenticate the patient’s existing ABHA again before accessing the official profile, QR code or card.'
-  );
+function reauthenticationRequiredError(status, cause, sessionKind = DEFAULT_SESSION_KIND) {
+  const message = sessionKind === 'PHR_APP'
+    ? 'The ABDM PHR session cannot be renewed. Authenticate the patient in the PHR flow again before using patient-authenticated HIE-CM features.'
+    : 'The ABDM ABHA Profile session cannot be renewed. Authenticate the patient’s existing ABHA again before accessing the official profile, QR code or card.';
+  const error = new Error(message);
   error.statusCode = 401;
   error.code = 'ABHA_REAUTH_REQUIRED';
   error.details = {
+    sessionKind,
     reason: status?.reason || 'REFRESH_TOKEN_UNUSABLE',
     accessExpiresAt: status?.accessExpiresAt || null,
     refreshExpiresAt: status?.refreshExpiresAt || null,
@@ -290,7 +293,7 @@ function reauthenticationRequiredError(status, cause) {
 async function performRefresh(patientId, session, updatedBy) {
   const status = sessionStatusFromDates(session);
   if (!session?.refreshToken || !status.hasUnexpiredRefreshToken) {
-    throw reauthenticationRequiredError(status);
+    throw reauthenticationRequiredError(status, null, session?.sessionKind || DEFAULT_SESSION_KIND);
   }
 
   try {
@@ -322,22 +325,22 @@ async function performRefresh(patientId, session, updatedBy) {
       existingSession: session,
       sessionKind: session.sessionKind || 'ABHA_PROFILE'
     });
-    return getPatientSession(patientId);
+    return getPatientSession(patientId, session.sessionKind || DEFAULT_SESSION_KIND);
   } catch (error) {
     if ([400, 401, 403].includes(Number(error.statusCode))) {
-      await clearPatientSession(patientId);
-      throw reauthenticationRequiredError(status, error);
+      await clearPatientSession(patientId, session.sessionKind || DEFAULT_SESSION_KIND);
+      throw reauthenticationRequiredError(status, error, session.sessionKind || DEFAULT_SESSION_KIND);
     }
     throw error;
   }
 }
 
-async function refreshPatientSession(patientId, { updatedBy } = {}) {
-  const key = String(patientId);
+async function refreshPatientSession(patientId, { updatedBy, sessionKind = DEFAULT_SESSION_KIND } = {}) {
+  const key = `${patientId}:${sessionKind}`;
   if (refreshLocks.has(key)) return refreshLocks.get(key);
   const promise = (async () => {
-    const session = await getPatientSession(patientId);
-    if (!session) throw reauthenticationRequiredError({ reason: 'SESSION_MISSING' });
+    const session = await getPatientSession(patientId, sessionKind);
+    if (!session) throw reauthenticationRequiredError({ reason: 'SESSION_MISSING' }, null, sessionKind);
     return performRefresh(patientId, session, updatedBy);
   })().finally(() => refreshLocks.delete(key));
   refreshLocks.set(key, promise);
@@ -345,41 +348,102 @@ async function refreshPatientSession(patientId, { updatedBy } = {}) {
 }
 
 async function getActiveAccessToken(patientId, options = {}) {
-  const session = await getPatientSession(patientId);
+  const sessionKind = options.sessionKind || DEFAULT_SESSION_KIND;
+  const session = await getPatientSession(patientId, sessionKind);
   if (!session) {
-    throw reauthenticationRequiredError({ reason: 'SESSION_MISSING' });
+    throw reauthenticationRequiredError({ reason: 'SESSION_MISSING' }, null, sessionKind);
   }
   const status = sessionStatusFromDates(session);
   if (!options.forceRefresh && status.status === 'ACTIVE' && session.accessToken) {
     return session.accessToken;
   }
   if (status.hasUnexpiredRefreshToken && session.refreshToken) {
-    const refreshed = await refreshPatientSession(patientId, options);
+    const refreshed = await refreshPatientSession(patientId, { ...options, sessionKind });
     if (refreshed?.accessToken) return refreshed.accessToken;
   }
-  throw reauthenticationRequiredError({
-    ...status,
-    reason: session.accessToken ? status.reason : 'ACCESS_TOKEN_MISSING'
-  });
+  throw reauthenticationRequiredError(
+    {
+      ...status,
+      reason: session.accessToken ? status.reason : 'ACCESS_TOKEN_MISSING'
+    },
+    null,
+    sessionKind
+  );
+}
+
+function errorText(error) {
+  const values = [
+    error?.message,
+    error?.code,
+    error?.details?.message,
+    error?.details?.error,
+    error?.details?.error?.message,
+    error?.details?.code
+  ];
+  try {
+    if (error?.details) values.push(JSON.stringify(error.details));
+  } catch (_error) {
+    // Ignore non-serializable upstream details.
+  }
+  return values.filter(Boolean).join(' ').toLowerCase();
+}
+
+function isPatientAccessTokenRejected(error) {
+  const statusCode = Number(error?.statusCode);
+  if (![400, 401, 403].includes(statusCode)) return false;
+  if (statusCode === 401) return true;
+
+  const text = errorText(error);
+  return (
+    /invalid\s*x[- ]?token/.test(text) ||
+    /invalid\s*x[- ]?auth[- ]?token/.test(text) ||
+    /x[- ]?token\s*(?:is\s*)?(?:invalid|expired|missing)/.test(text) ||
+    /x[- ]?auth[- ]?token\s*(?:is\s*)?(?:invalid|expired|missing)/.test(text) ||
+    /(?:expired|invalid)\s*(?:patient\s*)?(?:access\s*)?token/.test(text)
+  );
 }
 
 async function withPatientAccessToken(patientId, operation, options = {}) {
-  let token = await getActiveAccessToken(patientId, options);
+  const sessionKind = options.sessionKind || DEFAULT_SESSION_KIND;
+  let token = await getActiveAccessToken(patientId, { ...options, sessionKind });
   try {
     return await operation(token);
   } catch (error) {
-    if (Number(error.statusCode) !== 401) throw error;
+    // ABHA profile APIs may report an expired/rejected X-token as HTTP 400
+    // (for example, "Invalid X-token") instead of HTTP 401. Refresh only
+    // for token-specific 400/401/403 responses; do not retry ordinary 400
+    // request-validation failures.
+    if (!isPatientAccessTokenRejected(error)) throw error;
+
     token = await getActiveAccessToken(patientId, {
       ...options,
-      forceRefresh: true
+      forceRefresh: true,
+      sessionKind
     });
-    return operation(token);
+    try {
+      return await operation(token);
+    } catch (retryError) {
+      if (!isPatientAccessTokenRejected(retryError)) throw retryError;
+      await clearPatientSession(patientId, sessionKind).catch(() => {});
+      throw reauthenticationRequiredError(
+        { reason: 'REFRESHED_ACCESS_TOKEN_REJECTED' },
+        retryError,
+        sessionKind
+      );
+    }
   }
 }
 
-async function clearPatientSession(patientId) {
+async function clearPatientSession(patientId, sessionKind = DEFAULT_SESSION_KIND) {
   await Promise.all([
-    AbdmCredential.deleteOne({ patientId }),
+    AbdmCredential.deleteOne({ patientId, sessionKind }),
+    Patient.updateOne({ _id: patientId }, { $unset: { 'abha.session': 1 } })
+  ]);
+}
+
+async function clearAllPatientSessions(patientId) {
+  await Promise.all([
+    AbdmCredential.deleteMany({ patientId }),
     Patient.updateOne({ _id: patientId }, { $unset: { 'abha.session': 1 } })
   ]);
 }
@@ -394,5 +458,7 @@ module.exports = {
   refreshPatientSession,
   getActiveAccessToken,
   withPatientAccessToken,
-  clearPatientSession
+  isPatientAccessTokenRejected,
+  clearPatientSession,
+  clearAllPatientSessions
 };

@@ -569,7 +569,7 @@ exports.requestRunningTokenStatus = async (req, res) => {
           }
         });
       },
-      { updatedBy: req.user._id }
+      { updatedBy: req.user._id, sessionKind: 'PHR_APP' }
     );
     return res.status(202).json({ success: true, requestId: result.requestId });
   } catch (error) {

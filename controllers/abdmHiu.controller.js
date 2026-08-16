@@ -352,7 +352,7 @@ async function patientAuthenticatedAction(req, action, extra = {}) {
         body: extra.body
       }
     }),
-    { updatedBy: req.user._id }
+    { updatedBy: req.user._id, sessionKind: 'PHR_APP' }
   );
 }
 

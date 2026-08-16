@@ -17,7 +17,8 @@ Module._load = function mockedLoad(request, parent, isMain) {
 
 const {
   normalizeSession,
-  sessionStatusFromDates
+  sessionStatusFromDates,
+  isPatientAccessTokenRejected
 } = require('../services/abdmCredential.service');
 Module._load = originalLoad;
 
@@ -66,4 +67,21 @@ test('asset controller uses server-side refresh-and-retry and rejects browser to
   assert.match(source, /withPatientAccessToken/);
   assert.doesNotMatch(source, /req\.headers\[['"]x-token['"]\]/i);
   assert.match(source, /ABHA_REAUTH_REQUIRED|code:\s*error\.code/);
+});
+
+
+test('recognizes ABDM patient X-token rejection even when upstream uses HTTP 400', () => {
+  assert.equal(isPatientAccessTokenRejected({
+    statusCode: 400,
+    details: { error: 'Invalid X-token' }
+  }), true);
+  assert.equal(isPatientAccessTokenRejected({
+    statusCode: 400,
+    details: { error: { message: 'Invalid X-token' } }
+  }), true);
+  assert.equal(isPatientAccessTokenRejected({
+    statusCode: 400,
+    details: { message: 'Invalid request body' }
+  }), false);
+  assert.equal(isPatientAccessTokenRejected({ statusCode: 401 }), true);
 });
