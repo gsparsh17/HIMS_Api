@@ -15,6 +15,7 @@ router.get('/care-contexts/patient/:patientId', reader, controller.listPatientCa
 router.get('/care-contexts/patient/:patientId/grouped', reader, controller.groupedCareContexts);
 router.post('/care-contexts/:contextId/notify-update', clinician, controller.notifyCareContextUpdate);
 router.post('/linking/hip/initiate/:patientId', clinician, controller.initiateHipLinking);
+router.post('/linking/hip/retry-pending/:contextId', clinician, controller.retryPendingHipLinking);
 router.post('/linking/hip/sms/:patientId', clinician, controller.sendHipLinkSms);
 router.post('/running-token/status/:patientId', reader, controller.requestRunningTokenStatus);
 router.post('/fhir/generate', authorize('admin', 'doctor'), controller.generateFhir);

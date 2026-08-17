@@ -48,6 +48,20 @@ function canonicalAbhaNumber(value) {
   )}-${valueDigits.slice(10)}`;
 }
 
+function abdmLinkRequestAbhaNumber(value) {
+  const valueDigits = String(value || '').replace(/\D/g, '');
+  if (valueDigits.length !== 14) {
+    const error = new Error(
+      'A valid 14-digit ABHA number is required for ABDM care-context linking'
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+  // 14 digits are below Number.MAX_SAFE_INTEGER and the M2 contract examples
+  // represent abhaNumber as a JSON number.
+  return Number(valueDigits);
+}
+
 function normalizeGender(value) {
   const normalized = String(value || '').toUpperCase();
   if (['M', 'MALE'].includes(normalized)) return 'male';
@@ -620,11 +634,6 @@ exports.linkConfirm = async (req, res) => {
       metadata: { userInitiated: true, confirmedLocallyAt: new Date() }
     });
 
-    const linkedPatient = await Patient.findOne({
-      _id: auth.patientId,
-      hospitalId
-    }).select('abha.address');
-
     try {
       await masterRequest('/internal/abdm/m2/action', {
         method: 'POST',
@@ -633,7 +642,7 @@ exports.linkConfirm = async (req, res) => {
           body: {
             transactionId: body.transactionId,
             patient: patientGroups,
-            matchedBy: linkedPatient?.abha?.address ? ['ABHA_ADDRESS'] : ['MR'],
+            matchedBy: requestedPatient.id ? ['ABHA_ADDRESS'] : ['MR'],
             response: { requestId }
           }
         }
@@ -674,11 +683,26 @@ exports.linkToken = async (req, res) => {
     const body = req.body?.body || {};
     const callbackRequestId = body.response?.requestId || requestIdFromEnvelope(req);
     const linkToken = body.linkToken || body.token || body.link?.token;
-    const pending = await AbdmCareContext.find({
+    let pending = await AbdmCareContext.find({
       hospitalId,
       linkRequestId: callbackRequestId,
       linkStatus: 'ABDM_LINK_PENDING'
     });
+
+    // A Master callback job can be retried after the Hospital already consumed
+    // the link-token callback but before Master successfully completed the
+    // outbound LINK_CARE_CONTEXT call. In that case linkRequestId has already
+    // changed to careContextLinkRequestId. Reuse the existing outbound request
+    // instead of creating a second care-context identity.
+    let reusePreparedLinkRequest = false;
+    if (!pending.length && linkToken) {
+      pending = await AbdmCareContext.find({
+        hospitalId,
+        'metadata.linkTokenCallbackRequestId': callbackRequestId,
+        linkStatus: 'ABDM_LINK_PENDING'
+      });
+      reusePreparedLinkRequest = pending.length > 0;
+    }
 
     if (body.error) {
       await AbdmCareContext.updateMany(
@@ -729,21 +753,33 @@ exports.linkToken = async (req, res) => {
       count: items.length
     }));
 
-    const careContextLinkRequestId = crypto.randomUUID();
-    await AbdmCareContext.updateMany(
-      {
-        hospitalId,
-        _id: { $in: pending.map((item) => item._id) },
-        linkStatus: 'ABDM_LINK_PENDING'
-      },
-      {
-        $set: {
-          linkRequestId: careContextLinkRequestId,
-          'metadata.linkTokenCallbackRequestId': callbackRequestId,
-          'metadata.careContextLinkRequestId': careContextLinkRequestId
-        }
-      }
+    const preparedRequestIds = new Set(
+      pending
+        .map((item) => item.metadata?.careContextLinkRequestId)
+        .filter(Boolean)
+        .map(String)
     );
+    const careContextLinkRequestId =
+      reusePreparedLinkRequest && preparedRequestIds.size === 1
+        ? Array.from(preparedRequestIds)[0]
+        : crypto.randomUUID();
+
+    if (!reusePreparedLinkRequest) {
+      await AbdmCareContext.updateMany(
+        {
+          hospitalId,
+          _id: { $in: pending.map((item) => item._id) },
+          linkStatus: 'ABDM_LINK_PENDING'
+        },
+        {
+          $set: {
+            linkRequestId: careContextLinkRequestId,
+            'metadata.linkTokenCallbackRequestId': callbackRequestId,
+            'metadata.careContextLinkRequestId': careContextLinkRequestId
+          }
+        }
+      );
+    }
 
     return res.json({
       success: true,
@@ -757,8 +793,14 @@ exports.linkToken = async (req, res) => {
           requestId: careContextLinkRequestId,
           linkToken,
           body: {
-            abhaNumber: patient.abha?.number,
-            abhaAddress: patient.abha?.address,
+            abhaNumber: abdmLinkRequestAbhaNumber(patient.abha?.number),
+            ...(patient.abha?.address
+              ? {
+                  abhaAddress: String(patient.abha.address)
+                    .trim()
+                    .toLowerCase()
+                }
+              : {}),
             patient: patientGroups
           }
         }
@@ -774,17 +816,26 @@ exports.linkCareContext = async (req, res) => {
   const body = req.body?.body || {};
   const callbackRequestId = body.response?.requestId || requestIdFromEnvelope(req);
   const failed = Boolean(body.error);
+  const update = {
+    $set: {
+      linkStatus: failed ? 'ABDM_LINK_FAILED' : 'ABDM_LINKED',
+      'metadata.callback': body,
+      'metadata.linkCareContextCallbackAt': new Date()
+    }
+  };
+  if (failed) {
+    update.$unset = { linkedAt: '' };
+  } else {
+    update.$set.linkedAt = new Date();
+  }
+
   await AbdmCareContext.updateMany(
     {
       hospitalId,
       linkRequestId: callbackRequestId,
       linkStatus: 'ABDM_LINK_PENDING'
     },
-    {
-      linkStatus: failed ? 'ABDM_LINK_FAILED' : 'ABDM_LINKED',
-      linkedAt: failed ? undefined : new Date(),
-      metadata: { callback: body }
-    }
+    update
   );
   return res.json({ success: true, summary: { failed }, outbound: [] });
 };

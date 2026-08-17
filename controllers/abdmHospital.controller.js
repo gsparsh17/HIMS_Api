@@ -214,10 +214,7 @@ exports.integrationStatus = async (_req, res) => {
     fhirProvider: abdmConfig.fhirProvider,
     fhirFallbackProvider: abdmConfig.fhirFallbackProvider,
     fhirValidatorConfigured: fhirValidator.configured === true,
-    fhirValidatorHealthy:
-      fhirValidator.effectiveHealthy === true || fhirValidator.healthy === true,
-    fhirValidatorPrimaryHealthy: fhirValidator.healthy === true,
-    fhirValidatorActiveProvider: fhirValidator.activeProvider || null,
+    fhirValidatorHealthy: fhirValidator.healthy === true,
     externalFhirValidationRequired: abdmConfig.requireExternalFhirValidation === true,
     fhirPackage: abdmConfig.fhirPackage,
     fhirVersion: abdmConfig.fhirR4Version,
@@ -239,30 +236,28 @@ exports.integrationStatus = async (_req, res) => {
     approvalRequiredBeforeTransfer:
       abdmConfig.packetDefaultReviewPolicy !== 'PREVIEW_ONLY'
   };
-  const productionTransferBlockers = [];
-  if (!configured) productionTransferBlockers.push('ABDM_NOT_CONFIGURED');
-  if (abdmConfig.cryptoProvider === 'mock') productionTransferBlockers.push('CRYPTO_PROVIDER_MOCK');
-  if (!transferReadiness.cryptoAdapterConfigured) productionTransferBlockers.push('CRYPTO_ADAPTER_NOT_CONFIGURED');
-  if (!transferReadiness.cryptoAdapterHealthy) productionTransferBlockers.push('CRYPTO_ADAPTER_UNHEALTHY');
-  if (!transferReadiness.cryptoIntegrityRequired) productionTransferBlockers.push('CRYPTO_INTEGRITY_NOT_REQUIRED');
-  if (!transferReadiness.fhirValidatorConfigured) productionTransferBlockers.push('FHIR_VALIDATOR_NOT_CONFIGURED');
-  if (!transferReadiness.fhirValidatorHealthy) productionTransferBlockers.push('FHIR_VALIDATOR_UNHEALTHY');
-  if (!transferReadiness.externalFhirValidationRequired) productionTransferBlockers.push('EXTERNAL_FHIR_VALIDATION_NOT_REQUIRED');
-  if (!transferReadiness.consentValidatorConfigured) productionTransferBlockers.push('CONSENT_VALIDATOR_NOT_CONFIGURED');
-  if (!transferReadiness.consentValidatorHealthy) productionTransferBlockers.push('CONSENT_VALIDATOR_UNHEALTHY');
-  if (!transferReadiness.consentValidatorProductionCapable) productionTransferBlockers.push('CONSENT_VALIDATOR_NOT_PRODUCTION_CAPABLE');
-  if (!transferReadiness.consentValidationRequired) productionTransferBlockers.push('CONSENT_VALIDATION_NOT_REQUIRED');
-  if (!transferReadiness.dataPushAllowlistConfigured) productionTransferBlockers.push('DATA_PUSH_ALLOWLIST_MISSING');
-  if (transferReadiness.privateDataPushAllowed) productionTransferBlockers.push('PRIVATE_DATA_PUSH_ALLOWED');
-  if (!packetReadiness.enabled) productionTransferBlockers.push('PACKET_FEATURE_DISABLED');
-  if (!packetReadiness.approvalRequiredBeforeTransfer) productionTransferBlockers.push('PACKET_APPROVAL_NOT_REQUIRED');
-
-  const productionTransferReady = productionTransferBlockers.length === 0;
+  const productionTransferReady = Boolean(
+    configured &&
+      abdmConfig.cryptoProvider !== 'mock' &&
+      transferReadiness.cryptoAdapterConfigured &&
+      transferReadiness.cryptoAdapterHealthy &&
+      transferReadiness.cryptoIntegrityRequired &&
+      transferReadiness.fhirValidatorConfigured &&
+      transferReadiness.fhirValidatorHealthy &&
+      transferReadiness.externalFhirValidationRequired &&
+      transferReadiness.consentValidatorConfigured &&
+      transferReadiness.consentValidatorHealthy &&
+      transferReadiness.consentValidatorProductionCapable &&
+      transferReadiness.consentValidationRequired &&
+      transferReadiness.dataPushAllowlistConfigured &&
+      !transferReadiness.privateDataPushAllowed &&
+      packetReadiness.enabled &&
+      packetReadiness.approvalRequiredBeforeTransfer
+  );
 
   const dependencyStatus = {
     reportedAt: new Date().toISOString(),
     productionTransferReady,
-    productionTransferBlockers,
     transferReadiness,
     packetReadiness,
     dependencies: { fhirValidator, cryptoAdapter, consentValidator }
@@ -295,7 +290,6 @@ exports.integrationStatus = async (_req, res) => {
       abdmPackets: abdmConfig.packetFeatureEnabled
     },
     productionTransferReady,
-    productionTransferBlockers,
     transferReadiness,
     packetReadiness,
     dependencies: dependencyStatus.dependencies
@@ -349,14 +343,25 @@ exports.initiateHipLinking = async (req, res) => {
     const patient = await scopedPatient(req.params.patientId, req.user);
     assertAbdmExchangeEligible(patient);
 
-    await buildPatientCareContexts(patient._id);
+    const requestedCareContextIds =
+      Array.isArray(req.body?.careContextIds) && req.body.careContextIds.length
+        ? req.body.careContextIds
+        : [];
+
+    // Linking an explicitly selected care context must not rebuild the patient's
+    // entire context catalogue. Rebuilding here created duplicate CC_* records
+    // whenever older rows had lost metadata.naturalKey.
+    if (!requestedCareContextIds.length) {
+      await buildPatientCareContexts(patient._id);
+    }
+
     const query = {
       hospitalId: patient.hospitalId,
       patientId: patient._id,
       linkStatus: { $in: ['LOCAL_RECORD_READY', 'ABDM_LINK_FAILED'] }
     };
-    if (Array.isArray(req.body?.careContextIds) && req.body.careContextIds.length) {
-      query._id = { $in: req.body.careContextIds };
+    if (requestedCareContextIds.length) {
+      query._id = { $in: requestedCareContextIds };
     }
 
     const contexts = await AbdmCareContext.find(query);
@@ -380,12 +385,12 @@ exports.initiateHipLinking = async (req, res) => {
         _id: { $in: contexts.map((item) => item._id) }
       },
       {
-        linkStatus: 'ABDM_LINK_PENDING',
-        linkRequestId: result.requestId,
-        metadata: {
-          initiatedBy: req.user?._id,
-          initiatedAt: new Date(),
-          masterRequestId: result.requestId
+        $set: {
+          linkStatus: 'ABDM_LINK_PENDING',
+          linkRequestId: result.requestId,
+          'metadata.initiatedBy': req.user?._id,
+          'metadata.initiatedAt': new Date(),
+          'metadata.masterRequestId': result.requestId
         }
       }
     );
@@ -396,6 +401,152 @@ exports.initiateHipLinking = async (req, res) => {
       pendingCareContexts: contexts.length,
       message:
         'ABDM link-token generation was accepted. Final linking continues asynchronously through the ABDM callback.'
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({
+      success: false,
+      error: error.message,
+      details: error.details
+    });
+  }
+};
+
+
+exports.retryPendingHipLinking = async (req, res) => {
+  try {
+    const hospitalId = assertUserHospital(req.user);
+    const context = await AbdmCareContext.findOne({
+      _id: req.params.contextId,
+      hospitalId
+    });
+
+    if (!context || context.active === false) {
+      return res.status(404).json({
+        success: false,
+        error: 'Care context not found'
+      });
+    }
+
+    if (context.linkStatus === 'ABDM_LINKED') {
+      return res.json({
+        success: true,
+        mode: 'ALREADY_LINKED',
+        message: 'Care context is already linked with ABDM'
+      });
+    }
+
+    if (context.linkStatus !== 'ABDM_LINK_PENDING') {
+      return res.status(409).json({
+        success: false,
+        code: 'ABDM_LINK_NOT_PENDING',
+        error:
+          'Only ABDM_LINK_PENDING contexts can use pending-link recovery. Use Link selected for LOCAL_RECORD_READY or ABDM_LINK_FAILED contexts.'
+      });
+    }
+
+    const patient = await Patient.findOne({
+      _id: context.patientId,
+      hospitalId
+    });
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        error: 'Patient not found for care context'
+      });
+    }
+    assertAbdmExchangeEligible(patient);
+
+    const metadata = context.metadata || {};
+    const linkTokenCallbackRequestId = metadata.linkTokenCallbackRequestId;
+    const careContextLinkRequestId = metadata.careContextLinkRequestId;
+
+    // Once the link-token callback has already been consumed, generating a new
+    // link token would fork the same context into another concurrent M2 flow.
+    // Resume the existing callback job instead.
+    if (linkTokenCallbackRequestId && careContextLinkRequestId) {
+      const result = await masterRequest('/internal/abdm/m2/retry-link-callback', {
+        method: 'POST',
+        body: {
+          originalRequestId: String(linkTokenCallbackRequestId),
+          careContextLinkRequestId: String(careContextLinkRequestId)
+        }
+      });
+
+      await AbdmCareContext.updateOne(
+        { _id: context._id, hospitalId },
+        {
+          $set: {
+            'metadata.pendingRecoveryMode': 'RESUME_CALLBACK',
+            'metadata.pendingRecoveryRequestedAt': new Date(),
+            'metadata.pendingRecoveryJobId': result.jobId
+          }
+        }
+      );
+
+      return res.status(202).json({
+        success: true,
+        mode: 'RESUME_CALLBACK',
+        requestId: careContextLinkRequestId,
+        jobId: result.jobId,
+        message:
+          'The existing ABDM link-token callback was queued for recovery. No new link token was generated.'
+      });
+    }
+
+    const retryAfterMs = Math.max(
+      30000,
+      Number(process.env.ABDM_LINK_PENDING_RETRY_AFTER_MS || 120000)
+    );
+    const initiatedAt = new Date(
+      metadata.initiatedAt || context.updatedAt || context.createdAt
+    );
+    const ageMs = Date.now() - initiatedAt.getTime();
+
+    if (Number.isFinite(ageMs) && ageMs < retryAfterMs) {
+      return res.status(409).json({
+        success: false,
+        code: 'ABDM_LINK_STILL_ACTIVE',
+        retryAfterSeconds: Math.ceil((retryAfterMs - ageMs) / 1000),
+        error:
+          'This ABDM link request is still within the active callback window. Wait for the callback before retrying.'
+      });
+    }
+
+    // No link-token callback has been consumed and the pending request is stale.
+    // Reissue only the selected existing context; do not rebuild care contexts.
+    const body = abdmLinkingIdentity(patient);
+    const result = await masterRequest('/internal/abdm/m2/action', {
+      method: 'POST',
+      body: { action: 'GENERATE_LINK_TOKEN', body }
+    });
+
+    await AbdmCareContext.updateOne(
+      { _id: context._id, hospitalId, linkStatus: 'ABDM_LINK_PENDING' },
+      {
+        $set: {
+          linkRequestId: result.requestId,
+          'metadata.previousLinkRequestId': context.linkRequestId,
+          'metadata.initiatedBy': req.user?._id,
+          'metadata.initiatedAt': new Date(),
+          'metadata.masterRequestId': result.requestId,
+          'metadata.pendingRecoveryMode': 'REISSUE_LINK_TOKEN',
+          'metadata.pendingRecoveryRequestedAt': new Date()
+        },
+        $unset: {
+          'metadata.linkTokenCallbackRequestId': '',
+          'metadata.careContextLinkRequestId': '',
+          'metadata.pendingRecoveryJobId': ''
+        }
+      }
+    );
+
+    return res.status(202).json({
+      success: true,
+      mode: 'REISSUE_LINK_TOKEN',
+      requestId: result.requestId,
+      pendingCareContexts: 1,
+      message:
+        'The stale pending link was retried with a new ABDM link-token request.'
     });
   } catch (error) {
     return res.status(error.statusCode || 502).json({
@@ -494,14 +645,9 @@ exports.validateFhir = async (req, res) => {
     const result = await validateBundle(req.body.bundle, {
       external: req.body.external !== false
     });
-    // Validation completed successfully at the HTTP layer even when the
-    // submitted FHIR is non-conformant. Return the conformance result in the
-    // body and reserve 4xx/5xx for operational failures.
-    return res.json({
-      success: true,
-      validationPassed: result.valid === true,
-      validation: result
-    });
+    return res
+      .status(result.valid ? 200 : 422)
+      .json({ success: result.valid, validation: result });
   } catch (error) {
     return res.status(400).json({
       success: false,
