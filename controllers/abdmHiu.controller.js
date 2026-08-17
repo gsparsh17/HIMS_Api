@@ -298,16 +298,28 @@ exports.createSubscription = async (req, res) => {
     const body = {
       subscription: req.body.subscription || {
         patient: { id: req.body.abhaAddress || patient.abha.address },
+        hiu: { id: abdmConfig.hiuId },
         purpose: req.body.purpose,
         categories: req.body.categories,
         period: req.body.period
       }
     };
+    if (!body.subscription.hiu?.id) body.subscription.hiu = { id: abdmConfig.hiuId };
     const master = await masterRequest('/internal/abdm/m3/action', {
       method: 'POST',
       body: { action: 'INIT_SUBSCRIPTION', body }
     });
-    subscription.metadata = { masterRequestId: master.requestId };
+    const officialSubscriptionRequestId =
+      master.data?.subscriptionRequestId ||
+      master.data?.subscriptionRequest?.id;
+    if (officialSubscriptionRequestId) {
+      subscription.subscriptionRequestId = officialSubscriptionRequestId;
+    }
+    subscription.metadata = {
+      masterRequestId: master.requestId,
+      localRequestId: requestId,
+      ...(officialSubscriptionRequestId ? { officialSubscriptionRequestId } : {})
+    };
     await subscription.save();
     return res.status(202).json({ success: true, subscription });
   } catch (error) {

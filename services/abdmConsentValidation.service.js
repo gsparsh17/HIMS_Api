@@ -4,7 +4,7 @@ const AbdmHospitalConsent = require('../models/AbdmHospitalConsent');
 const { decryptJson } = require('./abdmVault.service');
 const { masterRequest } = require('./abdmMasterClient.service');
 const { requestInternalJson, checkInternalHealth } = require('./abdmInternalServiceClient');
-const { hashArtifact } = require('./abdmConsentPolicy.service');
+const { hashArtifact, consentParts } = require('./abdmConsentPolicy.service');
 
 const {
   identifier,
@@ -14,48 +14,105 @@ const {
 } = require('./abdmConsentValidationContract');
 
 function structuralConsentValidation(artefact = {}) {
-  const value =
-    artefact.consentDetail ||
-    artefact.consent ||
-    artefact.consentArtefact ||
-    artefact.notification?.consentDetail ||
-    artefact.notification?.consentArtefact ||
-    artefact.notification ||
-    artefact;
-  const permission = value.permission || artefact.permission || {};
+  const { notification, envelope, detail, permission, patient, artefactIds } = consentParts(artefact);
+  const value = detail && Object.keys(detail).length ? detail : envelope;
   const errors = [];
-  const consentId = value.id || value.consentId || artefact.consentId || artefact.notification?.consentId;
-  if (!consentId) errors.push({ code: 'CONSENT_ID_MISSING', path: 'consent.id', message: 'Consent identifier is missing' });
+  const consentId =
+    value.id ||
+    value.consentId ||
+    envelope.consentId ||
+    artefact.consentId ||
+    notification.consentId ||
+    artefactIds[0];
+  if (!consentId) errors.push({ code: 'CONSENT_ID_MISSING', path: 'consent.consentDetail.consentId', message: 'Consent identifier is missing' });
   if (!permission.dateRange?.from || !permission.dateRange?.to) {
-    errors.push({ code: 'DATE_RANGE_MISSING', path: 'permission.dateRange', message: 'Consent date range is missing' });
+    errors.push({ code: 'DATE_RANGE_MISSING', path: 'consent.consentDetail.permission.dateRange', message: 'Consent date range is missing' });
   }
   if (!permission.dataEraseAt && !permission.permissionExpiry && !value.expiresAt) {
-    errors.push({ code: 'EXPIRY_MISSING', path: 'permission.dataEraseAt', message: 'Consent expiry/data erase time is missing' });
+    errors.push({ code: 'EXPIRY_MISSING', path: 'consent.consentDetail.permission.dataEraseAt', message: 'Consent expiry/data erase time is missing' });
   }
-  const hiTypes = permission.hiTypes || value.hiTypes || artefact.hiTypes;
+  const hiTypes = permission.hiTypes || value.hiTypes || envelope.hiTypes || artefact.hiTypes;
   if (!Array.isArray(hiTypes) || !hiTypes.length) {
-    errors.push({ code: 'HI_TYPES_MISSING', path: 'permission.hiTypes', message: 'Consent HI types are missing' });
+    errors.push({ code: 'HI_TYPES_MISSING', path: 'consent.consentDetail.hiTypes', message: 'Consent HI types are missing' });
   }
-  const patient = value.patient || artefact.patient;
   if (!identifier(patient) && !patient?.abhaAddress && !artefact.abhaAddress) {
-    errors.push({ code: 'PATIENT_MISSING', path: 'patient.id', message: 'Consent patient identity is missing' });
+    errors.push({ code: 'PATIENT_MISSING', path: 'consent.consentDetail.patient.id', message: 'Consent patient identity is missing' });
   }
   const hipIds = [
-    ...asArray(value.hips || artefact.hips),
-    ...asArray(value.hip || artefact.hip)
+    ...asArray(value.hips || envelope.hips || artefact.hips),
+    ...asArray(value.hip || envelope.hip || artefact.hip)
   ].map(identifier).filter(Boolean);
-  const hiuId = identifier(value.hiu || artefact.hiu);
+  const hiuId = identifier(value.hiu || envelope.hiu || artefact.hiu);
   if (!hipIds.length) {
-    errors.push({ code: 'HIP_MISSING', path: 'hip.id', message: 'Consent HIP identity is missing' });
+    errors.push({ code: 'HIP_MISSING', path: 'consent.consentDetail.hip.id', message: 'Consent HIP identity is missing' });
   }
   if (!hiuId) {
-    errors.push({ code: 'HIU_MISSING', path: 'hiu.id', message: 'Consent HIU identity is missing' });
+    errors.push({ code: 'HIU_MISSING', path: 'consent.consentDetail.hiu.id', message: 'Consent HIU identity is missing' });
   }
-  const purpose = permission.purpose || value.purpose || artefact.purpose;
+  const purpose = permission.purpose || value.purpose || envelope.purpose || artefact.purpose;
   if (!purposeCode(purpose)) {
-    errors.push({ code: 'PURPOSE_MISSING', path: 'purpose.code', message: 'Consent purpose is missing' });
+    errors.push({ code: 'PURPOSE_MISSING', path: 'consent.consentDetail.purpose.code', message: 'Consent purpose is missing' });
   }
   return { valid: errors.length === 0, errors };
+}
+
+function structuralSandboxDecision(artefact, structural, operation = {}, provider = 'structural-sandbox', warning) {
+  const { notification, envelope, detail, permission, patient, careContexts, artefactIds } = consentParts(artefact);
+  const value = detail && Object.keys(detail).length ? detail : envelope;
+  const hipIds = [
+    ...asArray(value.hips || envelope.hips || artefact.hips),
+    ...asArray(value.hip || envelope.hip || artefact.hip)
+  ].map(identifier).filter(Boolean);
+  const consentId =
+    value.id || value.consentId || envelope.consentId || artefact.consentId || notification.consentId || artefactIds[0];
+  const status = String(value.status || envelope.status || artefact.status || notification.status || 'GRANTED').toUpperCase();
+  const artefactHash = hashArtifact(artefact);
+  const verifiedScope = {
+    consentId: consentId ? String(consentId) : null,
+    status,
+    patientId: String(identifier(patient) || patient?.abhaAddress || artefact.abhaAddress || '').toLowerCase(),
+    hipIds: Array.from(new Set(hipIds.map(String))),
+    hiuId: identifier(value.hiu || envelope.hiu || artefact.hiu),
+    purpose: permission.purpose || value.purpose || envelope.purpose || artefact.purpose,
+    hiTypes: asArray(permission.hiTypes || value.hiTypes || envelope.hiTypes || artefact.hiTypes).map(String),
+    careContextIds: asArray(careContexts)
+      .map((item) => item?.careContextReference || item?.referenceNumber || identifier(item))
+      .filter(Boolean)
+      .map(String),
+    dateRange: {
+      from: permission.dateRange?.from || value.dateRange?.from || artefact.dateRange?.from || null,
+      to: permission.dateRange?.to || value.dateRange?.to || artefact.dateRange?.to || null
+    },
+    validFrom: value.createdAt || envelope.createdAt || null,
+    expiresAt: permission.permissionExpiry || value.expiresAt || permission.dataEraseAt || null,
+    dataEraseAt: permission.dataEraseAt || null,
+    frequency: permission.frequency || null,
+    accessMode: permission.accessMode || null,
+    retention: permission.retention || null
+  };
+  const authorizedOperationHash = hashArtifact({ artefactHash, operation, verifiedScope });
+  return {
+    valid: true,
+    decision: 'PERMIT',
+    provider,
+    validationId: `sandbox:${artefactHash.slice(0, 24)}`,
+    artefactHash,
+    signatureVerified: false,
+    integrityVerified: false,
+    cryptographicallyValidated: false,
+    unsignedSandbox: true,
+    authorizedOperationHash,
+    verifiedScope,
+    trust: { issuer: null, keyId: null, algorithm: 'STRUCTURAL_SANDBOX' },
+    lifecycleStatus: status,
+    retentionUntil: verifiedScope.dataEraseAt || verifiedScope.expiresAt,
+    usage: null,
+    validatedAt: new Date().toISOString(),
+    decisionExpiresAt: null,
+    reasonCodes: [],
+    warnings: warning ? [{ code: 'SANDBOX_STRUCTURAL_FALLBACK', message: warning }] : [],
+    structural
+  };
 }
 
 function selectedProvider(value) {
@@ -152,9 +209,10 @@ async function consentProviderRequest(provider, { type, body, reservationId, act
   throw new Error(`Unsupported consent provider operation: ${provider}/${type}`);
 }
 
-function assertResult(result, operationType) {
+function assertResult(result, operationType, options = {}) {
   const cryptographic = result.signatureVerified === true && result.integrityVerified === true;
-  const valid = result.valid === true && result.decision === 'PERMIT' && cryptographic;
+  const unsignedSandboxAccepted = options.allowUnsignedSandbox === true && result.unsignedSandbox === true;
+  const valid = result.valid === true && result.decision === 'PERMIT' && (cryptographic || unsignedSandboxAccepted);
   if (!valid) {
     const error = new Error(
       result.errors?.[0]?.message ||
@@ -193,104 +251,86 @@ async function validateConsentArtefact(artefact, options = {}) {
     throw error;
   }
 
-  // Sandbox/demo mode: when cryptographic consent validation is explicitly not
-  // required, stop after local structural validation instead of calling the
-  // configured shared provider. Production/certification must keep
-  // ABDM_REQUIRE_CONSENT_VALIDATION=true.
-  if (!abdmConfig.requireConsentValidation) {
-    const artefactHash = hashArtifact(artefact);
-    const operation = options.operation || { type: 'REGISTER_ARTEFACT' };
-    const authorizedOperationHash = crypto
-      .createHash('sha256')
-      .update(JSON.stringify({ artefactHash, operation }))
-      .digest('hex');
-    return {
-      valid: true,
-      decision: 'PERMIT',
-      provider: 'structural-only-sandbox',
-      validationId: `sandbox-structural:${artefactHash.slice(0, 32)}`,
-      artefactHash,
-      signatureVerified: false,
-      integrityVerified: false,
-      cryptographicallyValidated: false,
-      authorizedOperationHash,
-      verifiedScope: null,
-      trust: { mode: 'STRUCTURAL_ONLY_SANDBOX' },
-      lifecycleStatus: null,
-      retentionUntil: null,
-      usage: null,
-      validatedAt: new Date().toISOString(),
-      decisionExpiresAt: null,
-      reasonCodes: [],
-      warnings: ['Cryptographic consent validation disabled for sandbox demo'],
-      structural
-    };
-  }
-
-  const provider = selectedProvider(options.provider);
-  if (!providerConfigured(provider)) {
-    if (abdmConfig.requireConsentValidation) {
-      const error = new Error(`External ABDM consent validation is required but provider ${provider} is not configured`);
-      error.statusCode = 503;
-      error.code = 'ABDM_CONSENT_VALIDATOR_REQUIRED';
-      throw error;
-    }
-    return {
-      valid: false,
-      decision: 'DENY',
-      signatureVerified: false,
-      integrityVerified: false,
-      skipped: true,
-      provider,
-      structural,
-      reason: `ABDM consent provider ${provider} is not configured`
-    };
-  }
-
   const operation = {
     type: 'REGISTER_ARTEFACT',
     operationId: `register:${hashArtifact(artefact)}`,
     ...(options.operation || {})
   };
+  const role = String(options.role || '').toUpperCase();
   const expected = {
-    hipId: abdmConfig.hipId,
+    ...(role === 'HIP' ? { hipId: abdmConfig.hipId } : {}),
     hiuId: abdmConfig.hiuId,
     ...(options.expected || {})
   };
 
-  const result = await consentProviderRequest(provider, {
-    type: 'validate',
-    body: {
-      artefact,
-      environment: abdmConfig.environment,
-      operation,
-      expected
+  const provider = selectedProvider(options.provider);
+  if (!providerConfigured(provider)) {
+    if (abdmConfig.requireConsentValidation || abdmConfig.isProduction) {
+      const error = new Error(`External ABDM consent validation is required but provider ${provider} is not configured`);
+      error.statusCode = 503;
+      error.code = 'ABDM_CONSENT_VALIDATOR_REQUIRED';
+      throw error;
     }
-  });
+    const fallback = structuralSandboxDecision(
+      artefact,
+      structural,
+      operation,
+      'structural-sandbox',
+      `ABDM consent provider ${provider} is not configured; using sandbox structural validation only`
+    );
+    assertVerifiedScopeMatches(fallback, operation, expected);
+    return fallback;
+  }
+  try {
+    const result = await consentProviderRequest(provider, {
+      type: 'validate',
+      body: {
+        artefact,
+        environment: abdmConfig.environment,
+        operation,
+        expected
+      }
+    });
 
-  const accepted = assertResult(result, operation.type);
-  assertVerifiedScopeMatches(accepted, operation, expected);
-  return {
-    valid: true,
-    decision: 'PERMIT',
-    provider,
-    validationId: accepted.validationId,
-    artefactHash: accepted.artefactHash,
-    signatureVerified: accepted.signatureVerified === true,
-    integrityVerified: accepted.integrityVerified === true,
-    cryptographicallyValidated: true,
-    authorizedOperationHash: accepted.authorizedOperationHash,
-    verifiedScope: accepted.verifiedScope,
-    trust: accepted.trust,
-    lifecycleStatus: accepted.lifecycleStatus,
-    retentionUntil: accepted.retentionUntil,
-    usage: accepted.usage ? { ...accepted.usage, provider } : null,
-    validatedAt: accepted.validatedAt,
-    decisionExpiresAt: accepted.decisionExpiresAt,
-    reasonCodes: [],
-    warnings: Array.isArray(accepted.warnings) ? accepted.warnings.slice(0, 100) : [],
-    structural
-  };
+    const accepted = assertResult(result, operation.type, {
+      allowUnsignedSandbox: !abdmConfig.requireConsentValidation && !abdmConfig.isProduction
+    });
+    assertVerifiedScopeMatches(accepted, operation, expected);
+    return {
+      valid: true,
+      decision: 'PERMIT',
+      provider,
+      validationId: accepted.validationId,
+      artefactHash: accepted.artefactHash,
+      signatureVerified: accepted.signatureVerified === true,
+      integrityVerified: accepted.integrityVerified === true,
+      cryptographicallyValidated:
+        accepted.signatureVerified === true && accepted.integrityVerified === true,
+      authorizedOperationHash: accepted.authorizedOperationHash,
+      verifiedScope: accepted.verifiedScope,
+      trust: accepted.trust,
+      lifecycleStatus: accepted.lifecycleStatus,
+      retentionUntil: accepted.retentionUntil,
+      usage: accepted.usage ? { ...accepted.usage, provider } : null,
+      validatedAt: accepted.validatedAt,
+      decisionExpiresAt: accepted.decisionExpiresAt,
+      reasonCodes: [],
+      unsignedSandbox: accepted.unsignedSandbox === true,
+      warnings: Array.isArray(accepted.warnings) ? accepted.warnings.slice(0, 100) : [],
+      structural
+    };
+  } catch (error) {
+    if (abdmConfig.requireConsentValidation || abdmConfig.isProduction) throw error;
+    const fallback = structuralSandboxDecision(
+      artefact,
+      structural,
+      operation,
+      'structural-sandbox',
+      `External consent validator could not produce a sandbox decision: ${error.message}`
+    );
+    assertVerifiedScopeMatches(fallback, operation, expected);
+    return fallback;
+  }
 }
 
 async function consentWithEncryptedArtefact(consent) {
@@ -313,6 +353,7 @@ async function authorizeConsentOperation({ consent, operation }) {
     `abdm-consent:${stored.hospitalId}:${stored.role}:${stored.consentId || stored.consentRequestId}`
   );
   const authorization = await validateConsentArtefact(artefact, {
+    role: stored.role,
     operation,
     expected: {
       consentId: stored.consentId,

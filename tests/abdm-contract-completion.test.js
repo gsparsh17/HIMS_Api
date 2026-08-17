@@ -73,9 +73,15 @@ test('M3 uses exact request wrappers and final success/failure notification', ()
   assert.match(hiu, /body: \{ consentId: consent\.consentId \}/);
   assert.match(hiu, /const body = \{\s*hiRequest:/);
   assert.match(hiu, /action: 'NOTIFY_HEALTH_INFORMATION'/);
-  assert.match(hiu, /status: 'TRANSFERRED'/);
+  assert.match(hiu, /status: 'RECEIVED'/);
+  assert.match(hiu, /hiStatus: status === 'RECEIVED' \? 'OK' : 'ERRORED'/);
+  assert.match(hiu, /hiu: \{ id: hiuId \}/);
+  assert.match(hiu, /identifier: \{/);
   assert.match(hiu, /status: 'FAILED'/);
   assert.match(hiu, /assertDecryptionIntegrity/);
+  const connector = source('controllers/abdmHiuConnector.controller.js');
+  assert.match(connector, /const acknowledgement = artefactIds\.map/);
+  assert.match(connector, /acknowledgement,/);
 });
 
 test('running-token, deep-link and subscription backend routes are present', () => {

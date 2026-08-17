@@ -38,22 +38,32 @@ exports.consentOnInit = async (req, res) => {
 exports.consentNotify = async (req, res) => {
   try {
     const body = payload(req);
+    const artefactIds = (body.notification?.consentArtefacts || [])
+      .map((item) => (typeof item === 'string' ? item : item?.id))
+      .filter(Boolean);
     const consent = await onConsentCallback('HIU_CONSENT_NOTIFY', body);
+    const acknowledgement = artefactIds.map((consentId) => ({
+      status: 'OK',
+      consentId
+    }));
     return res.json({
       success: true,
-      summary: { consentId: consent.consentId, status: consent.status },
-      outbound: [
-        {
-          action: 'HIU_ACK_CONSENT_NOTIFY',
-          body: {
-            acknowledgement: {
-              status: 'OK',
-              consentId: consent.consentId
-            },
-            response: { requestId: requestId(req) }
-          }
-        }
-      ]
+      summary: {
+        consentId: consent.consentId || artefactIds[0],
+        consentArtefactIds: artefactIds,
+        status: consent.status
+      },
+      outbound: acknowledgement.length
+        ? [
+            {
+              action: 'HIU_ACK_CONSENT_NOTIFY',
+              body: {
+                acknowledgement,
+                response: { requestId: requestId(req) }
+              }
+            }
+          ]
+        : []
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });

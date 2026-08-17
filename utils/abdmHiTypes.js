@@ -1,12 +1,12 @@
 const INTERNAL_TO_ABDM = {
-  PRESCRIPTION: 'PRESCRIPTION',
-  DIAGNOSTIC_REPORT: 'DIAGNOSTICREPORT',
-  OP_CONSULTATION: 'OPCONSULTATION',
-  DISCHARGE_SUMMARY: 'DISCHARGESUMMARY',
-  IMMUNIZATION_RECORD: 'IMMUNIZATIONRECORD',
-  HEALTH_DOCUMENT_RECORD: 'HEALTHDOCUMENTRECORD',
-  WELLNESS_RECORD: 'WELLNESSRECORD',
-  INVOICE: 'INVOICE'
+  PRESCRIPTION: 'Prescription',
+  DIAGNOSTIC_REPORT: 'DiagnosticReport',
+  OP_CONSULTATION: 'OPConsultation',
+  DISCHARGE_SUMMARY: 'DischargeSummary',
+  IMMUNIZATION_RECORD: 'ImmunizationRecord',
+  HEALTH_DOCUMENT_RECORD: 'HealthDocumentRecord',
+  WELLNESS_RECORD: 'WellnessRecord',
+  INVOICE: 'Invoice'
 };
 
 const ALIASES = new Map();
@@ -23,7 +23,7 @@ function toInternalHiType(value) {
 
 function toAbdmHiType(value) {
   const internal = toInternalHiType(value) || value;
-  return INTERNAL_TO_ABDM[internal] || String(value || '').toUpperCase();
+  return INTERNAL_TO_ABDM[internal] || String(value || '');
 }
 
 function normalizeInternalHiTypes(values) {

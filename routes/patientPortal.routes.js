@@ -34,6 +34,20 @@ router.post('/consents/:consentId/sign', portal.signConsent);
 router.post('/feedback', portal.submitFeedback);
 router.get('/abdm', portal.abdmOverview);
 router.get('/abdm/records/:recordId', portal.abdmRecord);
+
+// Patient-authenticated ABDM PHR consent request inbox. These routes use the
+// encrypted server-side PHR_APP session; patient tokens are never returned.
+router.get('/abdm/consent-requests', portal.abdmConsentRequests);
+router.get('/abdm/consent-requests/:requestId', portal.abdmConsentRequest);
+router.post('/abdm/consent-requests/:requestId/deny', portal.denyAbdmConsentRequest);
+router.get('/abdm/consent-requests/:requestId/artefacts', portal.abdmConsentArtefactsByRequest);
+router.get('/abdm/consent-artefacts', portal.abdmConsentArtefacts);
+router.get('/abdm/consent-artefacts/:consentId', portal.abdmConsentArtefact);
+router.post('/abdm/consents/revoke', portal.revokeAbdmConsent);
+router.post('/abdm/consent-auto-approve', portal.createAbdmConsentAutoApprove);
+router.post('/abdm/consent-auto-approve/:policyId/disable', portal.disableAbdmConsentAutoApprove);
+router.post('/abdm/consent-auto-approve/:policyId/enable', portal.enableAbdmConsentAutoApprove);
+
 router.get('/abdm/subscription-requests', portal.subscriptionRequests);
 router.post('/abdm/subscription-requests/:id/approve', portal.approveSubscription);
 router.post('/abdm/subscription-requests/:id/deny', portal.denySubscription);

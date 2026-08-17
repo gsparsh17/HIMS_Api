@@ -1,5 +1,15 @@
 const mongoose = require('mongoose');
 
+const encryptedJsonSchema = new mongoose.Schema(
+  {
+    ciphertext: { type: String, required: true, select: false },
+    iv: { type: String, required: true, select: false },
+    tag: { type: String, required: true, select: false },
+    keyVersion: { type: String, default: 'v1', select: false }
+  },
+  { _id: false }
+);
+
 const schema = new mongoose.Schema(
   {
     hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
@@ -15,12 +25,7 @@ const schema = new mongoose.Schema(
     title: String,
     bundleIdentifier: String,
     fhirVersion: String,
-    encryptedFhirBundle: {
-      ciphertext: { type: String, required: true, select: false },
-      iv: { type: String, required: true, select: false },
-      tag: { type: String, required: true, select: false },
-      keyVersion: { type: String, default: 'v1', select: false }
-    },
+    encryptedFhirBundle: { type: encryptedJsonSchema, required: true, select: false },
     bundleHash: { type: String, required: true, index: true },
     provenance: mongoose.Schema.Types.Mixed,
     consentSnapshot: mongoose.Schema.Types.Mixed,

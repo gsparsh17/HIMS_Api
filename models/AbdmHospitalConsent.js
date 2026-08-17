@@ -7,6 +7,7 @@ const schema = new mongoose.Schema(
     consentRequestId: { type: String, index: true },
     consentId: { type: String, index: true },
     artefactId: { type: String, index: true },
+    consentArtefactIds: [String],
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
     abhaAddress: { type: String, lowercase: true, trim: true, index: true },
     status: {
@@ -35,7 +36,7 @@ const schema = new mongoose.Schema(
     requester: {
       userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       name: String,
-      identifier: String
+      identifier: mongoose.Schema.Types.Mixed
     },
     encryptedArtefact: {
       ciphertext: { type: String, select: false },

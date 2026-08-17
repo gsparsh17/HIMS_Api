@@ -28,12 +28,38 @@ function normalizedStatus(value) {
   return accepted.has(status) ? status : 'PENDING';
 }
 
-function extractConsent(payload = {}, role = 'HIP') {
+function consentParts(payload = {}) {
   const notification = payload.notification || {};
-  const detail = payload.consentDetail || payload.consent || payload.consentArtefact || {};
-  const permission = detail.permission || notification.permission || payload.permission || {};
-  const patient = detail.patient || notification.patient || payload.patient || {};
-  const careContexts = detail.careContexts || notification.careContexts || [];
+  const envelope = payload.consent && typeof payload.consent === 'object'
+    ? payload.consent
+    : {};
+  const detail =
+    payload.consentDetail ||
+    envelope.consentDetail ||
+    payload.consentArtefact ||
+    notification.consentDetail ||
+    notification.consentArtefact ||
+    (Object.keys(envelope).length ? envelope : {}) ||
+    {};
+  const permission = detail.permission || envelope.permission || notification.permission || payload.permission || {};
+  const patient = detail.patient || envelope.patient || notification.patient || payload.patient || {};
+  const careContexts = detail.careContexts || envelope.careContexts || notification.careContexts || [];
+  const artefactIds = (notification.consentArtefacts || payload.consentArtefacts || [])
+    .map((item) => (typeof item === 'string' ? item : item?.id))
+    .filter(Boolean);
+  return { notification, envelope, detail, permission, patient, careContexts, artefactIds };
+}
+
+function extractConsent(payload = {}, role = 'HIP') {
+  const { notification, envelope, detail, permission, patient, careContexts, artefactIds } = consentParts(payload);
+  const consentId =
+    detail.id ||
+    detail.consentId ||
+    envelope.consentId ||
+    payload.consentId ||
+    notification.consentId ||
+    payload.consentArtefact?.id ||
+    artefactIds[0];
 
   return {
     role,
@@ -41,41 +67,42 @@ function extractConsent(payload = {}, role = 'HIP') {
       payload.consentRequestId ||
       payload.consentRequest?.id ||
       notification.consentRequestId,
-    consentId:
-      detail.id ||
-      payload.consentId ||
-      notification.consentId ||
-      payload.consentArtefact?.id,
-    artefactId: payload.consentArtefact?.id || detail.id,
+    consentId,
+    artefactId: payload.consentArtefact?.id || detail.id || artefactIds[0],
+    consentArtefactIds: artefactIds,
     abhaAddress: patient.id || patient.abhaAddress || payload.abhaAddress,
     status: normalizedStatus(
       payload.status ||
+        envelope.status ||
         payload.consentRequest?.status ||
         notification.status ||
         detail.status
     ),
-    purpose: permission.purpose || detail.purpose || payload.purpose,
+    purpose: permission.purpose || detail.purpose || envelope.purpose || payload.purpose,
     hiTypes: normalizeInternalHiTypes(
-      permission.hiTypes || detail.hiTypes || payload.hiTypes || []
+      permission.hiTypes || detail.hiTypes || envelope.hiTypes || payload.hiTypes || []
     ),
-    dateRange: permission.dateRange || detail.dateRange || payload.dateRange,
+    dateRange: permission.dateRange || detail.dateRange || envelope.dateRange || payload.dateRange,
     permission,
     careContextReferences: careContexts
       .map((item) => item.careContextReference || item.referenceNumber || item.id)
       .filter(Boolean),
     hipIds: [
       ...(Array.isArray(detail.hips) ? detail.hips : []),
+      ...(Array.isArray(envelope.hips) ? envelope.hips : []),
       ...(Array.isArray(payload.hips) ? payload.hips : []),
       ...(detail.hip ? [detail.hip] : []),
+      ...(envelope.hip ? [envelope.hip] : []),
       ...(payload.hip ? [payload.hip] : [])
     ]
       .map((item) => (typeof item === 'string' ? item : item?.id))
       .filter(Boolean),
-    hiuId: detail.hiu?.id || payload.hiu?.id,
+    hiuId: detail.hiu?.id || envelope.hiu?.id || payload.hiu?.id,
     expiresAt:
       permission.dataEraseAt ||
       permission.permissionExpiry ||
       detail.expiresAt ||
+      envelope.expiresAt ||
       payload.expiresAt
   };
 }
@@ -203,6 +230,7 @@ function assertContextAllowed(consent, context) {
 module.exports = {
   normalizedStatus,
   extractConsent,
+  consentParts,
   upsertConsent,
   assertConsentUsable,
   assertContextAllowed,

@@ -47,12 +47,103 @@ function dateValue(value) {
   return date;
 }
 
-function consentRequestBody({ patient, payload, requestId }) {
+const CONSENT_PURPOSES = Object.freeze({
+  CAREMGT: 'Care Management',
+  BTG: 'Break the Glass',
+  PUBHLTH: 'Public Health',
+  HPAYMT: 'Healthcare Payment',
+  DSRCH: 'Disease Specific Healthcare Research',
+  PATRQT: 'Self Requested'
+});
+
+function normalizeConsentPurpose(purpose = {}) {
+  const code = String(purpose.code || 'CAREMGT').trim().toUpperCase();
+  if (!CONSENT_PURPOSES[code]) {
+    const error = new Error(`Unsupported ABDM consent purpose code: ${code}`);
+    error.statusCode = 400;
+    error.code = 'ABDM_CONSENT_PURPOSE_INVALID';
+    throw error;
+  }
+  return {
+    code,
+    text: CONSENT_PURPOSES[code],
+    refUri: String(
+      purpose.refUri || 'https://terminology.hl7.org/CodeSystem/v3-ActReason'
+    ).trim()
+  };
+}
+
+function normalizeRequester(payload = {}, user = {}) {
+  const raw = payload.requester || {};
+  const rawIdentifier = raw.identifier;
+  const objectIdentifier = rawIdentifier && typeof rawIdentifier === 'object'
+    ? rawIdentifier
+    : {};
+  const fallbackValue =
+    (typeof rawIdentifier === 'string' ? rawIdentifier : undefined) ||
+    payload.requesterIdentifier ||
+    user.hprId ||
+    user.employeeId ||
+    abdmConfig.hiuId;
+  const identifierValue = String(objectIdentifier.value || fallbackValue || '').trim();
+  const identifierType = String(
+    objectIdentifier.type ||
+    payload.requesterIdentifierType ||
+    (user.hprId ? 'REGNO' : 'HFR')
+  ).trim();
+  const identifierSystem = String(
+    objectIdentifier.system ||
+    payload.requesterIdentifierSystem ||
+    (user.hprId ? 'https://www.mciindia.org' : 'https://facility.abdm.gov.in')
+  ).trim();
+  const name = String(
+    raw.name || user.name || user.fullName || user.email || 'MediQliq HIU'
+  ).trim();
+
+  if (!name || !identifierType || !identifierValue || !identifierSystem) {
+    const error = new Error('ABDM requester name and identifier type/value/system are required');
+    error.statusCode = 400;
+    error.code = 'ABDM_CONSENT_REQUESTER_INVALID';
+    throw error;
+  }
+
+  return {
+    name,
+    identifier: {
+      type: identifierType,
+      value: identifierValue,
+      system: identifierSystem
+    }
+  };
+}
+
+function consentRequestBody({ patient, payload, user }) {
   const hiTypes = normalizeInternalHiTypes(payload.hiTypes || []);
   if (!hiTypes.length) throw new Error('At least one HI type is required');
+
   const from = dateValue(payload.dateRange?.from);
-  const to = dateValue(payload.dateRange?.to);
+  let to = dateValue(payload.dateRange?.to);
   if (!from || !to || from > to) throw new Error('A valid consent date range is required');
+
+  // ABDM M3 rejects permission ranges in the future. A date-only UI commonly
+  // turns "today" into 23:59:59Z, which is still future for most of the day.
+  // Cap a same-day end value to the current instant instead of emitting an
+  // invalid HIE-CM request.
+  const now = new Date();
+  if (from.getTime() > now.getTime()) {
+    const error = new Error('Consent dateRange.from must be present or past');
+    error.statusCode = 400;
+    error.code = 'ABDM_CONSENT_DATE_RANGE_FUTURE';
+    throw error;
+  }
+  if (to.getTime() > now.getTime()) to = new Date(now.getTime() - 1000);
+  if (from > to) {
+    const error = new Error('Consent date range becomes invalid after removing future time');
+    error.statusCode = 400;
+    error.code = 'ABDM_CONSENT_DATE_RANGE_INVALID';
+    throw error;
+  }
+
   const expiry = dateValue(payload.consentExpiry);
   if (!expiry || expiry.getTime() <= Date.now()) {
     throw new Error('Consent expiry must be in the future');
@@ -60,29 +151,53 @@ function consentRequestBody({ patient, payload, requestId }) {
   const abhaAddress = payload.abhaAddress || patient.abha?.address;
   if (!abhaAddress) throw new Error('A verified ABHA address is required');
 
-  return {
-    consent: {
-      purpose: payload.purpose || {
-        text: 'Care Management',
-        code: 'CAREMGT',
-        refUri: 'https://terminology.hl7.org/CodeSystem/v3-ActReason'
-      },
-      patient: { id: String(abhaAddress).toLowerCase() },
-      hiu: payload.hiu || undefined,
-      requester: payload.requester,
-      hiTypes: hiTypes.map(toAbdmHiType),
-      permission: {
-        accessMode: payload.accessMode || 'VIEW',
-        dateRange: { from: from.toISOString(), to: to.toISOString() },
-        dataEraseAt: expiry.toISOString(),
-        frequency: payload.frequency || {
-          unit: 'HOUR',
-          value: 1,
-          repeats: 0
-        }
+  const hiuId = String(
+    (typeof payload.hiu === 'string' ? payload.hiu : payload.hiu?.id) ||
+    abdmConfig.hiuId ||
+    ''
+  ).trim();
+  if (!hiuId) {
+    const error = new Error('HIU service ID is required for an ABDM consent request');
+    error.statusCode = 500;
+    error.code = 'ABDM_HIU_ID_MISSING';
+    throw error;
+  }
+
+  const careContexts = Array.isArray(payload.careContexts)
+    ? payload.careContexts.filter(Boolean)
+    : [];
+  const hipId = String(
+    (typeof payload.hip === 'string' ? payload.hip : payload.hip?.id) || ''
+  ).trim();
+  if (careContexts.length && !hipId) {
+    const error = new Error('HIP is mandatory when care contexts are specified');
+    error.statusCode = 400;
+    error.code = 'ABDM_CONSENT_HIP_REQUIRED_WITH_CARE_CONTEXTS';
+    throw error;
+  }
+
+  const consent = {
+    purpose: normalizeConsentPurpose(payload.purpose),
+    patient: { id: String(abhaAddress).toLowerCase() },
+    hiu: { id: hiuId },
+    requester: normalizeRequester(payload, user),
+    hiTypes: hiTypes.map(toAbdmHiType),
+    permission: {
+      accessMode: String(payload.accessMode || 'VIEW').toUpperCase(),
+      dateRange: { from: from.toISOString(), to: to.toISOString() },
+      dataEraseAt: expiry.toISOString(),
+      frequency: payload.frequency || {
+        unit: 'HOUR',
+        value: 1,
+        repeats: 0
       }
     }
   };
+
+  if (hipId) consent.hip = { id: hipId };
+  if (careContexts.length) consent.careContexts = careContexts;
+
+  return { consent };
 }
 
 async function initiateConsent({ patientId, payload, user }) {
@@ -92,7 +207,7 @@ async function initiateConsent({ patientId, payload, user }) {
   assertAbdmExchangeEligible(patient);
 
   const requestId = newId();
-  const body = consentRequestBody({ patient, payload, requestId });
+  const body = consentRequestBody({ patient, payload, user });
   const local = await AbdmHospitalConsent.create({
     hospitalId: patient.hospitalId,
     role: 'HIU',
@@ -106,8 +221,8 @@ async function initiateConsent({ patientId, payload, user }) {
     permission: body.consent.permission,
     requester: {
       userId: user?._id,
-      name: payload.requester?.name,
-      identifier: payload.requester?.identifier
+      name: body.consent.requester.name,
+      identifier: body.consent.requester.identifier
     },
     expiresAt: body.consent.permission.dataEraseAt,
     metadata: { localRequestId: requestId }
@@ -118,7 +233,17 @@ async function initiateConsent({ patientId, payload, user }) {
       method: 'POST',
       body: { action: 'INIT_CONSENT_REQUEST', body }
     });
-    local.metadata = { ...(local.metadata || {}), masterRequestId: master.requestId };
+    const officialConsentRequestId =
+      master.data?.consentRequestId ||
+      master.data?.consentRequest?.id;
+    if (officialConsentRequestId) local.consentRequestId = officialConsentRequestId;
+    local.hiuId = body.consent.hiu.id;
+    local.metadata = {
+      ...(local.metadata || {}),
+      masterRequestId: master.requestId,
+      localRequestId: requestId,
+      ...(officialConsentRequestId ? { officialConsentRequestId } : {})
+    };
     await local.save();
     return { consent: local, masterRequestId: master.requestId };
   } catch (error) {
@@ -130,6 +255,12 @@ async function initiateConsent({ patientId, payload, user }) {
 }
 
 async function requestConsentStatus(consent) {
+  if (!consent.consentRequestId || consent.consentRequestId === consent.metadata?.localRequestId) {
+    const error = new Error('Official ABDM consent request ID is not available yet; wait for the on-init callback');
+    error.statusCode = 409;
+    error.code = 'ABDM_CONSENT_ON_INIT_PENDING';
+    throw error;
+  }
   const result = await masterRequest('/internal/abdm/m3/action', {
     method: 'POST',
     body: { action: 'GET_CONSENT_STATUS', body: { consentRequestId: consent.consentRequestId } }
@@ -291,7 +422,7 @@ async function onConsentCallback(eventType, payload) {
   // callbacks are lifecycle signals authenticated by the Master connector and
   // are retained as unvalidated until ON_FETCH supplies the signed artefact.
   const validation = eventType === 'HIU_CONSENT_ON_FETCH'
-    ? await validateConsentArtefact(payload)
+    ? await validateConsentArtefact(payload, { role: 'HIU' })
     : null;
   const value = await upsertConsent(payload, role, {
     hospitalId,
@@ -338,10 +469,19 @@ async function onConsentCallback(eventType, payload) {
       existing.consentRequestId = value.consentRequestId || existing.consentRequestId;
       existing.consentId = value.consentId || existing.consentId;
       existing.artefactId = value.artefactId || existing.artefactId;
+      existing.consentArtefactIds = value.consentArtefactIds?.length
+        ? value.consentArtefactIds
+        : existing.consentArtefactIds;
       existing.status = value.status;
       existing.permission = value.permission || existing.permission;
       existing.hiTypes = value.hiTypes?.length ? value.hiTypes : existing.hiTypes;
       existing.dateRange = value.dateRange || existing.dateRange;
+      existing.careContextReferences = value.careContextReferences?.length
+        ? value.careContextReferences
+        : existing.careContextReferences;
+      existing.hipIds = value.hipIds?.length ? value.hipIds : existing.hipIds;
+      existing.hiuId = value.hiuId || existing.hiuId;
+      existing.expiresAt = value.expiresAt || existing.expiresAt;
       if (validation) {
         existing.encryptedArtefact = encryptJson(
           payload,
@@ -361,7 +501,6 @@ async function onConsentCallback(eventType, payload) {
         existing.trustEvidence = value.trustEvidence || existing.trustEvidence;
         existing.retentionUntil = value.retentionUntil || existing.retentionUntil;
       }
-      existing.expiresAt = value.expiresAt || existing.expiresAt;
       existing.lastCallbackAt = new Date();
       existing.metadata = {
         ...(existing.metadata || {}),
@@ -521,7 +660,7 @@ function pageShape(payload) {
 async function notifyHiuDataFlow({ request, consent, hipId, status, contexts = [], error }) {
   const statusResponses = (contexts.length ? contexts : [{ referenceNumber: 'UNKNOWN' }]).map((context) => ({
     careContextReference: context.referenceNumber || context.careContextReference || 'UNKNOWN',
-    hiStatus: status === 'TRANSFERRED' ? 'DELIVERED' : 'ERRORED',
+    hiStatus: status === 'RECEIVED' ? 'OK' : 'ERRORED',
     description: error || undefined
   }));
   return masterRequest('/internal/abdm/m3/action', {
@@ -737,35 +876,37 @@ async function receiveEncryptedData(payload) {
       await AbdmImportedRecord.findOneAndUpdate(
         { hospitalId: request.hospitalId, transactionId, bundleHash },
         {
-          hospitalId: request.hospitalId,
-          patientId: request.patientId,
-          hiuRequestId: request._id,
-          consentId: request.consentId,
-          transactionId,
-          sourceHipId: record.sourceHipId || assembled.hipId,
-          sourceName: record.sourceName,
-          careContextReference: record.careContextReference,
-          hiType: normalizedHiType,
-          recordDate: metadata.recordDate,
-          title: metadata.title,
-          bundleIdentifier: metadata.bundleIdentifier,
-          fhirVersion: 'R4',
-          encryptedFhirBundle: encryptJson(bundle, `abdm-imported-record:${request.hospitalId}:${transactionId}:${bundleHash}`),
-          bundleHash,
-          provenance: record.provenance,
-          consentSnapshot: {
-            status: consent.status,
-            hiTypes: consent.hiTypes,
-            dateRange: consent.dateRange,
-            expiresAt: consent.expiresAt,
-            validationId: importAuthorization.validationId,
-            authorizedOperationHash: importAuthorization.authorizedOperationHash
-          },
-          status: 'ACTIVE',
-          validation,
-          receivedAt: new Date(),
-          importedAt: new Date(),
-          purgeAt: importAuthorization.retentionUntil || consent.retentionUntil || consent.expiresAt || consent.permission?.dataEraseAt
+          $set: {
+            hospitalId: request.hospitalId,
+            patientId: request.patientId,
+            hiuRequestId: request._id,
+            consentId: request.consentId,
+            transactionId,
+            sourceHipId: record.sourceHipId || assembled.hipId,
+            sourceName: record.sourceName,
+            careContextReference: record.careContextReference,
+            hiType: normalizedHiType,
+            recordDate: metadata.recordDate,
+            title: metadata.title,
+            bundleIdentifier: metadata.bundleIdentifier,
+            fhirVersion: 'R4',
+            encryptedFhirBundle: encryptJson(bundle, `abdm-imported-record:${request.hospitalId}:${transactionId}:${bundleHash}`),
+            bundleHash,
+            provenance: record.provenance,
+            consentSnapshot: {
+              status: consent.status,
+              hiTypes: consent.hiTypes,
+              dateRange: consent.dateRange,
+              expiresAt: consent.expiresAt,
+              validationId: importAuthorization.validationId,
+              authorizedOperationHash: importAuthorization.authorizedOperationHash
+            },
+            status: 'ACTIVE',
+            validation,
+            receivedAt: new Date(),
+            importedAt: new Date(),
+            purgeAt: importAuthorization.retentionUntil || consent.retentionUntil || consent.expiresAt || consent.permission?.dataEraseAt
+          }
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
@@ -780,7 +921,7 @@ async function receiveEncryptedData(payload) {
     transfer.recordCount = imported;
     transfer.completedAt = new Date();
     await transfer.save();
-    await notifyHiuDataFlow({ request, consent, hipId: assembled.hipId, status: 'TRANSFERRED', contexts });
+    await notifyHiuDataFlow({ request, consent, hipId: assembled.hipId, status: 'RECEIVED', contexts });
     await AbdmHiuDataPage.deleteMany({ hospitalId, transactionId });
     return { imported, requestId: request._id };
   } catch (error) {
