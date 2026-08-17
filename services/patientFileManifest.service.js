@@ -134,7 +134,7 @@ async function buildManifest(req, admissionId, options = {}) {
   const hospitalId = requireHospitalId(req);
   const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId })
     .populate('patientId', 'first_name last_name name patient_id uhid age gender date_of_birth phone')
-    .populate('primaryDoctorId', 'first_name last_name name specialization')
+    .populate('primaryDoctorId', 'firstName lastName specialization doctorId licenseNumber')
     .populate('departmentId', 'name')
     .populate('wardId', 'name wardName')
     .populate('roomId', 'room_number roomNumber name')
