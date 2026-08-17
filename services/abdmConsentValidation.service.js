@@ -193,6 +193,40 @@ async function validateConsentArtefact(artefact, options = {}) {
     throw error;
   }
 
+  // Sandbox/demo mode: when cryptographic consent validation is explicitly not
+  // required, stop after local structural validation instead of calling the
+  // configured shared provider. Production/certification must keep
+  // ABDM_REQUIRE_CONSENT_VALIDATION=true.
+  if (!abdmConfig.requireConsentValidation) {
+    const artefactHash = hashArtifact(artefact);
+    const operation = options.operation || { type: 'REGISTER_ARTEFACT' };
+    const authorizedOperationHash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify({ artefactHash, operation }))
+      .digest('hex');
+    return {
+      valid: true,
+      decision: 'PERMIT',
+      provider: 'structural-only-sandbox',
+      validationId: `sandbox-structural:${artefactHash.slice(0, 32)}`,
+      artefactHash,
+      signatureVerified: false,
+      integrityVerified: false,
+      cryptographicallyValidated: false,
+      authorizedOperationHash,
+      verifiedScope: null,
+      trust: { mode: 'STRUCTURAL_ONLY_SANDBOX' },
+      lifecycleStatus: null,
+      retentionUntil: null,
+      usage: null,
+      validatedAt: new Date().toISOString(),
+      decisionExpiresAt: null,
+      reasonCodes: [],
+      warnings: ['Cryptographic consent validation disabled for sandbox demo'],
+      structural
+    };
+  }
+
   const provider = selectedProvider(options.provider);
   if (!providerConfigured(provider)) {
     if (abdmConfig.requireConsentValidation) {

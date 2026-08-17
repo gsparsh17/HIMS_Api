@@ -214,7 +214,10 @@ exports.integrationStatus = async (_req, res) => {
     fhirProvider: abdmConfig.fhirProvider,
     fhirFallbackProvider: abdmConfig.fhirFallbackProvider,
     fhirValidatorConfigured: fhirValidator.configured === true,
-    fhirValidatorHealthy: fhirValidator.healthy === true,
+    fhirValidatorHealthy:
+      fhirValidator.effectiveHealthy === true || fhirValidator.healthy === true,
+    fhirValidatorPrimaryHealthy: fhirValidator.healthy === true,
+    fhirValidatorActiveProvider: fhirValidator.activeProvider || null,
     externalFhirValidationRequired: abdmConfig.requireExternalFhirValidation === true,
     fhirPackage: abdmConfig.fhirPackage,
     fhirVersion: abdmConfig.fhirR4Version,
@@ -236,28 +239,30 @@ exports.integrationStatus = async (_req, res) => {
     approvalRequiredBeforeTransfer:
       abdmConfig.packetDefaultReviewPolicy !== 'PREVIEW_ONLY'
   };
-  const productionTransferReady = Boolean(
-    configured &&
-      abdmConfig.cryptoProvider !== 'mock' &&
-      transferReadiness.cryptoAdapterConfigured &&
-      transferReadiness.cryptoAdapterHealthy &&
-      transferReadiness.cryptoIntegrityRequired &&
-      transferReadiness.fhirValidatorConfigured &&
-      transferReadiness.fhirValidatorHealthy &&
-      transferReadiness.externalFhirValidationRequired &&
-      transferReadiness.consentValidatorConfigured &&
-      transferReadiness.consentValidatorHealthy &&
-      transferReadiness.consentValidatorProductionCapable &&
-      transferReadiness.consentValidationRequired &&
-      transferReadiness.dataPushAllowlistConfigured &&
-      !transferReadiness.privateDataPushAllowed &&
-      packetReadiness.enabled &&
-      packetReadiness.approvalRequiredBeforeTransfer
-  );
+  const productionTransferBlockers = [];
+  if (!configured) productionTransferBlockers.push('ABDM_NOT_CONFIGURED');
+  if (abdmConfig.cryptoProvider === 'mock') productionTransferBlockers.push('CRYPTO_PROVIDER_MOCK');
+  if (!transferReadiness.cryptoAdapterConfigured) productionTransferBlockers.push('CRYPTO_ADAPTER_NOT_CONFIGURED');
+  if (!transferReadiness.cryptoAdapterHealthy) productionTransferBlockers.push('CRYPTO_ADAPTER_UNHEALTHY');
+  if (!transferReadiness.cryptoIntegrityRequired) productionTransferBlockers.push('CRYPTO_INTEGRITY_NOT_REQUIRED');
+  if (!transferReadiness.fhirValidatorConfigured) productionTransferBlockers.push('FHIR_VALIDATOR_NOT_CONFIGURED');
+  if (!transferReadiness.fhirValidatorHealthy) productionTransferBlockers.push('FHIR_VALIDATOR_UNHEALTHY');
+  if (!transferReadiness.externalFhirValidationRequired) productionTransferBlockers.push('EXTERNAL_FHIR_VALIDATION_NOT_REQUIRED');
+  if (!transferReadiness.consentValidatorConfigured) productionTransferBlockers.push('CONSENT_VALIDATOR_NOT_CONFIGURED');
+  if (!transferReadiness.consentValidatorHealthy) productionTransferBlockers.push('CONSENT_VALIDATOR_UNHEALTHY');
+  if (!transferReadiness.consentValidatorProductionCapable) productionTransferBlockers.push('CONSENT_VALIDATOR_NOT_PRODUCTION_CAPABLE');
+  if (!transferReadiness.consentValidationRequired) productionTransferBlockers.push('CONSENT_VALIDATION_NOT_REQUIRED');
+  if (!transferReadiness.dataPushAllowlistConfigured) productionTransferBlockers.push('DATA_PUSH_ALLOWLIST_MISSING');
+  if (transferReadiness.privateDataPushAllowed) productionTransferBlockers.push('PRIVATE_DATA_PUSH_ALLOWED');
+  if (!packetReadiness.enabled) productionTransferBlockers.push('PACKET_FEATURE_DISABLED');
+  if (!packetReadiness.approvalRequiredBeforeTransfer) productionTransferBlockers.push('PACKET_APPROVAL_NOT_REQUIRED');
+
+  const productionTransferReady = productionTransferBlockers.length === 0;
 
   const dependencyStatus = {
     reportedAt: new Date().toISOString(),
     productionTransferReady,
+    productionTransferBlockers,
     transferReadiness,
     packetReadiness,
     dependencies: { fhirValidator, cryptoAdapter, consentValidator }
@@ -290,6 +295,7 @@ exports.integrationStatus = async (_req, res) => {
       abdmPackets: abdmConfig.packetFeatureEnabled
     },
     productionTransferReady,
+    productionTransferBlockers,
     transferReadiness,
     packetReadiness,
     dependencies: dependencyStatus.dependencies
@@ -488,9 +494,14 @@ exports.validateFhir = async (req, res) => {
     const result = await validateBundle(req.body.bundle, {
       external: req.body.external !== false
     });
-    return res
-      .status(result.valid ? 200 : 422)
-      .json({ success: result.valid, validation: result });
+    // Validation completed successfully at the HTTP layer even when the
+    // submitted FHIR is non-conformant. Return the conformance result in the
+    // body and reserve 4xx/5xx for operational failures.
+    return res.json({
+      success: true,
+      validationPassed: result.valid === true,
+      validation: result
+    });
   } catch (error) {
     return res.status(400).json({
       success: false,

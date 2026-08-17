@@ -82,7 +82,7 @@ function extractTokens(data = {}) {
   if (data.tokens && typeof data.tokens === 'object') return data.tokens;
   if (data.token && typeof data.token === 'object') return data.token;
   return {
-    token: typeof data.token === 'string' ? data.token : data.accessToken,
+    token: typeof data.token === 'string' ? data.token : (data.accessToken || data.xToken),
     refreshToken: data.refreshToken,
     expiresIn: data.expiresIn,
     refreshExpiresIn: data.refreshExpiresIn,
@@ -408,6 +408,14 @@ function normalizeSearchResponse(data) {
   return { txnId: first?.txnId, accounts: first?.ABHA || first?.accounts || [] };
 }
 
+function hasVerifiedAbdmIdentity(patient) {
+  return (
+    String(patient?.abha?.status || '').toUpperCase() === 'VERIFIED' &&
+    patient?.abha?.kycVerified === true &&
+    String(patient?.abha?.identityReconciliation?.status || '').toUpperCase() === 'MATCHED'
+  );
+}
+
 exports.searchExistingAbhaByMobile = async (req, res) => {
   try {
     const { patientId, mobile } = req.body;
@@ -435,15 +443,20 @@ exports.searchExistingAbhaByMobile = async (req, res) => {
       consent,
       req
     });
+    const patientUpdate = {
+      'abha.registrationMode': 'mobile_search',
+      'abha.existingSearchTxnId': transaction.txnId
+    };
+    // Starting a new authentication challenge must not invalidate a previously
+    // verified/reconciled ABHA identity. The transaction carries the pending
+    // state until verification succeeds. This prevents an abandoned OTP flow
+    // from blocking M2/M3 record exchange for an already verified patient.
+    if (!hasVerifiedAbdmIdentity(patient)) {
+      patientUpdate['abha.status'] = 'VERIFICATION_PENDING';
+    }
     await Patient.updateOne(
       { _id: patient._id },
-      {
-        $set: {
-          'abha.status': 'VERIFICATION_PENDING',
-          'abha.registrationMode': 'mobile_search',
-          'abha.existingSearchTxnId': transaction.txnId
-        }
-      }
+      { $set: patientUpdate }
     );
     return res.json({ success: true, txnId: transaction.txnId, accounts: normalized.accounts });
   } catch (error) {
@@ -493,15 +506,16 @@ exports.requestExistingAbhaOtp = async (req, res) => {
       req,
       metadata: { searchTxnId: txnId }
     });
+    const patientUpdate = {
+      'abha.existingLoginTxnId': loginTransaction.txnId,
+      'abha.existingSelectedIndex': String(index)
+    };
+    if (!hasVerifiedAbdmIdentity(patient)) {
+      patientUpdate['abha.status'] = 'OTP_SENT';
+    }
     await Patient.updateOne(
       { _id: patient._id },
-      {
-        $set: {
-          'abha.existingLoginTxnId': loginTransaction.txnId,
-          'abha.existingSelectedIndex': String(index),
-          'abha.status': 'OTP_SENT'
-        }
-      }
+      { $set: patientUpdate }
     );
     return res.json({ success: true, txnId: loginTransaction.txnId, message: data.message });
   } catch (error) {
@@ -1328,58 +1342,87 @@ exports.completeAdvancedLoginUser = async (req, res) => {
 exports.searchPasswordLogin = async (req, res) => {
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
-    const abhaNumber = displayAbhaNumber(req.body.abhaNumber || patient.abha?.number);
-    if (!abhaNumber) return res.status(400).json({ success: false, error: 'abhaNumber is required' });
-    const consent = consentForIdentity(req, patient);
-    const data = await abdmPost('/v3/profile/login/search', { ABHANumber: abhaNumber });
-    const transaction = await createTransaction({
-      txnId: data.txnId,
-      flow: 'PASSWORD_LOGIN',
-      patient,
-      userId: req.user._id,
-      consent,
-      req,
-      metadata: { abhaNumber }
+    const abhaAddress = String(req.body.abhaAddress || patient.abha?.address || '')
+      .trim()
+      .toLowerCase();
+    if (!abhaAddress.includes('@')) {
+      return res.status(400).json({ success: false, error: 'A valid abhaAddress is required' });
+    }
+    consentForIdentity(req, patient, 'abha-address-password-login', '1.0');
+    // PHR V3 password search is an ABHA Address lookup. It intentionally does
+    // not return a transaction ID; the previous /v3/profile/login/search call
+    // was from the wrong API family and caused a false 502.
+    const data = await abdmPost('/v3/phr/app/login/search', { abhaAddress });
+    const authMethods = Array.isArray(data?.authMethods) ? data.authMethods : [];
+    return res.json({
+      success: true,
+      abhaAddress: data?.abhaAddress || abhaAddress,
+      authMethods,
+      passwordSupported: authMethods.some((item) => String(item).toUpperCase() === 'PASSWORD'),
+      data
     });
-    return res.json({ success: true, txnId: transaction.txnId, data });
   } catch (error) {
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
 
 exports.verifyPasswordLogin = async (req, res) => {
-  let transaction;
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
-    if (!req.body.password) return res.status(400).json({ success: false, error: 'password is required' });
-    transaction = await getOwnedTransaction({
-      txnId: req.body.txnId,
-      patient,
-      userId: req.user._id,
-      flows: ['PASSWORD_LOGIN']
-    });
-    const abhaNumber = transaction.metadata?.abhaNumber || displayAbhaNumber(req.body.abhaNumber);
-    const data = await abdmPost('/v3/profile/login/verify', {
-      scope: ['abha-login', 'password-verify'],
+    const abhaAddress = String(req.body.abhaAddress || patient.abha?.address || '')
+      .trim()
+      .toLowerCase();
+    if (!abhaAddress.includes('@')) {
+      return res.status(400).json({ success: false, error: 'A valid abhaAddress is required' });
+    }
+    if (!req.body.password) {
+      return res.status(400).json({ success: false, error: 'password is required' });
+    }
+    consentForIdentity(req, patient, 'abha-address-password-login', '1.0');
+    const data = await abdmPost('/v3/phr/app/login/verify', {
+      scope: ['abha-address-login', 'password-verify'],
       authData: {
         authMethods: ['password'],
         password: {
-          ABHANumber: abhaNumber,
+          abhaAddress,
           password: await encryptForAbdm(req.body.password)
         }
       }
     });
+    if (data.authResult && String(data.authResult).toLowerCase() !== 'success') {
+      const error = new Error(data.message || 'ABHA Address password verification failed');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const tokens = extractTokens(data);
+    if (!tokens?.token) {
+      const error = new Error('ABDM PHR password login did not return an X-token');
+      error.statusCode = 502;
+      throw error;
+    }
+    let profile = extractProfile(data);
+    if (!(profile?.ABHANumber || profile?.abhaNumber || getAbhaAddress(profile))) {
+      profile = extractProfile(
+        await abdmGet('/v3/phr/app/login/profile', {
+          'X-token': `Bearer ${tokens.token}`
+        })
+      );
+    }
     const saved = await saveVerifiedProfile({
       patient,
-      profile: extractProfile(data),
-      tokens: extractTokens(data),
-      method: 'ABDM_PASSWORD',
-      userId: req.user._id
+      profile,
+      tokens,
+      method: 'ABDM_PHR_PASSWORD',
+      userId: req.user._id,
+      sessionKind: 'PHR_APP'
     });
-    await markCompleted(transaction);
-    return res.json({ success: true, abha: safeAbha(saved) });
+    return res.json({
+      success: true,
+      abha: safeAbha(saved),
+      credential: await getPatientSessionStatus(saved._id, 'PHR_APP')
+    });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -1592,7 +1635,14 @@ exports.verifyAbhaAddressLoginOtp = async (req, res) => {
       scope: transaction.metadata?.scope,
       authData: { authMethods: ['otp'], otp: { txnId: transaction.txnId, otpValue: await encryptForAbdm(req.body.otp) } }
     });
-    const saved = await saveVerifiedProfile({ patient, profile: extractProfile(data), tokens: extractTokens(data), method: 'ABDM_ABHA_ADDRESS_OTP', userId: req.user._id });
+    const saved = await saveVerifiedProfile({
+      patient,
+      profile: extractProfile(data),
+      tokens: extractTokens(data),
+      method: 'ABDM_ABHA_ADDRESS_OTP',
+      userId: req.user._id,
+      sessionKind: 'PHR_APP'
+    });
     await markCompleted(transaction);
     return res.json({ success: true, abha: safeAbha(saved) });
   } catch (error) {

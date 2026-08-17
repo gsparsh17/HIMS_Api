@@ -107,7 +107,15 @@ exports.validate = async (req, res) => {
       hospitalId: assertUserHospital(req.user),
       actorUserId: req.user._id
     });
-    return res.status(result.validation.valid ? 200 : 422).json({ success: result.validation.valid, ...result });
+    // A completed validator run is a successful HTTP operation even when the
+    // FHIR payload is non-conformant. Keep 4xx/5xx for transport/auth/runtime
+    // failures so the frontend can render the NRCeS errors instead of treating
+    // them as an Axios/network failure.
+    return res.json({
+      success: true,
+      validationPassed: result.validation.valid === true,
+      ...result
+    });
   } catch (error) {
     return failure(res, error);
   }

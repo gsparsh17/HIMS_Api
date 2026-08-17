@@ -620,6 +620,11 @@ exports.linkConfirm = async (req, res) => {
       metadata: { userInitiated: true, confirmedLocallyAt: new Date() }
     });
 
+    const linkedPatient = await Patient.findOne({
+      _id: auth.patientId,
+      hospitalId
+    }).select('abha.address');
+
     try {
       await masterRequest('/internal/abdm/m2/action', {
         method: 'POST',
@@ -628,7 +633,7 @@ exports.linkConfirm = async (req, res) => {
           body: {
             transactionId: body.transactionId,
             patient: patientGroups,
-            matchedBy: requestedPatient.id ? ['ABHA_ADDRESS'] : ['MR'],
+            matchedBy: linkedPatient?.abha?.address ? ['ABHA_ADDRESS'] : ['MR'],
             response: { requestId }
           }
         }

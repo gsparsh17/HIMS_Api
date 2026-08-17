@@ -48,6 +48,61 @@ function resourceProfileUrl(profileName) {
   return `${abdmConfig.fhirProfileBase}/${profileName}`;
 }
 
+const NRCES_IDENTIFIER_TYPE_SYSTEM = `${abdmConfig.fhirProfileBase.replace(/\/StructureDefinition$/, '')}/CodeSystem/ndhm-identifier-type-code`;
+const V2_IDENTIFIER_TYPE_SYSTEM = 'http://terminology.hl7.org/CodeSystem/v2-0203';
+const ORGANIZATION_TYPE_SYSTEM = 'http://terminology.hl7.org/CodeSystem/organization-type';
+const LOINC_SYSTEM = 'http://loinc.org';
+const UCUM_SYSTEM = 'http://unitsofmeasure.org';
+
+function coding(system, code, display) {
+  return { coding: [{ system, code, display }], text: display };
+}
+
+function identifierType(system, code, display) {
+  return { coding: [{ system, code, display }] };
+}
+
+function identifier({ typeSystem, typeCode, typeDisplay, system, value }) {
+  if (!value) return undefined;
+  return {
+    type: identifierType(typeSystem, typeCode, typeDisplay),
+    system,
+    value: String(value)
+  };
+}
+
+function quantity(value, unit, code = unit) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return undefined;
+  return { value: numeric, unit, system: UCUM_SYSTEM, code };
+}
+
+function numericValue(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  const match = String(value).replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function xhtmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function generatedNarrative(label, value) {
+  const suffix = value === undefined || value === null || value === '' ? '' : `: ${xhtmlEscape(value)}`;
+  return {
+    status: 'generated',
+    div: `<div xmlns="http://www.w3.org/1999/xhtml"><p>${xhtmlEscape(label)}${suffix}</p></div>`
+  };
+}
+
 function withResourceProfile(resource) {
   const copy = { ...resource };
   let profileName = RESOURCE_PROFILE_BY_TYPE[copy.resourceType];
@@ -106,28 +161,39 @@ function sectionsFor(hiType, clinicalEntries) {
 }
 
 function organizationResource(hospital) {
+  const organizationName = hospital.hospitalName || hospital.name || 'Healthcare Provider';
   return clean({
     resourceType: 'Organization',
     id: `organization-${hospital._id}`,
+    text: generatedNarrative('Healthcare Provider', organizationName),
     active: true,
     identifier: [
-      hospital.onboarding?.hfrFacilityId
-        ? {
-            system: 'https://facility.abdm.gov.in',
-            value: hospital.onboarding.hfrFacilityId
-          }
-        : undefined,
-      hospital.hospitalID
-        ? {
-            system: 'https://mediqliq.com/identifier/hospital',
-            value: hospital.hospitalID
-          }
-        : undefined
+      identifier({
+        typeSystem: V2_IDENTIFIER_TYPE_SYSTEM,
+        typeCode: 'PRN',
+        typeDisplay: 'Provider number',
+        system: 'https://facility.ndhm.gov.in',
+        value: hospital.onboarding?.hfrFacilityId
+      }),
+      identifier({
+        typeSystem: NRCES_IDENTIFIER_TYPE_SYSTEM,
+        typeCode: 'OIN',
+        typeDisplay: 'Other identifier',
+        system: 'https://mediqliq.com/identifier/hospital',
+        value: hospital.hospitalID
+      })
     ],
-    name: hospital.hospitalName || hospital.name,
+    type: [{
+      coding: [{
+        system: ORGANIZATION_TYPE_SYSTEM,
+        code: 'prov',
+        display: 'Healthcare Provider'
+      }]
+    }],
+    name: organizationName,
     telecom: [
-      hospital.contact ? { system: 'phone', value: hospital.contact } : undefined,
-      hospital.email ? { system: 'email', value: hospital.email } : undefined
+      hospital.contact ? { system: 'phone', value: hospital.contact, use: 'work' } : undefined,
+      hospital.email ? { system: 'email', value: hospital.email, use: 'work' } : undefined
     ],
     address: hospital.address
       ? [
@@ -144,34 +210,62 @@ function organizationResource(hospital) {
 }
 
 function patientResource(patient, hospital) {
+  const displayName = [patient.salutation, patient.first_name, patient.middle_name, patient.last_name]
+    .filter(Boolean)
+    .join(' ') || patient.uhid || 'Patient';
   return clean({
     resourceType: 'Patient',
     id: `patient-${patient._id}`,
+    text: generatedNarrative('Patient', displayName),
     identifier: [
-      patient.uhid ? { system: 'https://mediqliq.com/identifier/uhid', value: patient.uhid } : undefined,
-      patient.abha?.number ? { system: 'https://healthid.ndhm.gov.in/abha-number', value: patient.abha.number } : undefined,
-      patient.abha?.address ? { system: 'https://healthid.ndhm.gov.in/abha-address', value: patient.abha.address } : undefined
+      identifier({
+        typeSystem: V2_IDENTIFIER_TYPE_SYSTEM,
+        typeCode: 'MR',
+        typeDisplay: 'Medical record number',
+        system: 'https://mediqliq.com/identifier/uhid',
+        value: patient.uhid || patient.patientId
+      }),
+      identifier({
+        typeSystem: NRCES_IDENTIFIER_TYPE_SYSTEM,
+        typeCode: 'HIN',
+        typeDisplay: 'Health ID issued by NDHM',
+        system: 'https://healthid.ndhm.gov.in',
+        value: patient.abha?.number
+      }),
+      identifier({
+        typeSystem: NRCES_IDENTIFIER_TYPE_SYSTEM,
+        typeCode: 'ABHA',
+        typeDisplay: 'Ayushman Bharat Health Account (ABHA) ID',
+        system: 'https://healthid.ndhm.gov.in/abha-address',
+        value: patient.abha?.address
+      })
     ],
     name: [{
-      text: [patient.salutation, patient.first_name, patient.middle_name, patient.last_name].filter(Boolean).join(' '),
+      text: displayName,
       given: [patient.first_name, patient.middle_name].filter(Boolean),
       family: patient.last_name
     }],
     telecom: [
-      patient.phone ? { system: 'phone', value: patient.phone } : undefined,
-      patient.email ? { system: 'email', value: patient.email } : undefined
+      patient.phone ? { system: 'phone', value: patient.phone, use: 'home' } : undefined,
+      patient.email ? { system: 'email', value: patient.email, use: 'home' } : undefined
     ],
     gender: ['male', 'female', 'other'].includes(String(patient.gender).toLowerCase())
       ? String(patient.gender).toLowerCase()
       : 'unknown',
     birthDate: patient.dob ? new Date(patient.dob).toISOString().slice(0, 10) : undefined,
-    address: patient.address ? [{ text: patient.address, city: patient.city, district: patient.district, state: patient.state, postalCode: patient.zipCode, country: 'IN' }] : undefined,
+    address: patient.address ? [{
+      text: patient.address,
+      city: patient.city,
+      district: patient.district,
+      state: patient.state,
+      postalCode: patient.zipCode,
+      country: 'IN'
+    }] : undefined,
     managingOrganization: hospital
       ? { reference: `Organization/organization-${hospital._id}` }
       : undefined
   });
 }
-
 function rewriteReferences(value, referenceMap) {
   if (Array.isArray(value)) return value.map((item) => rewriteReferences(item, referenceMap));
   if (!value || typeof value !== 'object') return value;
@@ -216,6 +310,7 @@ function bundleDocument({
     resourceType: 'Composition',
     id: compositionUuid,
     meta: { profile: [profileUrl(hiType)], versionId: String(bundleVersion) },
+    language: 'en-IN',
     status: 'final',
     type: COMPOSITION_TYPES[hiType],
     subject: { reference: patientEntry.__fullUrl, type: 'Patient' },
@@ -493,59 +588,153 @@ function healthDocumentResources(items, patient) {
   }));
 }
 
-function wellnessResources(vitals, patient) {
-  const mapping = [
-    ['bp', 'Blood pressure'],
-    ['bloodPressureString', 'Blood pressure'],
-    ['weight', 'Body weight'],
-    ['height', 'Body height'],
-    ['pulse', 'Pulse rate'],
-    ['spo2', 'Oxygen saturation'],
-    ['temperature', 'Body temperature'],
-    ['respiratory_rate', 'Respiratory rate'],
-    ['respiratoryRate', 'Respiratory rate'],
-    ['random_blood_sugar', 'Random blood sugar'],
-    ['bloodSugar', 'Blood sugar'],
-    ['painScore', 'Pain score']
-  ];
+function wellnessResources(vitals, patient, hospital) {
   const resources = [];
+  const performer = hospital ? [{ reference: `Organization/organization-${hospital._id}` }] : undefined;
+
+  const observation = ({ vital, suffix, profileName, code, display, valueQuantity, component }) => clean({
+    resourceType: 'Observation',
+    __profileName: profileName,
+    id: `observation-${vital._id}-${suffix}`,
+    text: generatedNarrative(display, valueQuantity?.value ?? ''),
+    status: 'final',
+    code: coding(LOINC_SYSTEM, code, display),
+    subject: { reference: patientRef(patient) },
+    effectiveDateTime: iso(vital.recorded_at || vital.recordedAt || vital.createdAt),
+    performer,
+    valueQuantity,
+    component
+  });
+
   for (const vital of vitals) {
-    const enriched = {
-      ...vital,
-      bloodPressureString:
-        vital.bloodPressureString ||
-        (vital.bloodPressure?.systolic && vital.bloodPressure?.diastolic
-          ? `${vital.bloodPressure.systolic}/${vital.bloodPressure.diastolic}`
-          : undefined)
-    };
-    for (const [field, label] of mapping) {
-      if (enriched[field] === undefined || enriched[field] === null || enriched[field] === '') continue;
-      const profileByField = {
-        bp: 'ObservationVitalSigns',
-        bloodPressureString: 'ObservationVitalSigns',
-        pulse: 'ObservationVitalSigns',
-        spo2: 'ObservationVitalSigns',
-        temperature: 'ObservationVitalSigns',
-        respiratory_rate: 'ObservationVitalSigns',
-        respiratoryRate: 'ObservationVitalSigns',
-        weight: 'ObservationBodyMeasurement',
-        height: 'ObservationBodyMeasurement'
-      };
-      resources.push(clean({
-        resourceType: 'Observation',
-        __profileName: profileByField[field] || 'ObservationGeneralAssessment',
-        id: `observation-${vital._id}-${field}`,
-        status: 'final',
-        code: { text: label },
-        subject: { reference: patientRef(patient) },
-        effectiveDateTime: iso(vital.recorded_at || vital.recordedAt || vital.createdAt),
-        valueString: String(enriched[field])
+    const bpString = vital.bp || vital.bloodPressureString;
+    const bpMatch = bpString ? String(bpString).match(/(\d+(?:\.\d+)?)\s*[/\\-]\s*(\d+(?:\.\d+)?)/) : null;
+    const systolic = numericValue(vital.bloodPressure?.systolic ?? bpMatch?.[1]);
+    const diastolic = numericValue(vital.bloodPressure?.diastolic ?? bpMatch?.[2]);
+    if (systolic !== undefined && diastolic !== undefined) {
+      resources.push(observation({
+        vital,
+        suffix: 'blood-pressure',
+        profileName: 'ObservationVitalSigns',
+        code: '85354-9',
+        display: 'Blood pressure panel with all children optional',
+        component: [
+          {
+            code: coding(LOINC_SYSTEM, '8480-6', 'Systolic blood pressure'),
+            valueQuantity: quantity(systolic, 'mmHg', 'mm[Hg]')
+          },
+          {
+            code: coding(LOINC_SYSTEM, '8462-4', 'Diastolic blood pressure'),
+            valueQuantity: quantity(diastolic, 'mmHg', 'mm[Hg]')
+          }
+        ]
       }));
     }
+
+    const pulse = numericValue(vital.pulse);
+    if (pulse !== undefined) {
+      resources.push(observation({
+        vital,
+        suffix: 'heart-rate',
+        profileName: 'ObservationVitalSigns',
+        code: '8867-4',
+        display: 'Heart rate',
+        valueQuantity: quantity(pulse, 'beats/minute', '/min')
+      }));
+    }
+
+    const spo2 = numericValue(vital.spo2);
+    if (spo2 !== undefined) {
+      resources.push(observation({
+        vital,
+        suffix: 'oxygen-saturation',
+        profileName: 'ObservationVitalSigns',
+        code: '2708-6',
+        display: 'Oxygen saturation in Arterial blood',
+        valueQuantity: quantity(spo2, '%', '%')
+      }));
+    }
+
+    const temperature = numericValue(vital.temperature);
+    if (temperature !== undefined) {
+      const declaredUnit = String(vital.temperatureUnit || '').toLowerCase();
+      const fahrenheit = declaredUnit.startsWith('f') || (!declaredUnit && temperature > 45);
+      resources.push(observation({
+        vital,
+        suffix: 'temperature',
+        profileName: 'ObservationVitalSigns',
+        code: '61008-9',
+        display: 'Body surface temperature',
+        valueQuantity: quantity(
+          temperature,
+          fahrenheit ? 'degF' : 'Cel',
+          fahrenheit ? '[degF]' : 'Cel'
+        )
+      }));
+    }
+
+    const respiratoryRate = numericValue(vital.respiratoryRate ?? vital.respiratory_rate);
+    if (respiratoryRate !== undefined) {
+      resources.push(observation({
+        vital,
+        suffix: 'respiratory-rate',
+        profileName: 'ObservationVitalSigns',
+        code: '9279-1',
+        display: 'Respiratory rate',
+        valueQuantity: quantity(respiratoryRate, 'breaths/minute', '/min')
+      }));
+    }
+
+    const weight = numericValue(vital.weight);
+    if (weight !== undefined) {
+      const rawWeight = String(vital.weight || '').toLowerCase();
+      const pounds = /\blb|pound/.test(rawWeight);
+      resources.push(observation({
+        vital,
+        suffix: 'body-weight',
+        profileName: 'ObservationBodyMeasurement',
+        code: '29463-7',
+        display: 'Body weight',
+        valueQuantity: quantity(weight, pounds ? 'lb' : 'kg', pounds ? '[lb_av]' : 'kg')
+      }));
+    }
+
+    const height = numericValue(vital.height);
+    if (height !== undefined) {
+      const rawHeight = String(vital.height || '').toLowerCase();
+      let unit = 'cm';
+      let code = 'cm';
+      if (/\bin\b|inch/.test(rawHeight)) { unit = 'in'; code = '[in_i]'; }
+      else if (/\b(m|metre|meter)s?\b/.test(rawHeight) && !/cm/.test(rawHeight)) { unit = 'm'; code = 'm'; }
+      resources.push(observation({
+        vital,
+        suffix: 'body-height',
+        profileName: 'ObservationBodyMeasurement',
+        code: '8302-2',
+        display: 'Body height',
+        valueQuantity: quantity(height, unit, code)
+      }));
+    }
+
+    const bloodSugar = numericValue(vital.bloodSugar ?? vital.random_blood_sugar);
+    if (bloodSugar !== undefined) {
+      resources.push(observation({
+        vital,
+        suffix: 'blood-glucose',
+        profileName: 'ObservationGeneralAssessment',
+        code: '2339-0',
+        display: 'Glucose [Mass/volume] in Blood',
+        valueQuantity: quantity(bloodSugar, 'mg/dL', 'mg/dL')
+      }));
+    }
+
+    // painScore is intentionally not projected into WellnessRecord until a
+    // value-set-conformant NRCeS code is selected. The source row remains in
+    // the packet manifest/hash, so omitting an unsupported FHIR projection does
+    // not weaken the immutable source binding.
   }
   return resources;
 }
-
 function invoiceResources(invoices, patient) {
   return invoices.map((invoice) => clean({
     resourceType: 'Invoice',
@@ -631,7 +820,7 @@ function resourcesFor(hiType, records) {
     case 'DISCHARGE_SUMMARY': return dischargeResources(records.discharges, records.patient);
     case 'IMMUNIZATION_RECORD': return immunizationResources(records.immunizations, records.patient);
     case 'HEALTH_DOCUMENT_RECORD': return healthDocumentResources(records.documents, records.patient);
-    case 'WELLNESS_RECORD': return wellnessResources(records.vitals, records.patient);
+    case 'WELLNESS_RECORD': return wellnessResources(records.vitals, records.patient, records.hospital);
     case 'INVOICE': return invoiceResources(records.invoices, records.patient);
     default: return [];
   }

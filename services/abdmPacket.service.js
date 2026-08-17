@@ -440,14 +440,38 @@ async function packetVersionForHospital({ packetId, versionNumber, hospitalId, i
   if (versionNumber !== undefined && versionNumber !== null) query.version = Number(versionNumber);
   else query._id = packet.activeVersionId;
   let lookup = AbdmPacketVersion.findOne(query);
-  if (includeBundle) lookup = lookup.select('+encryptedBundle.ciphertext +encryptedBundle.iv +encryptedBundle.tag +encryptedBundle.keyVersion');
+  if (includeBundle) {
+    // encryptedBundle itself and its members are intentionally select:false.
+    // Explicitly opt the parent and children back in so raw-FHIR review,
+    // validation and transfer all use the same persisted immutable payload.
+    lookup = lookup.select(
+      '+encryptedBundle +encryptedBundle.ciphertext +encryptedBundle.iv +encryptedBundle.tag +encryptedBundle.keyVersion'
+    );
+  }
   const version = await lookup;
   if (!version) throw appError('ABDM packet version not found', 404, 'ABDM_PACKET_VERSION_NOT_FOUND');
   return { packet, version };
 }
 
 async function readBundle(version) {
-  return decryptJson(version.encryptedBundle, packetAad(version));
+  const encrypted = version?.encryptedBundle;
+  if (!encrypted?.ciphertext || !encrypted?.iv || !encrypted?.tag) {
+    throw appError(
+      'Stored ABDM packet encrypted payload is unavailable',
+      500,
+      'ABDM_PACKET_ENCRYPTED_PAYLOAD_MISSING'
+    );
+  }
+  try {
+    return decryptJson(encrypted, packetAad(version));
+  } catch (error) {
+    throw appError(
+      'Stored ABDM packet could not be decrypted. Verify ABDM_HOSPITAL_ENCRYPTION_KEY and packet integrity.',
+      409,
+      'ABDM_PACKET_DECRYPT_FAILED',
+      { cause: error?.message }
+    );
+  }
 }
 
 async function validatePacket({ packetId, versionNumber, hospitalId, actorUserId }) {
@@ -462,16 +486,14 @@ async function validatePacket({ packetId, versionNumber, hospitalId, actorUserId
   if (actualHash !== version.bundleHash) {
     throw appError('Stored packet integrity verification failed', 409, 'ABDM_PACKET_INTEGRITY_FAILED');
   }
-  let validation;
-  try {
-    validation = await validateBundle(bundle, { external: true, expectedProfile: version.expectedProfile });
-  } catch (error) {
-    validation = {
-      valid: false,
-      errors: error.details?.errors || [{ code: error.code || 'VALIDATOR_ERROR', message: error.message }],
-      warnings: error.details?.warnings || []
-    };
-  }
+  // Operational validator failures (timeout/unavailable/protocol errors) are
+  // not FHIR conformance failures. Let them propagate so the API returns a
+  // 5xx/504 and, importantly, do not mark an immutable packet FAILED merely
+  // because the validation infrastructure was temporarily unavailable.
+  const validation = await validateBundle(bundle, {
+    external: true,
+    expectedProfile: version.expectedProfile
+  });
   version.validation = {
     valid: validation.valid === true,
     validator: validation.validator || 'mediqliq-fhir-validator',
@@ -619,7 +641,9 @@ async function approvedRecordsForTransfer({ hospitalId, patientId, consent, cont
       'consentBinding.consentId': consent.consentId,
       'consentBinding.consentScopeHash': consentScope.consentScopeHash
     })
-      .select('+encryptedBundle.ciphertext +encryptedBundle.iv +encryptedBundle.tag +encryptedBundle.keyVersion')
+      .select(
+        '+encryptedBundle +encryptedBundle.ciphertext +encryptedBundle.iv +encryptedBundle.tag +encryptedBundle.keyVersion'
+      )
       .sort({ version: -1 });
     if (!version) {
       throw appError(

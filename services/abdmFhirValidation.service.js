@@ -242,6 +242,10 @@ function externalRequestBody(bundle, expectedProfile, bundleHash) {
 
   return {
     validationContext: {
+      // The validator wrapper ships with an R5 DEFAULT preset.  Pin the ABDM
+      // request to the dedicated R4/NRCeS preset so R4 elements are not parsed
+      // by the R5 engine before the ndhm.in profile is applied.
+      baseEngine: process.env.ABDM_FHIR_VALIDATOR_BASE_ENGINE || 'ABDM_R4',
       sv: abdmConfig.fhirR4Version,
       locale: 'en',
       igs: [abdmConfig.fhirPackage],
@@ -475,9 +479,25 @@ async function masterFhirHealth() {
 async function checkFhirValidatorHealth(provider = abdmConfig.fhirProvider) {
   const primary = provider === 'local' ? await localFhirHealth() : await masterFhirHealth();
   const fallbackProvider = abdmConfig.fhirFallbackProvider;
-  if (!fallbackProvider || fallbackProvider === 'none' || fallbackProvider === provider) return primary;
+
+  if (!fallbackProvider || fallbackProvider === 'none' || fallbackProvider === provider) {
+    return {
+      ...primary,
+      effectiveHealthy: primary.healthy === true,
+      activeProvider: primary.healthy === true ? provider : null
+    };
+  }
+
   const fallback = fallbackProvider === 'local' ? await localFhirHealth() : await masterFhirHealth();
-  return { ...primary, fallback };
+  const effectiveHealthy = primary.healthy === true || fallback.healthy === true;
+  return {
+    ...primary,
+    fallback,
+    effectiveHealthy,
+    activeProvider: primary.healthy === true
+      ? provider
+      : (fallback.healthy === true ? fallbackProvider : null)
+  };
 }
 
 module.exports = {
