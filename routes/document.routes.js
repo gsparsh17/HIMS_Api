@@ -11,6 +11,7 @@ router.post('/signatures/:id/revoke', authorize('admin', 'mediqliq_super_admin')
 router.get('/patient-file/:admissionId/manifest', controller.getManifest);
 router.get('/patient-file/:admissionId/completeness', controller.getCompleteness);
 router.get('/patient-file/:admissionId/bundle-plan', controller.getBundlePlan);
+router.get('/patient-file/:admissionId/packet-validation', controller.getPacketValidation);
 router.post('/patient-file/:admissionId/bundles/preview', controller.previewPatientFileBundle);
 router.post('/patient-file/:admissionId/bundles', controller.finalizePatientFileBundle);
 router.get('/patient-file/:admissionId/bundles/:renderedId', controller.streamPatientFileBundle);

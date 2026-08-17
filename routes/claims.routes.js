@@ -1,11 +1,22 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/claim.controller');
-const { protect, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
+const readinessController = require('../controllers/claimReadiness.controller');
+const { protect, authorize, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
 
 router.use(protect);
 const financeView = requireModuleAccess('billing_finance', 'view');
 const financeManage = requireModuleAccess('billing_finance', 'manage');
+
+
+router.get('/scheme-rule-profiles', financeView, readinessController.listRuleProfiles);
+router.put('/scheme-rule-profiles', financeManage, authorize('admin', 'mediqliq_super_admin'), readinessController.upsertRuleProfile);
+router.get('/claims/:id/readiness', financeView, readinessController.getReadiness);
+router.post('/claims/:id/readiness/override', financeManage, requireActionPermission('claim_manage'), readinessController.overrideReadiness);
+router.delete('/claims/:id/readiness/override', financeManage, requireActionPermission('claim_manage'), readinessController.clearReadinessOverride);
+router.get('/claims/:id/evidence', financeView, readinessController.listEvidence);
+router.post('/claims/:id/evidence', financeManage, requireActionPermission('claim_manage'), readinessController.addEvidence);
+router.patch('/claims/:id/evidence/:evidenceId', financeManage, requireActionPermission('claim_manage'), readinessController.updateEvidence);
 
 router.post('/claims', financeManage, requireActionPermission('claim_manage'), controller.create);
 router.get('/claims', financeView, controller.list);

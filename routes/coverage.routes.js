@@ -18,5 +18,6 @@ router.post('/opd/appointments/:appointmentId/preauth', manage, controller.preau
 
 router.patch('/preauth/:id/status', manage, requireActionPermission('preauth_decide'), controller.updatePreauthById);
 router.get('/coverages/:id/utilization', requireModuleAccess('billing_finance', 'view'), controller.utilization);
+router.patch('/coverages/:id/scheme-details', manage, requireActionPermission('claim_manage'), controller.updateSchemeDetails);
 router.post('/coverages/:id/activate', manage, requireActionPermission('coverage_reprice_commit'), controller.activate);
 module.exports = router;

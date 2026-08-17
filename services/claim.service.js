@@ -8,6 +8,7 @@ const IPDCharge = require('../models/IPDCharge');
 const Appointment = require('../models/Appointment');
 const Bill = require('../models/Bill');
 const Payer = require('../models/Payer');
+const claimReadiness = require('./claimReadiness.service');
 
 function money(value) {
   return Number(Number(value || 0).toFixed(2));
@@ -158,6 +159,35 @@ function allocationFromBillItem(bill, item) {
   };
 }
 
+function deriveClaimSchemeData(coverage = {}) {
+  const schemeType = String(coverage.payerCategory || coverage.payerId?.type || 'generic').toLowerCase();
+  if (schemeType !== 'pmjay') return { schemeType, schemeData: {} };
+  const source = coverage.schemeData?.pmjay || {};
+  return {
+    schemeType,
+    schemeData: {
+      pmjay: {
+        pmjayCaseId: source.pmjayCaseId,
+        abhaId: source.abhaId,
+        beneficiaryId: source.beneficiaryId || coverage.beneficiary?.beneficiaryId || coverage.beneficiary?.schemeCardNumber,
+        packageCode: source.packageCode || coverage.preAuthorisation?.requestedPackageCode,
+        packageName: source.packageName,
+        packageType: source.packageType,
+        packageRate: source.packageRate,
+        specialty: source.specialty || coverage.rateContext?.specialty,
+        caseType: source.caseType,
+        provisionalDiagnosis: source.provisionalDiagnosis,
+        finalDiagnosis: source.finalDiagnosis,
+        icd10Codes: source.icd10Codes || [],
+        procedureCodes: source.procedureCodes || [],
+        portability: Boolean(source.portability),
+        homeState: source.homeState,
+        treatingState: source.treatingState
+      }
+    }
+  };
+}
+
 function summarizeLines(lines) {
   const sums = lines.reduce((acc, line) => {
     acc.standardAmount += Number(line.standardAmount || 0);
@@ -273,6 +303,7 @@ async function createClaim({ hospitalId, body, user }) {
   const totals = summarizeLines(lines);
   const serviceDates = lines.map((line) => new Date(line.serviceDate || Date.now()).getTime()).filter(Number.isFinite);
 
+  const scheme = deriveClaimSchemeData(resolved.coverage);
   return ClaimCase.create({
     hospitalId,
     claimNumber: await nextClaimNumber(hospitalId),
@@ -283,6 +314,8 @@ async function createClaim({ hospitalId, body, user }) {
     coverageId: resolved.coverage._id,
     payerId: resolved.coverage.payerId._id,
     type: body.type || 'cashless',
+    schemeType: scheme.schemeType,
+    schemeData: { ...scheme.schemeData, ...(body.schemeData || {}) },
     status: body.status || 'draft',
     servicePeriod: {
       from: new Date(Math.min(...serviceDates)),
@@ -377,6 +410,14 @@ async function ensureReceivableAtSubmission({ claim, payer, user, session }) {
 }
 
 async function submitClaim({ hospitalId, claimId, amount, user }) {
+  const readiness = await claimReadiness.evaluateAndPersist({ hospitalId, claimId, user });
+  const claimBeforeSubmit = await ClaimCase.findOne({ _id: claimId, hospitalId }).select('readiness').lean();
+  const overrideActive = Boolean(claimBeforeSubmit?.readiness?.override?.active);
+  if (readiness.status === 'blocked' && !overrideActive) {
+    const error = badRequest('Claim readiness is blocked. Resolve critical issues or record an authorized readiness override before submission.', 422);
+    error.readiness = readiness;
+    throw error;
+  }
   const session = await mongoose.startSession();
   let saved;
   try {
@@ -764,6 +805,7 @@ module.exports = {
   recordSettlement,
   cancelClaim,
   claimFilter,
+  deriveClaimSchemeData,
   report,
   ledgerReport,
   appendLedger

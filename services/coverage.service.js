@@ -160,6 +160,7 @@ async function createEncounterCoverage({ req, hospitalId, encounterType, encount
     convertedFromCoverageId: payload.convertedFromCoverageId,
     conversionReason: payload.conversionReason,
     documentChecklist: payload.documentChecklist || payer.documentChecklist || [],
+    schemeData: payload.schemeData || {},
     active: Boolean(activateImmediately),
     effectiveFrom: payload.effectiveFrom || new Date(),
     createdBy: req.user?._id,
@@ -284,6 +285,43 @@ async function updatePreAuth({ req, hospitalId, admissionId, appointmentId, cove
 }
 
 
+
+async function updateSchemeData({ req, hospitalId, coverageId, payload, session }) {
+  const coverage = await sessionQuery(AdmissionCoverage.findOne({ _id: coverageId, hospitalId, active: true }), session);
+  if (!coverage) throw httpError('Active coverage not found', 404);
+  const existing = coverage.schemeData?.toObject?.() || coverage.schemeData || {};
+  const mergeSafe = (base, patch) => {
+    const next = { ...(base || {}) };
+    for (const [key, value] of Object.entries(patch || {})) {
+      if (['__proto__', 'prototype', 'constructor'].includes(key)) continue;
+      const current = next[key]?.toObject?.() || next[key];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        next[key] = mergeSafe(current && typeof current === 'object' && !Array.isArray(current) ? current : {}, value);
+      } else {
+        next[key] = value;
+      }
+    }
+    return next;
+  };
+  coverage.schemeData = mergeSafe(existing, payload);
+  coverage.updatedBy = req.user?._id;
+  coverage.revision += 1;
+  await coverage.save({ session });
+  await appendDomainEvent({
+    req,
+    eventType: 'coverage.scheme_details_updated',
+    entityType: 'AdmissionCoverage',
+    entityId: coverage._id,
+    hospitalId,
+    patientId: coverage.patientId,
+    encounterId: coverage.appointmentId || coverage.admissionId,
+    revision: coverage.revision,
+    afterSummary: { payerCategory: coverage.payerCategory, schemeData: coverage.schemeData },
+    session
+  });
+  return coverage;
+}
+
 async function activatePreparedCoverage({ req, hospitalId, coverageId, session }) {
   const coverage = await sessionQuery(AdmissionCoverage.findOne({ _id: coverageId, hospitalId }), session);
   if (!coverage) throw httpError('Coverage not found', 404);
@@ -340,6 +378,7 @@ module.exports = {
   activatePreparedCoverage,
   updateEligibility,
   updatePreAuth,
+  updateSchemeData,
   resolveEffectiveRateCard,
   tenantAdmission,
   tenantAppointment,

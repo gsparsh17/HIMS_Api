@@ -49,6 +49,31 @@ const claimCaseSchema = new mongoose.Schema({
     index: true
   },
   servicePeriod: { from: Date, to: Date },
+  schemeType: { type: String, trim: true, lowercase: true, index: true },
+  schemeData: {
+    pmjay: {
+      pmjayCaseId: { type: String, trim: true, index: true },
+      abhaId: { type: String, trim: true },
+      beneficiaryId: { type: String, trim: true },
+      packageCode: { type: String, trim: true, uppercase: true },
+      packageName: { type: String, trim: true },
+      packageType: { type: String, trim: true },
+      packageRate: Number,
+      specialty: String,
+      caseType: { type: String, trim: true },
+      provisionalDiagnosis: String,
+      finalDiagnosis: String,
+      icd10Codes: [{ type: String, trim: true, uppercase: true }],
+      procedureCodes: [{ type: String, trim: true, uppercase: true }],
+      portability: { type: Boolean, default: false },
+      homeState: String,
+      treatingState: String,
+      portalStatus: String,
+      portalSubmissionReference: String,
+      portalSubmittedAt: Date,
+      lastPortalSyncAt: Date
+    }
+  },
   preAuth: { requestNumber: String, approvedAmount: Number, status: String },
   amounts: {
     standardAmount: { type: Number, default: 0 },
@@ -69,13 +94,38 @@ const claimCaseSchema = new mongoose.Schema({
   documents: [{ code: String, name: String, documentId: mongoose.Schema.Types.ObjectId, url: String, status: String, note: String }],
   queries: [{
     queryNumber: String,
+    externalQueryId: String,
+    category: String,
+    reasonCode: String,
     receivedAt: Date,
     dueAt: Date,
     text: String,
     status: { type: String, enum: ['open', 'responded', 'closed'], default: 'open' },
     response: String,
+    documentsAdded: [{ documentId: mongoose.Schema.Types.ObjectId, name: String, url: String }],
     respondedAt: Date,
     respondedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
+  readiness: {
+    status: { type: String, enum: ['not_evaluated', 'ready', 'warning', 'blocked', 'overridden'], default: 'not_evaluated', index: true },
+    score: { type: Number, min: 0, max: 100, default: 0 },
+    evaluatedAt: Date,
+    rulesVersion: String,
+    blockers: [{ code: String, severity: String, message: String, source: String, details: mongoose.Schema.Types.Mixed }],
+    warnings: [{ code: String, severity: String, message: String, source: String, details: mongoose.Schema.Types.Mixed }],
+    override: {
+      active: { type: Boolean, default: false },
+      reason: String,
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date
+    }
+  },
+  rejectionHistory: [{
+    reasonCode: String,
+    reason: String,
+    category: String,
+    recordedAt: { type: Date, default: Date.now },
+    recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   }],
   deductions: [{ code: String, lineId: mongoose.Schema.Types.ObjectId, reason: String, amount: Number, accepted: Boolean, appealed: Boolean, note: String }],
   settlements: [{ amount: Number, receivedAt: Date, reference: String, method: String, recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } }],

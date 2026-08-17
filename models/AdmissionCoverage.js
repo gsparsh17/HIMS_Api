@@ -57,7 +57,66 @@ const admissionCoverageSchema = new mongoose.Schema({
     validTo: Date,
     decisionReason: String,
     documents: [{ documentId: mongoose.Schema.Types.ObjectId, name: String, url: String, status: String }],
-    history: [{ status: String, at: { type: Date, default: Date.now }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, note: String }]
+    history: [{ status: String, at: { type: Date, default: Date.now }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, note: String }],
+    enhancements: [{
+      enhancementNumber: String,
+      requestedAmount: Number,
+      approvedAmount: Number,
+      status: { type: String, enum: ['draft', 'submitted', 'query', 'approved', 'partially_approved', 'rejected', 'cancelled'], default: 'draft' },
+      requestedAt: Date,
+      decisionAt: Date,
+      reason: String,
+      documents: [{ documentId: mongoose.Schema.Types.ObjectId, name: String, url: String, status: String }]
+    }],
+    queryHistory: [{
+      queryNumber: String,
+      category: String,
+      text: String,
+      raisedAt: Date,
+      dueAt: Date,
+      response: String,
+      respondedAt: Date,
+      status: { type: String, enum: ['open', 'responded', 'closed'], default: 'open' }
+    }]
+  },
+  schemeData: {
+    pmjay: {
+      beneficiaryId: { type: String, trim: true },
+      pmjayCaseId: { type: String, trim: true, index: true },
+      abhaId: { type: String, trim: true },
+      bis: {
+        status: { type: String, enum: ['not_checked', 'verified', 'failed', 'manual_override'], default: 'not_checked' },
+        verificationId: String,
+        verifiedAt: Date,
+        method: String,
+        reason: String
+      },
+      aadhaarVerificationStatus: { type: String, enum: ['not_checked', 'verified', 'failed', 'not_applicable'], default: 'not_checked' },
+      biometric: {
+        admissionStatus: { type: String, enum: ['not_checked', 'verified', 'failed', 'exception', 'not_applicable'], default: 'not_checked' },
+        dischargeStatus: { type: String, enum: ['not_checked', 'verified', 'failed', 'exception', 'not_applicable'], default: 'not_checked' },
+        errorCode: String,
+        errorScreenshotUrl: String,
+        undertakingDocumentId: mongoose.Schema.Types.ObjectId
+      },
+      admissionVerificationAt: Date,
+      dischargeVerificationAt: Date,
+      specialty: { type: String, trim: true },
+      packageCode: { type: String, trim: true, uppercase: true },
+      packageName: { type: String, trim: true },
+      packageType: { type: String, enum: ['medical', 'surgical', 'add_on', 'unspecified_surgical', 'other'] },
+      packageRate: Number,
+      reservedPackage: { type: Boolean, default: false },
+      portability: { type: Boolean, default: false },
+      homeState: String,
+      treatingState: String,
+      caseType: { type: String, enum: ['normal_discharge', 'lama_dama', 'death', 'referred', 'medical_management', 'surgical', 'icu_hdu', 'multiple_procedures', 'portability', 'unspecified_surgical', 'other'], default: 'normal_discharge' },
+      provisionalDiagnosis: String,
+      finalDiagnosis: String,
+      icd10Codes: [{ type: String, trim: true, uppercase: true }],
+      procedureCodes: [{ type: String, trim: true, uppercase: true }],
+      notes: String
+    }
   },
   rateContext: {
     cityTier: { type: String, enum: ['I', 'II', 'III'], default: 'I' },

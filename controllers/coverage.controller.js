@@ -75,6 +75,15 @@ exports.updatePreauthById = async (req, res) => {
   } catch (error) { fail(res, error); }
 };
 
+
+exports.updateSchemeDetails = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const data = await transaction((session) => coverageService.updateSchemeData({ req, hospitalId, coverageId: req.params.id, payload: req.body, session }));
+    res.json({ success: true, data });
+  } catch (error) { fail(res, error); }
+};
+
 exports.activate = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);

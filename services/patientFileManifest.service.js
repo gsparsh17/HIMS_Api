@@ -26,48 +26,91 @@ const DischargeSummary = require('../models/DischargeSummary');
 const ClinicalDocument = require('../models/ClinicalDocument');
 const EncounterDocument = require('../models/EncounterDocument');
 const DocumentSignature = require('../models/DocumentSignature');
+const Bill = require('../models/Bill');
+const Invoice = require('../models/Invoice');
+const FinancialTransaction = require('../models/FinancialTransaction');
+const AdmissionCoverage = require('../models/AdmissionCoverage');
+const ClaimCase = require('../models/ClaimCase');
+const PackageEpisode = require('../models/PackageEpisode');
+const ClaimEvidence = require('../models/ClaimEvidence');
+const { templates: ipdConsentTemplates } = require('../data/ipdConsentTemplates');
 const { requireHospitalId, idString } = require('./tenantScope.service');
 const { listTemplates: listSurgeryFormTemplates } = require('../config/otSurgeryFormTemplates');
 const { buildAccommodationPrintData } = require('./ipdAccommodationPrint.service');
+const { completionIssues } = require('./patientPacketValidation.service');
+const { hasModuleAccess } = require('../middlewares/auth');
 
 const CATEGORY_ORDER = [
   'admission', 'consent', 'assessment', 'progress', 'nursing', 'vitals', 'medication',
-  'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'transfusion', 'discharge', 'attachment', 'financial'
+  'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'transfusion', 'discharge', 'payer', 'attachment', 'financial'
 ];
 
 const PACKET_DEFINITIONS = Object.freeze({
   patient_file: {
     label: 'Patient File',
-    description: 'Admission, outcome summary, investigation reports and implant papers.',
-    categories: ['admission', 'discharge', 'investigation', 'attachment'],
-    match: (document) => /admission|discharge|lama|death|pathology|lab|radiology|implant/i.test(`${document.documentType} ${document.title}`)
+    description: 'Concise admission-to-discharge patient file with core clinical course and outcome.',
+    categories: ['admission', 'assessment', 'progress', 'nursing', 'vitals', 'medication', 'discharge'],
+    match: () => true
+  },
+  clinical: {
+    label: 'Clinical Packet',
+    description: 'Admission, assessments, progress, nursing course, vitals, medication chart and discharge summary. Detailed investigations, OT and billing are excluded.',
+    categories: ['admission', 'assessment', 'progress', 'nursing', 'vitals', 'medication', 'discharge'],
+    match: () => true
   },
   mrd_file: {
     label: 'MRD File',
-    description: 'Complete clinical patient file for Medical Records.',
-    categories: CATEGORY_ORDER.filter((category) => category !== 'financial'),
+    description: 'Complete clinical medical-record file without finance-only documents.',
+    categories: CATEGORY_ORDER.filter((category) => !['financial', 'payer'].includes(category)),
+    match: () => true
+  },
+  complete_patient_file: {
+    label: 'Complete Patient File',
+    description: 'One deduplicated copy of every applicable completed clinical, investigation, OT, discharge, payer and financial document.',
+    categories: CATEGORY_ORDER,
     match: () => true
   },
   ot_packet: {
     label: 'OT Packet',
-    description: 'Consents, checklists, anaesthesia records, OT notes, instructions and implant papers.',
+    description: 'Applicable consents, PAC/checklists, operative/anaesthesia records, recovery, specimen and implant evidence.',
     categories: ['consent', 'assessment', 'procedure', 'ot', 'anesthesia', 'recovery', 'transfusion', 'attachment'],
-    match: (document) => /an(a|ae)esthesia|surgery consent|surgical consent|high risk|blood transfusion|pre.?operative|pre.?an(a|ae)esthesia|pac|surgical safety|intra.?operative|post.?operative|operative note|ot note|implant/i.test(`${document.documentType} ${document.title} ${document.rendererKey}`)
+    match: (document) => document.relatedCaseType === 'OTRequest' || /an(a|ae)esthesia|operation|operative|surgery|surgical|high risk|blood transfusion|pre.?op|post.?op|recovery|implant|specimen|ot/i.test(`${document.documentType} ${document.title} ${document.rendererKey}`)
+  },
+  pmjay: {
+    label: 'PMJAY Packet',
+    description: 'Claim-review packet based on accepted legacy evidence patterns: eligibility/preauth, clinical justification, relevant investigations, pre/post evidence, OT/procedure proof, outcome and selected claim/financial documents.',
+    categories: ['admission', 'assessment', 'progress', 'investigation', 'consent', 'procedure', 'ot', 'anesthesia', 'recovery', 'discharge', 'payer', 'attachment', 'financial'],
+    match: (document) => {
+      if (['payer', 'financial', 'investigation', 'discharge', 'assessment', 'progress'].includes(document.category)) return true;
+      if (document.category === 'attachment') return Boolean(document.relatedCaseType === 'OTRequest' || document.metadata?.pmjayRelevant);
+      return /consent|pre.?op|post.?op|operation|operative|surgery|surgical|an(a|ae)esthesia|pac|recovery|implant|specimen|procedure|ot/i.test(`${document.documentType} ${document.title} ${document.rendererKey}`);
+    }
+  },
+  insurance: {
+    label: 'Insurance Packet',
+    description: 'Payer-aware claim-support packet for non-PMJAY insurance/TPA/corporate/government sponsored encounters.',
+    categories: ['admission', 'assessment', 'progress', 'investigation', 'consent', 'procedure', 'ot', 'anesthesia', 'recovery', 'discharge', 'payer', 'attachment', 'financial'],
+    match: (document) => {
+      if (['payer', 'financial', 'discharge', 'assessment', 'progress'].includes(document.category)) return true;
+      if (document.category === 'investigation') return true;
+      if (document.category === 'attachment') return Boolean(document.metadata?.insuranceRelevant || document.metadata?.pmjayRelevant);
+      return /consent|pre.?op|post.?op|operation|operative|surgery|surgical|an(a|ae)esthesia|pac|recovery|implant|specimen|procedure|ot/i.test(`${document.documentType} ${document.title} ${document.rendererKey}`);
+    }
   },
   mlc_tpa_ayushman_file: {
-    label: 'MLC / TPA Insurance / Ayushman File',
-    description: 'Admission-to-discharge clinical packet including applicable consents, OT and investigation reports.',
+    label: 'Legacy MLC / TPA Insurance File',
+    description: 'Backward-compatible insurance/MLC packet. Use the dedicated PMJAY Packet for Ayushman Bharat claims.',
     categories: CATEGORY_ORDER.filter((category) => category !== 'financial'),
-    match: (document) => /admission|discharge|lama|death|mlc|initial assessment|progress|nursing|vital|medication|transfusion|consent|ot|operative|an(a|ae)esthesia|pathology|lab|radiology|implant/i.test(`${document.documentType} ${document.title} ${document.category}`)
+    match: (document) => /admission|discharge|lama|death|mlc|initial assessment|progress|nursing|vital|medication|transfusion|consent|ot|operative|an(a|ae)esthesia|pathology|lab|radiology|implant|payer|claim|pre.?auth/i.test(`${document.documentType} ${document.title} ${document.category}`)
   },
-  // Backward-compatible packet keys retained for existing links.
-  clinical: { label: 'Clinical File', categories: CATEGORY_ORDER.filter((category) => category !== 'financial'), match: () => true },
-  ot: { label: 'OT Packet', categories: ['admission', 'consent', 'assessment', 'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'medication', 'attachment'], match: () => true },
   nursing: { label: 'Nursing Packet', categories: ['admission', 'assessment', 'nursing', 'vitals', 'medication', 'progress', 'recovery'], match: () => true },
-  investigation: { label: 'Investigation Packet', categories: ['investigation', 'attachment'], match: () => true },
-  discharge: { label: 'Discharge Packet', categories: ['admission', 'assessment', 'progress', 'nursing', 'vitals', 'medication', 'investigation', 'procedure', 'ot', 'anesthesia', 'recovery', 'discharge'], match: () => true },
-  financial: { label: 'Financial Packet', categories: ['financial'], match: () => true }
+  investigation: { label: 'Investigation Packet', description: 'Finalized pathology, microbiology, radiology, ECG/echo and histopathology evidence.', categories: ['investigation'], match: () => true },
+  discharge: { label: 'Discharge Packet', categories: ['admission', 'assessment', 'progress', 'nursing', 'vitals', 'medication', 'discharge'], match: () => true },
+  financial: { label: 'Financial Packet', description: 'Bills, itemized invoices and payment/settlement receipts for this admission.', categories: ['financial'], match: () => true },
+  // Backward-compatible aliases retained for older deep links.
+  ot: { label: 'OT Packet', categories: ['consent', 'assessment', 'procedure', 'ot', 'anesthesia', 'recovery', 'transfusion', 'attachment'], match: () => true }
 });
+
 
 const PACKETS = Object.freeze(Object.fromEntries(
   Object.entries(PACKET_DEFINITIONS).map(([key, definition]) => [key, definition.categories])
@@ -84,7 +127,53 @@ function packetCategories(packetType) {
 
 function packetDocuments(packetType, documents = []) {
   const definition = packetDefinition(packetType);
-  return documents.filter((document) => definition.categories.includes(document.category) && definition.match(document));
+  const selected = documents.filter((document) => definition.categories.includes(document.category) && definition.match(document));
+
+  const normalizedType = String(packetType || '').toLowerCase();
+  if (normalizedType === 'pmjay' || normalizedType === 'pmjay_packet') {
+    const hasPmjayDischarge = selected.some((document) => document.documentType === 'pmjay_discharge_summary');
+    const pmjaySelected = hasPmjayDischarge
+      ? selected.filter((document) => !(document.documentType === 'discharge_summary' && document.sourceModel === 'DischargeSummary'))
+      : selected;
+    const sectionRank = (document) => {
+      if (document.documentType === 'pmjay_claim_summary') return 0;
+      if (document.category === 'payer' && document.metadata?.pmjaySection === 'eligibility_authorization') return 1;
+      if (document.category === 'admission') return 2;
+      if (['assessment', 'progress'].includes(document.category)) return 3;
+      if (document.category === 'investigation') return 4;
+      if (document.category === 'attachment' && document.metadata?.evidenceStage === 'preop') return 5;
+      if (['consent', 'procedure', 'ot', 'anesthesia', 'recovery'].includes(document.category)) return 6;
+      if (document.category === 'attachment' && document.metadata?.evidenceStage === 'intraop') return 7;
+      if (document.category === 'attachment' && document.metadata?.evidenceStage === 'postop') return 8;
+      if (document.category === 'discharge') return 9;
+      if (document.category === 'financial') return 10;
+      if (document.category === 'payer' && document.metadata?.pmjaySection === 'query_response') return 12;
+      if (document.category === 'payer') return 11;
+      return 13;
+    };
+    return pmjaySelected.slice().sort((a, b) => {
+      const rank = sectionRank(a) - sectionRank(b);
+      if (rank) return rank;
+      return new Date(a.documentDate || 0) - new Date(b.documentDate || 0);
+    });
+  }
+
+  if (normalizedType === 'investigation') {
+    const investigationRank = (document) => {
+      const text = `${document.documentType || ''} ${document.title || ''}`.toLowerCase();
+      if (/pathology|histopath/.test(text)) return 3;
+      if (/radiology|x.?ray|ct|mri|ultrasound|usg/.test(text)) return 2;
+      if (/ecg|echo|cardio/.test(text)) return 4;
+      return 1;
+    };
+    return selected.slice().sort((a, b) => {
+      const date = new Date(a.documentDate || 0) - new Date(b.documentDate || 0);
+      if (date) return date;
+      return investigationRank(a) - investigationRank(b);
+    });
+  }
+
+  return selected;
 }
 
 function statusOf(value, { final = [], complete = [] } = {}) {
@@ -133,8 +222,8 @@ function clinicalStatus(record) {
 async function buildManifest(req, admissionId, options = {}) {
   const hospitalId = requireHospitalId(req);
   const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId })
-    .populate('patientId', 'first_name last_name name patient_id uhid age gender date_of_birth phone')
-    .populate('primaryDoctorId', 'firstName lastName specialization doctorId licenseNumber')
+    .populate('patientId', 'first_name last_name name patient_id uhid age gender date_of_birth phone address city state')
+    .populate('primaryDoctorId', 'firstName lastName first_name last_name name specialization education licenseNumber phone')
     .populate('departmentId', 'name')
     .populate('wardId', 'name wardName')
     .populate('roomId', 'room_number roomNumber name')
@@ -146,6 +235,7 @@ async function buildManifest(req, admissionId, options = {}) {
     throw error;
   }
 
+  const canViewFinancial = hasModuleAccess(req.user, 'billing_finance', 'view');
   const patientId = admission.patientId?._id || admission.patientId;
   const caseFilter = { hospitalId, admissionId: admission._id };
   const [
@@ -164,30 +254,87 @@ async function buildManifest(req, admissionId, options = {}) {
     discharge,
     uploadedClinical,
     registeredDocuments,
-    signatures
+    signatures,
+    bills,
+    invoices,
+    financialTransactions,
+    coverage,
+    claimCase,
+    packageEpisodes
   ] = await Promise.all([
-    IPDInitialAssessment.findOne({ admissionId }).lean(),
-    IPDNursingAdmissionAssessment.findOne({ admissionId }).lean(),
-    IPDVitals.find({ admissionId }).sort({ recordedAt: 1 }).lean(),
-    IPDMedicationChart.find({ admissionId }).sort({ startDate: 1, createdAt: 1 }).lean(),
-    IPDRound.find({ admissionId }).sort({ roundDateTime: 1 }).lean(),
-    NursingNote.find({ admissionId }).sort({ noteDateTime: 1 }).lean(),
+    IPDInitialAssessment.findOne({ admissionId, hospitalId }).lean(),
+    IPDNursingAdmissionAssessment.findOne({ admissionId, hospitalId }).lean(),
+    IPDVitals.find({ admissionId, hospitalId }).sort({ recordedAt: 1 }).lean(),
+    IPDMedicationChart.find({ admissionId, hospitalId }).sort({ startDate: 1, createdAt: 1 }).lean(),
+    IPDRound.find({ admissionId, hospitalId }).sort({ roundDateTime: 1 }).lean(),
+    NursingNote.find({ admissionId, hospitalId }).sort({ noteDateTime: 1 }).lean(),
     IPDConsent.find({ admissionId, $or: [{ hospitalId }, { hospitalId: null }] }).sort({ createdAt: 1 }).lean(),
-    LabRequest.find({ admissionId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
+    LabRequest.find({ admissionId, hospitalId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
     LabReport.find({ patient_id: patientId, $or: [{ hospitalId }, { hospitalId: null }] }).sort({ report_date: 1 }).lean(),
-    RadiologyRequest.find({ admissionId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
-    ProcedureRequest.find({ admissionId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
+    RadiologyRequest.find({ admissionId, hospitalId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
+    ProcedureRequest.find({ admissionId, hospitalId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
     OTRequest.find(caseFilter).sort({ requestedDate: 1 }).lean(),
-    DischargeSummary.findOne({ admissionId }).lean(),
-    ClinicalDocument.find({ patientId, status: 'current' }).sort({ documentDate: 1 }).lean(),
+    DischargeSummary.findOne({ admissionId, hospitalId }).lean(),
+    ClinicalDocument.find({ patientId, hospitalId, status: 'current' }).sort({ documentDate: 1 }).lean(),
     EncounterDocument.find({ hospitalId, admissionId, sourceModel: { $ne: 'PatientFileBundle' }, rendererKey: { $ne: 'rendered-patient-file' }, documentType: { $not: /_patient_file$/ } }).sort({ documentDate: 1 }).lean(),
-    DocumentSignature.find({ hospitalId, admissionId, status: 'signed' }).sort({ signedAt: -1 }).lean()
+    DocumentSignature.find({ hospitalId, admissionId, status: 'signed' }).sort({ signedAt: -1 }).lean(),
+    Bill.find({ hospital_id: hospitalId, admission_id: admission._id, document_stage: { $ne: 'VOID' } }).sort({ generated_at: 1, createdAt: 1 }).lean(),
+    Invoice.find({ hospital_id: hospitalId, admission_id: admission._id, document_stage: { $ne: 'VOID' } }).sort({ issue_date: 1, createdAt: 1 }).lean(),
+    FinancialTransaction.find({ hospitalId, admissionId: admission._id, status: 'POSTED' }).sort({ postedAt: 1, createdAt: 1 }).lean(),
+    AdmissionCoverage.findOne({ hospitalId, encounterType: 'IPD', admissionId: admission._id, active: true }).populate('payerId', 'code name type documentChecklist pricingPolicy').lean(),
+    ClaimCase.findOne({ hospitalId, encounterType: 'IPD', admissionId: admission._id, status: { $ne: 'cancelled' } }).sort({ updatedAt: -1 }).populate('payerId', 'code name type').lean(),
+    PackageEpisode.find({ hospitalId, encounterType: 'IPD', admissionId: admission._id, status: { $in: ['planned', 'active', 'completed'] } }).sort({ startsAt: 1 }).lean()
   ]);
 
   const [accommodationPrint, hospital] = await Promise.all([
-    buildAccommodationPrintData({ hospitalId, admissionId: admission._id, financial: ['admin', 'mediqliq_super_admin', 'accountant', 'insurance_desk'].includes(req.user.role) }),
-    Hospital.findById(hospitalId).select('hospitalName name address city state pinCode contact email logo').lean()
+    buildAccommodationPrintData({ hospitalId, admissionId: admission._id, financial: canViewFinancial }),
+    Hospital.findById(hospitalId).select('hospitalID registryNo hospitalName name address city state pinCode contact email logo additionalInfo').lean()
   ]);
+
+  const claimEvidence = claimCase
+    ? await ClaimEvidence.find({ hospitalId, claimId: claimCase._id, status: 'current' }).sort({ evidenceStage: 1, capturedAt: 1, createdAt: 1 }).lean()
+    : [];
+
+  const payerRecord = coverage?.payerId && typeof coverage.payerId === 'object' ? coverage.payerId : (claimCase?.payerId && typeof claimCase.payerId === 'object' ? claimCase.payerId : null);
+  const payerText = [payerRecord?.name, payerRecord?.code, admission.sponsorName, admission.insuranceDetails?.provider].filter(Boolean).join(' ');
+  const isPmjay = coverage?.payerCategory === 'pmjay' || payerRecord?.type === 'pmjay' || admission.sponsorType === 'ayushman_bharat' || /pm\s*-?\s*jay|ayushman/i.test(payerText);
+  const payerContext = {
+    paymentType: admission.paymentType,
+    sponsorType: admission.sponsorType,
+    sponsorName: admission.sponsorName,
+    isPmjay,
+    payer: payerRecord ? { id: String(payerRecord._id), code: payerRecord.code, name: payerRecord.name, type: payerRecord.type } : null,
+    coverage: coverage ? {
+      id: String(coverage._id), payerCategory: coverage.payerCategory, planName: coverage.planName,
+      beneficiary: coverage.beneficiary || {}, eligibility: coverage.eligibility || {}, preAuthorisation: coverage.preAuthorisation || {},
+      schemeData: coverage.schemeData || {}, documentChecklist: coverage.documentChecklist || []
+    } : null,
+    claim: claimCase ? {
+      id: String(claimCase._id), claimNumber: claimCase.claimNumber, status: claimCase.status, schemeType: claimCase.schemeType, schemeData: claimCase.schemeData || {},
+      adjudicationStatus: claimCase.adjudicationStatus, preAuth: claimCase.preAuth || {}, amounts: claimCase.amounts || {}, readiness: claimCase.readiness || {},
+      queryCount: claimCase.queries?.length || 0,
+      queries: (claimCase.queries || []).map((query) => ({
+        queryNumber: query.queryNumber,
+        receivedAt: query.receivedAt,
+        dueAt: query.dueAt,
+        text: query.text,
+        status: query.status,
+        response: query.response,
+        respondedAt: query.respondedAt
+      })),
+      settlements: (claimCase.settlements || []).map((settlement) => ({
+        amount: settlement.amount,
+        receivedAt: settlement.receivedAt,
+        reference: settlement.reference,
+        method: settlement.method
+      }))
+    } : null,
+    packageEpisodes: (packageEpisodes || []).map((episode) => ({
+      id: String(episode._id), packageCode: episode.packageCode, packageName: episode.packageName,
+      status: episode.status, startsAt: episode.startsAt, endsAt: episode.endsAt,
+      contractedAmount: episode.contractedAmount, approvedAmountCap: episode.approvedAmountCap
+    }))
+  };
 
   const documents = [];
   documents.push(manifestItem({
@@ -224,13 +371,15 @@ async function buildManifest(req, admissionId, options = {}) {
 
   const surgeryFormTemplates = listSurgeryFormTemplates();
   const surgeryTemplateById = new Map(surgeryFormTemplates.map((template) => [template.id, template]));
+  const ipdConsentTemplateById = new Map((ipdConsentTemplates || []).map((template) => [template.id, template]));
 
   consents.forEach((record) => documents.push(manifestItem({
     record, category: 'consent', documentType: record.templateId, title: record.templateName,
     sourceModel: 'IPDConsent', rendererKey: 'ipd-consent', status: statusOf(record.status, { complete: ['Completed'], final: ['Signed'] }),
     date: record.completedAt || record.updatedAt, required: Boolean(record.relatedOTCaseId), relatedCaseId: record.relatedOTCaseId || record.relatedProcedureId,
     relatedCaseType: record.relatedOTCaseId ? 'OTRequest' : record.relatedProcedureId ? 'ProcedureRequest' : undefined,
-    templateId: record.templateId, templateVersion: record.templateVersion, formTemplate: surgeryTemplateById.get(record.templateId)
+    templateId: record.templateId, templateVersion: record.templateVersion, formTemplate: surgeryTemplateById.get(record.templateId) || ipdConsentTemplateById.get(record.templateId),
+    metadata: { signatureRequired: true }
   })));
 
   const vitalsByDate = new Map();
@@ -304,7 +453,8 @@ async function buildManifest(req, admissionId, options = {}) {
     return { otCase, readiness, safety, pac, anaesthesia, operative, recovery, inventory, structuredForms, schedule, specimens };
   }));
   otChildResults.forEach(({ otCase, readiness, safety, pac, anaesthesia, operative, recovery, inventory, structuredForms, schedule, specimens }) => {
-    const caseMetadata = { requestNumber: otCase.requestNumber, procedureName: otCase.procedureName, urgency: otCase.urgency, caseStatus: otCase.status };
+    const implantUsed = Boolean((otCase.implants || []).length || (inventory?.lines || []).some((line) => Number(line.usedQuantity || 0) > 0 || line.serialNumber));
+    const caseMetadata = { requestNumber: otCase.requestNumber, procedureName: otCase.procedureName, urgency: otCase.urgency, caseStatus: otCase.status, implantUsed };
     documents.push(manifestItem({ record: otCase, category: 'ot', documentType: 'ot_case_summary', title: `OT/Surgery Case - ${otCase.procedureName}`, sourceModel: 'OTRequest', rendererKey: 'ot-case-summary', status: statusOf(otCase.status, { complete: ['Completed', 'Transferred', 'Closed'], final: ['Closed'] }), date: otCase.scheduledStart || otCase.requestedDate, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', required: true, metadata: caseMetadata }));
     if (schedule) documents.push(manifestItem({ record: schedule, category: 'ot', documentType: 'ot_schedule', title: 'OT Schedule & Surgical Team', sourceModel: 'OTSchedule', rendererKey: 'ot-schedule', status: statusOf(schedule.status, { complete: ['Completed'] }), date: schedule.scheduledStart, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', metadata: { ...caseMetadata, teamCount: schedule.teamSnapshot?.length || 0 } }));
     (specimens || []).forEach((record) => documents.push(manifestItem({ record, category: 'ot', documentType: 'ot_specimen', title: `OT Specimen - ${record.label || record.specimenNumber}`, sourceModel: 'OTSpecimen', rendererKey: 'ot-specimen', status: statusOf(record.status, { complete: ['Collected', 'Handed Over', 'Received', 'Reported'] }), date: record.collectedAt || record.createdAt, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', metadata: { ...caseMetadata, specimenNumber: record.specimenNumber, site: record.site } })));
@@ -362,7 +512,7 @@ async function buildManifest(req, admissionId, options = {}) {
           templateId: template.id,
           templateVersion: template.version,
           formTemplate: template,
-          metadata: { ...caseMetadata, stage: template.stage, referencePages: template.referencePages || [] }
+          metadata: { ...caseMetadata, stage: template.stage, referencePages: template.referencePages || [], signatureRequired: Boolean(template.signatureRoles?.length) || ['consent', 'anesthesia'].includes(template.category) }
         }));
       } else {
         documents.push({
@@ -389,7 +539,163 @@ async function buildManifest(req, admissionId, options = {}) {
   if (discharge) documents.push(manifestItem({ record: discharge, category: 'discharge', documentType: 'discharge_summary', title: 'Discharge Summary', sourceModel: 'DischargeSummary', rendererKey: 'discharge-summary', status: clinicalStatus(discharge), date: discharge.dischargeDate || discharge.updatedAt, required: admission.status === 'Discharged' || admission.status?.includes('Discharge') }));
   else documents.push({ key: 'required:discharge_summary', category: 'discharge', documentType: 'discharge_summary', title: 'Discharge Summary', sourceModel: 'DischargeSummary', rendererKey: 'discharge-summary', status: 'Not Started', required: admission.status === 'Discharged' || admission.status?.includes('Discharge') });
 
-  uploadedClinical.forEach((record) => documents.push(manifestItem({ record, category: 'attachment', documentType: record.documentType || 'external_document', title: record.title, sourceModel: 'ClinicalDocument', rendererKey: record.fileUrl ? 'file-document' : 'text-document', status: 'Completed/Unsigned', date: record.documentDate, fileUrl: record.fileUrl, mimeType: record.mimeType, metadata: { description: record.description, source: record.source } })));
+  uploadedClinical.forEach((record) => {
+    const attachmentText = `${record.documentType || ''} ${record.title || ''} ${record.description || ''}`;
+    const evidenceStage = /pre.?op|pre.?procedure|baseline/i.test(attachmentText)
+      ? 'preop'
+      : (/post.?op|post.?procedure|wound|discharge/i.test(attachmentText) ? 'postop' : (/ot|intra.?op|procedure.?photo/i.test(attachmentText) ? 'intraop' : 'supporting'));
+    documents.push(manifestItem({
+      record,
+      category: 'attachment',
+      documentType: record.documentType || 'external_document',
+      title: record.title,
+      sourceModel: 'ClinicalDocument',
+      rendererKey: record.fileUrl ? 'file-document' : 'text-document',
+      status: 'Completed/Unsigned',
+      date: record.documentDate,
+      fileUrl: record.fileUrl,
+      mimeType: record.mimeType,
+      metadata: {
+        description: record.description,
+        source: record.source,
+        evidenceStage,
+        pmjayRelevant: /pre.?op|post.?op|x.?ray|ct|mri|ot|wound|photo|claim|pre.?auth/i.test(attachmentText),
+        insuranceRelevant: /insurance|tpa|claim|pre.?auth|approval|query|x.?ray|ct|mri|ot|wound|photo/i.test(attachmentText)
+      }
+    }));
+  });
+
+  claimEvidence.forEach((record) => {
+    const stage = String(record.evidenceStage || 'supporting').toLowerCase();
+    const category = stage === 'financial' ? 'financial' : (stage === 'query' ? 'payer' : 'attachment');
+    documents.push(manifestItem({
+      record,
+      category,
+      documentType: `claim_evidence_${String(record.evidenceType || 'other').toLowerCase()}`,
+      title: record.caption || String(record.evidenceType || 'Claim Evidence').replaceAll('_', ' '),
+      sourceModel: 'ClaimEvidence',
+      rendererKey: record.fileUrl ? 'file-document' : 'generic-clinical-record',
+      status: 'Completed/Unsigned',
+      date: record.capturedAt || record.createdAt,
+      fileUrl: record.fileUrl,
+      visibility: category === 'financial' || category === 'payer' ? 'financial' : 'clinical',
+      metadata: {
+        claimEvidenceId: String(record._id),
+        evidenceType: record.evidenceType,
+        evidenceStage: stage,
+        bodySite: record.bodySite,
+        laterality: record.laterality,
+        patientIdentityVisible: record.patientIdentityVisible,
+        clinicalSiteVisible: record.clinicalSiteVisible,
+        patientDateVisible: record.patientDateVisible,
+        pmjayRelevant: isPmjay,
+        insuranceRelevant: true,
+        externalReady: true,
+        signatureRequired: false,
+        pmjaySection: stage === 'query' ? 'query_response' : undefined
+      }
+    }));
+  });
+
+  (bills || []).forEach((record) => {
+    const stage = String(record.document_stage || '').toUpperCase();
+    if (stage === 'DRAFT' || stage === 'VOID') return;
+    documents.push(manifestItem({
+      record, category: 'financial', documentType: 'financial_bill',
+      title: record.bill_number ? `Bill ${record.bill_number}` : 'Itemized Patient Bill',
+      sourceModel: 'Bill', rendererKey: 'financial-bill-summary',
+      status: stage === 'INVOICED' ? 'Final/Signed' : 'Completed/Unsigned',
+      date: record.invoiced_at || record.generated_at || record.createdAt,
+      visibility: 'financial',
+      metadata: { billId: String(record._id), billNumber: record.bill_number, externalReady: stage !== 'DRAFT', signatureRequired: false }
+    }));
+  });
+
+  (invoices || []).forEach((record) => {
+    const stage = String(record.document_stage || '').toUpperCase();
+    if (stage === 'DRAFT' || stage === 'VOID') return;
+    documents.push(manifestItem({
+      record, category: 'financial', documentType: 'financial_invoice',
+      title: `${record.is_final_ipd_invoice ? 'Final ' : ''}Invoice ${record.invoice_number || ''}`.trim(),
+      sourceModel: 'Invoice', rendererKey: 'financial-invoice',
+      status: ['ISSUED', 'CREDIT_NOTE'].includes(stage) ? 'Final/Signed' : 'Completed/Unsigned',
+      date: record.issued_at || record.issue_date || record.createdAt,
+      fileUrl: `/api/invoices/${record._id}/download`,
+      mimeType: 'application/pdf', visibility: 'financial',
+      metadata: { invoiceId: String(record._id), invoiceNumber: record.invoice_number, finalInvoice: Boolean(record.is_final_ipd_invoice), externalReady: true, signatureRequired: false }
+    }));
+  });
+
+  const receiptGroups = new Map();
+  (financialTransactions || []).filter((record) => ['RECEIPT', 'SETTLEMENT', 'ADVANCE_DEPOSIT', 'REFUND', 'ADVANCE_REFUND'].includes(record.transactionType)).forEach((record) => {
+    const key = record.transactionNumber || String(record._id);
+    if (!receiptGroups.has(key)) receiptGroups.set(key, []);
+    receiptGroups.get(key).push(record);
+  });
+  receiptGroups.forEach((records, receiptNumber) => documents.push(manifestItem({
+    record: { _id: `financial-receipt-${admission._id}-${receiptNumber}`, records, receiptNumber },
+    category: 'financial', documentType: 'financial_receipt', title: `Receipt ${receiptNumber}`,
+    sourceModel: 'FinancialTransaction', rendererKey: 'financial-receipt', status: 'Final/Signed',
+    date: records[0]?.postedAt || records[0]?.createdAt, visibility: 'financial',
+    metadata: { receiptNumber, transactionIds: records.map((record) => String(record._id)), externalReady: true, signatureRequired: false }
+  })));
+
+  if (isPmjay && discharge) {
+    const primaryOperativeNote = (otChildResults || []).map((row) => row.operative).find(Boolean) || null;
+    documents.push(manifestItem({
+      record: { _id: `pmjay-discharge-${discharge._id}`, discharge, payerContext, operativeNote: primaryOperativeNote },
+      category: 'discharge',
+      documentType: 'pmjay_discharge_summary',
+      title: 'PMJAY Discharge Summary',
+      sourceModel: 'PMJAYDischargeSummaryView',
+      rendererKey: 'pmjay-discharge-summary',
+      status: clinicalStatus(discharge),
+      date: discharge.dischargeDate || discharge.updatedAt,
+      required: true,
+      visibility: 'financial',
+      metadata: { pmjayRelevant: true, externalReady: true, signatureRequired: false, pmjaySection: 'outcome', sourceDischargeId: String(discharge._id) }
+    }));
+  }
+
+  if (isPmjay) {
+    documents.push(manifestItem({
+      record: { _id: `pmjay-summary-${admission._id}`, payerContext }, category: 'payer', documentType: 'pmjay_claim_summary',
+      title: 'PMJAY Claim / Preauthorisation Summary', sourceModel: 'AdmissionCoverage', rendererKey: 'pmjay-claim-summary',
+      status: 'Final/Signed', date: claimCase?.updatedAt || coverage?.updatedAt || admission.updatedAt,
+      visibility: 'financial', metadata: { pmjayRelevant: true, externalReady: true, signatureRequired: false, pmjaySection: 'cover' }
+    }));
+    if ((claimCase?.queries || []).length) {
+      documents.push(manifestItem({
+        record: { _id: `pmjay-query-appendix-${admission._id}`, queries: claimCase.queries },
+        category: 'payer',
+        documentType: 'pmjay_query_response_appendix',
+        title: 'PMJAY Query / Response Appendix',
+        sourceModel: 'ClaimCase',
+        rendererKey: 'generic-clinical-record',
+        status: 'Completed/Unsigned',
+        date: claimCase.updatedAt,
+        visibility: 'financial',
+        metadata: { pmjayRelevant: true, externalReady: true, signatureRequired: false, pmjaySection: 'query_response' }
+      }));
+    }
+  }
+
+  const payerAttachments = [
+    ...((coverage?.preAuthorisation?.documents || []).map((item, index) => ({ ...item, group: 'Preauthorisation', index }))),
+    ...((claimCase?.documents || []).map((item, index) => ({ ...item, group: 'Claim', index })))
+  ].filter((item) => item?.url);
+  payerAttachments.forEach((item) => documents.push(manifestItem({
+    record: { _id: `payer-attachment-${admission._id}-${item.group}-${item.index}`, ...item }, category: 'payer',
+    documentType: 'payer_claim_attachment', title: item.name || `${item.group} Document`, sourceModel: 'ClaimCaseAttachment', rendererKey: 'file-document',
+    status: String(item.status || '').toLowerCase() === 'rejected' ? 'Draft' : 'Final/Signed', date: claimCase?.updatedAt || coverage?.updatedAt,
+    fileUrl: item.url, mimeType: item.mimeType || 'application/pdf', visibility: 'financial', metadata: {
+      pmjayRelevant: isPmjay,
+      insuranceRelevant: true,
+      externalReady: true,
+      signatureRequired: false,
+      pmjaySection: item.group === 'Preauthorisation' ? 'eligibility_authorization' : 'claim_support'
+    }
+  })));
 
   const signatureMap = new Map(signatures.map((signature) => [`${signature.sourceModel}:${signature.sourceId}`, signature]));
   documents.forEach((document) => {
@@ -441,6 +747,44 @@ async function buildManifest(req, admissionId, options = {}) {
     }
   });
 
+  const investigationCount = documents.filter((document) => document.category === 'investigation' && ['lab_report', 'radiology_report'].includes(document.documentType)).length;
+  const meaningful = (value) => {
+    if (value === undefined || value === null || value === false || value === '') return false;
+    if (Array.isArray(value)) return value.some(meaningful);
+    if (typeof value === 'object') return Object.values(value).some(meaningful);
+    return !/^not applicable|not recorded|n\/?a$/i.test(String(value).trim());
+  };
+  documents.forEach((document) => {
+    document.metadata = { ...(document.metadata || {}) };
+    document.completionIssues = completionIssues(document);
+
+    if (['ProcedureRequest', 'OTRequest', 'OTSchedule'].includes(document.sourceModel) && !document.fileUrl) {
+      document.metadata.externalEligible = false;
+    }
+
+    const templateId = String(document.templateId || document.formTemplate?.id || document.documentType || '').toLowerCase();
+    const formData = document.sourceModel === 'IPDConsent'
+      ? (document.content?.responses || {})
+      : (document.content?.formData || {});
+
+    if (document.formTemplate?.required === false && ['Not Started', 'Draft'].includes(document.status)) {
+      document.metadata.applicable = false;
+    }
+    if (/high[_-]?risk/.test(templateId)) {
+      document.metadata.applicable = meaningful(formData.reasonHighRisk) || meaningful(formData.materialRisks) || meaningful(formData.diagnosis && formData.proposedProcedure);
+    }
+    if (/implant|consumables_implants/.test(templateId) || document.documentType === 'ot_inventory_usage') {
+      const lines = document.content?.lines || document.content?.formData?.implants || [];
+      document.metadata.applicable = Boolean(document.metadata.implantUsed || (Array.isArray(lines) && lines.some((line) => Number(line.usedQuantity || line.quantity || 0) > 0 || meaningful(line.serialNumber) || meaningful(line.implantName))));
+    }
+    if (/investigation[_-]?chart/.test(templateId) && investigationCount > 0 && !meaningful(formData.investigationChart || formData.results || formData.investigations)) {
+      document.metadata.applicable = false;
+    }
+
+    document.applicable = document.metadata.applicable !== false;
+    document.externalEligible = document.metadata.externalEligible !== false;
+  });
+
   const categoryRank = new Map(CATEGORY_ORDER.map((category, index) => [category, index]));
   documents.sort((a, b) => {
     const categoryDiff = (categoryRank.get(a.category) ?? 999) - (categoryRank.get(b.category) ?? 999);
@@ -449,7 +793,7 @@ async function buildManifest(req, admissionId, options = {}) {
   });
 
   const filtered = documents.filter((document) => {
-    if (document.visibility === 'financial' && !['admin', 'mediqliq_super_admin', 'accountant', 'staff', 'registrar'].includes(req.user.role)) return false;
+    if (document.visibility === 'financial' && !canViewFinancial) return false;
     if (options.category && document.category !== options.category) return false;
     if (options.status && document.status !== options.status) return false;
     return true;
@@ -459,6 +803,28 @@ async function buildManifest(req, admissionId, options = {}) {
     acc[document.status] = (acc[document.status] || 0) + 1;
     return acc;
   }, {});
+  const publicPayerContext = canViewFinancial
+    ? payerContext
+    : {
+        paymentType: payerContext.paymentType,
+        sponsorType: payerContext.sponsorType,
+        sponsorName: payerContext.sponsorName,
+        isPmjay: payerContext.isPmjay,
+        payer: payerContext.payer
+      };
+
+  const billingSummary = canViewFinancial
+    ? {
+        billCount: (bills || []).filter((row) => row.document_stage !== 'VOID').length,
+        invoiceCount: (invoices || []).filter((row) => row.document_stage !== 'VOID').length,
+        receiptCount: receiptGroups.size,
+        finalInvoiceCount: (invoices || []).filter((row) => row.document_stage === 'ISSUED' && row.is_final_ipd_invoice).length,
+        totalBilled: (invoices || []).filter((row) => row.document_stage === 'ISSUED').reduce((sum, row) => sum + Number(row.total || 0), 0),
+        amountPaid: (invoices || []).filter((row) => row.document_stage === 'ISSUED').reduce((sum, row) => sum + Number(row.amount_paid || 0), 0),
+        balanceDue: (invoices || []).filter((row) => row.document_stage === 'ISSUED').reduce((sum, row) => sum + Number(row.balance_due || 0), 0)
+      }
+    : null;
+
   return {
     admission: {
       id: String(admission._id),
@@ -477,6 +843,8 @@ async function buildManifest(req, admissionId, options = {}) {
     },
     counts,
     categories: CATEGORY_ORDER,
+    payerContext: publicPayerContext,
+    billingSummary,
     packets: Object.entries(PACKET_DEFINITIONS).map(([key, definition]) => ({ key, label: definition.label, description: definition.description || '' })),
     documents: filtered
   };

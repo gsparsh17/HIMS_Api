@@ -6,7 +6,7 @@ const { appendDomainEvent } = require('../services/auditEvent.service');
 const claimService = require('../services/claim.service');
 
 function fail(res, error) {
-  res.status(error.statusCode || 400).json({ success: false, error: error.message });
+  res.status(error.statusCode || 400).json({ success: false, error: error.message, readiness: error.readiness, details: error.details });
 }
 
 async function audit(req, claim, eventType, summary = {}) {
@@ -84,8 +84,12 @@ exports.updateDraft = async (req, res) => {
     if (!['draft', 'documents_pending', 'ready', 'query'].includes(claim.status)) {
       return res.status(409).json({ success: false, error: 'Submitted/settled claim cannot be edited directly' });
     }
-    const allowed = ['type', 'documents', 'status', 'preAuth'];
+    const allowed = ['type', 'documents', 'status', 'preAuth', 'schemeType'];
     for (const key of allowed) if (req.body[key] !== undefined) claim[key] = req.body[key];
+    if (req.body.schemeData !== undefined) {
+      claim.schemeData = { ...(claim.schemeData?.toObject?.() || claim.schemeData || {}), ...req.body.schemeData };
+      claim.markModified('schemeData');
+    }
     if (req.body.lines) {
       const patches = new Map(req.body.lines.map((row) => [String(row.lineId || row._id), row]));
       for (const line of claim.lines) {
@@ -140,17 +144,25 @@ exports.queryResponse = async (req, res) => {
     if (req.body.queryNumber && req.body.response) {
       const existing = claim.queries.find((row) => row.queryNumber === req.body.queryNumber);
       if (existing) {
+        existing.externalQueryId = req.body.externalQueryId ?? existing.externalQueryId;
+        existing.category = req.body.category ?? existing.category;
+        existing.reasonCode = req.body.reasonCode ?? existing.reasonCode;
         existing.response = req.body.response;
+        if (req.body.documentsAdded) existing.documentsAdded = req.body.documentsAdded;
         existing.respondedAt = new Date();
         existing.respondedBy = req.user._id;
         existing.status = req.body.close ? 'closed' : 'responded';
       } else {
         claim.queries.push({
           queryNumber: req.body.queryNumber,
+          externalQueryId: req.body.externalQueryId,
+          category: req.body.category,
+          reasonCode: req.body.reasonCode,
           text: req.body.text,
           receivedAt: req.body.receivedAt || new Date(),
           dueAt: req.body.dueAt,
           response: req.body.response,
+          documentsAdded: req.body.documentsAdded || [],
           respondedAt: new Date(),
           respondedBy: req.user._id,
           status: req.body.close ? 'closed' : 'responded'
@@ -159,6 +171,9 @@ exports.queryResponse = async (req, res) => {
     } else {
       claim.queries.push({
         queryNumber: req.body.queryNumber || `Q-${Date.now()}`,
+        externalQueryId: req.body.externalQueryId,
+        category: req.body.category,
+        reasonCode: req.body.reasonCode,
         text: req.body.text,
         receivedAt: req.body.receivedAt || new Date(),
         dueAt: req.body.dueAt,

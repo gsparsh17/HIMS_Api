@@ -3,8 +3,47 @@ const EncounterDocument = require('../models/EncounterDocument');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { signDocument } = require('../services/documentSigning.service');
 const patientFileManifest = require('../services/patientFileManifest.service');
+const { buildPacketPlan } = require('../services/patientPacketValidation.service');
+const claimReadiness = require('../services/claimReadiness.service');
+const { hasModuleAccess } = require('../middlewares/auth');
 const RenderedDocument = require('../models/RenderedDocument');
 const fs = require('fs');
+
+
+const SENSITIVE_PACKET_TYPES = new Set(['pmjay', 'pmjay_packet', 'insurance', 'insurance_packet', 'financial', 'financial_packet', 'mlc_tpa_ayushman_file']);
+function normalizedPacketType(value) { return String(value || 'clinical').trim().toLowerCase(); }
+function assertPacketAccess(req, packetType) {
+  if (!SENSITIVE_PACKET_TYPES.has(normalizedPacketType(packetType))) return;
+  if (hasModuleAccess(req.user, 'billing_finance', 'view')) return;
+  const error = new Error('Billing/insurance access is required to view payer or financial patient packets.');
+  error.statusCode = 403;
+  throw error;
+}
+
+async function readinessForPacket(req, manifest, packetType) {
+  if (!['pmjay', 'pmjay_packet'].includes(normalizedPacketType(packetType))) return null;
+  const claimId = manifest?.payerContext?.claim?.id;
+  if (!claimId) return null;
+  return claimReadiness.evaluate({
+    hospitalId: requireHospitalId(req),
+    claimId
+  });
+}
+
+function mergeReadinessIntoValidation(validation, readiness) {
+  if (!readiness || readiness.effectiveStatus !== 'blocked') return validation;
+  const blockers = [
+    ...(validation?.blockers || []),
+    ...(readiness.blockers || []).map((row) => ({
+      code: row.code,
+      severity: 'blocker',
+      message: row.message,
+      source: row.source,
+      details: row.details
+    }))
+  ];
+  return { ...(validation || {}), blockers, ready: false };
+}
 
 exports.sign = async (req, res, next) => {
   try {
@@ -100,17 +139,42 @@ exports.getCompleteness = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-exports.getBundlePlan = async (req, res, next) => {
+exports.getPacketValidation = async (req, res, next) => {
   try {
-    const manifest = await patientFileManifest.buildManifest(req, req.params.admissionId, req.query);
     const packetType = req.query.packetType || 'clinical';
-    const packetDefinition = patientFileManifest.packetDefinition(packetType);
-    const packetCandidates = patientFileManifest.packetDocuments(packetType, manifest.documents);
-    const documents = packetCandidates.filter((document) => req.query.includeDrafts === 'true' || ['Completed/Unsigned', 'Final/Signed'].includes(document.status));
-    res.json({ success: true, data: { ...manifest, packetType, packetDefinition: { label: packetDefinition.label, description: packetDefinition.description || '' }, documents, generatedAt: new Date().toISOString() } });
+    assertPacketAccess(req, packetType);
+    const manifest = await patientFileManifest.buildManifest(req, req.params.admissionId, req.query);
+    const candidates = patientFileManifest.packetDocuments(packetType, manifest.documents);
+    const plan = buildPacketPlan({ packetType, manifest, candidates });
+    const readiness = await readinessForPacket(req, manifest, packetType);
+    const validation = mergeReadinessIntoValidation(plan.validation, readiness);
+    res.json({ success: true, data: { packetType, validation, claimReadiness: readiness, suppressedDocuments: plan.suppressedDocuments, payerContext: manifest.payerContext, billingSummary: manifest.billingSummary } });
   } catch (error) { next(error); }
 };
 
+exports.getBundlePlan = async (req, res, next) => {
+  try {
+    const packetType = req.query.packetType || 'clinical';
+    assertPacketAccess(req, packetType);
+    const manifest = await patientFileManifest.buildManifest(req, req.params.admissionId, req.query);
+    const packetDefinition = patientFileManifest.packetDefinition(packetType);
+    const packetCandidates = patientFileManifest.packetDocuments(packetType, manifest.documents);
+    const plan = buildPacketPlan({ packetType, manifest, candidates: packetCandidates });
+    const readiness = await readinessForPacket(req, manifest, packetType);
+    const validation = mergeReadinessIntoValidation(plan.validation, readiness);
+    res.json({
+      success: true,
+      data: {
+        ...manifest,
+        ...plan,
+        validation,
+        claimReadiness: readiness,
+        packetDefinition: { label: packetDefinition.label, description: packetDefinition.description || '' },
+        generatedAt: new Date().toISOString()
+      }
+    });
+  } catch (error) { next(error); }
+};
 
 function selectedBundleDocuments(manifest, body = {}, query = {}) {
   const packetType = body.packetType || query.packetType || 'clinical';
@@ -142,6 +206,7 @@ exports.streamPatientFileBundle = async (req, res, next) => {
   try {
     const hospitalId = requireHospitalId(req);
     const rendered = await RenderedDocument.findOne({ _id: req.params.renderedId, hospitalId, admissionId: req.params.admissionId, sourceModel: 'PatientFileBundle' });
+    if (rendered) assertPacketAccess(req, rendered.templateId);
     if (!rendered || !fs.existsSync(rendered.storagePath)) return res.status(404).json({ error: 'Rendered patient file not found' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `${req.query.download === 'true' ? 'attachment' : 'inline'}; filename="${rendered.templateId}-r${rendered.sourceRevision}.pdf"`);
