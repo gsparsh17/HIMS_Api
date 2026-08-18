@@ -162,6 +162,7 @@ exports.demoLogin = async (req, res) => {
       hospital_id: hospital?._id,
       hospitalId: hospital?._id,
       hospitalID: hospital?._id,
+      hospitalTimezone: hospital?.timezone || process.env.HOSPITAL_TIMEZONE || process.env.HOSPITAL_TIME_ZONE || 'Asia/Kolkata',
       isDemoLogin: true,
       originalDemoUser: {
         id: demoUser._id,
@@ -355,6 +356,7 @@ function loginBase(user, hospital, tokenClaims = {}) {
     hospital_id: user.hospital_id || hospital?._id,
     hospitalId: user.hospital_id || hospital?._id,
     hospitalID: user.hospital_id || hospital?._id,
+    hospitalTimezone: hospital?.timezone || process.env.HOSPITAL_TIMEZONE || process.env.HOSPITAL_TIME_ZONE || 'Asia/Kolkata',
     enforceModulePermissions: Boolean(user.enforceModulePermissions),
     sidebarAccess: Array.isArray(user.sidebarAccess) ? user.sidebarAccess : [],
     // Main role-oriented feature list used by navigation and guarded API routes.

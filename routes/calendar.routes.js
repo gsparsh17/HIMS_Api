@@ -23,7 +23,10 @@ router.patch('/appointment/status', updateAppointmentStatus);
 // Add a doctor break
 router.post('/doctor/break', addDoctorBreak);
 
-// Get doctor's schedule for a specific day
+// Static/specific routes must precede the parameterized date route.
+// Otherwise `/today` is consumed as `:date` and never reaches getTodayDoctorData.
+router.get('/:hospitalId/doctor/:doctorId/today', getTodayDoctorData);
+router.get('/:hospitalId/day/:date', getDayData);
 router.get('/:hospitalId/doctor/:doctorId/:date', getDoctorDaySchedule);
 
 // Get full doctor's calendar across all days
@@ -31,12 +34,6 @@ router.get('/doctor/:doctorId', getDoctorCalendar);
 
 // Get all calendar data for a hospital
 router.get('/:hospitalId', getHospitalCalendar);
-
-// Get today's data for a specific doctor at a hospital
-router.get('/:hospitalId/doctor/:doctorId/today', getTodayDoctorData);
-
-// Get specific day data for a hospital
-router.get('/:hospitalId/day/:date', getDayData);
 
 // Initialize a new day for hospital calendar
 router.post('/initialize', initializeDay);

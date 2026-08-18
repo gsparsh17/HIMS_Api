@@ -1,4 +1,5 @@
 // const mongoose = require('mongoose');
+const { DEFAULT_HOSPITAL_TIME_ZONE, calendarDayKey, dateKeyToStorageDate, dateKeyDayName } = require('../utils/hospitalDateTime');
 
 // const calendarSchema = new mongoose.Schema({
 //   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true },
@@ -55,13 +56,31 @@ const doctorDaySchema = new mongoose.Schema({
 
 const calendarDaySchema = new mongoose.Schema({
   date: { type: Date, required: true },
+  dateKey: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
   dayName: String,
   doctors: [doctorDaySchema]
 });
 
 const calendarSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true },
+  timezone: { type: String, default: DEFAULT_HOSPITAL_TIME_ZONE },
   days: [calendarDaySchema]
+});
+
+calendarSchema.pre('validate', function normalizeCalendarDates(next) {
+  try {
+    const timeZone = this.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+    for (const day of this.days || []) {
+      const key = day.dateKey || calendarDayKey(day, timeZone);
+      day.dateKey = key;
+      day.date = dateKeyToStorageDate(key);
+      day.dayName = dateKeyDayName(key);
+    }
+    this.timezone = timeZone;
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = mongoose.model('Calendar', calendarSchema);

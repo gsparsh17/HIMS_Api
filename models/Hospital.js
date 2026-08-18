@@ -34,6 +34,7 @@ const hospitalSchema = new mongoose.Schema(
     pinCode: String,
     city: { type: String, required: true, trim: true },
     state: { type: String, required: true, trim: true },
+    timezone: { type: String, default: process.env.HOSPITAL_TIMEZONE || process.env.HOSPITAL_TIME_ZONE || 'Asia/Kolkata', trim: true },
     email: { type: String, required: true, lowercase: true, trim: true },
     fireNOC: String,
     policyDetails: String,

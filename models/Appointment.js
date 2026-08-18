@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { DEFAULT_HOSPITAL_TIME_ZONE, hospitalDateKey, dateKeyToStorageDate } = require('../utils/hospitalDateTime');
 
 const appointmentSchema = new mongoose.Schema({
   patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true },
@@ -6,6 +7,8 @@ const appointmentSchema = new mongoose.Schema({
   hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true },
   department_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true },
   appointment_date: { type: Date, required: true },
+  appointment_date_key: { type: String, match: /^\d{4}-\d{2}-\d{2}$/, index: true },
+  scheduled_timezone: { type: String, default: DEFAULT_HOSPITAL_TIME_ZONE },
   start_time: Date, // For time-based appointments
   end_time: Date,   // For time-based appointments
   serial_number: Number, // For number-based appointments
@@ -164,5 +167,19 @@ appointmentSchema.index(
   }
 );
 appointmentSchema.index({ hospital_id: 1, appointment_date: 1, department_id: 1, status: 1 });
+appointmentSchema.index({ hospital_id: 1, appointment_date_key: 1, department_id: 1, status: 1 });
+
+appointmentSchema.pre('validate', function normalizeAppointmentDate(next) {
+  try {
+    const timeZone = this.scheduled_timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+    const key = this.appointment_date_key || hospitalDateKey(this.appointment_date, timeZone);
+    this.appointment_date_key = key;
+    this.appointment_date = dateKeyToStorageDate(key);
+    this.scheduled_timezone = timeZone;
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 module.exports = mongoose.model('Appointment', appointmentSchema);
