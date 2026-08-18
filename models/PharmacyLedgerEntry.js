@@ -38,6 +38,7 @@ const pharmacyLedgerEntrySchema = new mongoose.Schema({
   saleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
   returnId: { type: mongoose.Schema.Types.ObjectId, ref: 'PharmacyReturn' },
   invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+  billId: { type: mongoose.Schema.Types.ObjectId, ref: 'Bill' },
   settlementId: { type: mongoose.Schema.Types.ObjectId, ref: 'PharmacyLedgerSettlement', index: true },
   settlementAllocationId: { type: mongoose.Schema.Types.ObjectId },
   purchaseOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder' },

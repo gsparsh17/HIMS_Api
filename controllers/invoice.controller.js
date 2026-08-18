@@ -30,6 +30,15 @@ function invoiceScope(req, extra = {}) {
   };
 }
 
+function invoiceDateRange(startDate, endDate) {
+  if (!startDate || !endDate) return null;
+  const bareDate = /^\d{4}-\d{2}-\d{2}$/;
+  const start = new Date(bareDate.test(String(startDate)) ? `${startDate}T00:00:00.000Z` : startDate);
+  const end = new Date(bareDate.test(String(endDate)) ? `${endDate}T23:59:59.999Z` : endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return { $gte: start, $lte: end };
+}
+
 // ============== PROCEDURE INVOICE FUNCTIONS ==============
 
 // Generate invoice for procedures (using procedure_requests from prescription)
@@ -1394,7 +1403,11 @@ exports.getAllInvoices = async (req, res) => {
 
     const filter = invoiceScope(req);
 
-    if (status) filter.status = status;
+    if (status) {
+      const statuses = String(status).split(',').map((value) => value.trim()).filter(Boolean);
+      if (statuses.length === 1) filter.status = statuses[0];
+      else if (statuses.length > 1) filter.status = { $in: statuses };
+    }
     if (invoice_type) filter.invoice_type = invoice_type;
     if (payment_method) filter['payment_history.method'] = payment_method;
     if (patient_id) filter.patient_id = patient_id;
@@ -1410,12 +1423,8 @@ exports.getAllInvoices = async (req, res) => {
       if (max_amount) filter.total.$lte = parseFloat(max_amount);
     }
 
-    if (startDate && endDate) {
-      filter.issue_date = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    }
+    const issueDateRange = invoiceDateRange(startDate, endDate);
+    if (issueDateRange) filter.issue_date = issueDateRange;
 
     const pipeline = [
       { $match: filter },
@@ -1915,28 +1924,55 @@ exports.getInvoicesByType = async (req, res) => {
 // Get invoice statistics
 exports.getInvoiceStatistics = async (req, res) => {
   try {
-    const { startDate, endDate, type, payment_method } = req.query;
+    const { startDate, endDate, type, invoice_type, status, payment_method } = req.query;
 
     const filter = invoiceScope(req);
-    if (startDate && endDate) {
-      filter.issue_date = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
+    const issueDateRange = invoiceDateRange(startDate, endDate);
+    if (issueDateRange) filter.issue_date = issueDateRange;
+    const requestedType = type || invoice_type;
+    if (requestedType) filter.invoice_type = requestedType;
+    if (payment_method) filter['payment_history.method'] = payment_method;
+    if (status) {
+      const statuses = String(status).split(',').map((value) => value.trim()).filter(Boolean);
+      if (statuses.length === 1) filter.status = statuses[0];
+      else if (statuses.length > 1) filter.status = { $in: statuses };
     }
-    if (type) filter.invoice_type = type;
 
     const totalInvoices = await Invoice.countDocuments(filter);
 
-    const totalRevenue = await Invoice.aggregate([
+    const financialTotals = await Invoice.aggregate([
       { $match: filter },
-      { $group: { _id: null, total: { $sum: '$total' } } }
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: { $ifNull: ['$total', 0] } },
+          paidRevenue: { $sum: { $ifNull: ['$amount_paid', 0] } },
+          pendingRevenue: { $sum: { $ifNull: ['$balance_due', 0] } }
+        }
+      }
     ]);
+    const totals = financialTotals[0] || { totalRevenue: 0, paidRevenue: 0, pendingRevenue: 0 };
 
-    const paidRevenue = await Invoice.aggregate([
-      { $match: { ...filter, status: 'Paid' } },
-      { $group: { _id: null, total: { $sum: '$total' } } }
-    ]);
+    const agingRows = await Invoice.find(filter).select('due_date balance_due').lean();
+    const agingBreakdown = { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90_plus: 0 };
+    let agingDaysTotal = 0;
+    let agingDaysCount = 0;
+    const now = Date.now();
+    for (const row of agingRows) {
+      const due = row.due_date ? new Date(row.due_date).getTime() : NaN;
+      const balance = Math.max(0, Number(row.balance_due || 0));
+      const days = Number.isFinite(due) ? Math.max(0, Math.ceil((now - due) / 86400000)) : 0;
+      if (Number.isFinite(due)) {
+        agingDaysTotal += days;
+        agingDaysCount += 1;
+      }
+      if (days === 0) agingBreakdown.current += balance;
+      else if (days <= 30) agingBreakdown.days1_30 += balance;
+      else if (days <= 60) agingBreakdown.days31_60 += balance;
+      else if (days <= 90) agingBreakdown.days61_90 += balance;
+      else agingBreakdown.days90_plus += balance;
+    }
+    const averageAge = agingDaysCount ? Math.round(agingDaysTotal / agingDaysCount) : 0;
 
     const revenueByType = await Invoice.aggregate([
       { $match: filter },
@@ -2021,9 +2057,11 @@ exports.getInvoiceStatistics = async (req, res) => {
 
     res.json({
       totalInvoices,
-      totalRevenue: totalRevenue[0]?.total || 0,
-      paidRevenue: paidRevenue[0]?.total || 0,
-      pendingRevenue: (totalRevenue[0]?.total || 0) - (paidRevenue[0]?.total || 0),
+      totalRevenue: totals.totalRevenue || 0,
+      paidRevenue: totals.paidRevenue || 0,
+      pendingRevenue: totals.pendingRevenue || 0,
+      averageAge,
+      agingBreakdown,
       revenueByType,
       statusCounts,
       byPaymentMethod: paymentMethodBreakdown.map(item => ({
@@ -2053,12 +2091,8 @@ exports.exportInvoices = async (req, res) => {
     const { startDate, endDate, type, status } = req.query;
 
     const filter = invoiceScope(req);
-    if (startDate && endDate) {
-      filter.issue_date = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    }
+    const issueDateRange = invoiceDateRange(startDate, endDate);
+    if (issueDateRange) filter.issue_date = issueDateRange;
     if (type) filter.invoice_type = type;
     if (status) filter.status = status;
 

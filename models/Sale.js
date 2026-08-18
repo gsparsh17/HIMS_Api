@@ -7,7 +7,7 @@ const paymentBreakupSchema = new mongoose.Schema({
   presentationType: { type: String, trim: true },
   method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Credit', 'Pending', 'NoPayment', 'Adjustment', 'Deferred'],
+    enum: ['Cash', 'Card', 'UPI', 'Bank', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Credit', 'Pending', 'NoPayment', 'Adjustment', 'Deferred'],
     required: true
   },
   amount: { type: Number, required: true, min: 0 },
@@ -168,7 +168,7 @@ const saleSchema = new mongoose.Schema({
 
   payment_method: {
     type: String,
-    enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'Credit', 'Pending', 'NoPayment', 'Adjustment', 'Deferred'],
+    enum: ['Cash', 'Card', 'UPI', 'Bank', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Split', 'Credit', 'Pending', 'NoPayment', 'Adjustment', 'Deferred'],
     required: true,
     default: 'Cash'
   },

@@ -19,7 +19,7 @@ const {
 } = require('../utils/pharmacyLedgerSettlement.engine');
 
 const PAYMENT_METHODS = new Set([
-  'Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment',
+  'Cash', 'Card', 'UPI', 'Bank', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance', 'Adjustment',
 ]);
 const ADVANCE_METHODS = new Set(['IPDAdvance', 'PharmacyAdvance']);
 
@@ -836,8 +836,10 @@ async function postLedgerSettlement(input, context = {}) {
 
 // ========== GET SETTLEMENT BY ID ==========
 
-async function getSettlementById(id) {
-  return PharmacyLedgerSettlement.findById(objectId(id, 'settlementId'))
+async function getSettlementById(id, context = {}) {
+  const query = { _id: objectId(id, 'settlementId') };
+  if (context.hospitalId) query.hospital_id = objectId(context.hospitalId, 'hospitalId');
+  return PharmacyLedgerSettlement.findOne(query)
     .populate('patient_id', 'first_name last_name patientId uhid')
     .populate('admission_id', 'admissionNumber')
     .populate('created_by', 'name email')
@@ -847,8 +849,9 @@ async function getSettlementById(id) {
 
 // ========== LIST SETTLEMENTS ==========
 
-async function listSettlements(filters = {}) {
+async function listSettlements(filters = {}, context = {}) {
   const query = {};
+  if (context.hospitalId) query.hospital_id = objectId(context.hospitalId, 'hospitalId');
   if (filters.patientId) query.patient_id = objectId(filters.patientId, 'patientId');
   if (filters.admissionId) query.admission_id = objectId(filters.admissionId, 'admissionId');
   if (filters.status) query.status = filters.status;
@@ -868,7 +871,9 @@ async function reverseLedgerSettlement(id, input, context = {}) {
   const reversalReason = requireReason(input.reason);
 
   return runTransaction(async (session) => {
-    const settlement = await scoped(PharmacyLedgerSettlement.findById(objectId(id, 'settlementId')), session);
+    const settlementQuery = { _id: objectId(id, 'settlementId') };
+    if (context.hospitalId) settlementQuery.hospital_id = objectId(context.hospitalId, 'hospitalId');
+    const settlement = await scoped(PharmacyLedgerSettlement.findOne(settlementQuery), session);
     if (!settlement) throw new Error('Settlement not found.');
     if (settlement.status !== 'POSTED') throw new Error('Only a posted settlement can be reversed.');
 

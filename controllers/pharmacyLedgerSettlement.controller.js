@@ -51,13 +51,13 @@ exports.create = asyncHandler(async (req, res) => {
 });
 
 exports.getOne = asyncHandler(async (req, res) => {
-  const settlement = await getSettlementById(req.params.settlementId);
+  const settlement = await getSettlementById(req.params.settlementId, requestContext(req));
   if (!settlement) return res.status(404).json({ success: false, error: 'Settlement not found.' });
   res.json({ success: true, settlement });
 });
 
 exports.list = asyncHandler(async (req, res) => {
-  const settlements = await listSettlements(req.query);
+  const settlements = await listSettlements(req.query, requestContext(req));
   res.json({ success: true, settlements });
 });
 

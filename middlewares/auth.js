@@ -389,6 +389,69 @@ exports.requireAnyActionPermission = (actions = []) => {
 };
 
 /**
+ * Pharmacy financial endpoints are shared by several existing clinical/IPD
+ * workflows as well as the dedicated Pharmacy and Admin finance screens.
+ *
+ * Compatibility rule:
+ * - Legacy unrestricted admins keep their historical bypass.
+ * - Pharmacy users keep access through their Pharmacy permission.
+ * - Non-admin legacy roles keep the access they already had through IPD or
+ *   Billing & Finance, so this guard does not break discharge/registrar flows.
+ * - A delegated/restricted hospital admin is deliberately stricter: it must
+ *   have Billing & Finance at the requested level AND the explicit
+ *   pharmacy_finance_access action. This is what keeps testing@gmail.com out
+ *   while allowing normal admins to use the new Pharmacy Finance workspace.
+ */
+exports.requirePharmacyFinancialAccess = (minimumAccess = 'view') => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' });
+    }
+    if (isPermissionCheckDisabled() || hasUnrestrictedAdminAccess(req.user)) return next();
+
+    const required = minimumAccess === 'edit' ? 'manage' : minimumAccess;
+    const role = normalizedRole(req.user);
+    const pharmacyPermission = accessForRequestedModule(req.user, 'pharmacy');
+    const financePermission = accessForRequestedModule(req.user, 'billing_finance');
+    const ipdPermission = accessForRequestedModule(req.user, 'ipd');
+
+    // Restricted/delegated admins must be explicitly opted into Pharmacy
+    // Finance. Do not allow them to fall through to the compatibility paths.
+    if (role === 'admin') {
+      if (
+        ACCESS_ORDER[financePermission.access] >= ACCESS_ORDER[required] &&
+        hasActionPermission(req.user, 'pharmacy_finance_access')
+      ) {
+        return next();
+      }
+      return res.status(403).json({
+        success: false,
+        error: 'Pharmacy financial access is not permitted for this delegated admin',
+        requiredAction: 'pharmacy_finance_access'
+      });
+    }
+
+    // Existing Pharmacy users retain the financial workflows already present
+    // inside their Pharmacy sidebar.
+    if (role === 'pharmacy' && ACCESS_ORDER[pharmacyPermission.access] >= ACCESS_ORDER[required]) {
+      return next();
+    }
+
+    // Preserve existing non-admin finance/IPD workflows. Read endpoints are
+    // used by discharge summaries and IPD pharmacy components; mutation paths
+    // still require manage-level Finance/Pharmacy permission.
+    if (ACCESS_ORDER[financePermission.access] >= ACCESS_ORDER[required]) return next();
+    if (required === 'view' && ACCESS_ORDER[ipdPermission.access] >= ACCESS_ORDER.view) return next();
+    if (ACCESS_ORDER[pharmacyPermission.access] >= ACCESS_ORDER[required]) return next();
+
+    return res.status(403).json({
+      success: false,
+      error: 'Pharmacy financial access is not permitted for this user'
+    });
+  };
+};
+
+/**
  * Get user's effective module permissions with actions
  * Returns the full modulePermissions array with all details
  */

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect, authorize } = require('../middlewares/auth');
+const { protect, requirePharmacyFinancialAccess } = require('../middlewares/auth');
 const {
     getPatientPharmacyBills,
     getPharmacyBillById,
@@ -8,32 +8,24 @@ const {
     voidPharmacyBill
 } = require('../controllers/pharmacyBill.controller');
 
+// Every pharmacy-bill endpoint is authenticated and tenant-scoped by the
+// controller. Restricted/delegated admins additionally need the explicit
+// pharmacy_finance_access action via requirePharmacyFinancialAccess.
+router.use(protect);
+
+const pharmacyFinanceView = requirePharmacyFinancialAccess('view');
+const pharmacyFinanceManage = requirePharmacyFinancialAccess('manage');
+
 // Get all pharmacy bills for a patient
-router.get('/patient/:patientId',
-    //   protect, 
-    // authorize('pharmacy', 'pharmacy_head', 'admin', 'billing', 'patient'),
-    getPatientPharmacyBills
-);
+router.get('/patient/:patientId', pharmacyFinanceView, getPatientPharmacyBills);
 
 // Get pharmacy bill by ID with full details
-router.get('/:billId',
-    //   protect, 
-    // authorize('pharmacy', 'pharmacy_head', 'admin', 'billing'),
-    getPharmacyBillById
-);
+router.get('/:billId', pharmacyFinanceView, getPharmacyBillById);
 
 // Update payment on a pharmacy bill
-router.patch('/:billId/payment',
-    //   protect, 
-    // authorize('pharmacy', 'pharmacy_head', 'admin', 'billing'),
-    updatePharmacyBillPayment
-);
+router.patch('/:billId/payment', pharmacyFinanceManage, updatePharmacyBillPayment);
 
 // Void/cancel a pharmacy bill
-router.post('/:billId/void',
-    //   protect, 
-    // authorize('pharmacy_head', 'admin'),
-    voidPharmacyBill
-);
+router.post('/:billId/void', pharmacyFinanceManage, voidPharmacyBill);
 
 module.exports = router;

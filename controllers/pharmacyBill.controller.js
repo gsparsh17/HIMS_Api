@@ -3,13 +3,16 @@ const Sale = require('../models/Sale');
 const Invoice = require('../models/Invoice');
 const Patient = require('../models/Patient');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
+const { requestHospitalId } = require('../utils/hospitalScope');
 
 exports.getPatientPharmacyBills = async (req, res) => {
   try {
     const { patientId } = req.params;
     const { startDate, endDate, status, page = 1, limit = 20 } = req.query;
 
+    const hospitalId = requestHospitalId(req);
     const filter = {
+      hospital_id: hospitalId,
       patient_id: patientId,
       is_pharmacy_bill: true
     };
@@ -64,7 +67,8 @@ exports.getPharmacyBillById = async (req, res) => {
   try {
     const { billId } = req.params;
 
-    const bill = await Bill.findById(billId)
+    const hospitalId = requestHospitalId(req);
+    const bill = await Bill.findOne({ _id: billId, hospital_id: hospitalId, is_pharmacy_bill: true })
       .populate('patient_id', 'first_name last_name patientId uhid phone address')
       .populate('admission_id', 'admissionNumber shipNumber status admissionDate')
       .populate('prescription_id', 'prescription_number diagnosis')
@@ -80,7 +84,10 @@ exports.getPharmacyBillById = async (req, res) => {
 
     // Get related returns
     const PharmacyReturn = require('../models/PharmacyReturn');
-    const returns = await PharmacyReturn.find({ originalSaleId: bill.sale_id?._id || bill.sale_id });
+    const returns = await PharmacyReturn.find({
+      hospitalId,
+      originalSaleId: bill.sale_id?._id || bill.sale_id
+    });
 
     res.json({
       success: true,
@@ -96,19 +103,28 @@ exports.getPharmacyBillById = async (req, res) => {
 exports.updatePharmacyBillPayment = async (req, res) => {
   try {
     const { billId } = req.params;
-    const { amount, payment_method, reference, notes } = req.body;
+    const { payment_method = 'Cash', reference, notes } = req.body;
+    const amount = Number(req.body.amount);
+    const hospitalId = requestHospitalId(req);
 
-    const bill = await Bill.findById(billId);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Payment amount must be greater than zero' });
+    }
+
+    const bill = await Bill.findOne({ _id: billId, hospital_id: hospitalId, is_pharmacy_bill: true });
     if (!bill) {
       return res.status(404).json({ error: 'Pharmacy bill not found' });
     }
 
-    if (bill.status === 'Paid') {
+    if (bill.status === 'Paid' || Number(bill.balance_due || 0) <= 0) {
       return res.status(400).json({ error: 'Bill is already fully paid' });
     }
+    if (amount > Number(bill.balance_due || 0) + 0.001) {
+      return res.status(400).json({ error: 'Payment amount cannot exceed the bill balance due' });
+    }
 
-    const newPaidAmount = bill.paid_amount + amount;
-    const newBalanceDue = bill.total_amount - newPaidAmount;
+    const newPaidAmount = Number(bill.paid_amount || 0) + amount;
+    const newBalanceDue = Number(bill.total_amount || 0) - newPaidAmount;
 
     bill.paid_amount = newPaidAmount;
     bill.balance_due = Math.max(0, newBalanceDue);
@@ -140,7 +156,7 @@ exports.updatePharmacyBillPayment = async (req, res) => {
 
     // Update associated invoice
     if (bill.invoice_id) {
-      const invoice = await Invoice.findById(bill.invoice_id);
+      const invoice = await Invoice.findOne({ _id: bill.invoice_id, hospital_id: hospitalId });
       if (invoice) {
         invoice.amount_paid = (invoice.amount_paid || 0) + amount;
         invoice.balance_due = invoice.total - invoice.amount_paid;
@@ -166,7 +182,7 @@ exports.updatePharmacyBillPayment = async (req, res) => {
 
     // Update associated sale
     if (bill.sale_id) {
-      const sale = await Sale.findById(bill.sale_id);
+      const sale = await Sale.findOne({ _id: bill.sale_id, hospitalId });
       if (sale) {
         sale.amount_paid = (sale.amount_paid || 0) + amount;
         sale.balance_due = sale.total_amount - sale.amount_paid;
@@ -181,13 +197,15 @@ exports.updatePharmacyBillPayment = async (req, res) => {
 
     // Update patient outstanding balance
     if (bill.patient_id) {
-      await Patient.findByIdAndUpdate(bill.patient_id, {
-        $inc: { pharmacy_outstanding_balance: -amount }
-      });
+      await Patient.findOneAndUpdate(
+        { _id: bill.patient_id, hospitalId },
+        { $inc: { pharmacy_outstanding_balance: -amount } }
+      );
     }
 
     // Create ledger entry
     await PharmacyLedgerEntry.create({
+      hospitalId,
       entryType: 'OUTSTANDING_PAYMENT',
       direction: 'IN',
       amount: amount,
@@ -221,8 +239,9 @@ exports.voidPharmacyBill = async (req, res) => {
   try {
     const { billId } = req.params;
     const { reason } = req.body;
+    const hospitalId = requestHospitalId(req);
 
-    const bill = await Bill.findById(billId);
+    const bill = await Bill.findOne({ _id: billId, hospital_id: hospitalId, is_pharmacy_bill: true });
     if (!bill) {
       return res.status(404).json({ error: 'Pharmacy bill not found' });
     }
@@ -237,9 +256,10 @@ exports.voidPharmacyBill = async (req, res) => {
 
     // Restore patient outstanding balance if the bill was unpaid
     if (bill.balance_due > 0 && bill.patient_id) {
-      await Patient.findByIdAndUpdate(bill.patient_id, {
-        $inc: { pharmacy_outstanding_balance: -bill.balance_due }
-      });
+      await Patient.findOneAndUpdate(
+        { _id: bill.patient_id, hospitalId },
+        { $inc: { pharmacy_outstanding_balance: -bill.balance_due } }
+      );
     }
 
     res.json({

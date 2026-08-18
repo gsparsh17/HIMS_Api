@@ -495,15 +495,26 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
 
 exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
   const { admissionId } = req.params;
+  const hospitalId = getHospitalId(req);
 
   if (!admissionId) {
     return res.status(400).json({ success: false, error: 'admissionId is required' });
   }
 
+  const requestedStatuses = String(req.query.status || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const openStatuses = requestedStatuses.length
+    ? requestedStatuses
+    : ['Pending', 'Partially Paid'];
+
   const deferredSales = await Sale.find({
+    ...(hospitalId ? { hospitalId } : {}),
     admission_id: admissionId,
     include_in_discharge_clearance: true,
-    status: { $ne: 'Cancelled' }
+    payment_deferred: true,
+    status: { $in: openStatuses }
   })
     .select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount')
     .populate('patient_id', 'first_name last_name patientId uhid phone')
@@ -515,8 +526,16 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
 
   const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
   const saleIds = deferredSales.map(s => s._id);
-  const bills = await Bill.find({ sale_id: { $in: saleIds }, is_pharmacy_bill: true }).lean();
-  const invoices = await Invoice.find({ sale_id: { $in: saleIds }, is_pharmacy_sale: true }).lean();
+  const bills = await Bill.find({
+    ...(hospitalId ? { hospital_id: hospitalId } : {}),
+    sale_id: { $in: saleIds },
+    is_pharmacy_bill: true
+  }).lean();
+  const invoices = await Invoice.find({
+    ...(hospitalId ? { hospital_id: hospitalId } : {}),
+    sale_id: { $in: saleIds },
+    is_pharmacy_sale: true
+  }).lean();
 
   res.json({
     success: true,
@@ -529,11 +548,17 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
 });
 
 exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
-  const { startDate, endDate, admissionId, patientId, limit = 100 } = req.query;
+  const { startDate, endDate, admissionId, patientId, status, limit = 100 } = req.query;
+  const hospitalId = getHospitalId(req);
+  const requestedStatuses = String(status || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 
   const query = {
+    ...(hospitalId ? { hospitalId } : {}),
     payment_deferred: true,
-    status: { $in: ['Pending', 'Partially Paid'] }
+    status: { $in: requestedStatuses.length ? requestedStatuses : ['Pending', 'Partially Paid'] }
   };
 
   if (admissionId) query.admission_id = admissionId;
@@ -1201,12 +1226,16 @@ exports.getReturns = asyncHandler(async (req, res) => {
 });
 
 exports.getLedgerDaily = asyncHandler(async (req, res) => {
+  const hospitalId = getHospitalId(req);
   const start = req.query.startDate ? new Date(req.query.startDate) : new Date();
   start.setHours(0, 0, 0, 0);
   const end = req.query.endDate ? new Date(req.query.endDate) : new Date(start);
   end.setHours(23, 59, 59, 999);
 
-  const match = { entryDate: { $gte: start, $lte: end } };
+  const match = {
+    entryDate: { $gte: start, $lte: end },
+    ...(hospitalId ? { hospitalId } : {})
+  };
   if (req.query.pharmacyId) match.pharmacyId = objectIdOrUndefined(req.query.pharmacyId);
 
   const entries = await PharmacyLedgerEntry.find(match)
@@ -1273,7 +1302,8 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
 
   const billsQuery = {
     generated_at: { $gte: start, $lte: end },
-    is_pharmacy_bill: true
+    is_pharmacy_bill: true,
+    ...(hospitalId ? { hospital_id: hospitalId } : {})
   };
 
   const bills = await Bill.find(billsQuery)
@@ -1442,6 +1472,7 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
     IN_Cash: 0, OUT_Cash: 0,
     IN_UPI: 0, OUT_UPI: 0,
     IN_Card: 0, OUT_Card: 0,
+    IN_Bank: 0, OUT_Bank: 0,
     IN_Bank_Transfer: 0, OUT_Bank_Transfer: 0,
     NON_CASH_IPDAdvance: 0, NON_CASH_PharmacyAdvance: 0,
     discounts: 0, refunds: 0, returns_total: 0,
@@ -1491,15 +1522,19 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
   });
 
   totals.netCash = (totals.IN_Cash || 0) - (totals.OUT_Cash || 0);
-  totals.totalReceived = (totals.IN_Cash || 0) + (totals.IN_UPI || 0) + (totals.IN_Card || 0) + (totals.IN_Bank_Transfer || 0);
-  totals.totalRefunds = (totals.OUT_Cash || 0) + (totals.OUT_UPI || 0) + (totals.OUT_Card || 0);
+  totals.totalReceived = (totals.IN_Cash || 0) + (totals.IN_UPI || 0) + (totals.IN_Card || 0) + (totals.IN_Bank || 0) + (totals.IN_Bank_Transfer || 0);
+  totals.totalRefunds = (totals.OUT_Cash || 0) + (totals.OUT_UPI || 0) + (totals.OUT_Card || 0) + (totals.OUT_Bank || 0) + (totals.OUT_Bank_Transfer || 0);
 
   const summary = {
     byPaymentMethod: {
       Cash: { received: totals.IN_Cash || 0, refunded: totals.OUT_Cash || 0, net: (totals.IN_Cash || 0) - (totals.OUT_Cash || 0) },
       UPI: { received: totals.IN_UPI || 0, refunded: totals.OUT_UPI || 0, net: (totals.IN_UPI || 0) - (totals.OUT_UPI || 0) },
       Card: { received: totals.IN_Card || 0, refunded: totals.OUT_Card || 0, net: (totals.IN_Card || 0) - (totals.OUT_Card || 0) },
-      BankTransfer: { received: totals.IN_Bank_Transfer || 0, refunded: totals.OUT_Bank_Transfer || 0, net: (totals.IN_Bank_Transfer || 0) - (totals.OUT_Bank_Transfer || 0) }
+      BankTransfer: {
+        received: (totals.IN_Bank || 0) + (totals.IN_Bank_Transfer || 0),
+        refunded: (totals.OUT_Bank || 0) + (totals.OUT_Bank_Transfer || 0),
+        net: ((totals.IN_Bank || 0) + (totals.IN_Bank_Transfer || 0)) - ((totals.OUT_Bank || 0) + (totals.OUT_Bank_Transfer || 0))
+      }
     },
     advanceUtilization: { IPDAdvance: totals.NON_CASH_IPDAdvance || 0, PharmacyAdvance: totals.NON_CASH_PharmacyAdvance || 0 },
     discounts: totals.discounts || 0,
@@ -2175,16 +2210,17 @@ exports.getInventoryLedger = asyncHandler(async (req, res) => {
 
 exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
   const { q = '', limit = 20, patientId, status } = req.query;
+  const hospitalId = getHospitalId(req);
   const text = String(q).trim();
 
-  const admissionQuery = {};
+  const admissionQuery = hospitalId ? { hospitalId } : {};
   if (status) {
     admissionQuery.status = status;
   } else {
     admissionQuery.status = { $ne: 'Discharged' };
   }
 
-  const saleQuery = {};
+  const saleQuery = hospitalId ? { hospitalId } : {};
 
   if (patientId) {
     admissionQuery.patientId = patientId;
@@ -2193,6 +2229,7 @@ exports.searchIPDAdmissions = asyncHandler(async (req, res) => {
 
   if (text && !patientId) {
     const matchingPatients = await Patient.find({
+      ...(hospitalId ? { hospitalId } : {}),
       $or: [
         { patientId: { $regex: text, $options: 'i' } },
         { uhid: { $regex: text, $options: 'i' } },
@@ -2296,16 +2333,18 @@ exports.bulkSettleDeferredPayments = asyncHandler(async (req, res) => {
 // ========== NEW: Get Deferred Settlement Summary ==========
 exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
   const { admissionId } = req.params;
+  const hospitalId = getHospitalId(req);
 
   if (!admissionId) {
     return res.status(400).json({ success: false, error: 'admissionId is required' });
   }
 
   const deferredSales = await Sale.find({
+    ...(hospitalId ? { hospitalId } : {}),
     admission_id: admissionId,
     payment_deferred: true,
     status: { $in: ['Pending', 'Partially Paid'] }
-  }).select('sale_number total_amount amount_paid balance_due sale_date items medicine_name');
+  }).select('sale_number total_amount amount_paid balance_due sale_date items medicine_name patient_id');
 
   const totalDue = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
   const pharmacyAdvance = await getAdvanceBalance({ admissionId, walletType: 'PHARMACY_IPD' });

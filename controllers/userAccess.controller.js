@@ -44,7 +44,8 @@ const ALLOWED_ACTIONS = new Set([
   'billing_edit',
   'billing_delete_charge',
   'billing_apply_discount',
-  'billing_finalize'
+  'billing_finalize',
+  'pharmacy_finance_access'
 ]);
 
 function normalizePermissions(rows, actor) {
