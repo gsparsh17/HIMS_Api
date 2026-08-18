@@ -754,11 +754,15 @@ function drawAdditionalTable(doc, table, onNewPage) {
 }
 
 function drawLabSignatures(doc, request, report, onNewPage) {
-  ensureSpace(doc, mm(31), onNewPage);
+  // The signature block itself needs only ~18-20 mm. Reserving 31 mm forced
+  // otherwise-complete CBC reports onto a second page containing nothing but
+  // the repeated lab header and three signature columns. Keep the signatures
+  // with the result body whenever the actual remaining A4 space can hold them.
+  ensureSpace(doc, mm(20), onNewPage);
   const left = PAGE.margin;
   const width = PAGE.width - PAGE.margin * 2;
   const columnWidth = width / 3;
-  const y = doc.y + mm(7);
+  const y = doc.y + mm(5);
   const technician = fullName(request.processed_by || request.sample_collected_by) || text(report.technicianName, 'Medical Lab Technician');
   const pathologist = text(report.pathologistName, 'Pathologist');
   const authorized = text(report.authorizedSignatoryName, 'Authorized Signatory');
@@ -787,7 +791,7 @@ function drawLabSignatures(doc, request, report, onNewPage) {
       width: columnWidth - 6, align: 'center', height: mm(5), ellipsis: true
     });
   });
-  doc.y = y + mm(13);
+  doc.y = y + mm(11);
 }
 
 function generateLabReportPdf({ res, request, hospital }) {
