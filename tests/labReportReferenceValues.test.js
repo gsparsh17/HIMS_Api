@@ -3,6 +3,11 @@ const assert = require('node:assert/strict');
 const { Writable } = require('stream');
 const { generateLabReportPdf } = require('../services/clinicalPdf.service');
 
+function countPdfPages(buffer) {
+  const source = buffer.toString('latin1');
+  return (source.match(/\/Type\s*\/Page\b/g) || []).length;
+}
+
 class MemoryStream extends Writable {
   constructor(options) {
     super(options);
@@ -99,3 +104,61 @@ test('generateLabReportPdf synthesizes observations with reference intervals fro
   assert.ok(pdfBuffer.length > 1000, 'PDF buffer should be generated');
   assert.equal(pdfBuffer.subarray(0, 4).toString(), '%PDF');
 });
+
+test('CBC report with narrative notes keeps the signatory block on the result page', async () => {
+  const memoryStream = new MemoryStream();
+  const request = {
+    requestNumber: 'REQ-LAB-CBC-COMPACT-001',
+    testName: 'Complete Blood Count (CBC)',
+    testCode: 'LT-HAEM-009',
+    status: 'Reported',
+    report_mode: 'manual',
+    manual_report: {
+      templateId: 'lab-template-020',
+      templateName: 'Complete Blood Count (CBC)',
+      specimenType: 'EDTA whole blood',
+      observations: [
+        { name: 'Haemoglobin', resultNumeric: '13.1', unit: 'g/dL' },
+        { name: 'Total Leucocyte Count', resultNumeric: '7.8', unit: '10^3/uL' },
+        { name: 'Neutrophils', resultNumeric: '64', unit: '%' },
+        { name: 'Platelets', resultNumeric: '292', unit: '10^3/uL' },
+      ],
+      narrativeSections: [
+        { label: 'Clinical correlation', text: 'Counts normalised; suitable for discharge.' },
+        { label: 'Interpretation', text: 'Correlate with clinical findings and treatment response.' },
+      ],
+      instrument: 'HMS Seed Analyzer',
+      technicianNotes: 'Internal quality control acceptable.',
+      pathologistNotes: 'Counts normalised; suitable for discharge.',
+      disclaimer: 'Seeded demonstration report for software validation; not for real clinical use.',
+      technicianName: 'Medical Lab Technician',
+      pathologistName: 'Pathologist',
+      authorizedSignatoryName: 'Authorized Signatory',
+    },
+    patientId: {
+      first_name: 'Rakesh',
+      last_name: 'Sharma',
+      patientId: 'PID-SEED-20260714-001',
+      dob: new Date('1988-01-01'),
+      gender: 'male',
+      phone: '9876500001',
+      address: '117/Seed House, Swaroop Nagar',
+    },
+    doctorId: { firstName: 'Dental', lastName: 'Test', specialization: 'Pathology' },
+  };
+  const hospital = {
+    name: 'TEST HOSPITAL', address: 'Swaroop Nagar', city: 'Kanpur', state: 'UP',
+    phone: '9927277272', email: 'admin@gmail.com',
+  };
+
+  await new Promise((resolve, reject) => {
+    memoryStream.on('finish', resolve);
+    memoryStream.on('error', reject);
+    generateLabReportPdf({ res: memoryStream, request, hospital });
+  });
+
+  const pdfBuffer = memoryStream.getBuffer();
+  assert.equal(pdfBuffer.subarray(0, 4).toString(), '%PDF');
+  assert.equal(countPdfPages(pdfBuffer), 1, 'CBC result and signatory block should remain on one A4 page');
+});
+

@@ -659,7 +659,7 @@ function drawReportSectionHeading(doc, title) {
   doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(8.3).text(
     `${text(title, 'COMMENTS')}:`, left, doc.y, { width }
   );
-  doc.y += mm(5);
+  doc.y += mm(4);
 }
 
 function drawReportNarrative(doc, title, content, onNewPage) {
@@ -678,7 +678,7 @@ function drawReportNarrative(doc, title, content, onNewPage) {
         paragraphGap: 2
       }
     );
-    doc.y += mm(2);
+    doc.y += mm(1.2);
     remaining = remainder;
     if (remaining) {
       doc.addPage();
@@ -754,15 +754,15 @@ function drawAdditionalTable(doc, table, onNewPage) {
 }
 
 function drawLabSignatures(doc, request, report, onNewPage) {
-  // The signature block itself needs only ~18-20 mm. Reserving 31 mm forced
-  // otherwise-complete CBC reports onto a second page containing nothing but
-  // the repeated lab header and three signature columns. Keep the signatures
-  // with the result body whenever the actual remaining A4 space can hold them.
-  ensureSpace(doc, mm(20), onNewPage);
+  // Compact but readable laboratory sign-off. Older spacing reserved enough
+  // vertical room to push an otherwise complete CBC onto a second sheet that
+  // contained only technician/pathologist/signatory columns. The visible block
+  // is ~11-13 mm, so reserve 14 mm and keep it with the result whenever safe.
+  ensureSpace(doc, mm(14), onNewPage);
   const left = PAGE.margin;
   const width = PAGE.width - PAGE.margin * 2;
   const columnWidth = width / 3;
-  const y = doc.y + mm(5);
+  const y = doc.y + mm(3);
   const technician = fullName(request.processed_by || request.sample_collected_by) || text(report.technicianName, 'Medical Lab Technician');
   const pathologist = text(report.pathologistName, 'Pathologist');
   const authorized = text(report.authorizedSignatoryName, 'Authorized Signatory');
@@ -785,13 +785,13 @@ function drawLabSignatures(doc, request, report, onNewPage) {
     doc.moveTo(x + mm(8), y).lineTo(x + columnWidth - mm(8), y)
       .lineWidth(0.45).strokeColor(COLORS.ink).stroke();
     doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(7.2).text(name, x + 3, y + 4, {
-      width: columnWidth - 6, align: 'center', height: mm(5), ellipsis: true
+      width: columnWidth - 6, align: 'center', height: mm(4.5), ellipsis: true
     });
-    doc.fillColor(COLORS.muted).font('Helvetica').fontSize(6.2).text(role, x + 3, y + mm(5.5), {
-      width: columnWidth - 6, align: 'center', height: mm(5), ellipsis: true
+    doc.fillColor(COLORS.muted).font('Helvetica').fontSize(6.2).text(role, x + 3, y + mm(4.8), {
+      width: columnWidth - 6, align: 'center', height: mm(4.2), ellipsis: true
     });
   });
-  doc.y = y + mm(11);
+  doc.y = y + mm(9.5);
 }
 
 function generateLabReportPdf({ res, request, hospital }) {
