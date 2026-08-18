@@ -20,6 +20,12 @@ function isAdminRole(user) {
   return ADMIN_ROLES.has(normalizedRole(user));
 }
 
+function hasUnrestrictedAdminAccess(user) {
+  const role = normalizedRole(user);
+  if (role === 'mediqliq_super_admin') return true;
+  return role === 'admin' && !Boolean(user?.enforceModulePermissions);
+}
+
 // Permission checks are enabled by default. Set DISABLE_PERMISSION_CHECKS=true only for
 // controlled local troubleshooting; never use that setting in production.
 const isPermissionCheckDisabled = () =>
@@ -164,7 +170,7 @@ exports.authorize = (...roles) => (req, res, next) => {
 
   const role = normalizedRole(req.user);
   const allowedRoles = roles.map(normalizedRole);
-  if (isAdminRole(req.user) || allowedRoles.includes(role)) {
+  if (hasUnrestrictedAdminAccess(req.user) || allowedRoles.includes(role)) {
     return next();
   }
 
@@ -312,8 +318,8 @@ exports.requireAnyModuleAccess = (requirements = []) => (req, res, next) => {
 const hasActionPermission = (user, action) => {
   if (!user) return false;
   
-  // Super admin and admin have all actions
-  if (isAdminRole(user)) {
+  // Platform admins and legacy unrestricted hospital admins have all actions.
+  if (hasUnrestrictedAdminAccess(user)) {
     return true;
   }
 
@@ -346,7 +352,7 @@ exports.requireActionPermission = (action) => {
       return next();
     }
 
-    if (isAdminRole(req.user)) {
+    if (hasUnrestrictedAdminAccess(req.user)) {
       return next();
     }
 
@@ -373,7 +379,7 @@ exports.requireAnyActionPermission = (actions = []) => {
     if (!req.user) {
       return res.status(401).json({ success: false, error: 'User not authenticated' });
     }
-    if (isPermissionCheckDisabled() || isAdminRole(req.user)) return next();
+    if (isPermissionCheckDisabled() || hasUnrestrictedAdminAccess(req.user)) return next();
     if (expected.some((action) => hasActionPermission(req.user, action))) return next();
     return res.status(403).json({
       success: false,
@@ -398,8 +404,8 @@ exports.getEffectivePermissions = (user) => {
 exports.hasModuleAccess = (user, moduleKey, minimumAccess = 'view') => {
   if (!user) return false;
   
-  // Super admin and admin have all module access
-  if (isAdminRole(user)) {
+  // Platform admins and legacy unrestricted hospital admins have all module access.
+  if (hasUnrestrictedAdminAccess(user)) {
     return true;
   }
 
@@ -421,8 +427,8 @@ exports.hasModuleAccess = (user, moduleKey, minimumAccess = 'view') => {
 exports.getUserActions = (user) => {
   if (!user) return [];
   
-  // Super admin and admin have all actions
-  if (isAdminRole(user)) {
+  // Platform admins and legacy unrestricted hospital admins have all actions.
+  if (hasUnrestrictedAdminAccess(user)) {
     return [
       'approve',
       'discount_override',
@@ -567,8 +573,8 @@ exports.checkModuleAccess = (user, moduleKey, minimumAccess = "view") => {
     return true;
   }
 
-  // Super admin and admin have all access
-  if (isAdminRole(user)) {
+  // Platform admins and legacy unrestricted hospital admins have all access.
+  if (hasUnrestrictedAdminAccess(user)) {
     return true;
   }
 
@@ -590,7 +596,7 @@ exports.isOwner = (param = "id") => (req, res, next) => {
   }
 
   if (
-    isAdminRole(req.user) ||
+    hasUnrestrictedAdminAccess(req.user) ||
     String(req.params[param]) === String(req.user._id)
   ) {
     return next();
@@ -616,5 +622,6 @@ exports.isStaff = (req, res, next) => {
     : next();
 };
 
-// Export the internal helper for use in other modules
+// Export internal helpers for tests and permission-aware controllers.
 exports._hasActionPermission = hasActionPermission;
+exports._hasUnrestrictedAdminAccess = hasUnrestrictedAdminAccess;

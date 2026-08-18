@@ -7,7 +7,7 @@ const {
   getVitalsConfig,
   updateVitalsConfig
 } = require('../controllers/hospital.controller');
-const { protect, authorize } = require('../middlewares/auth');
+const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 const multer = require('multer');
 const path = require('path');
 const { tempDir } = require('../config/upload.config');
@@ -29,7 +29,7 @@ router.use(protect);
 router.get('/', getHospitalDetails);
 router.get('/:hospitalId', getHospitalById);
 router.get('/:hospitalId/vitals-config', getVitalsConfig);
-router.patch('/:hospitalId/details', authorize('admin'), upload.single('logo'), updateHospitalDetails);
-router.patch('/:hospitalId/vitals-config', authorize('admin'), updateVitalsConfig);
+router.patch('/:hospitalId/details', authorize('admin'), requireModuleAccess('masters_settings', 'manage'), upload.single('logo'), updateHospitalDetails);
+router.patch('/:hospitalId/vitals-config', authorize('admin'), requireModuleAccess('masters_settings', 'manage'), updateVitalsConfig);
 
 module.exports = router;

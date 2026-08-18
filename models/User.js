@@ -27,6 +27,13 @@ const userSchema = new mongoose.Schema({
   staff_profile_id: { type: mongoose.Schema.Types.ObjectId, ref: 'HRStaffProfile' },
   // Retained for backward compatibility. New code stores the same main feature keys here.
   dashboard_access: [{ type: String }],
+  // When true, explicit module rows (including `none`) are authoritative. Legacy
+  // admins default to false to stay unrestricted; delegated admins and users whose
+  // access is saved from Login Access Controls are switched to true.
+  enforceModulePermissions: { type: Boolean, default: false },
+  // Optional navigation allow-list. Empty means use the normal role sidebar. Entries may
+  // be exact paths or prefixes ending in * (for example /dashboard/hr*).
+  sidebarAccess: { type: [String], default: [] },
   // Deliberately high-level. There are no per-button or per-action access rows in this release.
   modulePermissions: { type: [featurePermissionSchema], default: [] },
   resetPasswordToken: String,
@@ -64,7 +71,8 @@ userSchema.pre('validate', function normalizeFeatureRows(next) {
   this.modulePermissions = normalizeFeaturePermissions(
     Array.isArray(this.modulePermissions) ? this.modulePermissions : [],
     this.role,
-    { grantedAt: this.createdAt || new Date() }
+    { grantedAt: this.createdAt || new Date() },
+    { preserveExplicitNone: Boolean(this.enforceModulePermissions) }
   );
   next();
 });

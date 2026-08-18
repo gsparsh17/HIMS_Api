@@ -132,6 +132,7 @@ exports.getUsers = async (req, res) => {
 
 exports.createUser = async (req, res) => {
   try {
+    const hasExplicitPermissions = Object.prototype.hasOwnProperty.call(req.body || {}, 'modulePermissions');
     const {
       name,
       email,
@@ -183,6 +184,7 @@ exports.createUser = async (req, res) => {
       role,
       hospital_id: hospital_id || req.user.hospital_id,
       modulePermissions: permissions,
+      enforceModulePermissions: hasExplicitPermissions,
       is_active: true
     });
 
@@ -268,6 +270,9 @@ exports.updateUserPermissions = async (req, res) => {
     }
 
     user.modulePermissions = permissions;
+    // This endpoint represents an explicit administrator choice. Persist `none`
+    // exactly as selected so future role presets cannot silently reopen access.
+    user.enforceModulePermissions = true;
     await user.save();
 
     return res.json({

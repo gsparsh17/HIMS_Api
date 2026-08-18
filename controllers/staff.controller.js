@@ -157,11 +157,31 @@ const mapStaffRoleToUserRole = (staffRole, explicitUserRole) => {
 
 function applyMainFeaturePermissions(user, permissions, role, grantedBy) {
   const hasExplicitSelection = Array.isArray(permissions);
+  const hasStoredRows = Array.isArray(user.modulePermissions) && user.modulePermissions.length > 0;
+
   const rows = hasExplicitSelection
-    ? normalizeFeaturePermissions(permissions, role, { grantedBy })
-    : (Array.isArray(user.modulePermissions) && user.modulePermissions.length
-      ? normalizeFeaturePermissions(user.modulePermissions, role, { grantedBy })
+    ? normalizeFeaturePermissions(
+        permissions,
+        role,
+        { grantedBy },
+        { preserveExplicitNone: true }
+      )
+    : (hasStoredRows
+      ? normalizeFeaturePermissions(
+          user.modulePermissions,
+          role,
+          { grantedBy },
+          { preserveExplicitNone: Boolean(user.enforceModulePermissions) }
+        )
       : defaultFeaturePermissions(role, { grantedBy }));
+
+  // Once an admin explicitly saves Login Access Controls, those choices become
+  // authoritative. This is what makes a saved `none` stay `none` for future
+  // staff/nurse/doctor accounts instead of being re-expanded by the role preset.
+  if (hasExplicitSelection) {
+    user.enforceModulePermissions = true;
+  }
+
   user.modulePermissions = rows;
   user.dashboard_access = dashboardAccessFromFeatures(rows);
 }
@@ -209,9 +229,9 @@ async function findOrCreateStaffUser(staff, payload, req) {
 
 exports.getStaffLoginAccess = async (req, res) => {
   try {
-    const staff = await Staff.findById(req.params.id).populate('user_id', 'name email role modulePermissions dashboard_access is_active');
+    const staff = await Staff.findById(req.params.id).populate('user_id', 'name email role modulePermissions dashboard_access enforceModulePermissions is_active');
     if (!staff) return res.status(404).json({ error: 'Staff not found' });
-    const user = staff.user_id || (staff.email ? await User.findOne({ email: staff.email }).select('name email role modulePermissions dashboard_access is_active') : null);
+    const user = staff.user_id || (staff.email ? await User.findOne({ email: staff.email }).select('name email role modulePermissions dashboard_access enforceModulePermissions is_active') : null);
     return res.json({
       success: true,
       staff: { _id: staff._id, name: `${staff.first_name || ''} ${staff.last_name || ''}`.trim(), email: staff.email, role: staff.role },

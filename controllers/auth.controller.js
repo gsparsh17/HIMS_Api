@@ -355,6 +355,8 @@ function loginBase(user, hospital, tokenClaims = {}) {
     hospital_id: user.hospital_id || hospital?._id,
     hospitalId: user.hospital_id || hospital?._id,
     hospitalID: user.hospital_id || hospital?._id,
+    enforceModulePermissions: Boolean(user.enforceModulePermissions),
+    sidebarAccess: Array.isArray(user.sidebarAccess) ? user.sidebarAccess : [],
     // Main role-oriented feature list used by navigation and guarded API routes.
     modulePermissions: effectiveMainFeaturePermissions(user)
   };
@@ -438,6 +440,8 @@ exports.getCurrentUser = async (req, res) => {
       hospital_id: req.user.hospital_id,
       hospitalId: req.user.hospital_id,
       hospitalID: req.user.hospital_id,
+      enforceModulePermissions: Boolean(req.user.enforceModulePermissions),
+      sidebarAccess: Array.isArray(req.user.sidebarAccess) ? req.user.sidebarAccess : [],
       modulePermissions: effectiveMainFeaturePermissions(req.user),
       security: {
         mfaEnabled: Boolean(req.user.mfa?.enabled),

@@ -393,8 +393,18 @@ function defaultFeaturePermissions(role, meta = {}) {
   }));
 }
 
-function normalizeFeaturePermissions(input, role, meta = {}) {
+function normalizeFeaturePermissions(input, role, meta = {}, options = {}) {
   if (!Array.isArray(input) || input.length === 0) {
+    if (options.preserveExplicitNone) {
+      return MAIN_FEATURES.map(({ key }) => ({
+        moduleKey: key,
+        access: 'none',
+        actions: [],
+        ...(meta.grantedBy ? { grantedBy: meta.grantedBy } : {}),
+        grantedAt: meta.grantedAt || new Date(),
+        updatedAt: new Date()
+      }));
+    }
     return defaultFeaturePermissions(role, meta);
   }
 
@@ -407,7 +417,13 @@ function normalizeFeaturePermissions(input, role, meta = {}) {
     const access = normalizeAccess(row?.access);
     const previous = combined.get(moduleKey) || 'none';
 
-    if (ACCESS_ORDER[access] > ACCESS_ORDER[previous]) {
+    // Legacy accounts keep the historical role-default fallback when a row is
+    // `none`. Delegated/restricted accounts opt into strict explicit rows so a
+    // stored `none` cannot become the admin role's default `manage`.
+    if (
+      (options.preserveExplicitNone && !combined.has(moduleKey)) ||
+      ACCESS_ORDER[access] > ACCESS_ORDER[previous]
+    ) {
       combined.set(moduleKey, access);
     }
 
@@ -429,7 +445,9 @@ function normalizeFeaturePermissions(input, role, meta = {}) {
 
     return {
       moduleKey: key,
-      access: combined.has(key) ? combined.get(key) : roleDefaultAccess(role, key),
+      access: combined.has(key)
+        ? combined.get(key)
+        : (options.preserveExplicitNone ? 'none' : roleDefaultAccess(role, key)),
       actions: Array.from(actions.get(key) || new Set(roleDefaultActions(role, key))),
       grantedBy: grant.grantedBy || meta.grantedBy,
       grantedAt: grant.grantedAt || meta.grantedAt || new Date(),
@@ -446,7 +464,10 @@ function mainFeaturePermission(user, moduleKey) {
   const mainModuleKey = toMainFeatureKey(moduleKey);
   const role = normalizeRole(user?.role);
 
-  if (role === 'admin' || role === 'mediqliq_super_admin') {
+  // Platform admins always remain unrestricted. Hospital admins keep the legacy
+  // unrestricted behaviour unless the account explicitly opts into permission
+  // enforcement (used for delegated/restricted admin accounts).
+  if (role === 'mediqliq_super_admin' || (role === 'admin' && !user?.enforceModulePermissions)) {
     return { moduleKey: mainModuleKey, access: 'manage' };
   }
 
@@ -464,7 +485,12 @@ function mainFeaturePermission(user, moduleKey) {
 
 function effectiveMainFeaturePermissions(user) {
   const role = normalizeRole(user?.role);
-  const normalized = normalizeFeaturePermissions(user?.modulePermissions, role);
+  const normalized = normalizeFeaturePermissions(
+    user?.modulePermissions,
+    role,
+    {},
+    { preserveExplicitNone: Boolean(user?.enforceModulePermissions) }
+  );
   const permissionByModule = new Map(
     normalized.map((permission) => [permission.moduleKey, permission])
   );
