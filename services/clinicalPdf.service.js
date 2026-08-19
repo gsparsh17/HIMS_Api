@@ -1324,7 +1324,7 @@ function generateOpdSlipPdf({ res, prescription, hospital, vitals, receipt, prin
   });
   y = vitalsY + mm(29);
 
-  const opDate = appointment.appointment_date || prescription.createdAt || prescription.issue_date;
+  const opDate = appointment.appointment_date || prescription.issue_date || prescription.eventDateTime || prescription.createdAt;
   drawOpdField(doc, 'Receipt No.', receipt?.transactionNumber, left, y, mm(29), half - mm(3));
   drawOpdField(doc, 'OP Date', formatDate(opDate, true), left + half, y, mm(24), half); y += mm(7);
   drawOpdField(doc, 'OP No.', appointment.token || prescription.prescription_number, left, y, mm(29), half - mm(3));

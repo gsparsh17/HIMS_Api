@@ -1,4 +1,6 @@
-const { operationNow } = require('../utils/operationTimeContext');
+const { operationNow, operationDateKey } = require('../utils/operationTimeContext');
+const { hospitalDayBounds } = require('../utils/hospitalDateTime');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
 const IPDAdmission = require('../models/IPDAdmission');
 const Bed = require('../models/Bed');
 const Ward = require('../models/Ward');
@@ -978,9 +980,7 @@ exports.getAllAdmissions = async (req, res) => {
     }
 
     if (startDate || endDate) {
-      filter.admissionDate = {};
-      if (startDate) filter.admissionDate.$gte = new Date(startDate);
-      if (endDate) filter.admissionDate.$lte = new Date(endDate);
+      filter.admissionDate = semanticDateRange(startDate, endDate);
     }
 
     if (search) {
@@ -1385,8 +1385,7 @@ exports.deleteAdmission = async (req, res) => {
 exports.getDashboardStats = async (req, res) => {
   try {
     const hospitalId = requireAdmissionHospitalId(req);
-    const today = operationNow();
-    today.setHours(0, 0, 0, 0);
+    const { start: today, end: tomorrow } = hospitalDayBounds(operationDateKey());
 
     const [
       totalAdmitted,
@@ -1422,7 +1421,7 @@ exports.getDashboardStats = async (req, res) => {
       IPDAdmission.countDocuments({
         hospitalId,
         status: 'Discharged',
-        dischargeDate: { $gte: today }
+        dischargeDate: { $gte: today, $lt: tomorrow }
       }),
       Bed.countDocuments({ hospitalId, status: 'Occupied' }),
       Bed.countDocuments({ hospitalId, status: 'Available' }),
@@ -1548,10 +1547,7 @@ exports.getAdmissionStatsByWard = async (req, res) => {
 exports.getAdmissionTodaySchedule = async (req, res) => {
   try {
     const hospitalId = requireAdmissionHospitalId(req);
-    const start = operationNow();
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
+    const { start, end } = hospitalDayBounds(operationDateKey());
 
     const [activeAdmissions, dischargedAdmissions] = await Promise.all([
       IPDAdmission.find({

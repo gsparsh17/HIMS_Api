@@ -121,7 +121,7 @@ async function getAdvanceBalance({ admissionId, patientId, walletType = 'PHARMAC
   const query = { walletType };
   if (admissionId) query.admissionId = admissionId;
   else if (patientId) query.patientId = patientId;
-  let lookup = PatientAdvanceLedger.findOne(query).sort({ createdAt: -1 });
+  let lookup = PatientAdvanceLedger.findOne(query).sort({ postedAt: -1, createdAt: -1 });
   if (session) lookup = lookup.session(session);
   const last = await lookup;
   if (last) return Number(last.balanceAfter || 0);
@@ -2116,6 +2116,7 @@ async function legacyCreateReturn(payload, req = {}) {
   console.log('Processed return items:', JSON.stringify(items, null, 2));
 
   const pharmacyReturn = await PharmacyReturn.create({
+    returnedAt: operationNow(),
     originalSaleId,
     originalInvoiceId: objectIdOrUndefined(
       payload.originalInvoiceId ||

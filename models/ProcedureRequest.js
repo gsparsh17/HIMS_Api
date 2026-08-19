@@ -194,7 +194,7 @@ const procedureRequestSchema = new mongoose.Schema({
     name: String,
     url: String,
     uploaded_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    uploaded_at: { type: Date, default: Date.now }
+    uploaded_at: { type: Date, default: operationNow }
   }],
   
   // Billing

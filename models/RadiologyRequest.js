@@ -28,7 +28,7 @@ const manualRadiologyReportSchema = new mongoose.Schema({
   radiologistName: { type: String, trim: true },
   technicianName: { type: String, trim: true },
   disclaimer: { type: String, trim: true },
-  reportedAt: { type: Date, default: Date.now },
+  reportedAt: { type: Date, default: operationNow },
   reportedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { _id: false });
 
@@ -190,12 +190,12 @@ const radiologyRequestSchema = new mongoose.Schema({
     reason: { type: String, required: true },
     previousReport: mongoose.Schema.Types.Mixed,
     previousChecksum: String,
-    amendedAt: { type: Date, default: Date.now },
+    amendedAt: { type: Date, default: operationNow },
     amendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   }],
   repeatHistory: [{
     reason: { type: String, required: true },
-    requestedAt: { type: Date, default: Date.now },
+    requestedAt: { type: Date, default: operationNow },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     previousStatus: String
   }],
@@ -330,7 +330,7 @@ const radiologyRequestSchema = new mongoose.Schema({
   workflowHistory: [{
     from: String,
     to: String,
-    at: { type: Date, default: Date.now },
+    at: { type: Date, default: operationNow },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     note: String
   }],

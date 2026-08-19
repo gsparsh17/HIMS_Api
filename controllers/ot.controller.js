@@ -1,4 +1,6 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
+const { hospitalDateKey } = require('../utils/hospitalDateTime');
 const OTRequest = require('../models/OTRequest');
 const OTStaff = require('../models/OTStaff');
 const OTSchedule = require('../models/OTSchedule');
@@ -229,11 +231,11 @@ exports.getOTRequests = async (req, res) => {
     if (urgency) filter.urgency = urgency;
 
     if (startDate && endDate) {
-      filter.requestedDate = { $gte: new Date(startDate), $lte: new Date(endDate) };
+      filter.requestedDate = semanticDateRange(startDate, endDate);
     } else if (startDate) {
-      filter.requestedDate = { $gte: new Date(startDate) };
+      filter.requestedDate = semanticDateRange(startDate, null);
     } else if (endDate) {
-      filter.requestedDate = { $lte: new Date(endDate) };
+      filter.requestedDate = semanticDateRange(null, endDate);
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -1104,16 +1106,14 @@ exports.getDailySchedule = async (req, res) => {
 exports.getMonthlyReports = async (req, res) => {
   try {
     const { start, end } = req.query;
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    endDate.setHours(23, 59, 59, 999);
+    const completedRange = semanticDateRange(start, end);
 
     const data = await OTRequest.aggregate([
       {
         $match: {
           hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
           status: 'Completed',
-          completedAt: { $gte: startDate, $lte: endDate }
+          completedAt: completedRange
         }
       },
       {
@@ -1145,16 +1145,14 @@ exports.getMonthlyReports = async (req, res) => {
 exports.getProcedureStats = async (req, res) => {
   try {
     const { start, end } = req.query;
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    endDate.setHours(23, 59, 59, 999);
+    const completedRange = semanticDateRange(start, end);
 
     const data = await OTRequest.aggregate([
       {
         $match: {
           hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
           status: 'Completed',
-          completedAt: { $gte: startDate, $lte: endDate }
+          completedAt: completedRange
         }
       },
       {
@@ -1184,16 +1182,14 @@ exports.getProcedureStats = async (req, res) => {
 exports.getSurgeonStats = async (req, res) => {
   try {
     const { start, end } = req.query;
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    endDate.setHours(23, 59, 59, 999);
+    const completedRange = semanticDateRange(start, end);
 
     const data = await OTRequest.aggregate([
       {
         $match: {
           hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
           status: 'Completed',
-          completedAt: { $gte: startDate, $lte: endDate }
+          completedAt: completedRange
         }
       },
       {
@@ -1227,14 +1223,12 @@ exports.exportOTReports = async (req, res) => {
   try {
     const { type } = req.params;
     const { start, end } = req.query;
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    endDate.setHours(23, 59, 59, 999);
+    const completedRange = semanticDateRange(start, end);
 
     const requests = await OTRequest.find({
       hospitalId: requireHospitalId(req),
       status: 'Completed',
-      completedAt: { $gte: startDate, $lte: endDate }
+      completedAt: completedRange
     }).populate('patientId', 'first_name last_name patientId')
       .populate('primarySurgeonId', 'firstName lastName')
       .sort({ completedAt: 1 });
@@ -1244,7 +1238,7 @@ exports.exportOTReports = async (req, res) => {
       csv = 'Month,Surgeries,Revenue\n';
       const monthly = {};
       requests.forEach(r => {
-        const month = r.completedAt.toISOString().slice(0, 7);
+        const month = hospitalDateKey(r.completedAt).slice(0, 7);
         if (!monthly[month]) monthly[month] = { count: 0, revenue: 0 };
         monthly[month].count++;
         monthly[month].revenue += (r.total_cost || 0);
@@ -1255,7 +1249,7 @@ exports.exportOTReports = async (req, res) => {
     } else {
       csv = 'Date,Patient,Patient ID,Procedure,Surgeon,Cost\n';
       requests.forEach(r => {
-        const date = r.completedAt.toISOString().split('T')[0];
+        const date = hospitalDateKey(r.completedAt);
         const patientName = `${r.patientId?.first_name || ''} ${r.patientId?.last_name || ''}`.trim();
         const surgeonName = `${r.primarySurgeonId?.firstName || ''} ${r.primarySurgeonId?.lastName || ''}`.trim();
         csv += `"${date}","${patientName}","${r.patientId?.patientId || ''}","${r.procedureName}","${surgeonName}",${r.total_cost || 0}\n`;

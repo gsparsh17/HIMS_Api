@@ -1,4 +1,7 @@
 const mongoose = require('mongoose');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
+const { operationNow, operationDateKey } = require('../utils/operationTimeContext');
+const { hospitalDayBounds } = require('../utils/hospitalDateTime');
 const HospitalPharmacySetting = require('../models/HospitalPharmacySetting');
 const Pharmacy = require('../models/Pharmacy');
 const Medicine = require('../models/Medicine');
@@ -565,9 +568,7 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
   if (patientId) query.patient_id = patientId;
 
   if (startDate || endDate) {
-    query.sale_date = {};
-    if (startDate) query.sale_date.$gte = new Date(startDate);
-    if (endDate) query.sale_date.$lte = new Date(endDate);
+    query.sale_date = semanticDateRange(startDate, endDate);
   }
 
   const deferredSales = await Sale.find(query)
@@ -632,7 +633,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   sale.status = 'Completed';
   sale.payment_method = paymentMethod;
   sale.payment_deferred = false;
-  sale.settled_at = new Date();
+  sale.settled_at = operationNow();
 
   if (discountAmount > 0) {
     sale.discount_amount = normalizeMoney((sale.discount_amount || 0) + discountAmount);
@@ -646,7 +647,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     method: paymentMethod,
     amount: amountToPay,
     reference: reference,
-    date: new Date(),
+    date: operationNow(),
     collected_by: collected_by || getCreatedBy(req)
   });
 
@@ -693,7 +694,7 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
     });
     if (ipdCharge && !ipdCharge.isBilled) {
       ipdCharge.isBilled = true;
-      ipdCharge.billedAt = new Date();
+      ipdCharge.billedAt = operationNow();
       await ipdCharge.save();
     }
   }
@@ -745,9 +746,14 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
 });
 
 exports.getDoctorCommissionReport = asyncHandler(async (req, res) => {
-  const start = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
-  const match = { sale_date: { $gte: start, $lte: end }, 'items.is_own_brand': true };
+  const effectiveNow = operationNow();
+  const defaultStart = new Date(effectiveNow.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const range = (req.query.startDate || req.query.endDate)
+    ? semanticDateRange(req.query.startDate, req.query.endDate)
+    : { $gte: defaultStart, $lte: effectiveNow };
+  const match = { sale_date: range, 'items.is_own_brand': true };
+  const start = range.$gte;
+  const end = range.$lt || range.$lte;
   if (req.query.doctorId) match.doctor_id = objectIdOrUndefined(req.query.doctorId);
   const sales = await Sale.find(match)
     .select('+commission_amount +items.commission_amount +items.purchase_amount +items.gross_profit')
@@ -785,11 +791,16 @@ exports.getDoctorCommissionReport = asyncHandler(async (req, res) => {
 });
 
 exports.getDoctorBillReport = asyncHandler(async (req, res) => {
-  const start = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
+  const effectiveNow = operationNow();
+  const defaultStart = new Date(effectiveNow.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const range = (req.query.startDate || req.query.endDate)
+    ? semanticDateRange(req.query.startDate, req.query.endDate)
+    : { $gte: defaultStart, $lte: effectiveNow };
+  const start = range.$gte;
+  const end = range.$lt || range.$lte;
 
   const match = {
-    sale_date: { $gte: start, $lte: end }
+    sale_date: range
   };
 
   if (req.query.doctorId) {
@@ -1217,23 +1228,23 @@ exports.getReturns = asyncHandler(async (req, res) => {
   if (admissionId) query.admissionId = admissionId;
   if (patientId) query.patientId = patientId;
   if (startDate || endDate) {
-    query.createdAt = {};
-    if (startDate) query.createdAt.$gte = new Date(startDate);
-    if (endDate) query.createdAt.$lte = new Date(endDate);
+    const range = semanticDateRange(startDate, endDate);
+    query.$or = [
+      { returnedAt: range },
+      { returnedAt: { $exists: false }, createdAt: range },
+    ];
   }
-  const returns = await PharmacyReturn.find(query).sort({ createdAt: -1 }).limit(Number(limit)).lean();
+  const returns = await PharmacyReturn.find(query).sort({ returnedAt: -1, createdAt: -1 }).limit(Number(limit)).lean();
   res.json({ success: true, returns });
 });
 
 exports.getLedgerDaily = asyncHandler(async (req, res) => {
   const hospitalId = getHospitalId(req);
-  const start = req.query.startDate ? new Date(req.query.startDate) : new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = req.query.endDate ? new Date(req.query.endDate) : new Date(start);
-  end.setHours(23, 59, 59, 999);
+  const selectedDay = operationDateKey();
+  const range = semanticDateRange(req.query.startDate || selectedDay, req.query.endDate || selectedDay);
 
   const match = {
-    entryDate: { $gte: start, $lte: end },
+    entryDate: range,
     ...(hospitalId ? { hospitalId } : {})
   };
   if (req.query.pharmacyId) match.pharmacyId = objectIdOrUndefined(req.query.pharmacyId);
@@ -2060,7 +2071,7 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
   await Patient.findByIdAndUpdate(patientId, {
     $set: {
       pharmacy_advance_balance: Math.max(0, normalizeMoney(advanceLedger.balanceAfter || 0)),
-      last_pharmacy_transaction: new Date()
+      last_pharmacy_transaction: operationNow()
     }
   });
 
@@ -2085,18 +2096,15 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
 });
 
 exports.getDashboard = asyncHandler(async (req, res) => {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date();
-  end.setHours(23, 59, 59, 999);
+  const { start, end } = hospitalDayBounds(operationDateKey());
 
   const [salesAgg, ledgerAgg, pendingIpd, lowStockCount, nearExpiryCount, pendingPO, recentSales, recentReturns, recentBills, invoiceStats, deferredCount] = await Promise.all([
     Sale.aggregate([
-      { $match: { sale_date: { $gte: start, $lte: end } } },
+      { $match: { sale_date: { $gte: start, $lt: end } } },
       { $group: { _id: '$customer_type', count: { $sum: 1 }, total: { $sum: '$total_amount' }, discount: { $sum: '$discount_amount' } } }
     ]),
     PharmacyLedgerEntry.aggregate([
-      { $match: { entryDate: { $gte: start, $lte: end } } },
+      { $match: { entryDate: { $gte: start, $lt: end } } },
       { $group: { _id: { method: '$paymentMethod', direction: '$direction', type: '$entryType' }, amount: { $sum: '$amount' }, count: { $sum: 1 } } }
     ]),
     IPDMedicationChart.countDocuments({ requiresPharmacyDispense: true, 'pharmacyRequest.requestedToPharmacy': true, 'pharmacyRequest.pharmacyStatus': 'Pending' }),
@@ -2104,10 +2112,10 @@ exports.getDashboard = asyncHandler(async (req, res) => {
     MedicineBatch.countDocuments({ expiry_date: { $gte: new Date(), $lte: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) }, is_active: true }),
     PurchaseOrder.countDocuments({ status: { $in: ['Draft', 'Ordered', 'Partially Received'] } }),
     Sale.find({}).sort({ sale_date: -1 }).limit(10).populate('patient_id', 'first_name last_name patientId').lean(),
-    PharmacyReturn.find({}).sort({ createdAt: -1 }).limit(10).lean(),
+    PharmacyReturn.find({}).sort({ returnedAt: -1, createdAt: -1 }).limit(10).lean(),
     Bill.find({ is_pharmacy_bill: true }).sort({ generated_at: -1 }).limit(10).populate('patient_id', 'first_name last_name patientId').lean(),
     Invoice.aggregate([
-      { $match: { is_pharmacy_sale: true, issue_date: { $gte: start, $lte: end } } },
+      { $match: { is_pharmacy_sale: true, issue_date: { $gte: start, $lt: end } } },
       { $group: { _id: '$status', count: { $sum: 1 }, total: { $sum: '$total' } } }
     ]),
     Sale.countDocuments({ payment_deferred: true, status: 'Pending' })
@@ -2188,12 +2196,17 @@ exports.getInventoryAnalytics = asyncHandler(async (req, res) => {
 });
 
 exports.getPurchaseAnalytics = asyncHandler(async (req, res) => {
-  const start = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
+  const effectiveNow = operationNow();
+  const defaultStart = new Date(effectiveNow.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const range = (req.query.startDate || req.query.endDate)
+    ? semanticDateRange(req.query.startDate, req.query.endDate)
+    : { $gte: defaultStart, $lte: effectiveNow };
+  const start = range.$gte;
+  const end = range.$lt || range.$lte;
 
   const [byStatus, bySupplier, recent] = await Promise.all([
-    PurchaseOrder.aggregate([{ $match: { order_date: { $gte: start, $lte: end } } }, { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$total_amount' } } }]),
-    PurchaseOrder.aggregate([{ $match: { order_date: { $gte: start, $lte: end } } }, { $group: { _id: '$supplier_id', count: { $sum: 1 }, amount: { $sum: '$total_amount' } } }, { $sort: { amount: -1 } }, { $limit: 10 }]),
+    PurchaseOrder.aggregate([{ $match: { order_date: range } }, { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$total_amount' } } }]),
+    PurchaseOrder.aggregate([{ $match: { order_date: range } }, { $group: { _id: '$supplier_id', count: { $sum: 1 }, amount: { $sum: '$total_amount' } } }, { $sort: { amount: -1 } }, { $limit: 10 }]),
     PurchaseOrder.find({}).populate('supplier_id', 'name').sort({ order_date: -1 }).limit(10).lean()
   ]);
 

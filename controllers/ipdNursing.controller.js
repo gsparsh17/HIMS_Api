@@ -1,4 +1,6 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const { hospitalDateKey } = require('../utils/hospitalDateTime');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
 const NursingNote = require('../models/NursingNote');
 const IPDVitals = require('../models/IPDVitals');
 const IPDAdmission = require('../models/IPDAdmission');
@@ -183,10 +185,7 @@ exports.getVitalsByAdmission = async (req, res) => {
 
     const filter = { admissionId };
     if (startDate && endDate) {
-      filter.recordedAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
+      filter.recordedAt = semanticDateRange(startDate, endDate);
     }
 
     const vitals = await IPDVitals.find(filter)
@@ -236,7 +235,7 @@ exports.getVitalsChartData = async (req, res) => {
     };
 
     vitals.forEach(v => {
-      chartData.dates.push(v.recordedAt.toISOString().split('T')[0]);
+      chartData.dates.push(hospitalDateKey(v.recordedAt));
       chartData.temperature.push(v.temperature || null);
       chartData.pulse.push(v.pulse || null);
       chartData.bloodPressureSystolic.push(v.bloodPressure?.systolic || null);

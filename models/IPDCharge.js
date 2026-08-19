@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const { hospitalDateKey } = require('../utils/hospitalDateTime');
 const mongoose = require('mongoose');
 
 /**
@@ -217,7 +218,7 @@ ipdChargeSchema.pre('validate', function calculateCharge(next) {
   };
 
   if (!this.chargeDateKey && this.chargeDate) {
-    this.chargeDateKey = new Date(this.chargeDate).toISOString().slice(0, 10);
+    this.chargeDateKey = hospitalDateKey(this.chargeDate);
   }
 
   if (this.adjustmentType === 'DISCOUNT' || this.chargeType === 'Discount') {

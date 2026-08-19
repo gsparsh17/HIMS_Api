@@ -5,6 +5,7 @@ const ClinicalAssessmentRecord = require('../models/ClinicalAssessmentRecord');
 const PatientDietOrder = require('../models/PatientDietOrder');
 const Patient = require('../models/Patient');
 const { hospitalId, required, sendError } = require('../utils/functionalDomain');
+const { operationNow } = require('../utils/operationTimeContext');
 
 async function patient(req, id) {
   const p = await Patient
@@ -307,7 +308,7 @@ exports.createDiet = async (req, res) => {
       {
         $set: {
           status: 'completed',
-          endsAt: new Date()
+          endsAt: operationNow()
         }
       }
     );
@@ -319,7 +320,7 @@ exports.createDiet = async (req, res) => {
       dietType: req.body.dietType,
       instructions: req.body.instructions,
       allergiesConsidered: Boolean(req.body.allergiesConsidered),
-      startsAt: req.body.startsAt || new Date(),
+      startsAt: req.body.startsAt || operationNow(),
       orderedBy: req.user._id
     });
 

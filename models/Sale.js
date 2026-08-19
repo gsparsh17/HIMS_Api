@@ -13,6 +13,7 @@ const paymentBreakupSchema = new mongoose.Schema({
   },
   amount: { type: Number, required: true, min: 0 },
   reference: { type: String },
+  date: { type: Date, default: operationNow },
   walletType: { type: String, enum: ['IPD_SHARED', 'PHARMACY_IPD', null], default: null }
 }, { _id: false });
 

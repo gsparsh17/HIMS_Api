@@ -849,6 +849,7 @@ exports.saveNursingAdmissionAssessment = async (req, res) => {
     patch.assessedByName = patch.assessedByName || req.user.name;
 
     if (!existing) {
+      patch.assessmentAt = patch.assessmentAt || operationNow();
       existing = new IPDNursingAdmissionAssessment(patch);
     } else {
       if (existing.status === 'Signed' || req.body.amend === true) {

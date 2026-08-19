@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { operationNow } = require('../utils/operationTimeContext');
 const DocumentSignature = require('../models/DocumentSignature');
 const PrintIdentityAsset = require('../models/PrintIdentityAsset');
 const PatientIdentityAsset = require('../models/PatientIdentityAsset');
@@ -116,7 +117,7 @@ async function signDocument({ req, hospitalId, patientId, admissionId, encounter
   });
   const allAssets = [...staffAssets, ...patientAssets];
   const sourceHash = sha256({ sourceModel: normalizedSourceModel, sourceId: String(normalizedSourceId), sourceRevision, templateId, templateVersion, sourceSnapshot });
-  const signedAt = new Date();
+  const signedAt = operationNow();
   const signatureHash = sha256({
     sourceHash,
     signer: String(req.user._id),

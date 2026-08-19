@@ -9,6 +9,9 @@ const ExcelJS = require('exceljs');
 const Medicine = require('../models/Medicine');
 const PharmacyReturn = require('../models/PharmacyReturn');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
+const { operationNow } = require('../utils/operationTimeContext');
+const { hospitalDateKey } = require('../utils/hospitalDateTime');
 
 const toObjectId = (id) => {
   try {
@@ -20,32 +23,34 @@ const toObjectId = (id) => {
 };
 
 const getDateField = (doc) => {
-  return doc.created_at || doc.createdAt || doc.issue_date || doc.generated_at;
+  return doc.issue_date || doc.issued_at || doc.generated_at || doc.postedAt || doc.entryDate || doc.sale_date || doc.created_at || doc.createdAt;
 };
 
 const buildDateFilter = (startDate, endDate) => {
-  if (startDate && endDate) {
+  if (startDate || endDate) {
+    const range = semanticDateRange(startDate, endDate);
     return {
       $or: [
-        { created_at: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } },
-        { createdAt: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } },
-        { issue_date: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } },
-        { generated_at: { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999Z') } }
-      ]
-    };
-  } else {
-    const now = new Date();
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(now.getDate() - 30);
-    return {
-      $or: [
-        { created_at: { $gte: thirtyDaysAgo, $lte: now } },
-        { createdAt: { $gte: thirtyDaysAgo, $lte: now } },
-        { issue_date: { $gte: thirtyDaysAgo, $lte: now } },
-        { generated_at: { $gte: thirtyDaysAgo, $lte: now } }
+        { issue_date: range },
+        { generated_at: range },
+        { postedAt: range },
+        { entryDate: range },
+        { sale_date: range },
+        // Legacy records without domain timestamps remain discoverable.
+        { created_at: range },
+        { createdAt: range }
       ]
     };
   }
+  const now = operationNow();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
+  const range = { $gte: thirtyDaysAgo, $lte: now };
+  return {
+    $or: [
+      { issue_date: range }, { generated_at: range }, { postedAt: range }, { entryDate: range }, { sale_date: range },
+      { created_at: range }, { createdAt: range }
+    ]
+  };
 };
 
 /**
@@ -672,7 +677,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
 
     ipdAdmissions.forEach(adm => {
       const admissionDate = new Date(adm.admissionDate);
-      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
+      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : operationNow();
       const bedDays = Math.ceil((dischargeDate - admissionDate) / (1000 * 60 * 60 * 24));
       totalBedDays += bedDays;
 
@@ -712,7 +717,7 @@ exports.calculateHospitalRevenue = async (req, res) => {
       }
       ipdByWard[wardName].admissions += 1;
       const admissionDate = new Date(adm.admissionDate);
-      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
+      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : operationNow();
       const bedDays = Math.ceil((dischargeDate - admissionDate) / (1000 * 60 * 60 * 24));
       const dailyRate = adm.wardId?.dailyRate || adm.bedId?.dailyRate || 1000;
       ipdByWard[wardName].estimatedRevenue += dailyRate * bedDays;
@@ -5107,7 +5112,7 @@ exports.getRadiologyRevenueAnalytics = async (req, res) => {
       }
 
       // Daily breakdown
-      const dateKey = new Date(req.requestedDate).toISOString().split('T')[0];
+      const dateKey = hospitalDateKey(req.requestedDate);
       if (!dailyStats[dateKey]) {
         dailyStats[dateKey] = {
           date: dateKey,
@@ -5477,7 +5482,7 @@ exports.getIpdRevenueAnalytics = async (req, res) => {
     // Process admissions for bed days and basic stats
     admissions.forEach(adm => {
       const admissionDate = new Date(adm.admissionDate);
-      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : new Date();
+      const dischargeDate = adm.dischargeDate ? new Date(adm.dischargeDate) : operationNow();
       const bedDays = Math.ceil((dischargeDate - admissionDate) / (1000 * 60 * 60 * 24));
       totalBedDays += bedDays;
 
@@ -5615,8 +5620,8 @@ exports.getIpdRevenueAnalytics = async (req, res) => {
       }
 
       // Daily revenue
-      const chargeDate = new Date(charge.createdAt || charge.created_at || Date.now());
-      const dateKey = chargeDate.toISOString().split('T')[0];
+      const chargeDate = new Date(charge.chargeDate || charge.charge_date || charge.serviceDate || charge.createdAt || charge.created_at || operationNow());
+      const dateKey = hospitalDateKey(chargeDate);
       if (!dailyRevenue[dateKey]) {
         dailyRevenue[dateKey] = {
           date: dateKey,
@@ -6203,8 +6208,8 @@ exports.getPharmacyRevenueAnalytics = async (req, res) => {
 
     bills.forEach(bill => {
       const amount = bill.total_amount || 0;
-      if (!dailyRevenue[new Date(bill.generated_at).toISOString().split('T')[0]]) {
-        const dateKey = new Date(bill.generated_at).toISOString().split('T')[0];
+      if (!dailyRevenue[hospitalDateKey(bill.generated_at)]) {
+        const dateKey = hospitalDateKey(bill.generated_at);
         if (!dailyRevenue[dateKey]) {
           dailyRevenue[dateKey] = {
             date: dateKey,

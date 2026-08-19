@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 /**
  * Append-only patient advance wallet ledger. balanceAfter is written by the
@@ -48,11 +49,12 @@ const patientAdvanceLedgerSchema = new mongoose.Schema({
   parentGroupId: { type: String, trim: true, index: true },
   presentationType: { type: String, trim: true },
   notes: { type: String, trim: true },
+  postedAt: { type: Date, default: operationNow, index: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
-patientAdvanceLedgerSchema.index({ admissionId: 1, walletType: 1, createdAt: -1 });
-patientAdvanceLedgerSchema.index({ patientId: 1, createdAt: -1 });
+patientAdvanceLedgerSchema.index({ admissionId: 1, walletType: 1, postedAt: -1, createdAt: -1 });
+patientAdvanceLedgerSchema.index({ patientId: 1, postedAt: -1, createdAt: -1 });
 patientAdvanceLedgerSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('PatientAdvanceLedger', patientAdvanceLedgerSchema);

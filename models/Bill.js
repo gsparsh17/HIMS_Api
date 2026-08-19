@@ -154,7 +154,7 @@ const deletionRequestSchema = new mongoose.Schema({
   },
   requested_at: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   reason: {
     type: String,
@@ -401,7 +401,7 @@ billSchema.pre('save', function (next) {
   const protectedStatuses = ['Draft', 'Cancelled', 'Refunded', 'Partially Returned', 'Fully Returned'];
   if (this.balance_due <= 0 && !['Cancelled', 'Refunded'].includes(this.status)) {
     this.status = 'Paid';
-    this.paid_at = this.paid_at || new Date();
+    this.paid_at = this.paid_at || operationNow();
   } else if (
     this.paid_amount > 0 ||
     Number(this.settlement_discount_amount || 0) > 0 ||
@@ -423,7 +423,7 @@ billSchema.pre('save', function (next) {
 
   if (this.invoice_ids.length > 0) {
     this.document_stage = 'INVOICED';
-    this.invoiced_at = this.invoiced_at || new Date();
+    this.invoiced_at = this.invoiced_at || operationNow();
   } else if (this.document_stage === 'DRAFT' && this.status !== 'Draft') {
     this.document_stage = 'GENERATED';
   }

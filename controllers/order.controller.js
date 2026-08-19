@@ -314,7 +314,7 @@ exports.createPurchaseOrder = async (req, res) => {
       customer_name: 'Supplier Purchase',
       purchase_order_id: purchaseOrder._id,
       issue_date: operationNow(),
-      due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      due_date: new Date(operationNow().getTime() + 30 * 24 * 60 * 60 * 1000),
       service_items: validatedItems.map((item) => ({
         description: `Purchase - ${item.medicine_name} (HSN: ${item.hsn_code}, GST: ${item.gst_rate}%)`,
         quantity: item.quantity,

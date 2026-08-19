@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { operationNow } = require('../utils/operationTimeContext');
+const { hospitalDateKey, hospitalDayBounds } = require('../utils/hospitalDateTime');
 const DailySequence = require('./DailySequence');
 
 const ipdAdmissionSchema = new mongoose.Schema({
@@ -210,7 +211,7 @@ const ipdAdmissionSchema = new mongoose.Schema({
     }],
     delayReasons: [{
       reason: { type: String, required: true },
-      recordedAt: { type: Date, default: Date.now },
+      recordedAt: { type: Date, default: operationNow },
       recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
     }],
     updatedAt: Date
@@ -331,13 +332,10 @@ ipdAdmissionSchema.pre('validate', async function(next) {
   try {
     const IPDAdmission = mongoose.model('IPDAdmission');
     const session = typeof this.$session === 'function' ? this.$session() : null;
-    const now = this.admissionDate ? new Date(this.admissionDate) : new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const dateStr = `${year}${month}${day}`;
-    const dayStart = new Date(year, now.getMonth(), now.getDate());
-    const dayEnd = new Date(year, now.getMonth(), now.getDate() + 1);
+    const now = this.admissionDate ? new Date(this.admissionDate) : operationNow();
+    const admissionDateKey = hospitalDateKey(now);
+    const dateStr = admissionDateKey.replace(/-/g, '');
+    const { start: dayStart, end: dayEnd } = hospitalDayBounds(admissionDateKey);
 
     if (!this.admissionNumber) {
       const query = IPDAdmission.findOne({
@@ -408,7 +406,7 @@ ipdAdmissionSchema.post('findOneAndUpdate', async function(doc) {
 
 // Virtual for length of stay
 ipdAdmissionSchema.virtual('lengthOfStay').get(function() {
-  const endDate = this.dischargeDate || new Date();
+  const endDate = this.dischargeDate || operationNow();
   const diffTime = Math.abs(endDate - this.admissionDate);
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 });

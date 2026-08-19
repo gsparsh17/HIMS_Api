@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
 const LabRequest = require('../models/LabRequest');
 const LabTest = require('../models/LabTest');
 const LabStaff = require('../models/LabStaff');
@@ -650,9 +651,7 @@ exports.getLabRequests = async (req, res) => {
     if (sourceType) filter.sourceType = sourceType;
     
     if (startDate || endDate) {
-      filter.requestedDate = {};
-      if (startDate) filter.requestedDate.$gte = new Date(startDate);
-      if (endDate) filter.requestedDate.$lte = new Date(endDate);
+      filter.requestedDate = semanticDateRange(startDate, endDate);
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -889,9 +888,7 @@ exports.getReleasedReports = async (req, res) => {
     };
     if (req.query.patientId) filter.patientId = req.query.patientId;
     if (req.query.startDate || req.query.endDate) {
-      filter['reportFinalisation.finalisedAt'] = {};
-      if (req.query.startDate) filter['reportFinalisation.finalisedAt'].$gte = new Date(req.query.startDate);
-      if (req.query.endDate) filter['reportFinalisation.finalisedAt'].$lte = new Date(req.query.endDate);
+      filter['reportFinalisation.finalisedAt'] = semanticDateRange(req.query.startDate, req.query.endDate);
     }
     const [items, total] = await Promise.all([
       LabRequest.find(filter)

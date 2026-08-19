@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require('mongoose');
 const RepricingBatch = require('../models/RepricingBatch');
 const AdmissionCoverage = require('../models/AdmissionCoverage');
@@ -294,7 +295,7 @@ async function createAdjustmentInvoice({ batch, coverage, patientAmount, sponsor
   return Invoice.create({
     hospital_id: batch.hospitalId, invoice_number: invoiceNumber, patient_id: batch.patientId,
     appointment_id: batch.appointmentId, admission_id: batch.admissionId, customer_type: sponsorAmount > 0 ? 'Insurance' : 'Patient',
-    invoice_type: 'Other', document_stage: 'ISSUED', issued_at: new Date(), issue_date: new Date(), due_date: new Date(Date.now() + 30 * 86400000),
+    invoice_type: 'Other', document_stage: 'ISSUED', issued_at: operationNow(), issue_date: operationNow(), due_date: new Date(operationNow().getTime() + 30 * 86400000),
     linked_invoice_id: linkedInvoiceId, subtotal: total, gross_amount: total, discount: 0, tax: 0, total, amount_paid: 0,
     payer_allocation: { coverage_id: coverage._id, payer_id: coverage.payerId?._id || coverage.payerId, standard_amount: total, contracted_amount: total, eligible_amount: sponsorAmount, patient_liability: Math.max(0, patientAmount), sponsor_liability: Math.max(0, sponsorAmount) },
     service_items: [{ description: reason, quantity: 1, unit_price: total, total_price: total, service_type: 'Other', patient_liability: Math.max(0, patientAmount), sponsor_liability: Math.max(0, sponsorAmount), contracted_amount: total, eligible_amount: Math.max(0, sponsorAmount), standard_amount: total }],

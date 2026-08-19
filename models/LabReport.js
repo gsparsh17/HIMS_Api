@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const labReportSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
@@ -38,7 +39,7 @@ const labReportSchema = new mongoose.Schema({
   report_date: { 
     type: Date, 
     required: true,
-    default: Date.now
+    default: operationNow
   },
   notes: { 
     type: String 

@@ -1,3 +1,4 @@
+const { hospitalDateKey } = require('../utils/hospitalDateTime');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
 const IPDCharge = require('../models/IPDCharge');
@@ -52,9 +53,8 @@ function chargeSection(charge = {}) {
 }
 
 function dateKey(value) {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return 'Undated';
-  return date.toISOString().slice(0, 10);
+  if (!value) return 'Undated';
+  try { return hospitalDateKey(value); } catch { return 'Undated'; }
 }
 
 function groupCharges(charges = []) {

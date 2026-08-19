@@ -14,7 +14,7 @@ const schema = new mongoose.Schema({
   reservedUnitIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'BloodUnit' }],
   shortageReason: String,
   delayReason: String,
-  timeline: [{ activity: { type: String, required: true }, at: { type: Date, default: Date.now }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, note: String }],
+  timeline: [{ activity: { type: String, required: true }, at: { type: Date, default: operationNow }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, note: String }],
   requestedAt: { type: Date, default: operationNow },
   dispatchedAt: Date,
   requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

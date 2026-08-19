@@ -1,4 +1,5 @@
 'use strict';
+const { operationNow } = require('../utils/operationTimeContext');
 
 const mongoose = require('mongoose');
 const Medicine = require('../models/Medicine');
@@ -1137,11 +1138,11 @@ exports.createEmergencyChecklist = async (req, res) => {
     const row = await EmergencyMedicationChecklist.create({
       hospitalId: hospitalIdFor(req),
       location: req.body.location,
-      checklistDate: req.body.checklistDate || new Date(),
+      checklistDate: req.body.checklistDate || operationNow(),
       items,
       status: complete ? 'completed' : 'draft',
       completedBy: complete ? req.user._id : undefined,
-      completedAt: complete ? (req.body.completedAt || new Date()) : undefined
+      completedAt: complete ? (req.body.completedAt || operationNow()) : undefined
     });
 
     return res.status(201).json({

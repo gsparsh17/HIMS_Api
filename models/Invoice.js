@@ -4,7 +4,7 @@ const { operationNow } = require('../utils/operationTimeContext');
 const paymentSchema = new mongoose.Schema({
   date: {
     type: Date,
-    default: () => new Date()
+    default: operationNow
   },
   amount: {
     type: Number,
@@ -634,7 +634,7 @@ const invoiceSchema = new mongoose.Schema({
   // Dates - All stored in UTC
   issue_date: {
     type: Date,
-    default: () => new Date(),
+    default: operationNow,
     required: true
   },
   due_date: {
@@ -870,7 +870,7 @@ invoiceSchema.pre('save', function (next) {
   // back to Draft merely because a balance remains outstanding.
   if (this.document_stage === 'DRAFT' && ['Issued', 'Pending', 'Paid', 'Partial', 'Overdue'].includes(this.status)) {
     this.document_stage = 'ISSUED';
-    if (!this.issued_at) this.issued_at = this.issue_date || new Date();
+    if (!this.issued_at) this.issued_at = this.issue_date || operationNow();
   }
 
   const completedPaymentTotal = (this.payment_history || [])

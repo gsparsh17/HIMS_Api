@@ -1,5 +1,6 @@
 // models/IPDNursingAdmissionAssessment.js
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const yesNoDetailsSchema = new mongoose.Schema({
   value: { type: Boolean, default: false },
@@ -152,7 +153,7 @@ const nursingAdmissionAssessmentSchema = new mongoose.Schema({
     remarks: { type: String, trim: true }
   }],
 
-  assessmentAt: { type: Date, default: Date.now },
+  assessmentAt: { type: Date, default: operationNow },
   assessedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   assessedByName: { type: String, trim: true },
   areaInChargeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

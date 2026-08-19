@@ -1212,7 +1212,7 @@ exports.getActivePrescriptions = async (req, res) => {
     const filter = {
       hospitalId: requestHospitalId(req),
       status: 'Active',
-      issue_date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+      issue_date: { $gte: new Date(operationNow().getTime() - 30 * 24 * 60 * 60 * 1000), $lte: operationNow() }
     };
     if (patient_id) filter.patient_id = patient_id;
 

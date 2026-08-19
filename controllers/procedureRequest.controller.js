@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const Procedure = require('../models/Procedure');
 const fileStorage = require('../services/fileStorage.service');
@@ -139,9 +140,7 @@ exports.getProcedureRequests = async (req, res) => {
     if (sourceType) filter.sourceType = sourceType;
     
     if (startDate || endDate) {
-      filter.requestedDate = {};
-      if (startDate) filter.requestedDate.$gte = new Date(startDate);
-      if (endDate) filter.requestedDate.$lte = new Date(endDate);
+      filter.requestedDate = semanticDateRange(startDate, endDate);
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);

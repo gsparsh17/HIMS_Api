@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const { operationNow } = require('../utils/operationTimeContext');
 
 const amendmentSchema = new mongoose.Schema({
-  amendedAt: { type: Date, default: Date.now },
+  amendedAt: { type: Date, default: operationNow },
   amendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   reason: { type: String, required: true, trim: true },
   snapshot: { type: mongoose.Schema.Types.Mixed }

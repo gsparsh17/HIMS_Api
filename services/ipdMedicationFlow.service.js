@@ -2,6 +2,8 @@ const Pharmacy = require('../models/Pharmacy');
 const NursingNote = require('../models/NursingNote');
 const { frequencyToPerDay, parseDurationDays } = require('./pharmacyTransaction.service');
 const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
+const { operationNow } = require('../utils/operationTimeContext');
+const { hospitalDateKey, dateKeyToStorageDate, addDateKeyDays } = require('../utils/hospitalDateTime');
 
 function normaliseBoolean(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -38,7 +40,7 @@ function calculateMedicationRequiredBaseUnits(item = {}) {
   return Math.max(1, Math.ceil(doseQty * perDay * Math.max(1, durationDays)));
 }
 
-function generateTimingSlots(frequency, durationDays, startDate = new Date()) {
+function generateTimingSlots(frequency, durationDays, startDate = operationNow()) {
   const map = {
     OD: ['08:00'], BD: ['08:00', '20:00'], TDS: ['08:00', '14:00', '20:00'],
     QDS: ['06:00', '12:00', '18:00', '22:00'], q4h: ['02:00', '06:00', '10:00', '14:00', '18:00', '22:00'],
@@ -46,14 +48,12 @@ function generateTimingSlots(frequency, durationDays, startDate = new Date()) {
     q12h: ['08:00', '20:00'], Stat: ['now'], SOS: []
   };
   const count = Math.max(1, Number(durationDays || 1));
-  const day0 = new Date(startDate);
-  day0.setHours(0, 0, 0, 0);
+  const day0Key = hospitalDateKey(startDate);
   const times = map[frequency] || ['08:00'];
   const slots = [];
   for (let day = 0; day < count; day += 1) {
+    const date = dateKeyToStorageDate(addDateKeyDays(day0Key, day));
     for (const time of times) {
-      const date = new Date(day0);
-      date.setDate(date.getDate() + day);
       slots.push({ date, time, status: 'Pending' });
     }
   }
@@ -80,7 +80,7 @@ async function createOrUpdatePharmacyRequest({ medication, requestedQuantity, re
   medication.pharmacyRequest = {
     ...((medication.pharmacyRequest && medication.pharmacyRequest.toObject) ? medication.pharmacyRequest.toObject() : medication.pharmacyRequest || {}),
     requestedToPharmacy: true,
-    requestedAt: new Date(),
+    requestedAt: operationNow(),
     requestedBy: requestedBy || medication.createdBy || medication.prescribedBy,
     requestedQuantity: Math.ceil(quantity),
     pharmacyId: pharmacy._id,

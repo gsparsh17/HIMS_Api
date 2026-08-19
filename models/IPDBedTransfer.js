@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const locationSchema = new mongoose.Schema({
   wardId: { type: mongoose.Schema.Types.ObjectId, ref: 'Ward' },
@@ -37,7 +38,7 @@ const ipdBedTransferSchema = new mongoose.Schema({
     receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     completedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
-  timeline: [{ status: String, at: { type: Date, default: Date.now }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, note: String }],
+  timeline: [{ status: String, at: { type: Date, default: operationNow }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, note: String }],
   handover: {
     note: String,
     belongings: [String],

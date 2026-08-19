@@ -19,6 +19,7 @@ const MRDRecordReview = require('../models/MRDRecordReview');
 const Hospital = require('../models/Hospital');
 const patientFileManifest = require('./patientFileManifest.service');
 const { appendDomainEvent } = require('./auditEvent.service');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
 
 // ============================================
 // Helpers
@@ -32,15 +33,7 @@ function dateRange(query = {}, field = 'createdAt') {
   const filter = {};
 
   if (query.from || query.to) {
-    filter[field] = {};
-
-    if (query.from) {
-      filter[field].$gte = new Date(`${query.from}T00:00:00.000`);
-    }
-
-    if (query.to) {
-      filter[field].$lte = new Date(`${query.to}T23:59:59.999`);
-    }
+    filter[field] = semanticDateRange(query.from, query.to);
   }
 
   return filter;
@@ -231,11 +224,11 @@ async function listDischarges(hospitalId, query = {}) {
     filter.dischargeDate = {};
 
     if (query.from) {
-      filter.dischargeDate.$gte = new Date(`${query.from}T00:00:00.000`);
+      Object.assign(filter.dischargeDate, semanticDateRange(query.from, null));
     }
 
     if (query.to) {
-      filter.dischargeDate.$lte = new Date(`${query.to}T23:59:59.999`);
+      Object.assign(filter.dischargeDate, semanticDateRange(null, query.to));
     }
 
     delete filter.$or;

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const placementSchema = new mongoose.Schema({
   assetId: { type: mongoose.Schema.Types.ObjectId, required: true },
@@ -47,7 +48,7 @@ const documentSignatureSchema = new mongoose.Schema({
   sourceHash: { type: String, required: true },
   signatureHash: { type: String, required: true, unique: true, index: true },
   verificationCode: { type: String, required: true, unique: true, index: true },
-  signedAt: { type: Date, default: Date.now, index: true },
+  signedAt: { type: Date, default: operationNow, index: true },
   status: { type: String, enum: ['signed', 'superseded', 'revoked'], default: 'signed', index: true },
   supersededBy: { type: mongoose.Schema.Types.ObjectId, ref: 'DocumentSignature' },
   revokedAt: Date,

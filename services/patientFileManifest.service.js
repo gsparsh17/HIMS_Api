@@ -1,4 +1,6 @@
 const IPDAdmission = require('../models/IPDAdmission');
+const { operationNow } = require('../utils/operationTimeContext');
+const { hospitalDateKey } = require('../utils/hospitalDateTime');
 const Hospital = require('../models/Hospital');
 const IPDInitialAssessment = require('../models/IPDInitialAssessment');
 const IPDNursingAdmissionAssessment = require('../models/IPDNursingAdmissionAssessment');
@@ -187,6 +189,23 @@ function objectId(record) {
   return record?._id || record?.id;
 }
 
+function otDocumentDate(record, sourceModel) {
+  if (!record) return null;
+  const fields = {
+    OTReadinessChecklist: ['completedAt', 'evaluatedAt'],
+    OTSurgicalSafetyChecklist: ['finalizedAt', 'attestedAt', 'completedAt'],
+    OTPreAnaesthesiaAssessment: ['signedAt', 'assessedAt'],
+    OTAnesthesiaRecord: ['signedAt', 'closureAt', 'incisionAt', 'inductionAt', 'recordedAt'],
+    OTOperativeNote: ['signedAt', 'surgeryDate', 'closureAt', 'incisionAt'],
+    OTRecoveryRecord: ['signedAt', 'transferAt', 'receivedAt', 'recordedAt'],
+    OTCaseInventoryUsage: ['reconciledAt']
+  };
+  for (const field of fields[sourceModel] || []) {
+    if (record[field]) return record[field];
+  }
+  return record.createdAt || record.updatedAt || null;
+}
+
 function manifestItem({ record, category, documentType, title, sourceModel, rendererKey, status, date, authorName, fileUrl, mimeType, relatedCaseId, relatedCaseType, required = false, visibility = 'clinical', metadata = {}, templateId, templateVersion, formTemplate }) {
   return {
     key: `${sourceModel}:${objectId(record)}`,
@@ -199,7 +218,7 @@ function manifestItem({ record, category, documentType, title, sourceModel, rend
     sourceRevision: Number(record?.version || record?.revision || 1),
     rendererKey,
     status,
-    documentDate: date || record?.updatedAt || record?.createdAt || new Date(),
+    documentDate: date || record?.createdAt || record?.updatedAt || null,
     authorName,
     fileUrl,
     mimeType,
@@ -384,7 +403,7 @@ async function buildManifest(req, admissionId, options = {}) {
 
   const vitalsByDate = new Map();
   vitals.forEach((record) => {
-    const key = record.chartDate || new Date(record.recordedAt || record.createdAt).toISOString().slice(0, 10);
+    const key = record.chartDate || hospitalDateKey(record.recordedAt || record.createdAt);
     if (!vitalsByDate.has(key)) vitalsByDate.set(key, []);
     vitalsByDate.get(key).push(record);
   });
@@ -425,7 +444,7 @@ async function buildManifest(req, admissionId, options = {}) {
   });
   const knownLabRequestIds = new Set(labRequests.map((record) => idString(record._id)));
   const encounterStart = admission.admissionDate ? new Date(admission.admissionDate) : new Date(0);
-  const encounterEnd = admission.dischargeDate ? new Date(admission.dischargeDate) : new Date();
+  const encounterEnd = admission.dischargeDate ? new Date(admission.dischargeDate) : operationNow();
   encounterEnd.setHours(23, 59, 59, 999);
   // Lab reports linked to this admission are represented by their LabRequest row
   // above. Only include standalone/external reports when they were produced
@@ -463,7 +482,7 @@ async function buildManifest(req, admissionId, options = {}) {
       otCase.surgery_report_url ? { name: 'Uploaded Surgery Report', url: otCase.surgery_report_url } : null,
       ...(otCase.attachments || []).map((attachment) => ({ name: attachment.name || 'OT Attachment', url: attachment.url, uploadedAt: attachment.uploaded_at }))
     ].filter((attachment) => attachment?.url);
-    otAttachments.forEach((attachment, index) => documents.push(manifestItem({ record: { _id: `${otCase._id}-attachment-${index}`, ...attachment }, category: 'attachment', documentType: 'ot_attachment', title: attachment.name, sourceModel: 'OTRequestAttachment', rendererKey: 'file-document', status: 'Completed/Unsigned', date: attachment.uploadedAt || otCase.updatedAt, fileUrl: attachment.url, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', metadata: caseMetadata })));
+    otAttachments.forEach((attachment, index) => documents.push(manifestItem({ record: { _id: `${otCase._id}-attachment-${index}`, ...attachment }, category: 'attachment', documentType: 'ot_attachment', title: attachment.name, sourceModel: 'OTRequestAttachment', rendererKey: 'file-document', status: 'Completed/Unsigned', date: attachment.uploadedAt || otCase.completedAt || otCase.startedAt || otCase.scheduledStart || otCase.requestedDate || otCase.createdAt, fileUrl: attachment.url, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', metadata: caseMetadata })));
     const children = [
       [readiness, 'ot', 'ot_readiness', 'Pre-Operative Readiness Checklist', 'OTReadinessChecklist', 'ot-readiness', ['Ready', 'Ready With Bypass']],
       [safety, 'ot', 'surgical_safety_checklist', 'Surgical Safety Checklist', 'OTSurgicalSafetyChecklist', 'ot-safety-checklist', ['Completed']],
@@ -486,7 +505,7 @@ async function buildManifest(req, admissionId, options = {}) {
     children.forEach(([record, category, documentType, title, sourceModel, rendererKey, completed]) => {
       const replacementTemplateId = structuredReplacementBySourceModel[sourceModel];
       if (replacementTemplateId && structuredIds.has(replacementTemplateId)) return;
-      if (record) documents.push(manifestItem({ record, category, documentType, title, sourceModel, rendererKey, status: statusOf(record.status || record.overallStatus, { complete: completed.filter((value) => value !== 'Signed'), final: completed.includes('Signed') ? ['Signed'] : [] }), date: record.updatedAt, relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', required: true, metadata: caseMetadata }));
+      if (record) documents.push(manifestItem({ record, category, documentType, title, sourceModel, rendererKey, status: statusOf(record.status || record.overallStatus, { complete: completed.filter((value) => value !== 'Signed'), final: completed.includes('Signed') ? ['Signed'] : [] }), date: otDocumentDate(record, sourceModel), relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', required: true, metadata: caseMetadata }));
       else documents.push({ key: `required:${sourceModel}:${otCase._id}`, category, documentType, title, sourceModel, rendererKey, status: 'Not Started', required: true, relatedCaseId: String(otCase._id), relatedCaseType: 'OTRequest', metadata: caseMetadata });
     });
 

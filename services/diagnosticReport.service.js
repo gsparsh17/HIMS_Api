@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { operationNow } = require('../utils/operationTimeContext');
 const { queueNotification } = require('./nabhNotification.service');
 
 function canonicalJson(value) {
@@ -47,7 +48,7 @@ function finaliseDiagnosticReport(request, userId) {
   const snapshot = reportSnapshot(request);
   request.reportFinalisation = {
     isFinal: true,
-    finalisedAt: new Date(),
+    finalisedAt: operationNow(),
     finalisedBy: userId,
     checksum: checksum(snapshot),
     version: Number(request.reportFinalisation?.version || 0) + 1
@@ -73,7 +74,7 @@ async function amendDiagnosticReport({ request, userId, reason, patch }) {
     reason: String(reason).trim(),
     previousReport: previous,
     previousChecksum: request.reportFinalisation.checksum,
-    amendedAt: new Date(),
+    amendedAt: operationNow(),
     amendedBy: userId
   });
   const editableReportFields = new Set([
@@ -89,7 +90,7 @@ async function amendDiagnosticReport({ request, userId, reason, patch }) {
   }
   request.reportFinalisation = {
     isFinal: true,
-    finalisedAt: new Date(),
+    finalisedAt: operationNow(),
     finalisedBy: userId,
     checksum: checksum(reportSnapshot(request)),
     version: Number(request.reportFinalisation.version || 1) + 1

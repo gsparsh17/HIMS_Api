@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const itemSchema = new mongoose.Schema(
   {
@@ -54,7 +55,7 @@ const schema = new mongoose.Schema(
     },
     checklistDate: {
       type: Date,
-      default: Date.now,
+      default: operationNow,
       index: true
     },
     items: {

@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const { hospitalDateKey } = require('../utils/hospitalDateTime');
 const mongoose = require('mongoose');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
@@ -216,8 +217,8 @@ async function financialPrintSnapshots(admission, session) {
   };
 }
 
-function dateKey(value = new Date()) {
-  return new Date(value).toISOString().slice(0, 10);
+function dateKey(value = operationNow()) {
+  return hospitalDateKey(value);
 }
 
 async function syncLinkedBillFromInvoice(invoice, paymentMethod, session) {

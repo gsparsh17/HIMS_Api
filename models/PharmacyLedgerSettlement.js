@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow, operationDateKey } = require('../utils/operationTimeContext');
 
 const paymentBreakdownSchema = new mongoose.Schema({
   method: {
@@ -30,6 +31,7 @@ const allocationSchema = new mongoose.Schema({
 
 const pharmacyLedgerSettlementSchema = new mongoose.Schema({
   settlement_number: { type: String, unique: true, index: true },
+  settledAt: { type: Date, default: operationNow, index: true },
   hospital_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   pharmacy_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Pharmacy', index: true },
   patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
@@ -99,14 +101,14 @@ const pharmacyLedgerSettlementSchema = new mongoose.Schema({
 
 pharmacyLedgerSettlementSchema.pre('validate', function preValidate(next) {
   if (this.isNew && !this.settlement_number) {
-    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const day = operationDateKey().replace(/-/g, '');
     const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.toUpperCase();
     this.settlement_number = `PLS-${day}-${suffix}`;
   }
   next();
 });
 
-pharmacyLedgerSettlementSchema.index({ patient_id: 1, createdAt: -1 });
-pharmacyLedgerSettlementSchema.index({ admission_id: 1, createdAt: -1 });
+pharmacyLedgerSettlementSchema.index({ patient_id: 1, settledAt: -1, createdAt: -1 });
+pharmacyLedgerSettlementSchema.index({ admission_id: 1, settledAt: -1, createdAt: -1 });
 
 module.exports = mongoose.model('PharmacyLedgerSettlement', pharmacyLedgerSettlementSchema);

@@ -4,6 +4,7 @@ const Invoice = require('../models/Invoice');
 const Patient = require('../models/Patient');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const { requestHospitalId } = require('../utils/hospitalScope');
+const { operationNow } = require('../utils/operationTimeContext');
 
 exports.getPatientPharmacyBills = async (req, res) => {
   try {
@@ -134,20 +135,20 @@ exports.updatePharmacyBillPayment = async (req, res) => {
         method: payment_method,
         amount: amount,
         reference: reference,
-        date: new Date()
+        date: operationNow()
       });
     } else {
       bill.payments = [{
         method: payment_method,
         amount: amount,
         reference: reference,
-        date: new Date()
+        date: operationNow()
       }];
     }
 
     if (newPaidAmount >= bill.total_amount) {
       bill.status = 'Paid';
-      bill.paid_at = new Date();
+      bill.paid_at = operationNow();
     } else if (newPaidAmount > 0) {
       bill.status = 'Partially Paid';
     }
@@ -165,7 +166,7 @@ exports.updatePharmacyBillPayment = async (req, res) => {
           amount: amount,
           method: payment_method,
           reference: reference,
-          date: new Date(),
+          date: operationNow(),
           status: 'Completed',
           collected_by: req.user?._id
         });

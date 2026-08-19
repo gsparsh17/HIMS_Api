@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const { semanticDateRange } = require('../utils/hospitalDateRange');
 const mongoose = require('mongoose');
 const OTRequest = require('../models/OTRequest');
 const OTSchedule = require('../models/OTSchedule');
@@ -181,9 +182,7 @@ exports.listCases = async (req, res, next) => {
       if (req.query[field]) filter[field] = req.query[field];
     }
     if (req.query.startDate || req.query.endDate) {
-      filter.requestedDate = {};
-      if (req.query.startDate) filter.requestedDate.$gte = new Date(req.query.startDate);
-      if (req.query.endDate) filter.requestedDate.$lte = new Date(req.query.endDate);
+      filter.requestedDate = semanticDateRange(req.query.startDate, req.query.endDate);
     }
     const [data, total] = await Promise.all([
       casePopulate(OTRequest.find(filter)).sort({ scheduledStart: 1, requestedDate: -1 }).skip((page - 1) * limit).limit(limit),

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 /**
  * A purchase order may refer to an existing local Medicine master or carry a
@@ -63,7 +64,7 @@ const purchaseOrderSchema = new mongoose.Schema({
     ref: 'Supplier',
     required: true,
   },
-  order_date: { type: Date, default: Date.now },
+  order_date: { type: Date, default: operationNow },
   expected_delivery: { type: Date },
   status: {
     type: String,

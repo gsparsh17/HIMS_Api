@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const Sale = require('../models/Sale');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
@@ -109,7 +110,7 @@ async function getAdvanceBalance({ patientId, admissionId, walletType, session }
   } else {
     return 0;
   }
-  const last = await scoped(PatientAdvanceLedger.findOne(query).sort({ createdAt: -1 }), session);
+  const last = await scoped(PatientAdvanceLedger.findOne(query).sort({ postedAt: -1, createdAt: -1 }), session);
   return money(last?.balanceAfter);
 }
 
@@ -439,7 +440,7 @@ async function createPatientCredit({ settlement, amount, disposition, session, c
 // ========== APPLY ALLOCATION ==========
 
 async function applyAllocation({ sale, allocation, paymentEntries, settlement, createdBy, session }) {
-  const now = new Date();
+  const now = operationNow();
   const paymentAllocated = money(allocation.paymentAllocated);
   const settlementDiscount = money(allocation.settlementDiscountAllocated);
   const creditNote = money(allocation.creditNoteAllocated);
@@ -733,6 +734,7 @@ async function postLedgerSettlement(input, context = {}) {
     if (!resolvedPatientId) throw new Error('A patient is required for pharmacy ledger settlement.');
 
     const settlement = new PharmacyLedgerSettlement({
+      settledAt: operationNow(),
       hospital_id: hospitalId,
       pharmacy_id: pharmacyId,
       patient_id: resolvedPatientId,
@@ -824,7 +826,7 @@ async function postLedgerSettlement(input, context = {}) {
         { _id: settlement.patient_id },
         {
           $inc: { pharmacy_outstanding_balance: -clearedOutstanding },
-          $set: { last_pharmacy_transaction: new Date() }
+          $set: { last_pharmacy_transaction: operationNow() }
         },
         { session }
       );
@@ -857,7 +859,7 @@ async function listSettlements(filters = {}, context = {}) {
   if (filters.status) query.status = filters.status;
 
   return PharmacyLedgerSettlement.find(query)
-    .sort({ createdAt: -1 })
+    .sort({ settledAt: -1, createdAt: -1 })
     .limit(Math.min(Number(filters.limit || 50), 200))
     .populate('patient_id', 'first_name last_name patientId uhid')
     .populate('admission_id', 'admissionNumber')
@@ -1027,7 +1029,7 @@ async function reverseLedgerSettlement(id, input, context = {}) {
     }
 
     settlement.status = 'REVERSED';
-    settlement.reversed_at = new Date();
+    settlement.reversed_at = operationNow();
     settlement.reversed_by = createdBy;
     settlement.reversal_reason = reversalReason;
     await settlement.save({ session });

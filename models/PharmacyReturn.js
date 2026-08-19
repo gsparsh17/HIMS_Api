@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const pharmacyReturnItemSchema = new mongoose.Schema({
   transactionGroupId: { type: String, index: true },
@@ -34,6 +35,7 @@ const pharmacyReturnSchema = new mongoose.Schema({
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },
   admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', index: true },
   returnType: { type: String, enum: ['IPD_UNUSED_MEDICINE', 'OPD_RETURN', 'WALKIN_RETURN'], default: 'IPD_UNUSED_MEDICINE' },
+  returnedAt: { type: Date, default: operationNow, index: true },
   items: [pharmacyReturnItemSchema],
   totalRefundAmount: { type: Number, default: 0 },
   outstandingReduction: { type: Number, default: 0, min: 0 },
@@ -78,5 +80,8 @@ pharmacyReturnSchema.index({ admissionId: 1, createdAt: -1 });
 pharmacyReturnSchema.index({ patientId: 1, createdAt: -1 });
 pharmacyReturnSchema.index({ returnType: 1, createdAt: -1 });
 pharmacyReturnSchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
+
+pharmacyReturnSchema.index({ hospitalId: 1, patientId: 1, returnedAt: -1 });
+pharmacyReturnSchema.index({ hospitalId: 1, admissionId: 1, returnedAt: -1 });
 
 module.exports = mongoose.model('PharmacyReturn', pharmacyReturnSchema);

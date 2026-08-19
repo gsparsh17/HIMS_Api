@@ -13,6 +13,7 @@
 
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const Sale = require('../models/Sale');
 const PharmacyReturn = require('../models/PharmacyReturn');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
@@ -288,7 +289,7 @@ function setSaleAfterReturn({ sale, returnRecord, total, allocation }) {
     return_id: returnRecord._id,
     return_number: returnRecord.returnNumber,
     amount: total,
-    returned_at: new Date(),
+    returned_at: returnRecord.returnedAt || operationNow(),
   });
 }
 
@@ -761,9 +762,9 @@ async function applyClearanceAllocationToSales({ snapshot, allocations, settleme
       });
     }
     sale.discharge_settlement_id = settlement._id;
-    sale.discharged_settled_at = new Date();
+    sale.discharged_settled_at = operationNow();
     sale.settlement_refs = sale.settlement_refs || [];
-    sale.settlement_refs.push({ sale_id: sale._id, amount: settlementAmount, settled_at: new Date() });
+    sale.settlement_refs.push({ sale_id: sale._id, amount: settlementAmount, settled_at: operationNow() });
     await sale.save({ session });
   }
 
@@ -859,7 +860,7 @@ async function completeFinalClearance({ admissionId, payload, req }) {
       // including already-paid sales that did not need a new allocation today.
       await Sale.updateMany(
         { _id: { $in: snapshot.sales.map((sale) => sale._id) } },
-        { $set: { discharge_settlement_id: settlement._id, discharged_settled_at: new Date() } },
+        { $set: { discharge_settlement_id: settlement._id, discharged_settled_at: operationNow() } },
         { session }
       );
 
@@ -876,7 +877,7 @@ async function completeFinalClearance({ admissionId, payload, req }) {
       }
 
       snapshot.admission.pharmacyClearanceStatus = 'cleared';
-      snapshot.admission.pharmacyClearanceDate = new Date();
+      snapshot.admission.pharmacyClearanceDate = operationNow();
       snapshot.admission.pharmacyClearanceBy = getRequestUserId(req);
       snapshot.admission.pharmacyFinalBalance = 0;
       await snapshot.admission.save({ session });
