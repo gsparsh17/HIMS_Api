@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const imagingTestSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   code: { type: String, required: true, uppercase: true, trim: true, index: true },
@@ -52,5 +53,7 @@ imagingTestSchema.methods.incrementUsage = function incrementUsage() {
   this.last_used = new Date();
   return this.save();
 };
+
+addSoftDeleteFields(imagingTestSchema);
 
 module.exports = mongoose.model('ImagingTest', imagingTestSchema);

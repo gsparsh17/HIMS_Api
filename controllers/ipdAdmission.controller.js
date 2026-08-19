@@ -963,7 +963,7 @@ exports.getAllAdmissions = async (req, res) => {
       pharmacyClearanceStatus
     } = req.query;
 
-    const filter = { hospitalId };
+    const filter = { hospitalId, is_active: { $ne: false } };
 
     if (status) {
       const rows = String(status).split(',').map((value) => value.trim());
@@ -1316,7 +1316,8 @@ exports.deleteAdmission = async (req, res) => {
 
     const admission = await IPDAdmission.findOne({
       _id: req.params.id,
-      hospitalId
+      hospitalId,
+      is_active: { $ne: false }
     });
 
     if (!admission) {
@@ -1329,7 +1330,12 @@ exports.deleteAdmission = async (req, res) => {
       });
     }
 
+    const reason = String(req.body?.reason || 'Admission cancelled by user').trim();
     admission.status = 'Cancelled';
+    admission.is_active = false;
+    admission.deleted_at = operationNow();
+    admission.deleted_by = req.user?._id || null;
+    admission.deletion_reason = reason;
     admission.updatedBy = req.user?._id;
     await admission.save();
 

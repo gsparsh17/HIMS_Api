@@ -66,7 +66,7 @@ exports.createLabReport = async (req, res) => {
 
 exports.getAllLabReports = async (req, res) => {
   try {
-    const reports = await LabReport.find({ hospitalId: requireHospitalId(req) })
+    const reports = await LabReport.find({ hospitalId: requireHospitalId(req), is_active: { $ne: false } })
       .populate('patient_id', 'first_name last_name patientId')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('prescription_id', 'prescription_number')
@@ -80,7 +80,7 @@ exports.getAllLabReports = async (req, res) => {
 
 exports.getReportById = async (req, res) => {
   try {
-    const report = await LabReport.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) })
+    const report = await LabReport.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req), is_active: { $ne: false } })
       .populate('patient_id', 'first_name last_name patientId')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('prescription_id', 'prescription_number')
@@ -94,9 +94,9 @@ exports.getReportById = async (req, res) => {
 
 exports.deleteReport = async (req, res) => {
   try {
-    const deleted = await LabReport.findOneAndDelete({ _id: req.params.id, hospitalId: requireHospitalId(req) });
+    const deleted = await LabReport.findOneAndUpdate({ _id: req.params.id, hospitalId: requireHospitalId(req), is_active: { $ne: false } }, { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Lab report archived by user').trim() } }, { new: true });
     if (!deleted) return res.status(404).json({ error: 'Lab report not found' });
-    res.json({ message: 'Lab report deleted successfully' });
+    res.json({ message: 'Lab report archived successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -106,7 +106,7 @@ exports.deleteReport = async (req, res) => {
 exports.getReportsByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
-    const reports = await LabReport.find({ hospitalId: requireHospitalId(req), patient_id: patientId })
+    const reports = await LabReport.find({ hospitalId: requireHospitalId(req), patient_id: patientId, is_active: { $ne: false } })
       .populate('doctor_id', 'firstName lastName')
       .populate('lab_test_id', 'code name category')
       .sort({ createdAt: -1 });
@@ -120,7 +120,7 @@ exports.getReportsByPatient = async (req, res) => {
 exports.getReportsByPrescription = async (req, res) => {
   try {
     const { prescriptionId } = req.params;
-    const reports = await LabReport.find({ hospitalId: requireHospitalId(req), prescription_id: prescriptionId })
+    const reports = await LabReport.find({ hospitalId: requireHospitalId(req), prescription_id: prescriptionId, is_active: { $ne: false } })
       .populate('lab_test_id', 'code name category')
       .sort({ createdAt: -1 });
     res.json(reports);

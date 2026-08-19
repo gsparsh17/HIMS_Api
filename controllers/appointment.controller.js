@@ -103,8 +103,8 @@ async function guardConsultationStart({ hospitalId, appointment, doctorId, user 
   }
   const resolvedDoctorId = doctorId || appointment.doctor_id;
   const [patient, doctor, activeOther, profile] = await Promise.all([
-    Patient.findOne({ _id: appointment.patient_id, hospitalId }).select('_id patientId uhid').lean(),
-    Doctor.findOne({ _id: resolvedDoctorId, hospitalId }).select('_id user_id firstName lastName').lean(),
+    Patient.findOne({ _id: appointment.patient_id, hospitalId, is_active: { $ne: false } }).select('_id patientId uhid').lean(),
+    Doctor.findOne({ _id: resolvedDoctorId, hospitalId, is_active: { $ne: false } }).select('_id user_id firstName lastName').lean(),
     Appointment.findOne({
       hospital_id: hospitalId,
       doctor_id: resolvedDoctorId,
@@ -186,6 +186,7 @@ async function recalculateQueue({ hospitalId, departmentId, date, timeZone = DEF
     hospital_id: hospitalId,
     department_id: departmentId,
     status: { $in: ['Scheduled', 'In Progress'] },
+    is_active: { $ne: false },
     $or: [
       { appointment_date_key: dateKey },
       { appointment_date: { $gte: start, $lt: end } }
@@ -325,7 +326,7 @@ exports.checkAppointmentConflict = async (req, res) => {
       return res.status(400).json({ error: 'Invalid appointmentDate' });
     }
     if (!mongoose.isValidObjectId(doctorId)
-      || !(await Doctor.exists({ _id: doctorId, hospitalId }))) {
+      || !(await Doctor.exists({ _id: doctorId, hospitalId, is_active: { $ne: false } }))) {
       return res.status(404).json({ error: 'Doctor not found for this hospital' });
     }
     const durationMinutes = Number(duration);
@@ -991,7 +992,7 @@ exports.getDoctorProceduresForDate = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const { doctorId, date } = req.params;
-    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId });
+    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId, is_active: { $ne: false } });
     if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
 
     const hospital = await Hospital.findById(hospitalId).select('timezone');
@@ -1107,9 +1108,9 @@ exports.getAppointmentsByPatientId = async (req, res) => {
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
     const limit = Math.min(200, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
 
-    const patientExists = await Patient.exists({ _id: patientId, hospitalId });
+    const patientExists = await Patient.exists({ _id: patientId, hospitalId, is_active: { $ne: false } });
     if (!patientExists) return res.status(404).json({ error: 'Patient not found' });
-    const filter = { patient_id: patientId, hospital_id: hospitalId };
+    const filter = { patient_id: patientId, hospital_id: hospitalId, is_active: { $ne: false } };
     if (status) filter.status = status;
 
     const appointments = await Appointment.find(filter)
@@ -1195,9 +1196,9 @@ exports.createAppointment = async (req, res) => {
     }
 
     const [patient, doctorRecord, departmentRecord] = await Promise.all([
-      Patient.findOne({ _id: req.body.patient_id, hospitalId }),
-      Doctor.findOne({ _id: doctor_id, hospitalId }),
-      Department.findOne({ _id: department_id, hospitalId })
+      Patient.findOne({ _id: req.body.patient_id, hospitalId, is_active: { $ne: false } }),
+      Doctor.findOne({ _id: doctor_id, hospitalId, is_active: { $ne: false } }),
+      Department.findOne({ _id: department_id, hospitalId, is_active: { $ne: false } })
     ]);
     if (!patient) return res.status(404).json({ error: 'Patient not found for this hospital' });
     try {
@@ -1584,7 +1585,7 @@ exports.checkInAppointment = async (req, res) => {
 exports.startConsultation = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const current = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
+    const current = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } });
     if (!current) return res.status(404).json({ error: 'Appointment not found' });
     if (current.status === 'Cancelled' || current.status === 'Completed') {
       return res.status(409).json({ error: `${current.status} appointments cannot be started`, code: 'INVALID_APPOINTMENT_STATE' });
@@ -1673,7 +1674,7 @@ exports.getCurrentQueue = async (req, res) => {
 exports.getAllAppointments = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const filter = { hospital_id: hospitalId };
+    const filter = { hospital_id: hospitalId, is_active: { $ne: false } };
     if (req.query.status) filter.status = req.query.status;
     if (req.query.visit_mode) filter.visit_mode = req.query.visit_mode;
     if (req.query.from || req.query.to) {
@@ -1725,7 +1726,7 @@ exports.getAllAppointments = async (req, res) => {
 exports.getAppointmentById = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId })
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -1749,7 +1750,7 @@ exports.getAppointmentById = async (req, res) => {
 exports.updateAppointment = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
     if (req.body.type && req.body.type !== appointment.type) {
@@ -2028,7 +2029,7 @@ exports.cancelAppointment = async (req, res) => {
     const reason = String(req.body.reason || req.body.cancellationReason || '').trim();
     if (!reason) return res.status(400).json({ error: 'Cancellation reason is required' });
 
-    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
     if (appointment.status === 'Completed') {
       return res.status(409).json({ error: 'A completed appointment cannot be cancelled' });
@@ -2081,58 +2082,76 @@ exports.cancelAppointment = async (req, res) => {
   }
 };
 
-// Delete appointment
+// Archive appointment. The record and ObjectId are retained for every historical reference.
 exports.deleteAppointment = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      hospital_id: hospitalId,
+      is_active: { $ne: false }
+    });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
-    const calendar = await Calendar.findOne({ hospitalId: appointment.hospital_id });
-    if (!calendar) return res.status(404).json({ error: 'Calendar not found' });
-
-    const timeZone = calendar.timezone || appointment.scheduled_timezone || DEFAULT_HOSPITAL_TIME_ZONE;
-    const dateKey = appointment.appointment_date_key || hospitalDateKey(appointment.appointment_date, timeZone);
-    const day = calendar.days.find((d) => calendarDayKey(d, timeZone) === dateKey);
-    if (!day) return res.status(404).json({ error: 'Day not found in calendar' });
-
-    const doctor = day.doctors.find(d => d.doctorId.toString() === appointment.doctor_id.toString());
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found on this day' });
-
-    if (appointment.type === 'time-based') {
-      const appointmentIndex = doctor.bookedAppointments.findIndex(
-        a => a.appointmentId.toString() === appointment._id.toString()
-      );
-
-      if (appointmentIndex !== -1) {
-        const duration = (appointment.end_time - appointment.start_time) / 60000;
-        doctor.bookedAppointments.splice(appointmentIndex, 1);
-
-        for (let i = appointmentIndex; i < doctor.bookedAppointments.length; i++) {
-          const appt = doctor.bookedAppointments[i];
-          appt.startTime = new Date(appt.startTime.getTime() - duration * 60000);
-          appt.endTime = new Date(appt.endTime.getTime() - duration * 60000);
-
-          await Appointment.findOneAndUpdate({ _id: appt.appointmentId, hospital_id: hospitalId }, {
-            start_time: appt.startTime,
-            end_time: appt.endTime
-          });
-        }
-      }
-    } else {
-      doctor.bookedPatients = doctor.bookedPatients.filter(
-        p => p.appointmentId.toString() !== appointment._id.toString()
-      );
+    const now = operationNow();
+    const reason = String(req.body?.reason || 'Appointment cancelled and archived by user').trim();
+    appointment.status = 'Cancelled';
+    appointment.is_active = false;
+    appointment.cancelledAt = appointment.cancelledAt || now;
+    appointment.cancelledBy = appointment.cancelledBy || req.user?._id || null;
+    appointment.cancellationReason = appointment.cancellationReason || reason;
+    appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
+    appointment.lifecycleTimestamps.cancelledAt = appointment.lifecycleTimestamps.cancelledAt || now;
+    if (!appointment.cancellationHistory.some((row) => row.reason === reason && row.cancelledAt)) {
+      appointment.cancellationHistory.push({ reason, cancelledAt: now, cancelledBy: req.user?._id || null });
     }
+    appointment.deleted_at = now;
+    appointment.deleted_by = req.user?._id || null;
+    appointment.deletion_reason = reason;
 
     await Promise.all([
-      Appointment.deleteOne({ _id: req.params.id, hospital_id: hospitalId }),
-      calendar.save()
+      appointment.save(),
+      AdmissionCoverage.updateMany(
+        { hospitalId, appointmentId: appointment._id, active: { $ne: false } },
+        {
+          $set: {
+            active: false,
+            is_active: false,
+            effectiveTo: now,
+            deleted_at: now,
+            deleted_by: req.user?._id || null,
+            deletion_reason: reason
+          }
+        }
+      )
     ]);
 
-    res.json({ message: 'Appointment deleted successfully' });
+    // Calendar cleanup is best-effort. A missing/stale calendar must never prevent
+    // the committed appointment record from being safely archived.
+    try {
+      await removeAppointmentFromCalendar(appointment);
+    } catch (calendarError) {
+      console.error('Appointment archived but calendar cleanup failed:', calendarError);
+    }
+
+    try {
+      await recalculateQueue({
+        hospitalId,
+        departmentId: appointment.department_id,
+        date: appointment.appointment_date,
+        timeZone: appointment.scheduled_timezone || DEFAULT_HOSPITAL_TIME_ZONE
+      });
+    } catch (queueError) {
+      console.error('Appointment archived but queue recalculation failed:', queueError);
+    }
+
+    return res.json({
+      success: true,
+      message: 'Appointment cancelled and archived successfully',
+      appointment
+    });
   } catch (err) {
-    res.status(err.statusCode || 500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
@@ -2141,9 +2160,9 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const { doctorId } = req.params;
-    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId });
+    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId, is_active: { $ne: false } });
     if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
-    const appointments = await Appointment.find({ doctor_id: doctorId, hospital_id: hospitalId })
+    const appointments = await Appointment.find({ doctor_id: doctorId, hospital_id: hospitalId, is_active: { $ne: false } })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -2170,7 +2189,7 @@ exports.getAppointmentsByDepartmentId = async (req, res) => {
     const { departmentId } = req.params;
     const departmentExists = await Department.exists({ _id: departmentId, hospitalId });
     if (!departmentExists) return res.status(404).json({ error: 'Department not found' });
-    const appointments = await Appointment.find({ department_id: departmentId, hospital_id: hospitalId })
+    const appointments = await Appointment.find({ department_id: departmentId, hospital_id: hospitalId, is_active: { $ne: false } })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -2194,7 +2213,7 @@ exports.getAppointmentsByHospitalId = async (req, res) => {
     if (String(hospitalId) !== String(scopedHospitalId)) {
       return res.status(403).json({ error: 'Hospital scope mismatch', code: 'TENANT_SCOPE_MISMATCH' });
     }
-    const appointments = await Appointment.find({ hospital_id: scopedHospitalId })
+    const appointments = await Appointment.find({ hospital_id: scopedHospitalId, is_active: { $ne: false } })
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -2215,7 +2234,7 @@ exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const { doctorId } = req.params;
-    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId });
+    const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId, is_active: { $ne: false } });
     if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
     const hospital = await Hospital.findById(hospitalId).select('timezone');
     const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
@@ -2256,7 +2275,7 @@ exports.updateAppointmentStatus = async (req, res) => {
       return res.status(400).json({ error: 'Use the cancellation action and provide a cancellation reason' });
     }
 
-    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId });
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
     const previousStatus = appointment.status;

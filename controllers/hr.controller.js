@@ -866,20 +866,56 @@ exports.setEmployeeLogin = async (req, res) => {
 
 exports.deactivateEmployee = async (req, res) => {
   try {
-    const employee = await HRStaffProfile.findById(req.params.id);
-    if (!employee) return res.status(404).json({ error: 'Employee not found' });
+    const hospitalId = await resolveHospitalId(req);
+    const now = new Date();
+    const reason = String(req.body?.reason || 'Employee deactivated by HR').trim();
+    const employee = await HRStaffProfile.findOne({
+      _id: req.params.id,
+      hospital_id: hospitalId,
+      is_active: { $ne: false }
+    });
+    if (!employee) return res.status(404).json({ error: 'Active employee not found' });
+
     employee.employment_status = req.body.status || 'Inactive';
     employee.login_enabled = false;
     employee.availability_status = 'unavailable';
+    employee.is_active = false;
+    employee.deleted_at = now;
+    employee.deleted_by = getUserId(req);
+    employee.deletion_reason = reason;
+    employee.updated_by = getUserId(req);
     await employee.save();
 
-    if (employee.user_id) {
-      await User.findByIdAndUpdate(employee.user_id, { is_active: false });
+    const sourceUpdates = [];
+    if (employee.doctor_id) {
+      sourceUpdates.push(Doctor.findOneAndUpdate(
+        { _id: employee.doctor_id, hospitalId },
+        { $set: { is_active: false, deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
+      ));
     }
+    if (employee.nurse_id) {
+      sourceUpdates.push(Nurse.findOneAndUpdate(
+        { _id: employee.nurse_id, hospitalId },
+        { $set: { is_active: false, deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
+      ));
+    }
+    if (employee.staff_id) {
+      sourceUpdates.push(Staff.findOneAndUpdate(
+        { _id: employee.staff_id, hospitalId },
+        { $set: { status: 'Inactive', is_active: false, deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
+      ));
+    }
+    if (employee.user_id) {
+      sourceUpdates.push(User.findOneAndUpdate(
+        { _id: employee.user_id, hospital_id: hospitalId },
+        { $set: { is_active: false, deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
+      ));
+    }
+    await Promise.all(sourceUpdates);
 
-    res.json({ message: 'Employee deactivated', employee });
+    res.json({ message: 'Employee deactivated; source profile and references preserved', employee });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.statusCode || 400).json({ error: error.message });
   }
 };
 
@@ -1428,7 +1464,11 @@ exports.upsertLeaveBalance = async (req, res) => {
         adjusted: toNumber(req.body.adjusted, 0),
         paid_leave: req.body.paid_leave !== undefined ? Boolean(req.body.paid_leave) : true,
         notes: req.body.notes,
-        updated_by: getUserId(req)
+        updated_by: getUserId(req),
+        is_active: true,
+        deleted_at: null,
+        deleted_by: null,
+        deletion_reason: ''
       },
       { upsert: true, new: true, runValidators: true }
     ).populate('employee_id', 'full_name employee_code staff_type designation');
@@ -1441,7 +1481,7 @@ exports.upsertLeaveBalance = async (req, res) => {
 exports.getLeaveBalances = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
-    const filter = hospitalId ? { hospital_id: hospitalId } : {};
+    const filter = hospitalId ? { hospital_id: hospitalId, is_active: { $ne: false } } : { is_active: { $ne: false } };
     if (req.query.employee_id) filter.employee_id = req.query.employee_id;
     if (req.query.year) filter.year = parseInt(req.query.year, 10);
     if (req.query.leave_type) filter.leave_type = req.query.leave_type;
@@ -1451,6 +1491,29 @@ exports.getLeaveBalances = async (req, res) => {
     res.json(balances);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+};
+
+exports.deleteLeaveBalance = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const balance = await HRLeaveBalance.findOneAndUpdate(
+      { _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } },
+      {
+        $set: {
+          is_active: false,
+          deleted_at: new Date(),
+          deleted_by: getUserId(req),
+          deletion_reason: String(req.body?.reason || 'Leave balance archived by HR').trim(),
+          updated_by: getUserId(req)
+        }
+      },
+      { new: true }
+    );
+    if (!balance) return res.status(404).json({ error: 'Leave balance not found' });
+    return res.json({ message: 'Leave balance archived successfully', balance });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 
@@ -2382,7 +2445,7 @@ exports.getMyLeaveBalances = async (req, res) => {
   try {
     const employee = await resolveSelfEmployee(req);
     const year = Number(req.query.year || new Date().getFullYear());
-    const data = await HRLeaveBalance.find({ employee_id: employee._id, hospital_id: employee.hospital_id, year }).sort({ leave_type: 1 });
+    const data = await HRLeaveBalance.find({ employee_id: employee._id, hospital_id: employee.hospital_id, year, is_active: { $ne: false } }).sort({ leave_type: 1 });
     res.json({ success: true, data });
   } catch (error) { selfError(res, error); }
 };

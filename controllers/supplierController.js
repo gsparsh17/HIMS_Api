@@ -75,11 +75,15 @@ const updateSupplier = async (req, res) => {
 // @access  Private (Admin)
 const deactivateSupplier = async (req, res) => {
   try {
-    const supplier = await Supplier.findById(req.params.id);
+    const supplier = await Supplier.findOne({ _id: req.params.id, isActive: true, is_active: { $ne: false } });
     if (!supplier) {
       return res.status(404).json({ message: 'Supplier not found.' });
     }
     supplier.isActive = false;
+    supplier.is_active = false;
+    supplier.deleted_at = new Date();
+    supplier.deleted_by = req.user?._id || null;
+    supplier.deletion_reason = String(req.body?.reason || 'Supplier deactivated by user').trim();
     await supplier.save();
     res.status(200).json({ message: 'Supplier deactivated successfully.' });
   } catch (error) {

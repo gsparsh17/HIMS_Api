@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 
 const billItemSchema = new mongoose.Schema({
@@ -458,5 +459,7 @@ billSchema.index({ 'deletion_request.status': 1 });
 billSchema.index({ bill_number: 1 }, { unique: true, sparse: true });
 billSchema.index({ idempotency_key: 1 }, { unique: true, sparse: true });
 billSchema.index({ hospital_id: 1, document_stage: 1, generated_at: -1 });
+
+addSoftDeleteFields(billSchema);
 
 module.exports = mongoose.model('Bill', billSchema);

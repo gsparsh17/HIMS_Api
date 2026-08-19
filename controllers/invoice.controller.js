@@ -1125,7 +1125,7 @@ exports.generatePharmacyInvoice = async (req, res) => {
     }
 
     if (prescription_id) {
-      await Prescription.findByIdAndDelete(prescription_id);
+      await Prescription.findByIdAndUpdate(prescription_id, { $set: { status: 'Completed' } });
     }
 
     const populatedInvoice = await Invoice.findById(createdInvoice._id)

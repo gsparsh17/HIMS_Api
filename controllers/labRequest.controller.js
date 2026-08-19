@@ -296,9 +296,9 @@ exports.updateLabTest = async (req, res) => {
 exports.deleteLabTest = async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await LabTest.findOneAndDelete({ _id: id, hospitalId: requireHospitalId(req) });
+    const deleted = await LabTest.findOneAndUpdate({ _id: id, hospitalId: requireHospitalId(req), is_active: { $ne: false } }, { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Lab test archived by user').trim() } }, { new: true });
     if (!deleted) return res.status(404).json({ error: 'Lab test not found' });
-    res.json({ success: true, message: 'Lab test deleted successfully' });
+    res.json({ success: true, message: 'Lab test archived successfully' });
   } catch (error) {
     console.error('Error deleting lab test:', error);
     res.status(500).json({ error: error.message });

@@ -1,6 +1,7 @@
 const { operationNow } = require('../utils/operationTimeContext');
 const { hospitalDateKey } = require('../utils/hospitalDateTime');
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 
 /**
  * IPDCharge is the operational charge source. A charge remains editable only
@@ -307,5 +308,7 @@ ipdChargeSchema.index({ sourceModule: 1, sourceId: 1 });
 ipdChargeSchema.index({ admissionId: 1, isBilled: 1, status: 1 });
 ipdChargeSchema.index({ admissionId: 1, chargeDateKey: 1, chargeType: 1, status: 1 });
 ipdChargeSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
+
+addSoftDeleteFields(ipdChargeSchema);
 
 module.exports = mongoose.model('IPDCharge', ipdChargeSchema);

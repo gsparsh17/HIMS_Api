@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const otStaffSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   userId: {
@@ -64,5 +65,7 @@ otStaffSchema.index({ is_active: 1 });
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(otStaffSchema, 'OTStaff');
+
+addSoftDeleteFields(otStaffSchema);
 
 module.exports = mongoose.model('OTStaff', otStaffSchema);

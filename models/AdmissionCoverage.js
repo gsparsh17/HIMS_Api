@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 
 /**
  * Encounter coverage for both OPD appointments and IPD admissions.
@@ -158,5 +159,7 @@ admissionCoverageSchema.index(
   { hospitalId: 1, appointmentId: 1, active: 1 },
   { unique: true, partialFilterExpression: { encounterType: 'OPD', active: true, appointmentId: { $exists: true } } }
 );
+
+addSoftDeleteFields(admissionCoverageSchema);
 
 module.exports = mongoose.model('AdmissionCoverage', admissionCoverageSchema);

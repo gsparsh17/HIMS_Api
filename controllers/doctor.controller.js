@@ -20,7 +20,8 @@ exports.createDoctor = async (req, res) => {
     if (req.body.department) {
       const exists = await Department.exists({
         _id: req.body.department,
-        hospitalId
+        hospitalId,
+        is_active: { $ne: false }
       });
 
       if (!exists) {
@@ -154,7 +155,7 @@ exports.getAllDoctors = async (req, res) => {
     const hospitalId = requireDoctorHospitalId(req);
 
     const doctors = await Doctor
-      .find({ hospitalId })
+      .find({ hospitalId, is_active: { $ne: false } })
       .populate('department')
       .populate('user_id', 'name email role')
       .sort({ firstName: 1 });
@@ -171,7 +172,7 @@ exports.getDoctorById = async (req, res) => {
     const hospitalId = requireDoctorHospitalId(req);
 
     const doctor = await Doctor
-      .findOne({ _id: req.params.id, hospitalId })
+      .findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } })
       .populate('department')
       .populate('user_id', 'name email role');
 
@@ -201,7 +202,7 @@ exports.getDoctorLoginAccess = async (req, res) => {
     const hospitalId = requireDoctorHospitalId(req);
 
     const doctor = await Doctor
-      .findOne({ _id: req.params.id, hospitalId })
+      .findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } })
       .populate('user_id', 'name email role modulePermissions dashboard_access is_active');
 
     if (!doctor) {
@@ -239,7 +240,8 @@ exports.updateDoctorLoginAccess = async (req, res) => {
 
     const doctor = await Doctor.findOne({
       _id: req.params.id,
-      hospitalId
+      hospitalId,
+      is_active: { $ne: false }
     });
 
     if (!doctor) {
@@ -315,7 +317,8 @@ exports.updateDoctor = async (req, res) => {
     if (req.body.department) {
       const exists = await Department.exists({
         _id: req.body.department,
-        hospitalId
+        hospitalId,
+        is_active: { $ne: false }
       });
 
       if (!exists) {
@@ -328,7 +331,7 @@ exports.updateDoctor = async (req, res) => {
     delete req.body.hospitalId;
 
     const doctor = await Doctor.findOneAndUpdate(
-      { _id: req.params.id, hospitalId },
+      { _id: req.params.id, hospitalId, is_active: { $ne: false } },
       req.body,
       { new: true, runValidators: true }
     );
@@ -405,7 +408,8 @@ exports.getDoctorsByDepartmentId = async (req, res) => {
     const doctors = await Doctor
       .find({
         hospitalId,
-        department: req.params.departmentId
+        department: req.params.departmentId,
+        is_active: { $ne: false }
       })
       .populate('department')
       .sort({ firstName: 1 });
@@ -420,26 +424,29 @@ exports.getDoctorsByDepartmentId = async (req, res) => {
 exports.deleteDoctor = async (req, res) => {
   try {
     const hospitalId = requireDoctorHospitalId(req);
+    const doctor = await Doctor.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
+    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
 
-    const doctor = await Doctor.findOne({
-      _id: req.params.id,
-      hospitalId
-    });
-
-    if (!doctor) {
-      return res.status(404).json({ error: 'Doctor not found' });
-    }
+    const now = new Date();
+    const reason = String(req.body?.reason || 'Deactivated from doctor administration').trim();
+    doctor.is_active = false;
+    doctor.deleted_at = now;
+    doctor.deleted_by = req.user?._id || null;
+    doctor.deletion_reason = reason;
+    await doctor.save();
 
     if (doctor.user_id) {
-      await User.updateOne(
-        { _id: doctor.user_id, hospital_id: hospitalId },
-        { is_active: false }
-      );
+      await User.updateOne({ _id: doctor.user_id, hospital_id: hospitalId }, { $set: { is_active: false, deleted_at: now, deleted_by: req.user?._id || null, deletion_reason: reason } });
     }
 
-    await Doctor.deleteOne({ _id: doctor._id, hospitalId });
+    const HRStaffProfile = require('../models/HRStaffProfile');
+    await HRStaffProfile.updateMany(
+      { hospital_id: hospitalId, doctor_id: doctor._id },
+      { $set: { is_active: false, employment_status: 'Inactive', login_enabled: false, deleted_at: now, deleted_by: req.user?._id || null, deletion_reason: reason } }
+    );
 
-    return res.json({ message: 'Doctor deleted successfully' });
+    await removeDoctorFromCalendar(doctor._id).catch((error) => console.error('Calendar deactivation sync failed:', error.message));
+    return res.json({ message: 'Doctor deactivated successfully', doctor });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

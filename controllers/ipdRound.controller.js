@@ -6,7 +6,7 @@ const { requestHospitalId } = require('../utils/hospitalScope');
 
 // Helper function to update admission totals
 async function updateAdmissionTotals(admissionId, hospitalId) {
-  const charges = await IPDCharge.find({ admissionId, ...(hospitalId ? { hospitalId } : {}) });
+  const charges = await IPDCharge.find({ admissionId, ...(hospitalId ? { hospitalId } : {}), is_active: { $ne: false } });
   const totalBillAmount = charges.reduce((sum, c) => sum + c.netAmount, 0);
   
   const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requestHospitalId(req) });
@@ -122,7 +122,7 @@ exports.getRoundsByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
     
-    const rounds = await IPDRound.find({ admissionId })
+    const rounds = await IPDRound.find({ admissionId, is_active: { $ne: false } })
       .populate('doctorId', 'firstName lastName specialization')
       .populate({
         path: 'prescriptionId',
@@ -221,19 +221,25 @@ exports.deleteRound = async (req, res) => {
     }
     
     // Delete associated charge
-    await IPDCharge.deleteMany({
-      sourceModule: 'DoctorRound',
-      sourceId: round._id
-    });
-    
-    await round.deleteOne();
+    const now = new Date();
+    const reason = String(req.body?.reason || 'IPD round archived by user').trim();
+    await IPDCharge.updateMany(
+      { sourceModule: 'DoctorRound', sourceId: round._id, is_active: { $ne: false } },
+      { $set: { is_active: false, deleted_at: now, deleted_by: req.user?._id || null, deletion_reason: reason } }
+    );
+
+    round.is_active = false;
+    round.deleted_at = now;
+    round.deleted_by = req.user?._id || null;
+    round.deletion_reason = reason;
+    await round.save();
     
     // Update admission totals
     await updateAdmissionTotals(round.admissionId);
     
     res.json({
       success: true,
-      message: 'Round and associated charge deleted successfully'
+      message: 'Round and associated charge archived successfully'
     });
   } catch (err) {
     console.error('Error deleting round:', err);
@@ -247,7 +253,7 @@ exports.getRoundsByDoctor = async (req, res) => {
     const { doctorId } = req.params;
     const { startDate, endDate } = req.query;
     
-    const filter = { doctorId };
+    const filter = { doctorId, is_active: { $ne: false } };
     if (startDate && endDate) {
       filter.roundDateTime = {
         $gte: new Date(startDate),
@@ -264,7 +270,8 @@ exports.getRoundsByDoctor = async (req, res) => {
     const roundsWithCharges = await Promise.all(rounds.map(async (round) => {
       const charge = await IPDCharge.findOne({
         sourceModule: 'DoctorRound',
-        sourceId: round._id
+        sourceId: round._id,
+        is_active: { $ne: false }
       });
       return {
         ...round.toObject(),

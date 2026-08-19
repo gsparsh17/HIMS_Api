@@ -1,5 +1,6 @@
 const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { DEFAULT_HOSPITAL_TIME_ZONE, hospitalDateKey, dateKeyToStorageDate } = require('../utils/hospitalDateTime');
 
 const appointmentSchema = new mongoose.Schema({
@@ -182,5 +183,7 @@ appointmentSchema.pre('validate', function normalizeAppointmentDate(next) {
     next(error);
   }
 });
+
+addSoftDeleteFields(appointmentSchema);
 
 module.exports = mongoose.model('Appointment', appointmentSchema);

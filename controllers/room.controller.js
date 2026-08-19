@@ -70,7 +70,7 @@ exports.createRoom = async (req, res) => {
 exports.getAllRooms = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const filter = { hospitalId };
+    const filter = { hospitalId, is_active: { $ne: false } };
 
     if (req.query.wardId) {
       filter.wardId = req.query.wardId;
@@ -116,39 +116,16 @@ exports.updateRoom = async (req, res) => {
 exports.deleteRoom = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-
-    const occupied = await Bed.exists({
-      hospitalId,
-      roomId: req.params.id,
-      status: { $in: ['Occupied', 'Reserved'] }
-    });
-
-    if (occupied) {
-      return res.status(409).json({
-        success: false,
-        error: 'Room has occupied or reserved beds'
-      });
-    }
-
-    const room = await Room.findOneAndDelete({
-      _id: req.params.id,
-      hospitalId
-    });
-
-    if (!room) {
-      return res.status(404).json({
-        success: false,
-        error: 'Room not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Room deleted successfully'
-    });
-  } catch (e) {
-    fail(res, e);
-  }
+    const occupied = await Bed.exists({ hospitalId, roomId: req.params.id, status: { $in: ['Occupied', 'Reserved'] } });
+    if (occupied) return res.status(409).json({ success: false, error: 'Room has occupied or reserved beds' });
+    const room = await Room.findOneAndUpdate(
+      { _id: req.params.id, hospitalId, is_active: { $ne: false } },
+      { $set: { is_active: false, status: 'Closed', operationalStatus: 'closed', deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Room archived by user').trim() } },
+      { new: true }
+    );
+    if (!room) return res.status(404).json({ success: false, error: 'Room not found' });
+    res.json({ success: true, message: 'Room archived successfully', data: room });
+  } catch (e) { fail(res, e); }
 };
 
 exports.getRoomById = async (req, res) => {

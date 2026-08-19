@@ -2,6 +2,8 @@ const { operationNow } = require('../utils/operationTimeContext');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
 const Appointment = require('../models/Appointment');
+const Doctor = require('../models/Doctor');
+const HospitalCharges = require('../models/HospitalCharges');
 const Prescription = require('../models/Prescription');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
@@ -240,6 +242,119 @@ async function updateAdmissionTotals(admissionId) {
   await ipdFinancial.calculateAdmissionFinancials(admissionId);
 }
 
+
+async function applyAuthoritativeOpdAppointmentPricing({ hospitalId, patientId, appointmentId, items }) {
+  if (!appointmentId) return { items, pricing: null };
+
+  const appointment = await Appointment.findOne({
+    _id: appointmentId,
+    hospital_id: hospitalId,
+    is_active: { $ne: false }
+  }).select('_id patient_id doctor_id appointment_type').lean();
+
+  if (!appointment) {
+    const error = new Error('Active appointment not found for this hospital');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (String(appointment.patient_id) !== String(patientId)) {
+    const error = new Error('Bill patient does not match the appointment patient');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  // Do not require the doctor to still be active here: an appointment may be billed
+  // after a clinician is deactivated, and the preserved Doctor ObjectId remains authoritative.
+  const [doctor, hospitalCharges] = await Promise.all([
+    Doctor.findOne({ _id: appointment.doctor_id, hospitalId })
+      .select('_id firstName lastName opdConsultationFee')
+      .lean(),
+    HospitalCharges.findOne({ hospital: hospitalId, is_active: { $ne: false } }).lean()
+  ]);
+  if (!doctor) {
+    const error = new Error('Appointment doctor reference could not be resolved');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const doctorFee = doctor.opdConsultationFee;
+  const hasDoctorFee = doctorFee !== null
+    && doctorFee !== undefined
+    && doctorFee !== ''
+    && Number.isFinite(Number(doctorFee))
+    && Number(doctorFee) >= 0;
+  const hospitalFee = Number(hospitalCharges?.opdCharges?.consultationFee || 0);
+  const consultationFee = hasDoctorFee ? Number(doctorFee) : hospitalFee;
+  const source = hasDoctorFee ? 'doctor' : 'hospital';
+  const doctorName = [doctor.firstName, doctor.lastName].filter(Boolean).join(' ').trim();
+
+  const normalized = (Array.isArray(items) ? items : []).map((item) => ({ ...item }));
+  const consultationIndex = normalized.findIndex((item) =>
+    item?.item_type === 'Consultation' || /opd\s+consultation\s+fee/i.test(String(item?.description || ''))
+  );
+  const consultationLine = {
+    ...(consultationIndex >= 0 ? normalized[consultationIndex] : {}),
+    description: `OPD Consultation Fee (Dr. ${doctorName || 'Doctor'} — ${source === 'doctor' ? 'doctor rate' : 'hospital default'})`,
+    amount: consultationFee,
+    quantity: 1,
+    item_type: 'Consultation',
+    pricing_snapshot: {
+      pricingSource: source,
+      doctorId: doctor._id,
+      doctorOpdConsultationFee: hasDoctorFee ? Number(doctorFee) : null,
+      hospitalDefaultConsultationFee: hospitalFee
+    }
+  };
+  if (consultationIndex >= 0) normalized[consultationIndex] = consultationLine;
+  else normalized.push(consultationLine);
+
+  // If the front desk chose to charge registration, make that line authoritative too.
+  const registrationIndex = normalized.findIndex((item) =>
+    item?.item_type === 'Registration Fee' || /opd\s+registration\s+fee/i.test(String(item?.description || ''))
+  );
+  if (registrationIndex >= 0) {
+    normalized[registrationIndex] = {
+      ...normalized[registrationIndex],
+      description: 'OPD Registration Fee',
+      amount: Number(hospitalCharges?.opdCharges?.registrationFee || 0),
+      quantity: 1,
+      item_type: 'Registration Fee'
+    };
+  }
+
+  // Recalculate the configured OPD discount after replacing the consultation rate.
+  const discountIndex = normalized.findIndex((item) => /^discount$/i.test(String(item?.description || '').trim()));
+  const discountValue = Number(hospitalCharges?.opdCharges?.discountValue || 0);
+  if (discountValue > 0) {
+    const registrationAmount = registrationIndex >= 0 ? Number(normalized[registrationIndex].amount || 0) : 0;
+    const discountBase = registrationAmount + consultationFee;
+    const discountAmount = hospitalCharges?.opdCharges?.discountType === 'Percentage'
+      ? (discountBase * discountValue) / 100
+      : discountValue;
+    const discountLine = {
+      ...(discountIndex >= 0 ? normalized[discountIndex] : {}),
+      description: 'Discount',
+      amount: -Math.max(0, Number(discountAmount || 0)),
+      quantity: 1,
+      item_type: 'Other',
+      pricing_snapshot: {
+        pricingSource: 'hospital',
+        discountType: hospitalCharges?.opdCharges?.discountType || 'Fixed',
+        discountValue
+      }
+    };
+    if (discountIndex >= 0) normalized[discountIndex] = discountLine;
+    else normalized.push(discountLine);
+  } else if (discountIndex >= 0) {
+    normalized.splice(discountIndex, 1);
+  }
+
+  return {
+    items: normalized,
+    pricing: { consultationFee, source, doctorId: doctor._id }
+  };
+}
+
 // ========== MAIN CREATE BILL FUNCTION ==========
 exports.createBill = async (req, res) => {
   try {
@@ -268,15 +383,31 @@ exports.createBill = async (req, res) => {
       return res.status(400).json({ error: 'At least one bill item is required' });
     }
 
+    const hospitalId = requestHospitalId(req);
+    let billingItems = items.map((item) => ({ ...item }));
+    if (appointment_id && !admission_id) {
+      const priced = await applyAuthoritativeOpdAppointmentPricing({
+        hospitalId,
+        patientId: patient_id,
+        appointmentId: appointment_id,
+        items: billingItems
+      });
+      billingItems = priced.items;
+    }
+
     let calculatedSubtotal = subtotal;
     let calculatedTotal = total_amount;
 
-    if (!subtotal || !total_amount) {
-      calculatedSubtotal = items.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
-      calculatedTotal = calculatedSubtotal + (tax_amount || 0) - (discount || 0);
+    // For OPD appointment bills, the server always recalculates from authoritative
+    // doctor/hospital pricing instead of trusting a browser-submitted total.
+    if (appointment_id && !admission_id) {
+      calculatedSubtotal = billingItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
+      calculatedTotal = calculatedSubtotal + Number(tax_amount || 0) - Number(discount || 0);
+    } else if (subtotal === undefined || subtotal === null || total_amount === undefined || total_amount === null) {
+      calculatedSubtotal = billingItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
+      calculatedTotal = calculatedSubtotal + Number(tax_amount || 0) - Number(discount || 0);
     }
 
-    const hospitalId = requestHospitalId(req);
     const billNumber = await nextFinancialNumber({
       documentType: 'BILL',
       hospitalId
@@ -304,7 +435,7 @@ exports.createBill = async (req, res) => {
         reference: transaction_id,
         date: operationNow()
       }] : [],
-      items: items.map(item => ({
+      items: billingItems.map(item => ({
         description: item.description,
         amount: Number(item.amount || 0),
         quantity: item.quantity || 1,
@@ -316,7 +447,8 @@ exports.createBill = async (req, res) => {
         radiology_test_code: item.radiology_test_code,
         radiology_test_id: item.radiology_test_id,
         prescription_id: item.prescription_id,
-        admission_id: admission_id
+        admission_id: admission_id,
+        pricing_snapshot: item.pricing_snapshot || {}
       })),
       notes,
       created_by: req.user?._id
@@ -327,7 +459,7 @@ exports.createBill = async (req, res) => {
     // ========== CREATE IPD CHARGES FOR EACH ITEM (if admission_id exists) ==========
     const createdCharges = [];
     if (admission_id) {
-      for (const [itemIndex, item] of items.entries()) {
+      for (const [itemIndex, item] of billingItems.entries()) {
         let chargeType = null;
         let sourceModule = null;
         let sourceId = null;
@@ -400,10 +532,10 @@ exports.createBill = async (req, res) => {
         admission = await IPDAdmission.findById(admission_id).populate('patientId');
       }
 
-      const hasProcedures = items.some(item => item.item_type === 'Procedure');
-      const hasLabTests = items.some(item => item.item_type === 'Lab Test');
-      const hasRadiology = items.some(item => item.item_type === 'Radiology');
-      const hasMedicines = items.some(item => item.item_type === 'Medicine');
+      const hasProcedures = billingItems.some(item => item.item_type === 'Procedure');
+      const hasLabTests = billingItems.some(item => item.item_type === 'Lab Test');
+      const hasRadiology = billingItems.some(item => item.item_type === 'Radiology');
+      const hasMedicines = billingItems.some(item => item.item_type === 'Medicine');
 
       let invoiceType = 'Appointment';
       if (hasMedicines && (hasProcedures || hasLabTests || hasRadiology)) {
@@ -424,7 +556,7 @@ exports.createBill = async (req, res) => {
       const labTestItems = [];
       const radiologyItems = [];
 
-      for (const item of items) {
+      for (const item of billingItems) {
         const qty = item.quantity || 1;
         const unitPrice = qty > 0 ? (Number(item.amount || 0) / qty) : Number(item.amount || 0);
 
@@ -566,7 +698,7 @@ exports.createBill = async (req, res) => {
 
       // ========== MARK IPD CHARGES AS BILLED ==========
       if (admission_id) {
-        for (const [itemIndex, item] of items.entries()) {
+        for (const [itemIndex, item] of billingItems.entries()) {
           let sourceModule = null;
           let sourceId = null;
           
@@ -608,7 +740,7 @@ exports.createBill = async (req, res) => {
           let needsUpdate = false;
           
           if (prescription.procedure_requests?.length > 0) {
-            for (const item of items) {
+            for (const item of billingItems) {
               if (item.item_type === 'Procedure' && item.procedure_id) {
                 const procIndex = prescription.procedure_requests.findIndex(
                   p => p._id.toString() === item.procedure_id
@@ -624,7 +756,7 @@ exports.createBill = async (req, res) => {
           }
 
           if (prescription.lab_test_requests?.length > 0) {
-            for (const item of items) {
+            for (const item of billingItems) {
               if (item.item_type === 'Lab Test' && item.lab_test_id) {
                 const testIndex = prescription.lab_test_requests.findIndex(
                   t => t._id.toString() === item.lab_test_id
@@ -640,7 +772,7 @@ exports.createBill = async (req, res) => {
           }
 
           if (prescription.radiology_test_requests?.length > 0) {
-            for (const item of items) {
+            for (const item of billingItems) {
               if (item.item_type === 'Radiology' && item.radiology_test_id) {
                 const radIndex = prescription.radiology_test_requests.findIndex(
                   r => r._id.toString() === item.radiology_test_id
@@ -662,7 +794,7 @@ exports.createBill = async (req, res) => {
       }
 
       // Update actual request documents
-      const procedureIds = items.filter(i => i.item_type === 'Procedure' && i.procedure_id).map(i => i.procedure_id);
+      const procedureIds = billingItems.filter(i => i.item_type === 'Procedure' && i.procedure_id).map(i => i.procedure_id);
       if (procedureIds.length > 0) {
         await ProcedureRequest.updateMany(
           { _id: { $in: procedureIds } },
@@ -670,7 +802,7 @@ exports.createBill = async (req, res) => {
         );
       }
 
-      const labTestIds = items.filter(i => i.item_type === 'Lab Test' && i.lab_test_id).map(i => i.lab_test_id);
+      const labTestIds = billingItems.filter(i => i.item_type === 'Lab Test' && i.lab_test_id).map(i => i.lab_test_id);
       if (labTestIds.length > 0) {
         await LabRequest.updateMany(
           { _id: { $in: labTestIds } },
@@ -678,7 +810,7 @@ exports.createBill = async (req, res) => {
         );
       }
 
-      const radiologyTestIds = items.filter(i => i.item_type === 'Radiology' && i.radiology_test_id).map(i => i.radiology_test_id);
+      const radiologyTestIds = billingItems.filter(i => i.item_type === 'Radiology' && i.radiology_test_id).map(i => i.radiology_test_id);
       if (radiologyTestIds.length > 0) {
         await RadiologyRequest.updateMany(
           { _id: { $in: radiologyTestIds } },
@@ -1986,7 +2118,7 @@ exports.getBillByAdmissionId = async (req, res) => {
   }
 };
 
-// Admin delete bill (permanent)
+// Admin archive bill (soft delete; historical references are preserved)
 exports.adminDeleteBill = async (req, res) => {
   try {
     const { id } = req.params;
@@ -2011,7 +2143,7 @@ exports.adminDeleteBill = async (req, res) => {
     };
 
     if (bill.invoice_id) {
-      await Invoice.findOneAndDelete({ _id: bill.invoice_id, hospital_id: requestHospitalId(req) });
+      await Invoice.findOneAndUpdate({ _id: bill.invoice_id, hospital_id: requestHospitalId(req) }, { $set: { is_deleted: true, is_active: false, deleted_at: deletionInfo.deleted_at, deleted_by: req.user?._id || null, deletion_reason: deletionInfo.deletion_reason } });
     }
 
     if (bill.prescription_id) {
@@ -2060,11 +2192,16 @@ exports.adminDeleteBill = async (req, res) => {
       }
     }
 
-    await Bill.findOneAndDelete(billScope(req, { _id: id }));
+    bill.is_deleted = true;
+    bill.is_active = false;
+    bill.deleted_at = deletionInfo.deleted_at;
+    bill.deleted_by = req.user?._id || null;
+    bill.deletion_reason = deletionInfo.deletion_reason;
+    await bill.save();
 
     res.json({
       success: true,
-      message: 'Bill and associated invoice permanently deleted',
+      message: 'Bill and associated invoice archived successfully',
       deletion_info: deletionInfo
     });
   } catch (err) {
@@ -2182,6 +2319,7 @@ exports.reviewDeletionRequest = async (req, res) => {
 
     if (action === 'approve') {
       bill.is_deleted = true;
+      bill.is_active = false;
       bill.deleted_at = new Date();
       bill.deleted_by = req.user._id;
       bill.deletion_reason = bill.deletion_request.reason;
@@ -2189,6 +2327,7 @@ exports.reviewDeletionRequest = async (req, res) => {
       if (bill.invoice_id) {
         await Invoice.findByIdAndUpdate(bill.invoice_id, {
           is_deleted: true,
+          is_active: false,
           deleted_at: new Date(),
           deleted_by: req.user._id,
           deletion_reason: `Bill deletion approved: ${bill.deletion_request.reason}`

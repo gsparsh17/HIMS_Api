@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const hospitalChargesSchema = new mongoose.Schema({
   hospital: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true },
 
@@ -31,5 +32,7 @@ const hospitalChargesSchema = new mongoose.Schema({
 
   effectiveFrom: { type: Date, default: Date.now }
 }, { timestamps: true });
+
+addSoftDeleteFields(hospitalChargesSchema);
 
 module.exports = mongoose.model('HospitalCharges', hospitalChargesSchema);

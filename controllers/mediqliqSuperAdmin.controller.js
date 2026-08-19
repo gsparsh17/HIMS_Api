@@ -394,11 +394,17 @@ exports.deleteUser = async (req, res) => {
       return res.status(400).json({ success: false, message: 'You cannot delete your own super admin account' });
     }
 
-    const user = await User.findByIdAndDelete(req.params.userId);
+    const user = await User.findOne({ _id: req.params.userId, is_active: { $ne: false } });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
+    user.is_active = false;
+    user.deleted_at = new Date();
+    user.deleted_by = req.user?._id || null;
+    user.deletion_reason = String(req.body?.reason || 'User deactivated by MediQliq super admin').trim();
+    await user.save({ validateBeforeSave: false });
+
     req.auditResource = { type: 'User', id: user._id.toString() };
-    return res.json({ success: true, message: 'User deleted successfully' });
+    return res.json({ success: true, message: 'User deactivated successfully' });
   } catch (error) {
     req.auditError = { message: error.message };
     return res.status(500).json({ success: false, message: error.message });
@@ -408,7 +414,7 @@ exports.deleteUser = async (req, res) => {
 exports.listHospitals = async (req, res) => {
   try {
     const { page, limit, skip } = getPagination(req);
-    const filter = {};
+    const filter = { is_active: { $ne: false } };
 
     if (req.query.search) {
       const regex = new RegExp(escapeRegex(req.query.search), 'i');
@@ -518,7 +524,7 @@ exports.getHospital = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid hospital id' });
     }
 
-    const hospital = await Hospital.findById(req.params.hospitalId)
+    const hospital = await Hospital.findOne({ _id: req.params.hospitalId, is_active: { $ne: false } })
       .populate('createdBy', 'name email role')
       .populate('primaryAdmin', 'name email role is_active')
       .populate('abdmFacility', 'tenantCode hfr abdm connector onboardingStatus rollout');
@@ -544,7 +550,7 @@ exports.updateHospital = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid vitalsController' });
     }
 
-    const hospital = await Hospital.findByIdAndUpdate(req.params.hospitalId, data, {
+    const hospital = await Hospital.findOneAndUpdate({ _id: req.params.hospitalId, is_active: { $ne: false } }, data, {
       new: true,
       runValidators: true,
     });
@@ -566,11 +572,25 @@ exports.deleteHospital = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid hospital id' });
     }
 
-    const hospital = await Hospital.findByIdAndDelete(req.params.hospitalId);
+    const hospital = await Hospital.findOne({ _id: req.params.hospitalId, is_active: { $ne: false } });
     if (!hospital) return res.status(404).json({ success: false, message: 'Hospital not found' });
 
+    const now = new Date();
+    hospital.is_active = false;
+    hospital.deleted_at = now;
+    hospital.deleted_by = req.user?._id || null;
+    hospital.deletion_reason = String(req.body?.reason || 'Hospital deactivated by MediQliq super admin').trim();
+    if (hospital.deployment) hospital.deployment.status = 'SUSPENDED';
+    await Promise.all([
+      hospital.save({ validateBeforeSave: false }),
+      User.updateMany(
+        { hospital_id: hospital._id, is_active: { $ne: false } },
+        { $set: { is_active: false, deleted_at: now, deleted_by: req.user?._id || null, deletion_reason: 'Hospital deactivated' } }
+      )
+    ]);
+
     req.auditResource = { type: 'Hospital', id: hospital._id.toString() };
-    return res.json({ success: true, message: 'Hospital deleted successfully' });
+    return res.json({ success: true, message: 'Hospital deactivated successfully' });
   } catch (error) {
     req.auditError = { message: error.message };
     return res.status(500).json({ success: false, message: error.message });

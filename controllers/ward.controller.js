@@ -102,7 +102,7 @@ exports.deleteWard = async (req, res) => {
 
     const ward = await Ward.findOneAndUpdate(
       { _id: req.params.id, hospitalId },
-      { $set: { isActive: false } },
+      { $set: { isActive: false, is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Ward deactivated by user').trim() } },
       { new: true }
     );
 

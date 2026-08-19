@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const doctorSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -28,6 +29,10 @@ const doctorSchema = new mongoose.Schema({
   // Payment Details
   paymentType: { type: String, enum: ['Salary', 'Fee per Visit', 'Per Hour', 'Contractual Salary'], required: true },
   amount: { type: Number, required: true },
+
+  // Optional OPD consultation charge. null means "use hospital default OPD consultation fee".
+  // Keep this separate from salary / fee-per-visit because payroll terms and patient pricing are different concerns.
+  opdConsultationFee: { type: Number, min: 0, default: null },
   
   // NEW FIELD: Revenue split percentage for part-time doctors only
   revenuePercentage: { 
@@ -109,5 +114,7 @@ doctorSchema.index({ hospitalId: 1, department: 1, isFullTime: 1 });
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(doctorSchema, 'Doctor');
+
+addSoftDeleteFields(doctorSchema);
 
 module.exports = mongoose.model('Doctor', doctorSchema);

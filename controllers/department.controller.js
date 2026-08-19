@@ -41,7 +41,8 @@ exports.getAllDepartments = async (req, res) => {
     const departments = await Department
       .find({
         hospitalId,
-        active: { $ne: false }
+        active: { $ne: false },
+        is_active: { $ne: false }
       })
       .populate('head_doctor_id')
       .sort({ name: 1 });
@@ -122,33 +123,15 @@ exports.updateDepartment = async (req, res) => {
 exports.deleteDepartment = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-
-    const used = await Doctor.exists({
-      hospitalId,
-      department: req.params.id
-    });
-
-    if (used) {
-      return res.status(409).json({
-        error: 'Department has doctors; deactivate it instead of deleting'
-      });
-    }
-
-    const dept = await Department.findOneAndDelete({
-      _id: req.params.id,
-      hospitalId
-    });
-
-    if (!dept) {
-      return res.status(404).json({
-        error: 'Department not found'
-      });
-    }
-
-    return res.json({ message: 'Department deleted' });
-  } catch (error) {
-    return fail(res, error);
-  }
+    const reason = String(req.body?.reason || 'Department deactivated by user').trim();
+    const dept = await Department.findOneAndUpdate(
+      { _id: req.params.id, hospitalId, is_active: { $ne: false } },
+      { $set: { active: false, is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: reason } },
+      { new: true }
+    );
+    if (!dept) return res.status(404).json({ error: 'Department not found' });
+    return res.json({ message: 'Department deactivated', department: dept });
+  } catch (error) { return fail(res, error); }
 };
 
 exports.getAllHods = async (req, res) => {

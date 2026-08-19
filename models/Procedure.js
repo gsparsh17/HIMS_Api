@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 /**
  * Hospital procedure master.
  *
@@ -162,5 +163,7 @@ procedureSchema.methods.incrementUsage = function incrementUsage() {
   this.last_used = new Date();
   return this.save();
 };
+
+addSoftDeleteFields(procedureSchema);
 
 module.exports = mongoose.model('Procedure', procedureSchema);

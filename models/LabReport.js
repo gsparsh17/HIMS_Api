@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 
 const labReportSchema = new mongoose.Schema({
@@ -83,5 +84,7 @@ labReportSchema.index({ lab_test_id: 1 });
 labReportSchema.index({ is_external: 1 });
 labReportSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 labReportSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
+
+addSoftDeleteFields(labReportSchema);
 
 module.exports = mongoose.model('LabReport', labReportSchema);

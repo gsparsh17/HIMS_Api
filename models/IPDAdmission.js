@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 const { hospitalDateKey, hospitalDayBounds } = require('../utils/hospitalDateTime');
 const DailySequence = require('./DailySequence');
@@ -437,4 +438,6 @@ ipdAdmissionSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 ipdAdmissionSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
 
 ipdAdmissionSchema.index({ hospitalId: 1, status: 1, wardId: 1 });
+addSoftDeleteFields(ipdAdmissionSchema);
+
 module.exports = mongoose.model('IPDAdmission', ipdAdmissionSchema);

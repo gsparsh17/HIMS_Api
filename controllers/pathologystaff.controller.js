@@ -450,13 +450,17 @@ exports.deletePathologyStaff = async (req, res) => {
     }
 
     staff.status = 'Inactive';
+    staff.is_active = false;
+    staff.deleted_at = new Date();
+    staff.deleted_by = req.user?._id || null;
+    staff.deletion_reason = String(req.body?.reason || 'Pathology staff deactivated by user').trim();
     staff.updated_by = req.user._id;
     await staff.save();
 
     if (staff.user_id) {
       await User.updateOne(
         { _id: staff.user_id, hospital_id: hospitalId },
-        { $set: { is_active: false } }
+        { $set: { is_active: false, deleted_at: staff.deleted_at, deleted_by: staff.deleted_by, deletion_reason: staff.deletion_reason } }
       );
     }
 

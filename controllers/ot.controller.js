@@ -917,7 +917,7 @@ exports.toggleOTStaffStatus = async (req, res) => {
 exports.deleteOTStaff = async (req, res) => {
   try {
     const { id } = req.params;
-    const staff = await OTStaff.findOneAndDelete({ _id: id, hospitalId: requireHospitalId(req) });
+    const staff = await OTStaff.findOneAndUpdate({ _id: id, hospitalId: requireHospitalId(req), is_active: { $ne: false } }, { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'OT staff archived by user').trim() } }, { new: true });
 
     if (!staff) {
       return res.status(404).json({ error: 'OT staff not found' });
@@ -925,7 +925,7 @@ exports.deleteOTStaff = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'OT staff deleted successfully'
+      message: 'OT staff archived successfully'
     });
   } catch (error) {
     console.error('Error deleting OT staff:', error);

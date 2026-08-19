@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 
 const paymentSchema = new mongoose.Schema({
@@ -1150,5 +1151,7 @@ invoiceSchema.index({ is_deleted: 1 });
 invoiceSchema.index({ hospital_id: 1, document_stage: 1, issue_date: -1 });
 invoiceSchema.index({ admission_id: 1, document_stage: 1, issue_date: -1 });
 invoiceSchema.index({ idempotency_key: 1 }, { unique: true, sparse: true });
+
+addSoftDeleteFields(invoiceSchema);
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 
 function makeCode() {
   const date = new Date();
@@ -178,5 +179,7 @@ storeItemSchema.index({ is_active: 1 });
 storeItemSchema.index({ next_maintenance_due: 1 });
 storeItemSchema.index({ assigned_to_employee: 1 });
 storeItemSchema.index({ condition_status: 1, operational_status: 1 });
+
+addSoftDeleteFields(storeItemSchema);
 
 module.exports = mongoose.model('StoreItem', storeItemSchema);

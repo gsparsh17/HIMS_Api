@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 function makeEmployeeCode() {
   const y = new Date().getFullYear();
   const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -138,5 +139,7 @@ hrStaffProfileSchema.index({ department: 1 });
 hrStaffProfileSchema.index({ user_id: 1 });
 hrStaffProfileSchema.index({ source_model: 1, source_id: 1 }, { unique: true, sparse: true });
 hrStaffProfileSchema.index({ payroll_enabled: 1, employment_status: 1 });
+
+addSoftDeleteFields(hrStaffProfileSchema);
 
 module.exports = mongoose.model('HRStaffProfile', hrStaffProfileSchema);

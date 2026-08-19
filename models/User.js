@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const bcrypt = require('bcryptjs');
 const { MAIN_FEATURE_KEYS, normalizeFeaturePermissions } = require('../utils/mainFeatureAccess');
 const { passwordPolicyErrors } = require('../services/nabhSecurity.service');
@@ -151,5 +152,7 @@ userSchema.methods.matchPassword = async function matchPassword(enteredPassword)
 userSchema.index({ hospital_id: 1, email: 1 });
 userSchema.index({ lockedUntil: 1 });
 userSchema.index({ 'sso.provider': 1, 'sso.subject': 1 }, { sparse: true });
+
+addSoftDeleteFields(userSchema);
 
 module.exports = mongoose.model('User', userSchema);

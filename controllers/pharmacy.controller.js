@@ -98,7 +98,13 @@ exports.getAllPharmacies = async (req, res) => {
     const { status, search, limit = 50, page = 1 } = req.query;
 
     const filter = {};
-    if (status) filter.status = status;
+    if (status) {
+      filter.status = status;
+    } else {
+      // Normal operational listings exclude archived pharmacies, while an explicit
+      // status filter (for example status=Inactive) can still be used by admin UIs.
+      filter.is_active = { $ne: false };
+    }
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -283,12 +289,19 @@ exports.deletePharmacy = async (req, res) => {
 
     // Soft delete - set status to Inactive
     pharmacy.status = 'Inactive';
+    pharmacy.is_active = false;
+    pharmacy.deleted_at = new Date();
+    pharmacy.deleted_by = req.user?._id || null;
+    pharmacy.deletion_reason = String(req.body?.reason || 'Pharmacy deactivated by user').trim();
     await pharmacy.save();
 
     // Also deactivate associated user if exists
     const user = await User.findOne({ email: pharmacy.email });
     if (user) {
       user.is_active = false;
+      user.deleted_at = pharmacy.deleted_at;
+      user.deleted_by = pharmacy.deleted_by;
+      user.deletion_reason = pharmacy.deletion_reason;
       await user.save();
     }
 
@@ -328,12 +341,19 @@ exports.reactivatePharmacy = async (req, res) => {
     }
 
     pharmacy.status = 'Active';
+    pharmacy.is_active = true;
+    pharmacy.deleted_at = null;
+    pharmacy.deleted_by = null;
+    pharmacy.deletion_reason = '';
     await pharmacy.save();
 
     // Also reactivate associated user if exists
     const user = await User.findOne({ email: pharmacy.email });
     if (user) {
       user.is_active = true;
+      user.deleted_at = null;
+      user.deleted_by = null;
+      user.deletion_reason = '';
       await user.save();
     }
 

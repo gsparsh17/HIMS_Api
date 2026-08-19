@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const radiologyStaffSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   userId: {
@@ -54,5 +55,7 @@ radiologyStaffSchema.index({ hospitalId: 1, is_active: 1, availabilityStatus: 1 
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(radiologyStaffSchema, 'RadiologyStaff');
+
+addSoftDeleteFields(radiologyStaffSchema);
 
 module.exports = mongoose.model('RadiologyStaff', radiologyStaffSchema);

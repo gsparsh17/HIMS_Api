@@ -204,7 +204,7 @@ exports.getCategories = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
-    if (req.query.active !== undefined) filter.is_active = req.query.active === 'true';
+    filter.is_active = req.query.active !== undefined ? req.query.active === 'true' : true;
     const categories = await StoreCategory.find(filter).sort({ name: 1 });
     res.json(categories);
   } catch (error) {
@@ -224,7 +224,11 @@ exports.updateCategory = async (req, res) => {
 
 exports.deleteCategory = async (req, res) => {
   try {
-    const category = await StoreCategory.findOneAndUpdate(await hospitalRecordFilter(req, req.params.id), { is_active: false }, { new: true });
+    const category = await StoreCategory.findOneAndUpdate(
+      { ...(await hospitalRecordFilter(req, req.params.id)), is_active: { $ne: false } },
+      { $set: { is_active: false, deleted_at: new Date(), deleted_by: getUserId(req), deletion_reason: String(req.body?.reason || 'Store category deactivated by user').trim() } },
+      { new: true }
+    );
     if (!category) return res.status(404).json({ error: 'Store category not found' });
     res.json({ message: 'Store category deactivated', category });
   } catch (error) {
@@ -286,10 +290,10 @@ exports.getItems = async (req, res) => {
     const { page, limit, skip } = parsePagination(req.query);
     const hospitalId = await resolveHospitalId(req);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
+    filter.is_active = req.query.active !== undefined ? req.query.active === 'true' : true;
 
     if (req.query.category) filter.category = req.query.category;
     if (req.query.item_type) filter.item_type = req.query.item_type;
-    if (req.query.active !== undefined) filter.is_active = req.query.active === 'true';
     if (req.query.low_stock === 'true') filter.$expr = { $lte: ['$current_stock', { $ifNull: ['$reorder_level', '$minimum_stock'] }] };
     if (req.query.search) {
       filter.$or = [
@@ -337,7 +341,11 @@ exports.updateItem = async (req, res) => {
 
 exports.deleteItem = async (req, res) => {
   try {
-    const item = await StoreItem.findOneAndUpdate(await hospitalRecordFilter(req, req.params.id), { is_active: false, updated_by: getUserId(req) }, { new: true });
+    const item = await StoreItem.findOneAndUpdate(
+      { ...(await hospitalRecordFilter(req, req.params.id)), is_active: { $ne: false } },
+      { $set: { is_active: false, updated_by: getUserId(req), deleted_at: new Date(), deleted_by: getUserId(req), deletion_reason: String(req.body?.reason || 'Store item deactivated by user').trim() } },
+      { new: true }
+    );
     if (!item) return res.status(404).json({ error: 'Store item not found' });
     res.json({ message: 'Store item deactivated', item });
   } catch (error) {

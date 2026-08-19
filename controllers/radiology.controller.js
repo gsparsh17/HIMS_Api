@@ -156,8 +156,8 @@ exports.deleteImagingTest = async (req, res) => {
   try {
     const { id } = req.params;
     const deleted = await ImagingTest.findOneAndUpdate(
-      { _id: id, hospitalId: requireHospitalId(req) },
-      { $set: { is_active: false, is_billable: false, updatedBy: req.user?._id } },
+      { _id: id, hospitalId: requireHospitalId(req), is_active: { $ne: false } },
+      { $set: { is_active: false, is_billable: false, updatedBy: req.user?._id, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Imaging test archived by user').trim() } },
       { new: true }
     );
     if (!deleted) return res.status(404).json({ error: 'Imaging test not found' });

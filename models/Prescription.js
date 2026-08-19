@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 
 const prescriptionItemSchema = new mongoose.Schema({
@@ -213,5 +214,7 @@ prescriptionSchema.index({ 'radiology_test_requests.request_id': 1 });
 prescriptionSchema.index({ 'procedure_requests.request_id': 1 });
 prescriptionSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 prescriptionSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
+
+addSoftDeleteFields(prescriptionSchema);
 
 module.exports = mongoose.model('Prescription', prescriptionSchema);

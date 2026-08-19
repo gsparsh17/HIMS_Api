@@ -1349,7 +1349,21 @@ async function reconcilePrescriptionRequests({
   );
 
   if (removedIds.length) {
-    await RequestModel.deleteMany({ _id: { $in: removedIds }, prescriptionId: prescription._id });
+    const now = operationNow();
+    await RequestModel.updateMany(
+      { _id: { $in: removedIds }, prescriptionId: prescription._id, is_active: { $ne: false } },
+      {
+        $set: {
+          status: 'Cancelled',
+          is_active: false,
+          cancelled_at: now,
+          cancelled_by: userId || null,
+          deleted_at: now,
+          deleted_by: userId || null,
+          deletion_reason: 'Removed from prescription before billing/processing'
+        }
+      }
+    );
   }
 
   // Locked requests may already be processing, billed, or completed. They remain
@@ -1675,15 +1689,17 @@ exports.updatePrescription = async (req, res) => {
 exports.deletePrescription = async (req, res) => {
   try {
     const { id } = req.params;
-    const prescription = await Prescription.findOne({ _id: id, hospitalId: requestHospitalId(req) });
+    const prescription = await Prescription.findOne({ _id: id, hospitalId: requestHospitalId(req), is_active: { $ne: false } });
     if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
     await prescriptionTenant(req, prescription, { notFound: true });
-    await Prescription.deleteOne({ _id: prescription._id });
+    prescription.is_active = false;
+    if (prescription.status !== 'Completed') prescription.status = 'Cancelled';
+    prescription.deleted_at = new Date();
+    prescription.deleted_by = req.user?._id || null;
+    prescription.deletion_reason = String(req.body?.reason || 'Prescription archived by user').trim();
+    await prescription.save();
 
-    res.json({
-      success: true,
-      message: 'Prescription deleted successfully'
-    });
+    res.json({ success: true, message: 'Prescription archived successfully' });
   } catch (err) {
     console.error('Error deleting prescription:', err);
     res.status(500).json({ error: err.message });

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 const { sourceBillingFields } = require('../utils/billingLifecycle');
 
@@ -387,5 +388,7 @@ radiologyRequestSchema.index({ admissionId: 1, sourceType: 'IPD' });
 radiologyRequestSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 radiologyRequestSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
 radiologyRequestSchema.index({ hospitalId: 1, 'reportFinalisation.isFinal': 1, releasedAt: -1 });
+
+addSoftDeleteFields(radiologyRequestSchema);
 
 module.exports = mongoose.model('RadiologyRequest', radiologyRequestSchema);

@@ -31,7 +31,10 @@
     "insurance:rate-cards:repair": "node scripts/repair-rate-card-readiness-2026.js",
     "insurance:delegation:migrate": "node scripts/migrate-insurance-delegation-permissions-2026.js",
     "dates:audit": "node scripts/normalize-appointment-calendar-dates.js",
-    "dates:normalize": "node scripts/normalize-appointment-calendar-dates.js --apply"
+    "dates:normalize": "node scripts/normalize-appointment-calendar-dates.js --apply",
+    "data:recover:references": "node scripts/recover-reference-profiles-2026-08-19.js",
+    "data:recover:references:apply": "node scripts/recover-reference-profiles-2026-08-19.js --apply",
+    "audit:hard-deletes": "node scripts/audit-hard-deletes-2026-08-19.js"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",

@@ -295,6 +295,7 @@ exports.createStaff = async (req, res) => {
     const normalizedGender = gender?.toLowerCase();
 
     const staff = new Staff({
+      hospitalId: req.user?.hospital_id || undefined,
       first_name: firstName,
       last_name: lastName,
       email,
@@ -357,6 +358,7 @@ exports.createStaff = async (req, res) => {
       role === 'OT Manager'
     ) {
       const otStaff = new OTStaff({
+        hospitalId: req.user?.hospital_id || undefined,
         userId: staff.user_id || staff._id,
         employeeId: `OT${String(staff._id).slice(-6)}`,
         designation: role,
@@ -374,6 +376,7 @@ exports.createStaff = async (req, res) => {
 
     if (role && role.toLowerCase().includes('nurse')) {
       const nurse = new Nurse({
+        hospitalId: req.user?.hospital_id || undefined,
         first_name: firstName,
         last_name: lastName,
         email,
@@ -409,7 +412,7 @@ exports.createStaff = async (req, res) => {
 
 exports.getAllStaff = async (req, res) => {
   try {
-    const staffList = await Staff.find()
+    const staffList = await Staff.find({ hospitalId: req.user?.hospital_id, is_active: { $ne: false } })
       .populate('department')
       .populate('shift');
 
@@ -422,7 +425,7 @@ exports.getAllStaff = async (req, res) => {
 
 exports.getStaffById = async (req, res) => {
   try {
-    const staff = await Staff.findById(req.params.id)
+    const staff = await Staff.findOne({ _id: req.params.id, hospitalId: req.user?.hospital_id, is_active: { $ne: false } })
       .populate('department')
       .populate('shift');
 
@@ -460,8 +463,8 @@ exports.updateStaff = async (req, res) => {
     if (email) updateData.email = email;
     if (phone) updateData.phone = phone;
 
-    const staff = await Staff.findByIdAndUpdate(
-      req.params.id,
+    const staff = await Staff.findOneAndUpdate(
+      { _id: req.params.id, hospitalId: req.user?.hospital_id, is_active: { $ne: false } },
       updateData,
       { new: true, runValidators: true }
     )
@@ -626,15 +629,19 @@ exports.updateStaff = async (req, res) => {
 
 exports.deleteStaff = async (req, res) => {
   try {
-    const staff = await Staff.findByIdAndDelete(req.params.id);
-
-    if (!staff) {
-      return res.status(404).json({ error: 'Staff not found' });
-    }
-
-    res.json({ message: 'Staff member deleted successfully' });
+    const hospitalId = req.user?.hospital_id;
+    const staff = await Staff.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
+    if (!staff) return res.status(404).json({ error: 'Staff not found' });
+    const now = new Date();
+    const reason = String(req.body?.reason || 'Deactivated from staff administration').trim();
+    Object.assign(staff, { is_active: false, status: 'Inactive', deleted_at: now, deleted_by: req.user?._id || null, deletion_reason: reason });
+    await staff.save();
+    if (staff.user_id) await User.updateOne({ _id: staff.user_id, hospital_id: hospitalId }, { $set: { is_active: false, deleted_at: now, deleted_by: req.user?._id || null, deletion_reason: reason } });
+    const HRStaffProfile = require('../models/HRStaffProfile');
+    await HRStaffProfile.updateMany({ hospital_id: hospitalId, staff_id: staff._id }, { $set: { is_active: false, employment_status: 'Inactive', login_enabled: false, deleted_at: now, deleted_by: req.user?._id || null, deletion_reason: reason } });
+    res.json({ message: 'Staff member deactivated successfully', staff });
   } catch (err) {
-    console.error('Delete staff error:', err);
+    console.error('Deactivate staff error:', err);
     res.status(500).json({ error: err.message });
   }
 };

@@ -311,11 +311,14 @@ exports.deleteStaff = async (req, res) => {
     }
 
     staff.is_active = false;
+    staff.deleted_at = new Date();
+    staff.deleted_by = req.user?._id || null;
+    staff.deletion_reason = String(req.body?.reason || 'Radiology staff deactivated by user').trim();
     await staff.save();
 
     await User.updateOne(
       { _id: staff.userId, hospital_id: hospitalId },
-      { $set: { is_active: false } }
+      { $set: { is_active: false, deleted_at: staff.deleted_at, deleted_by: staff.deleted_by, deletion_reason: staff.deletion_reason } }
     );
 
     return res.json({

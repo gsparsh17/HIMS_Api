@@ -31,6 +31,7 @@ router.get('/active', async (req, res) => {
     const providers = await Payer.find({
       hospitalId,
       isActive: true,
+      is_active: { $ne: false },
       type: { $ne: 'self' },
       'empanelment.status': { $in: ['active', 'not_required'] }
     }).sort({ name: 1 });
@@ -101,6 +102,16 @@ router.patch('/:id/toggle-status', manage, async (req, res) => {
     const provider = await Payer.findOne({ _id: req.params.id, hospitalId });
     if (!provider) return res.status(404).json({ success: false, error: 'Insurance provider not found' });
     provider.isActive = !provider.isActive;
+    provider.is_active = provider.isActive;
+    if (provider.isActive) {
+      provider.deleted_at = null;
+      provider.deleted_by = null;
+      provider.deletion_reason = '';
+    } else {
+      provider.deleted_at = new Date();
+      provider.deleted_by = req.user._id;
+      provider.deletion_reason = 'Insurance provider deactivated by user';
+    }
     provider.updatedBy = req.user._id;
     await provider.save();
     return res.json({ success: true, is_active: provider.isActive });
@@ -113,7 +124,7 @@ router.delete('/:id', manage, async (req, res) => {
   try {
     const provider = await Payer.findOneAndUpdate(
       { _id: req.params.id, hospitalId: requireHospitalId(req) },
-      { $set: { isActive: false, updatedBy: req.user._id } },
+      { $set: { isActive: false, is_active: false, updatedBy: req.user._id, deleted_at: new Date(), deleted_by: req.user._id, deletion_reason: String(req.body?.reason || 'Insurance provider deactivated by user').trim() } },
       { new: true }
     );
     if (!provider) return res.status(404).json({ success: false, error: 'Insurance provider not found' });

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const labStaffSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -47,5 +48,7 @@ const labStaffSchema = new mongoose.Schema({
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(labStaffSchema, 'LabStaff');
+
+addSoftDeleteFields(labStaffSchema);
 
 module.exports = mongoose.model('LabStaff', labStaffSchema);

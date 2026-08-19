@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 
 const storeCategorySchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
@@ -11,5 +12,7 @@ const storeCategorySchema = new mongoose.Schema({
 
 storeCategorySchema.index({ hospital_id: 1, name: 1 }, { unique: true });
 storeCategorySchema.index({ is_active: 1 });
+
+addSoftDeleteFields(storeCategorySchema);
 
 module.exports = mongoose.model('StoreCategory', storeCategorySchema);

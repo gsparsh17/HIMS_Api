@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const mongoose = require("mongoose");
 
 const ipdRoundSchema = new mongoose.Schema(
@@ -153,5 +154,7 @@ const ipdRoundSchema = new mongoose.Schema(
 
 ipdRoundSchema.index({ hospitalId: 1, admissionId: 1, roundDateTime: -1 });
 ipdRoundSchema.index({ doctorId: 1, roundDateTime: -1 });
+
+addSoftDeleteFields(ipdRoundSchema);
 
 module.exports = mongoose.model("IPDRound", ipdRoundSchema);

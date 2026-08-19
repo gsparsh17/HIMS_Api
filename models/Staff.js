@@ -1,7 +1,9 @@
 const mongoose = require('mongoose');
 
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const staffSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   staffId: { type: String, unique: true },
   first_name: { type: String, required: true },
@@ -33,12 +35,14 @@ function generateRandomCode(length = 4) {
 staffSchema.pre('save', async function (next) {
   try {
     if (!this.staffId) {
-      const hospital = await Hospital.findOne();
+      const hospital = this.hospitalId
+        ? await Hospital.findById(this.hospitalId)
+        : await Hospital.findOne();
       if (!hospital || !hospital.hospitalID) {
         throw new Error('Hospital ID not found');
       }
 
-      this.hospitalId = hospital.hospitalID;
+      this.hospitalId = hospital._id;
       this.staffId = `${hospital.hospitalID}-${generateRandomCode(4)}`;
     }
     next();
@@ -49,5 +53,7 @@ staffSchema.pre('save', async function (next) {
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(staffSchema, 'Staff');
+
+addSoftDeleteFields(staffSchema);
 
 module.exports = mongoose.model('Staff', staffSchema);

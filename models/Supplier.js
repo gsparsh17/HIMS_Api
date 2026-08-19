@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const supplierSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -41,5 +42,7 @@ const supplierSchema = new mongoose.Schema({
     default: true,
   },
 }, { timestamps: true });
+
+addSoftDeleteFields(supplierSchema);
 
 module.exports = mongoose.model('Supplier', supplierSchema);

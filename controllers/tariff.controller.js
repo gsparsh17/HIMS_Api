@@ -112,6 +112,10 @@ exports.archivePayer = async (req, res) => {
       return res.status(409).json({ success: false, error: 'Payer has active coverages or open claims', activeCoverages, openClaims });
     }
     payer.isActive = false;
+    payer.is_active = false;
+    payer.deleted_at = new Date();
+    payer.deleted_by = req.user._id;
+    payer.deletion_reason = String(req.body?.reason || 'Payer archived by user').trim();
     payer.updatedBy = req.user._id;
     await payer.save();
     await RateCard.updateMany({ hospitalId, payerId: payer._id, status: 'active' }, { $set: { status: 'closed', effectiveTo: new Date(), updatedBy: req.user._id } });

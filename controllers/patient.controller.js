@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Patient = require('../models/Patient');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const fileStorage = require('../services/fileStorage.service');
@@ -78,12 +79,12 @@ exports.searchPatientsForPharmacy = async (req, res) => {
       }
     }
 
-    // Tenant scoping
-    const hospitalId = req.hospitalId || req.user?.hospitalId;
-    const matchStage = {};
-    if (hospitalId) {
-      matchStage.hospitalId = new mongoose.Types.ObjectId(hospitalId);
-    }
+    // Tenant scoping: pharmacy patient search must never cross hospitals.
+    const hospitalId = requireHospitalId(req);
+    const matchStage = {
+      hospitalId: new mongoose.Types.ObjectId(hospitalId),
+      is_active: { $ne: false }
+    };
     if (conditions.length > 0) {
       matchStage.$or = conditions;
     }
@@ -121,6 +122,8 @@ exports.searchPatientsForPharmacy = async (req, res) => {
                 $expr: {
                   $and: [
                     { $eq: ['$patientId', '$$patientId'] },
+                    { $eq: ['$hospitalId', new mongoose.Types.ObjectId(hospitalId)] },
+                    { $ne: ['$is_active', false] },
                     { $in: ['$status', activeStatuses] }
                   ]
                 }
@@ -325,8 +328,9 @@ exports.searchPatientsForPharmacy = async (req, res) => {
 exports.getPatientPharmacyAccount = async (req, res) => {
   try {
     const { id } = req.params;
+    const hospitalId = requireHospitalId(req);
 
-    const patient = await Patient.findById(id)
+    const patient = await Patient.findOne({ _id: id, hospitalId, is_active: { $ne: false } })
       .select('first_name last_name uhid patientId phone pharmacy_outstanding_balance pharmacy_advance_balance sponsor_type sponsor_name patient_type is_walkin');
 
     if (!patient) {
@@ -335,7 +339,9 @@ exports.getPatientPharmacyAccount = async (req, res) => {
 
     // Get active admission details if any
     const activeAdmission = await mongoose.model('IPDAdmission').findOne({
+      hospitalId,
       patientId: patient._id,
+      is_active: { $ne: false },
       status: { $in: ['Admitted', 'Under Treatment'] }
     }).populate('primaryDoctorId', 'name')
       .populate('wardId', 'name')
@@ -374,8 +380,9 @@ exports.updatePatientPharmacyBalance = async (req, res) => {
   try {
     const { id } = req.params;
     const { outstanding_delta, advance_delta, transaction_type, reference_id } = req.body;
+    const hospitalId = requireHospitalId(req);
 
-    const patient = await Patient.findById(id);
+    const patient = await Patient.findOne({ _id: id, hospitalId, is_active: { $ne: false } });
     if (!patient) {
       return res.status(404).json({ error: 'Patient not found' });
     }
@@ -389,7 +396,11 @@ exports.updatePatientPharmacyBalance = async (req, res) => {
     }
     updateFields.last_pharmacy_transaction = new Date();
 
-    const updatedPatient = await Patient.findByIdAndUpdate(id, updateFields, { new: true });
+    const updatedPatient = await Patient.findOneAndUpdate(
+      { _id: id, hospitalId, is_active: { $ne: false } },
+      updateFields,
+      { new: true }
+    );
 
     // Log the balance change for audit
     await mongoose.model('PharmacyAuditLog').create({
@@ -430,6 +441,12 @@ exports.updatePatientPharmacyBalance = async (req, res) => {
 exports.createOrUpdateWalkinPatient = async (req, res) => {
   try {
     const { phone, name, first_name, last_name, ...otherData } = req.body;
+    const hospitalId = requireHospitalId(req);
+    delete otherData.hospitalId;
+    delete otherData.is_active;
+    delete otherData.deleted_at;
+    delete otherData.deleted_by;
+    delete otherData.deletion_reason;
 
     // Parse name if provided as single field
     let firstName = first_name;
@@ -443,8 +460,10 @@ exports.createOrUpdateWalkinPatient = async (req, res) => {
 
     // Check if walkin patient already exists with this phone
     let walkinPatient = await Patient.findOne({
+      hospitalId,
       phone: phone,
-      is_walkin: true
+      is_walkin: true,
+      is_active: { $ne: false }
     });
 
     if (walkinPatient) {
@@ -471,6 +490,7 @@ exports.createOrUpdateWalkinPatient = async (req, res) => {
 
     // Create new walkin patient
     walkinPatient = new Patient({
+      hospitalId,
       first_name: firstName || 'Walkin',
       last_name: lastName || 'Patient',
       phone: phone || `W${Date.now()}`,
@@ -898,9 +918,13 @@ exports.updatePatient = async (req, res) => {
 // ========== DELETE PATIENT ==========
 exports.deletePatient = async (req, res) => {
   try {
-    const patient = await Patient.findByIdAndDelete(req.params.id);
+    const patient = await Patient.findOneAndUpdate(
+      { _id: req.params.id, is_active: { $ne: false } },
+      { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Patient deactivated by user').trim() } },
+      { new: true }
+    );
     if (!patient) return res.status(404).json({ error: 'Patient not found' });
-    res.json({ message: 'Patient deleted successfully' });
+    res.json({ message: 'Patient deactivated successfully', patient });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

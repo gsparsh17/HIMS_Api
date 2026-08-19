@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 
 function generateHospitalId() {
   const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -116,5 +117,7 @@ hospitalSchema.pre('validate', async function assignIdentifiers(next) {
     next(error);
   }
 });
+
+addSoftDeleteFields(hospitalSchema);
 
 module.exports = mongoose.model('Hospital', hospitalSchema);

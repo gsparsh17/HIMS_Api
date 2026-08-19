@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const wardSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   name: {
@@ -60,4 +61,6 @@ wardSchema.pre('validate', async function(next) {
 
 wardSchema.index({ hospitalId: 1, code: 1 }, { unique: true });
 wardSchema.index({ hospitalId: 1, name: 1 }, { unique: true });
+addSoftDeleteFields(wardSchema);
+
 module.exports = mongoose.model('Ward', wardSchema);

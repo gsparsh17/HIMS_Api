@@ -1,6 +1,7 @@
 // models/PathologyStaff.js
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const pathologyStaffSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -98,5 +99,7 @@ pathologyStaffSchema.index({ 'assigned_lab_tests.lab_test_id': 1 });
 
 const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(pathologyStaffSchema, 'PathologyStaff');
+
+addSoftDeleteFields(pathologyStaffSchema);
 
 module.exports = mongoose.model('PathologyStaff', pathologyStaffSchema);

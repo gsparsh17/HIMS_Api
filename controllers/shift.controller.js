@@ -19,7 +19,7 @@ exports.createShift = async (req, res) => {
 
 exports.getAllShifts = async (req, res) => {
   try {
-    let shifts = await Shift.find();
+    let shifts = await Shift.find({ is_active: { $ne: false } });
     
     // Auto-create default shifts if the collection is empty
     if (shifts.length === 0) {
@@ -39,7 +39,7 @@ exports.getAllShifts = async (req, res) => {
 
 exports.updateShift = async (req, res) => {
   try {
-    const shift = await Shift.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const shift = await Shift.findOneAndUpdate({ _id: req.params.id, is_active: { $ne: false } }, req.body, { new: true });
     res.json(shift);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -48,8 +48,13 @@ exports.updateShift = async (req, res) => {
 
 exports.deleteShift = async (req, res) => {
   try {
-    await Shift.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Shift deleted successfully' });
+    const shift = await Shift.findOneAndUpdate(
+      { _id: req.params.id, is_active: { $ne: false } },
+      { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Shift archived by user').trim() } },
+      { new: true }
+    );
+    if (!shift) return res.status(404).json({ error: 'Shift not found' });
+    res.json({ message: 'Shift archived successfully', shift });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -57,7 +62,7 @@ exports.deleteShift = async (req, res) => {
 
 exports.getShiftById = async (req, res) => {
   try {
-    const shift = await Shift.findById(req.params.id);
+    const shift = await Shift.findOne({ _id: req.params.id, is_active: { $ne: false } });
     if (!shift) return res.status(404).json({ error: 'Shift not found' });
     res.json(shift);
   } catch (err) {

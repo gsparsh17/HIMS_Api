@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const compositionSchema = new mongoose.Schema({
   name: { type: String, trim: true },
   strength: { type: String, trim: true }
@@ -230,5 +231,7 @@ medicineSchema.index({ hsn_code: 1, gst_rate: 1 });
 medicineSchema.index({ gst_rate: 1, is_active: 1 });
 medicineSchema.index({ hospitalId: 1, catalog_source: 1, name: 1 });
 medicineSchema.index({ hospitalId: 1, 'medicationSafety.formularyStatus': 1, 'medicationSafety.highRisk': 1 });
+
+addSoftDeleteFields(medicineSchema);
 
 module.exports = mongoose.model('Medicine', medicineSchema);

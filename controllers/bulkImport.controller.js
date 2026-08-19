@@ -1123,7 +1123,28 @@ exports.rollback = async (req, res) => {
             if (doc.bedId) await Bed.updateOne({ _id: doc.bedId, currentAdmissionId: doc._id }, { $set: { status: 'Available' }, $unset: { currentAdmissionId: 1 } });
             await Patient.updateOne({ _id: doc.patientId }, { $pull: { active_admissions: { admission_id: doc._id } } });
           }
-          await Model.findByIdAndDelete(row.targetId);
+          if (Model.schema.path('is_active')) {
+            const now = new Date();
+            const extra = {};
+            if (job.entity === 'appointments') extra.status = 'Cancelled';
+            if (job.entity === 'ipd-admissions') extra.status = 'Cancelled';
+            await Model.updateOne(
+              { _id: row.targetId },
+              {
+                $set: {
+                  ...extra,
+                  is_active: false,
+                  deleted_at: now,
+                  deleted_by: req.user?._id || null,
+                  deletion_reason: `Bulk import rollback: ${job._id}`
+                }
+              }
+            );
+          } else {
+            // Non-reference/transient import entities without a soft-delete contract
+            // keep the legacy rollback behavior.
+            await Model.findByIdAndDelete(row.targetId);
+          }
           rolledBack += 1;
         } else if (row.action === 'update' && row.targetId && row.before) {
           const current = await Model.findById(row.targetId);

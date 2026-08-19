@@ -68,7 +68,7 @@ exports.getNursingNotesByAdmission = async (req, res) => {
     const { admissionId } = req.params;
     const { limit = 50, noteType } = req.query;
 
-    const filter = { admissionId };
+    const filter = { admissionId, is_active: { $ne: false } };
     if (noteType) filter.noteType = noteType;
 
     const nursingNotes = await NursingNote.find(filter)
@@ -91,7 +91,7 @@ exports.getNursingNoteById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const nursingNote = await NursingNote.findById(id)
+    const nursingNote = await NursingNote.findOne({ _id: id, is_active: { $ne: false } })
       .populate('nurseId', 'first_name last_name')
       .populate('shiftHandoverFrom', 'first_name last_name')
       .populate('shiftHandoverTo', 'first_name last_name');
@@ -134,14 +134,14 @@ exports.deleteNursingNote = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const nursingNote = await NursingNote.findByIdAndDelete(id);
+    const nursingNote = await NursingNote.findOneAndUpdate({ _id: id, is_active: { $ne: false } }, { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Nursing note archived by user').trim() } }, { new: true });
     if (!nursingNote) {
       return res.status(404).json({ error: 'Nursing note not found' });
     }
 
     res.json({
       success: true,
-      message: 'Nursing note deleted successfully'
+      message: 'Nursing note archived successfully'
     });
   } catch (err) {
     console.error('Error deleting nursing note:', err);
@@ -277,7 +277,7 @@ exports.getNursesByWard = async (req, res) => {
     
     const nurses = await Nurse.find({ 
       assignedWard: wardId,
-      isActive: true 
+      is_active: { $ne: false } 
     }).select('first_name last_name employeeId');
 
     res.json({ success: true, nurses });

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 const crypto = require('crypto');
 
@@ -535,5 +536,7 @@ patientSchema.index(
     partialFilterExpression: { 'offlineSyncMetadata.idempotencyKey': { $type: 'string' } }
   }
 );
+
+addSoftDeleteFields(patientSchema);
 
 module.exports = mongoose.model('Patient', patientSchema);

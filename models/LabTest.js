@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const labParameterSchema = new mongoose.Schema({
   code: { type: String, trim: true },
   name: { type: String, required: true, trim: true },
@@ -87,6 +88,8 @@ labTestSchema.methods.incrementUsage = function incrementUsage() {
   this.last_used = new Date();
   return this.save();
 };
+
+addSoftDeleteFields(labTestSchema);
 
 module.exports = mongoose.model('LabTest', labTestSchema);
 module.exports.BROAD_SPECIMEN_TYPES = BROAD_SPECIMEN_TYPES;

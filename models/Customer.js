@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 
 const customerSchema = new mongoose.Schema({
   // Basic Information
@@ -92,5 +93,7 @@ customerSchema.virtual('age').get(function() {
   }
   return age;
 });
+
+addSoftDeleteFields(customerSchema);
 
 module.exports = mongoose.model('Customer', customerSchema);

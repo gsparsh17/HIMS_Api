@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 
 const expenseSchema = new mongoose.Schema({
@@ -262,6 +263,8 @@ expenseSchema.virtual('balance_due').get(function() {
 expenseSchema.virtual('is_fully_paid').get(function() {
   return this.paid_amount >= this.total_amount;
 });
+
+addSoftDeleteFields(expenseSchema);
 
 const Expense = mongoose.model('Expense', expenseSchema);
 

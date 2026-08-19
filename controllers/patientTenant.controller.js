@@ -58,7 +58,7 @@ function fail(res, error, status = 500) {
 
 async function ensureOwned(req, res) {
   const hospitalId = requireHospitalId(req);
-  const patient = await Patient.findOne({ _id: req.params.id, hospitalId });
+  const patient = await Patient.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
 
   if (!patient) {
     res.status(404).json({ error: 'Patient not found' });
@@ -348,7 +348,7 @@ exports.getAllPatients = async (req, res) => {
     ]);
     const safeSortBy = allowedSortFields.has(String(sortBy)) ? String(sortBy) : 'registered_at';
 
-    const filter = { hospitalId };
+    const filter = { hospitalId, is_active: { $ne: false } };
 
     if (search) {
       const regex = new RegExp(escapeRegex(search), 'i');
@@ -400,7 +400,7 @@ exports.getPatientById = async (req, res) => {
 exports.updatePatient = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const patient = await Patient.findOne({ _id: req.params.id, hospitalId });
+    const patient = await Patient.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
     if (!patient) {
       return res.status(404).json({ error: 'Patient not found' });
     }
@@ -487,61 +487,23 @@ exports.updatePatient = async (req, res) => {
 exports.deletePatient = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const patientId = req.params.id;
+    const patient = await Patient.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
+    if (!patient) return res.status(404).json({ error: 'Patient not found' });
 
-    const patient = await Patient.findOne({
-      _id: patientId,
-      hospitalId
-    }).select('_id');
+    const activeAdmission = await IPDAdmission.exists({
+      hospitalId,
+      patientId: patient._id,
+      is_active: { $ne: false },
+      status: { $in: ['Admitted', 'Under Treatment', 'Discharge Initiated', 'Discharge Summary Pending', 'Billing Pending', 'Payment Pending', 'Final Clearance Pending'] }
+    });
+    if (activeAdmission) return res.status(409).json({ error: 'Patient has an active IPD admission. Complete or cancel it before deactivating the patient.', code: 'PATIENT_HAS_ACTIVE_ADMISSION' });
 
-    if (!patient) {
-      return res.status(404).json({ error: 'Patient not found' });
-    }
-
-    // Patient identity is a clinical master record. Once downstream clinical
-    // or compliance records reference it, hard deletion would break record
-    // integrity and longitudinal traceability.
-    const [
-      admission,
-      appointment,
-      labRequest,
-      radiologyRequest,
-      prescription,
-      dischargeSummary,
-      nabhRecord
-    ] = await Promise.all([
-      IPDAdmission.exists({ hospitalId, patientId }),
-      Appointment.exists({ hospital_id: hospitalId, patient_id: patientId }),
-      LabRequest.exists({ hospitalId, patientId }),
-      RadiologyRequest.exists({ hospitalId, patientId }),
-      Prescription.exists({ patient_id: patientId }),
-      DischargeSummary.exists({ hospitalId, patientId }),
-      NabhRecord.exists({ hospitalId, patientId })
-    ]);
-
-    const linkedRecordTypes = [];
-    if (admission) linkedRecordTypes.push('admission');
-    if (appointment) linkedRecordTypes.push('appointment');
-    if (labRequest) linkedRecordTypes.push('laboratory request');
-    if (radiologyRequest) linkedRecordTypes.push('radiology request');
-    if (prescription) linkedRecordTypes.push('prescription');
-    if (dischargeSummary) linkedRecordTypes.push('discharge summary');
-    if (nabhRecord) linkedRecordTypes.push('NABH record');
-
-    if (linkedRecordTypes.length) {
-      return res.status(409).json({
-        error: 'Patient has linked clinical records and cannot be deleted',
-        code: 'PATIENT_HAS_LINKED_RECORDS',
-        linkedRecordTypes
-      });
-    }
-
-    await Patient.deleteOne({ _id: patientId, hospitalId });
-
-    return res.json({ message: 'Patient deleted successfully' });
-  } catch (error) {
-    return fail(res, error);
-  }
+    const reason = String(req.body?.reason || 'Deactivated from patient administration').trim();
+    Object.assign(patient, { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: reason });
+    await patient.save();
+    await appendDomainEvent({ hospitalId, entityType: 'Patient', entityId: patient._id, eventType: 'PATIENT_DEACTIVATED', actorUserId: req.user?._id, metadata: { reason } }).catch(() => {});
+    return res.json({ message: 'Patient deactivated successfully', patient });
+  } catch (error) { return fail(res, error); }
 };
 
 exports.getPatientByPhone = async (req, res) => {
@@ -549,7 +511,7 @@ exports.getPatientByPhone = async (req, res) => {
     const hospitalId = requireHospitalId(req);
 
     return res.json({
-      patient: await Patient.findOne({ hospitalId, phone: req.params.phone })
+      patient: await Patient.findOne({ hospitalId, phone: req.params.phone, is_active: { $ne: false } })
     });
   } catch (error) {
     return fail(res, error);
@@ -560,7 +522,7 @@ exports.getRecentPatients = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
 
-    const patients = await Patient.find({ hospitalId })
+    const patients = await Patient.find({ hospitalId, is_active: { $ne: false } })
       .sort({ registered_at: -1 })
       .limit(Number(req.query.limit || 10))
       .select('first_name last_name phone patientId uhid registered_at');
@@ -640,6 +602,7 @@ exports.searchPatientsForPharmacy = async (req, res) => {
 
     const patients = await Patient.find({
       hospitalId,
+      is_active: { $ne: false },
       $or: [
         { first_name: regex },
         { last_name: regex },
@@ -658,6 +621,7 @@ exports.searchPatientsForPharmacy = async (req, res) => {
     const admissions = await IPDAdmission.find({
       hospitalId,
       patientId: { $in: ids },
+      is_active: { $ne: false },
       status: { $nin: ['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'] }
     })
       .populate('primaryDoctorId', 'firstName lastName')
@@ -706,7 +670,7 @@ exports.getPatientByTempId = async (req, res) => {
 exports.getSyncStatus = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const filter = { hospitalId };
+    const filter = { hospitalId, is_active: { $ne: false } };
 
     const [stats, recentSyncs, pending, failed, conflict] = await Promise.all([
       OfflineSyncLog.aggregate([
@@ -790,7 +754,7 @@ exports.getLongitudinalRecord = async (req, res) => {
 exports.sharePatientRecord = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const patient = await Patient.findOne({ _id: req.params.id, hospitalId });
+    const patient = await Patient.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
     if (!patient) return res.status(404).json({ error: 'Patient not found' });
     const facility = String(req.body.facility || '').trim();
     const purpose = String(req.body.purpose || '').trim();

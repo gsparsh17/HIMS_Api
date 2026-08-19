@@ -243,6 +243,10 @@ exports.deleteBed = async (req, res) => {
     }
 
     bed.isActive = false;
+    bed.is_active = false;
+    bed.deleted_at = new Date();
+    bed.deleted_by = req.user?._id || null;
+    bed.deletion_reason = String(req.body?.reason || 'Bed deactivated by user').trim();
     await bed.save();
 
     res.json({

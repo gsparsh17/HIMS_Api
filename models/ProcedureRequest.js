@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 const { sourceBillingFields } = require('../utils/billingLifecycle');
 
@@ -279,5 +280,7 @@ procedureRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, { unique: tr
 procedureRequestSchema.index({ admissionId: 1, sourceType: 1 });
 procedureRequestSchema.index({ appointmentId: 1, sourceType: 1 });
 procedureRequestSchema.index({ procedureCode: 1 });
+
+addSoftDeleteFields(procedureRequestSchema);
 
 module.exports = mongoose.model('ProcedureRequest', procedureRequestSchema);

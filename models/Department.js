@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+const { addSoftDeleteFields } = require('../utils/softDelete');
 function generatedDepartmentCode(name, documentId) {
   const base = String(name || 'DEPT')
     .normalize('NFKD')
@@ -106,5 +107,7 @@ departmentSchema.index(
 );
 
 departmentSchema.statics.generatedCode = generatedDepartmentCode;
+
+addSoftDeleteFields(departmentSchema);
 
 module.exports = mongoose.model('Department', departmentSchema);

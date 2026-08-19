@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 
 const hrLeaveBalanceSchema = new mongoose.Schema({
   employee_id: { type: mongoose.Schema.Types.ObjectId, ref: 'HRStaffProfile', required: true },
@@ -22,5 +23,7 @@ hrLeaveBalanceSchema.set('toJSON', { virtuals: true });
 hrLeaveBalanceSchema.set('toObject', { virtuals: true });
 hrLeaveBalanceSchema.index({ employee_id: 1, year: 1, leave_type: 1 }, { unique: true });
 hrLeaveBalanceSchema.index({ hospital_id: 1, year: 1 });
+
+addSoftDeleteFields(hrLeaveBalanceSchema);
 
 module.exports = mongoose.model('HRLeaveBalance', hrLeaveBalanceSchema);

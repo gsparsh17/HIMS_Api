@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 
 const nursingNoteSchema = new mongoose.Schema({
@@ -67,5 +68,7 @@ const nursingNoteSchema = new mongoose.Schema({
 // Indexes
 nursingNoteSchema.index({ admissionId: 1, noteDateTime: -1 });
 nursingNoteSchema.index({ nurseId: 1, shift: 1 });
+
+addSoftDeleteFields(nursingNoteSchema);
 
 module.exports = mongoose.model('NursingNote', nursingNoteSchema);

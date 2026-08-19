@@ -384,8 +384,8 @@ exports.updateMedicine = async (req, res) => {
 exports.deleteMedicine = async (req, res) => {
   try {
     const medicine = await Medicine.findOneAndUpdate(
-      medicineScope(req, { _id: req.params.id }),
-      { is_active: false },
+      { ...medicineScope(req, { _id: req.params.id }), is_active: { $ne: false } },
+      { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Medicine deactivated by user').trim() } },
       { new: true }
     );
 

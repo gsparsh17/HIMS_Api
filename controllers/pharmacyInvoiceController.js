@@ -33,7 +33,7 @@ const createInvoiceAndHandleStock = async (req, res) => {
 
     // 3. ADDED: Delete the original prescription
     if (prescription_id) {
-        await Prescription.findByIdAndDelete(prescription_id);
+        await Prescription.findByIdAndUpdate(prescription_id, { $set: { status: 'Completed' } });
     }
     
     res.status(201).json(createdInvoice);

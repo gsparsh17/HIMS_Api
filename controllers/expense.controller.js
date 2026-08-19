@@ -104,7 +104,7 @@ exports.getAllExpenses = async (req, res) => {
       store_purchase_id
     } = req.query;
 
-    const filter = {};
+    const filter = { is_active: { $ne: false } };
 
     // Filter by hospital
     const hospitalId = req.user?.hospital_id;
@@ -281,13 +281,13 @@ exports.deleteExpense = async (req, res) => {
       return res.status(400).json({ error: 'Invalid expense ID' });
     }
 
-    const expense = await Expense.findByIdAndDelete(id);
+    const expense = await Expense.findOneAndUpdate({ _id: id, is_active: { $ne: false } }, { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Expense archived by user').trim() } }, { new: true });
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
     }
 
-    res.json({ message: 'Expense deleted successfully' });
+    res.json({ message: 'Expense archived successfully' });
   } catch (error) {
     console.error('Error deleting expense:', error);
     res.status(500).json({ error: 'Failed to delete expense' });
@@ -305,7 +305,8 @@ exports.getDailyExpenses = async (req, res) => {
     const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
 
     const filter = {
-      date: { $gte: startOfDay, $lte: endOfDay }
+      date: { $gte: startOfDay, $lte: endOfDay },
+      is_active: { $ne: false }
     };
 
     // Filter by hospital
@@ -377,7 +378,8 @@ exports.getMonthlyExpenses = async (req, res) => {
     const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999);
 
     const filter = {
-      date: { $gte: startDate, $lte: endDate }
+      date: { $gte: startDate, $lte: endDate },
+      is_active: { $ne: false }
     };
 
     // Filter by hospital

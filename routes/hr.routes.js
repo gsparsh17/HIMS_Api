@@ -48,6 +48,7 @@ router.put('/leaves/:id/status', hrAccess, hrController.updateLeaveStatus);
 router.get('/leave-balances', hrAccess, hrController.getLeaveBalances);
 router.put('/leave-balances/:employeeId', hrAccess, hrController.upsertLeaveBalance);
 router.post('/leave-balances', hrAccess, hrController.upsertLeaveBalance);
+router.delete('/leave-balances/:id', hrAccess, hrController.deleteLeaveBalance);
 router.get('/payrolls', hrAccess, hrController.getPayrolls);
 router.post('/payrolls/generate', hrAccess, hrController.generatePayroll);
 router.put('/payrolls/:id', hrAccess, hrController.updatePayroll);

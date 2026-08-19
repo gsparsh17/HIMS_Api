@@ -193,7 +193,7 @@ exports.deleteCustomer = async (req, res) => {
 
     const customer = await Customer.findByIdAndUpdate(
       id,
-      { is_active: false },
+      { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Customer deactivated by user').trim() } },
       { new: true }
     );
 
