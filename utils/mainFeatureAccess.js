@@ -57,6 +57,11 @@ const MAIN_FEATURES = Object.freeze([
     description: 'Staff, attendance, leave, payroll and HR records'
   },
   {
+    key: 'abdm',
+    label: 'ABDM',
+    description: 'ABHA identity, care contexts, consent and external health records'
+  },
+  {
     key: 'reports',
     label: 'Reports',
     description: 'Operational, clinical and financial reports/exports'
@@ -82,6 +87,7 @@ const ROLE_PRESET = Object.freeze({
     laboratory: 'view',
     radiology: 'view',
     operation_theatre: 'view',
+    abdm: 'manage',
     reports: 'view'
   },
   nurse: {
@@ -91,6 +97,7 @@ const ROLE_PRESET = Object.freeze({
     pharmacy: 'view',
     laboratory: 'view',
     radiology: 'view',
+    abdm: 'manage',
     reports: 'view'
   },
   staff: {
@@ -101,6 +108,7 @@ const ROLE_PRESET = Object.freeze({
     laboratory: 'view',
     radiology: 'view',
     operation_theatre: 'view',
+    abdm: 'manage',
     reports: 'view'
   },
   registrar: {
@@ -108,6 +116,7 @@ const ROLE_PRESET = Object.freeze({
     registration_opd: 'manage',
     ipd: 'view',
     billing_finance: 'manage',
+    abdm: 'manage',
     reports: 'view'
   },
   receptionist: {
@@ -115,6 +124,7 @@ const ROLE_PRESET = Object.freeze({
     registration_opd: 'manage',
     ipd: 'view',
     billing_finance: 'manage',
+    abdm: 'manage',
     reports: 'view'
   },
   pharmacy: {
@@ -301,6 +311,8 @@ const EXACT_MODULE_MAP = Object.freeze({
   lab: 'laboratory',
   radiology: 'radiology',
   imaging: 'radiology',
+  abdm: 'abdm',
+  abha: 'abdm',
   ot: 'operation_theatre',
   operation_theatre: 'operation_theatre',
   store: 'store_inventory',
@@ -365,6 +377,7 @@ function toMainFeatureKey(moduleKey) {
     return 'laboratory';
   }
   if (raw.startsWith('radiology.') || raw.startsWith('masters.radiology')) return 'radiology';
+  if (raw.startsWith('abdm.') || raw.startsWith('abha.')) return 'abdm';
   if (raw.startsWith('ot.') || raw.startsWith('procedure.')) return 'operation_theatre';
   if (raw.startsWith('store.')) return 'store_inventory';
   if (raw.startsWith('hr.') || raw.startsWith('staff.')) return 'hr_staff';

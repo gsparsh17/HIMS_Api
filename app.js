@@ -205,6 +205,7 @@ function mountHospitalRoutes() {
   app.use('/api/admin/config/imports', require('./routes/configurationImport.routes.js'));
   app.use('/api/admin/config/service-masters', require('./routes/serviceMaster.routes.js'));
   app.use('/api/clinical-ai', require('./routes/clinicalAi.routes.js'));
+  app.use('/api/setup-assistant', require('./routes/setupAssistant.routes.js'));
   app.use('/api/audit-logs', require('./routes/auditLog.routes'));
   app.use('/api/nabh', require('./routes/nabh.routes'));
   app.use('/api/patients', require('./routes/patient.routes'));

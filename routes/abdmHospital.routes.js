@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/abdmHospital.controller');
 const packetController = require('../controllers/abdmPacket.controller');
-const { protect, authorize } = require('../middlewares/auth');
+const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
-router.use(protect);
+router.use(protect, requireModuleAccess('abdm', 'view'));
+router.use((req, res, next) => req.method === 'GET' ? next() : requireModuleAccess('abdm', 'manage')(req, res, next));
 const reader = authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist');
 const clinician = authorize('admin', 'doctor', 'nurse', 'registrar');
 const administrator = authorize('admin');

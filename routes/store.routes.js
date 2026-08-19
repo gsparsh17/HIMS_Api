@@ -5,7 +5,7 @@ const { verifyToken, authorize } = require('../middlewares/auth');
 const operations = require('../controllers/storeOperations.controller');
 const procurement = require('../controllers/storeProcurement.controller');
 
-const storeAccess = [verifyToken, authorize('admin', 'mediqliq_super_admin', 'store', 'store_manager', 'inventory_manager')];
+const storeAccess = [verifyToken, authorize('admin', 'mediqliq_super_admin', 'store', 'store_manager', 'inventory_manager', 'equipment_manager')];
 
 router.post('/auth/login', storeController.storeLogin);
 
