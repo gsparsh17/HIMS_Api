@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const billItemSchema = new mongoose.Schema({
   description: {
@@ -275,7 +276,7 @@ const billSchema = new mongoose.Schema({
     },
     amount: Number,
     reference: String,
-    date: { type: Date, default: Date.now }
+    date: { type: Date, default: operationNow }
   }],
 
   items: [billItemSchema],
@@ -287,7 +288,7 @@ const billSchema = new mongoose.Schema({
   },
   generated_at: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   paid_at: {
     type: Date
@@ -312,7 +313,7 @@ const billSchema = new mongoose.Schema({
     payment_amount: { type: Number, default: 0 },
     settlement_discount_amount: { type: Number, default: 0 },
     credit_note_amount: { type: Number, default: 0 },
-    settled_at: { type: Date, default: Date.now }
+    settled_at: { type: Date, default: operationNow }
   }],
   balance_due: {
     type: Number,

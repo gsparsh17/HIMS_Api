@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const Prescription = require('../models/Prescription');
 const AdmissionCoverage = require('../models/AdmissionCoverage');
 const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
@@ -25,7 +26,7 @@ async function pricePharmacyItems({ hospitalId, admissionId, appointmentId, pres
       hospitalId,
       admissionId,
       appointmentId: resolvedAppointmentId,
-      serviceDate: serviceDate || new Date(),
+      serviceDate: serviceDate || operationNow(),
       chargeType: 'Pharmacy',
       serviceType: 'pharmacy',
       internalServiceModel: 'Medicine',

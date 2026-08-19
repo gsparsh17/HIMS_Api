@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const OTRequest = require('../models/OTRequest');
 const OTStaff = require('../models/OTStaff');
 const OTSchedule = require('../models/OTSchedule');
@@ -168,7 +169,7 @@ exports.processOTPayment = async (req, res) => {
       request.paidAmount = finalStatus === 'Paid' ? request.total_cost : paymentAmount;
       request.dueAmount = request.total_cost - request.paidAmount;
       request.paymentStatus = finalStatus === 'Paid' ? 'Completed' : 'Partial';
-      request.paymentReceivedAt = new Date();
+      request.paymentReceivedAt = operationNow();
       request.paymentReceivedBy = req.user?._id;
 
       // Update status to move forward
@@ -338,7 +339,7 @@ exports.updateOTRequestStatus = async (req, res) => {
 
     if (status === 'Approved') {
       request.approvedBy = req.user ? req.user._id : undefined;
-      request.approvedAt = new Date();
+      request.approvedAt = operationNow();
     }
 
     await request.save();
@@ -434,7 +435,7 @@ exports.assignOTRoom = async (req, res) => {
     request.otStaffId = otStaffId || request.otStaffId;
     request.status = 'Scheduled';
     request.approvedBy = req.user ? req.user._id : undefined;
-    request.approvedAt = new Date();
+    request.approvedAt = operationNow();
 
     await request.save();
 
@@ -483,7 +484,7 @@ exports.startSurgery = async (req, res) => {
     }
 
     request.status = 'In Progress';
-    request.startedAt = new Date();
+    request.startedAt = operationNow();
 
     await request.save();
 
@@ -536,7 +537,7 @@ exports.completeSurgery = async (req, res) => {
       return res.status(400).json({ error: 'Only in-progress surgeries can be completed' });
     }
 
-    const completedAt = new Date();
+    const completedAt = operationNow();
     const actualDuration = Math.round((completedAt - request.startedAt) / 60000);
 
     // Update final cost if different from estimated
@@ -607,7 +608,7 @@ exports.cancelOTRequest = async (req, res) => {
     const oldStatus = request.status;
     request.status = 'Cancelled';
     request.cancelledBy = req.user ? req.user._id : undefined;
-    request.cancelledAt = new Date();
+    request.cancelledAt = operationNow();
     request.cancellationReason = cancellationReason || 'No reason provided';
 
     // Handle refund if payment was made
@@ -677,7 +678,7 @@ exports.uploadSurgeryReport = async (req, res) => {
       name: req.file.originalname,
       url: result.secure_url,
       uploaded_by: req.user ? req.user._id : undefined,
-      uploaded_at: new Date()
+      uploaded_at: operationNow()
     };
 
     request.attachments.push(attachment);
@@ -1012,7 +1013,7 @@ exports.getDashboardStats = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const hospitalObjectId = new mongoose.Types.ObjectId(hospitalId);
-    const today = new Date();
+    const today = operationNow();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);

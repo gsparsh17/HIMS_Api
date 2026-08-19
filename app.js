@@ -36,7 +36,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Request-Id', 'X-Master-Admin-Key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Request-Id', 'X-Master-Admin-Key', 'X-Effective-Operation-Time', 'X-Effective-Operation-Source'],
     maxAge: 86400
   })
 );
@@ -197,6 +197,7 @@ function mountHospitalRoutes() {
   const authMiddleware = require('./middlewares/auth');
   app.use('/api', authMiddleware.protect);
   app.use('/api', authMiddleware.requireCompletedMfaSetup);
+  app.use('/api', require('./middlewares/operationTime'));
 
 
   app.use('/api/payments', require('./routes/paymentRoutes'));

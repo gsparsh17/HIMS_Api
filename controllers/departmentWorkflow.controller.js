@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const LabRequest = require('../models/LabRequest');
 const { groupLabRequests } = require('../services/labWorklistGrouping.service');
 const LabTest = require('../models/LabTest');
@@ -199,7 +200,7 @@ exports.collectSpecimen = async (req, res) => {
       container: req.body.container,
       barcode: req.body.barcode,
       fastingStatus: req.body.fastingStatus,
-      collectedAt: req.body.collectedAt || new Date(),
+      collectedAt: req.body.collectedAt || operationNow(),
       collectedBy: req.user._id,
       condition: req.body.condition
     };
@@ -340,7 +341,7 @@ exports.enterLabResults = async (req, res) => {
         payload: { labRequestId: request._id, result: request.result_value, reason: request.critical.flagReason },
         createdBy: req.user._id
       });
-      request.critical.notifiedAt = new Date(); request.critical.notifiedBy = req.user._id; await request.save();
+      request.critical.notifiedAt = operationNow(); request.critical.notifiedBy = req.user._id; await request.save();
     }
     res.json({ success: true, data, criticalNotification });
   } catch (e) {
@@ -386,14 +387,14 @@ exports.criticalAck = async (req, res) => {
       recipientName: req.body.recipientName,
       recipientRole: req.body.recipientRole,
       channel: req.body.channel,
-      acknowledgedAt: new Date(),
+      acknowledgedAt: operationNow(),
       acknowledgedBy: req.user._id,
       escalationLevel: req.body.escalationLevel || 0,
       note: req.body.note
     });
 
     if (!request.critical.notifiedAt) {
-      request.critical.notifiedAt = new Date();
+      request.critical.notifiedAt = operationNow();
       request.critical.notifiedBy = req.user._id;
     }
 
@@ -534,7 +535,7 @@ exports.releaseLab = async (req, res) => {
 exports.labStats = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const now = new Date();
+    const now = operationNow();
 
     const rows = await LabRequest.aggregate([
       { $match: { hospitalId } },
@@ -871,7 +872,7 @@ exports.releaseRadiology = async (req, res) => {
 exports.radiologyStats = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const now = new Date();
+    const now = operationNow();
 
     const [byStatus, byModality] = await Promise.all([
       RadiologyRequest.aggregate([

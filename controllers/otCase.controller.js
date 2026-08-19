@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require('mongoose');
 const OTRequest = require('../models/OTRequest');
 const OTSchedule = require('../models/OTSchedule');
@@ -101,7 +102,7 @@ async function evaluateReadiness(checklist) {
   const pending = required.filter((item) => !['Complete', 'Not Applicable', 'Bypassed'].includes(item.status));
   const bypassed = required.some((item) => item.status === 'Bypassed');
   checklist.overallStatus = pending.length ? 'Pending' : bypassed ? 'Ready With Bypass' : 'Ready';
-  checklist.evaluatedAt = new Date();
+  checklist.evaluatedAt = operationNow();
   checklist.version = Number(checklist.version || 0) + 1;
   return checklist;
 }
@@ -237,7 +238,7 @@ exports.updateReadiness = async (req, res, next) => {
       item.value = update.value;
       item.notes = update.notes;
       item.completedBy = req.user._id;
-      item.completedAt = ['Complete', 'Not Applicable', 'Bypassed'].includes(item.status) ? new Date() : undefined;
+      item.completedAt = ['Complete', 'Not Applicable', 'Bypassed'].includes(item.status) ? operationNow() : undefined;
       item.bypassReason = update.bypassReason;
       item.bypassApprovedBy = item.status === 'Bypassed' ? req.user._id : undefined;
     });
@@ -273,7 +274,7 @@ exports.updateSafety = async (req, res, next) => {
       item.response = update.response;
       item.notes = update.notes;
       item.completedBy = req.user._id;
-      item.completedAt = new Date();
+      item.completedAt = operationNow();
     });
     const incomplete = section.items.filter((item) => !['Yes', 'Not Applicable'].includes(item.response));
     if (req.body.bypass) {
@@ -284,7 +285,7 @@ exports.updateSafety = async (req, res, next) => {
       section.status = incomplete.length ? 'Pending' : 'Completed';
     }
     section.attestedBy = req.user._id;
-    section.attestedAt = new Date();
+    section.attestedAt = operationNow();
     checklist.version = Number(checklist.version || 0) + 1;
     await checklist.save();
     res.json({ success: true, data: checklist });
@@ -355,11 +356,11 @@ exports.scheduleCase = async (req, res, next) => {
 };
 
 const transitions = {
-  approve: { from: ['Requested', 'Readiness Pending', 'Payment Received'], to: 'Approved', eventType: 'ot.case.approved', guard: (doc) => doc.readinessStatus !== 'Pending' || doc.urgency === 'Emergency' || doc.emergencyOverride?.enabled, update: (_doc, req) => ({ approvedBy: req.user._id, approvedAt: new Date() }) },
-  receive: { from: ['Scheduled'], to: 'Patient Received', eventType: 'ot.case.patient_received', guard: (doc) => doc.readinessStatus !== 'Pending' || doc.emergencyOverride?.enabled, update: { patientReceivedAt: new Date() } },
-  start: { from: ['Patient Received', 'Scheduled'], to: 'In Progress', eventType: 'ot.case.started', update: { startedAt: new Date() } },
-  recover: { from: ['In Progress'], to: 'Recovery', eventType: 'ot.case.recovery_started', update: { recoveryStartedAt: new Date(), completedAt: new Date() } },
-  transfer: { from: ['Recovery'], to: 'Transferred', eventType: 'ot.case.transferred', update: { transferredAt: new Date(), transferred_to_ward: true } },
+  approve: { from: ['Requested', 'Readiness Pending', 'Payment Received'], to: 'Approved', eventType: 'ot.case.approved', guard: (doc) => doc.readinessStatus !== 'Pending' || doc.urgency === 'Emergency' || doc.emergencyOverride?.enabled, update: (_doc, req) => ({ approvedBy: req.user._id, approvedAt: operationNow() }) },
+  receive: { from: ['Scheduled'], to: 'Patient Received', eventType: 'ot.case.patient_received', guard: (doc) => doc.readinessStatus !== 'Pending' || doc.emergencyOverride?.enabled, update: () => ({ patientReceivedAt: operationNow() }) },
+  start: { from: ['Patient Received', 'Scheduled'], to: 'In Progress', eventType: 'ot.case.started', update: () => ({ startedAt: operationNow() }) },
+  recover: { from: ['In Progress'], to: 'Recovery', eventType: 'ot.case.recovery_started', update: () => ({ recoveryStartedAt: operationNow(), completedAt: operationNow() }) },
+  transfer: { from: ['Recovery'], to: 'Transferred', eventType: 'ot.case.transferred', update: () => ({ transferredAt: operationNow(), transferred_to_ward: true }) },
   close: { from: ['Transferred', 'Completed'], to: 'Closed', eventType: 'ot.case.closed', guard: async (doc) => {
     const [operative, anesthesia, recovery, inventory] = await Promise.all([
       OTOperativeNote.findOne({ hospitalId: doc.hospitalId, caseId: doc._id }),
@@ -372,9 +373,9 @@ const transitions = {
     if (!recovery || !['Transferred', 'Signed'].includes(recovery.status)) return 'Recovery/transfer record is incomplete';
     if (inventory && inventory.status !== 'Reconciled') return 'OT inventory usage is not reconciled';
     return true;
-  }, update: { closedAt: new Date(), clinicalClosureStatus: 'Closed', inventoryClosureStatus: 'Reconciled' } },
-  postpone: { from: ['Approved', 'Scheduled', 'Patient Received'], to: 'Postponed', eventType: 'ot.case.postponed', update: { postponedAt: new Date() } },
-  cancel: { from: ['Requested', 'Readiness Pending', 'Payment Pending', 'Payment Received', 'Approved', 'Scheduled', 'Patient Received', 'Postponed'], to: 'Cancelled', eventType: 'ot.case.cancelled', update: (_doc, req) => ({ cancelledAt: new Date(), cancelledBy: req.user._id }) }
+  }, update: () => ({ closedAt: operationNow(), clinicalClosureStatus: 'Closed', inventoryClosureStatus: 'Reconciled' }) },
+  postpone: { from: ['Approved', 'Scheduled', 'Patient Received'], to: 'Postponed', eventType: 'ot.case.postponed', update: () => ({ postponedAt: operationNow() }) },
+  cancel: { from: ['Requested', 'Readiness Pending', 'Payment Pending', 'Payment Received', 'Approved', 'Scheduled', 'Patient Received', 'Postponed'], to: 'Cancelled', eventType: 'ot.case.cancelled', update: (_doc, req) => ({ cancelledAt: operationNow(), cancelledBy: req.user._id }) }
 };
 
 exports.transitionCase = async (req, res, next) => {
@@ -436,7 +437,7 @@ exports.createSpecimen = async (req, res, next) => {
   try {
     const otCase = await findCase(req, req.params.id);
     const count = await OTSpecimen.countDocuments({ hospitalId: otCase.hospitalId, caseId: otCase._id });
-    const specimen = await OTSpecimen.create({ ...req.body, hospitalId: otCase.hospitalId, caseId: otCase._id, admissionId: otCase.admissionId, patientId: otCase.patientId, specimenNumber: req.body.specimenNumber || `${otCase.requestNumber}/SP-${String(count + 1).padStart(2, '0')}`, collectedBy: req.user._id, collectedAt: req.body.collectedAt || new Date() });
+    const specimen = await OTSpecimen.create({ ...req.body, hospitalId: otCase.hospitalId, caseId: otCase._id, admissionId: otCase.admissionId, patientId: otCase.patientId, specimenNumber: req.body.specimenNumber || `${otCase.requestNumber}/SP-${String(count + 1).padStart(2, '0')}`, collectedBy: req.user._id, collectedAt: req.body.collectedAt || operationNow() });
     res.status(201).json({ success: true, data: specimen });
   } catch (error) { next(error); }
 };
@@ -454,7 +455,7 @@ exports.completeSurgeryLegacy = async (req, res, next) => {
     const otCase = await findCase(req, req.params.id);
     await OTOperativeNote.findOneAndUpdate(
       { hospitalId: otCase.hospitalId, caseId: otCase._id },
-      { $set: { hospitalId: otCase.hospitalId, caseId: otCase._id, admissionId: otCase.admissionId, patientId: otCase.patientId, findings: req.body.findings, complications: req.body.complications, procedurePerformed: req.body.procedure_performed || otCase.procedureName, estimatedBloodLossMl: req.body.blood_loss_ml, postOpDiagnosis: req.body.post_op_diagnosis, postOpPlan: req.body.post_op_instructions, implants: req.body.implants || [], status: 'Completed', authoredBy: req.user._id, surgeryDate: new Date() }, $inc: { version: 1 } },
+      { $set: { hospitalId: otCase.hospitalId, caseId: otCase._id, admissionId: otCase.admissionId, patientId: otCase.patientId, findings: req.body.findings, complications: req.body.complications, procedurePerformed: req.body.procedure_performed || otCase.procedureName, estimatedBloodLossMl: req.body.blood_loss_ml, postOpDiagnosis: req.body.post_op_diagnosis, postOpPlan: req.body.post_op_instructions, implants: req.body.implants || [], status: 'Completed', authoredBy: req.user._id, surgeryDate: operationNow() }, $inc: { version: 1 } },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
     if (otCase.status === 'In Progress') {

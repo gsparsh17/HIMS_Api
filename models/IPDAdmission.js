@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const DailySequence = require('./DailySequence');
 
 const ipdAdmissionSchema = new mongoose.Schema({
@@ -33,7 +34,7 @@ const ipdAdmissionSchema = new mongoose.Schema({
   },
   admissionDate: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   dischargeDate: {
     type: Date

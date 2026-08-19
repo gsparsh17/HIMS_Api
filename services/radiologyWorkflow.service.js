@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const { appendDomainEvent } = require('./auditEvent.service');
 const { RADIOLOGY_TRANSITIONS: TRANSITIONS, ensureWorkflowTransition } = require('./workflowDefinitions.service');
 
@@ -10,7 +11,7 @@ async function transition({ req, request, to, hospitalId, note, patch = {} }) {
   request.workflowHistory.push({
     from: before,
     to,
-    at: new Date(),
+    at: operationNow(),
     by: req.user?._id,
     note
   });
@@ -18,24 +19,24 @@ async function transition({ req, request, to, hospitalId, note, patch = {} }) {
   Object.assign(request, patch);
 
   if (to === 'Scheduled') {
-    request.scheduledStart = patch.scheduledStart || request.scheduledStart || new Date();
+    request.scheduledStart = patch.scheduledStart || request.scheduledStart || operationNow();
   }
 
   if (to === 'In Progress') {
-    request.performedAt = request.performedAt || new Date();
+    request.performedAt = request.performedAt || operationNow();
   }
 
   if (to === 'Result Entered') {
-    request.resultEnteredAt = new Date();
+    request.resultEnteredAt = operationNow();
   }
 
   if (to === 'Verified') {
-    request.verifiedAt = new Date();
+    request.verifiedAt = operationNow();
     request.verifiedByUserId = req.user?._id;
   }
 
   if (to === 'Reported') {
-    request.releasedAt = new Date();
+    request.releasedAt = operationNow();
     request.releasedBy = req.user?._id;
   }
 

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const clinicalDocumentSchema = new mongoose.Schema(
   {
@@ -6,7 +7,7 @@ const clinicalDocumentSchema = new mongoose.Schema(
     title: { type: String, required: true },
     documentType: { type: String, required: true, default: 'OTHER' },
     description: String,
-    documentDate: { type: Date, default: Date.now, index: true },
+    documentDate: { type: Date, default: operationNow, index: true },
     fileUrl: String,
     mimeType: String,
     contentText: String,

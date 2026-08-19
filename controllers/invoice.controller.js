@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const Invoice = require('../models/Invoice');
 const Medicine = require('../models/Medicine');
 const Prescription = require('../models/Prescription');
@@ -143,7 +144,7 @@ exports.generateProcedureInvoice = async (req, res) => {
       appointment_id: appointment_id,
       has_procedures: true,
       procedures_status: 'Pending',
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     });
 
@@ -269,7 +270,7 @@ exports.updateInvoiceProcedureStatus = async (req, res) => {
     if (status) {
       invoice.procedure_items[procedureIndex].status = status;
       if (status === 'Completed') {
-        invoice.procedure_items[procedureIndex].completed_date = completed_date || new Date();
+        invoice.procedure_items[procedureIndex].completed_date = completed_date || operationNow();
       }
     }
 
@@ -304,7 +305,7 @@ exports.updateInvoiceProcedureStatus = async (req, res) => {
           if (procIndex !== -1) {
             prescription.procedure_requests[procIndex].status = status;
             if (status === 'Completed') {
-              prescription.procedure_requests[procIndex].completed_date = completed_date || new Date();
+              prescription.procedure_requests[procIndex].completed_date = completed_date || operationNow();
             }
             await prescription.save();
           }
@@ -485,7 +486,7 @@ exports.generateLabTestInvoice = async (req, res) => {
       appointment_id: appointment_id,
       has_lab_tests: true,
       lab_tests_status: 'Pending',
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     });
 
@@ -607,10 +608,10 @@ exports.updateInvoiceLabTestStatus = async (req, res) => {
     if (status) {
       invoice.lab_test_items[labTestIndex].status = status;
       if (status === 'Completed') {
-        invoice.lab_test_items[labTestIndex].completed_date = completed_date || new Date();
+        invoice.lab_test_items[labTestIndex].completed_date = completed_date || operationNow();
       }
       if (status === 'Sample Collected') {
-        invoice.lab_test_items[labTestIndex].sample_collected_at = sample_collected_at || new Date();
+        invoice.lab_test_items[labTestIndex].sample_collected_at = sample_collected_at || operationNow();
       }
     }
 
@@ -649,7 +650,7 @@ exports.updateInvoiceLabTestStatus = async (req, res) => {
           if (testIndex !== -1) {
             prescription.lab_test_requests[testIndex].status = status;
             if (status === 'Completed') {
-              prescription.lab_test_requests[testIndex].completed_date = completed_date || new Date();
+              prescription.lab_test_requests[testIndex].completed_date = completed_date || operationNow();
             }
             await prescription.save();
           }
@@ -831,7 +832,7 @@ exports.generateRadiologyInvoice = async (req, res) => {
       appointment_id: appointment_id,
       has_radiology: true,
       radiology_status: 'Pending',
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     });
 
@@ -957,10 +958,10 @@ exports.updateInvoiceRadiologyStatus = async (req, res) => {
     if (status) {
       invoice.radiology_items[radiologyIndex].status = status;
       if (status === 'Reported' || status === 'Completed') {
-        invoice.radiology_items[radiologyIndex].reported_at = reported_at || new Date();
+        invoice.radiology_items[radiologyIndex].reported_at = reported_at || operationNow();
       }
       if (status === 'In Progress') {
-        invoice.radiology_items[radiologyIndex].performed_at = performed_at || new Date();
+        invoice.radiology_items[radiologyIndex].performed_at = performed_at || operationNow();
       }
     }
 
@@ -1110,7 +1111,7 @@ exports.generatePharmacyInvoice = async (req, res) => {
       notes: notes,
       is_pharmacy_sale: true,
       created_by: req.user._id,
-      dispensing_date: new Date(),
+      dispensing_date: operationNow(),
       dispensed_by: req.user._id
     });
 
@@ -1174,7 +1175,7 @@ exports.getPharmacyInvoices = async (req, res) => {
 // Get monthly revenue for pharmacy
 exports.getPharmacyMonthlyRevenue = async (req, res) => {
   try {
-    const now = new Date();
+    const now = operationNow();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
@@ -1207,7 +1208,7 @@ exports.getPharmacyMonthlyRevenue = async (req, res) => {
 // Get daily revenue for pharmacy
 exports.getPharmacyDailyRevenue = async (req, res) => {
   try {
-    const now = new Date();
+    const now = operationNow();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
     const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
 
@@ -1282,7 +1283,7 @@ exports.generateAppointmentInvoice = async (req, res) => {
       customer_name: `${appointment.patient_id.first_name} ${appointment.patient_id.last_name}`,
       customer_phone: appointment.patient_id.phone,
       appointment_id: appointment_id,
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       service_items: items,
       subtotal: subtotal,
@@ -1335,7 +1336,7 @@ exports.generatePurchaseInvoice = async (req, res) => {
       customer_phone: supplier.phone,
       customer_address: supplier.address,
       purchase_order_id: purchase_order_id,
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       service_items: items.map(item => ({
         description: `Purchase - ${item.medicine_name || 'Item'}`,
@@ -1639,7 +1640,7 @@ exports.updateInvoicePayment = async (req, res) => {
       // If your schema expects ObjectId, we need to ensure we only pass ObjectId
       collected_by: finalCollectedBy || finalCollectedByName, // Use ObjectId if available, otherwise string
       collected_by_name: finalCollectedByName, // Always store name as separate field if schema has it
-      date: new Date(),
+      date: operationNow(),
       status: 'Completed'
     });
 
@@ -1686,7 +1687,7 @@ exports.updateInvoicePayment = async (req, res) => {
         if (sale.balance_due <= 0) {
           sale.payment_deferred = false;
           sale.status = 'Completed';
-          sale.settled_at = new Date();
+          sale.settled_at = operationNow();
         } else {
           sale.status = 'Partially Paid';
         }
@@ -1700,7 +1701,7 @@ exports.updateInvoicePayment = async (req, res) => {
         method: method,
         amount: amount,
         reference: reference || '',
-        date: new Date(),
+        date: operationNow(),
         collected_by: finalCollectedByName || 'Pharmacy Staff'
       });
 
@@ -1731,14 +1732,14 @@ exports.updateInvoicePayment = async (req, res) => {
         method: method,
         amount: amount,
         reference: reference || '',
-        date: new Date(),
+        date: operationNow(),
         collected_by: finalCollectedByName || 'Pharmacy Staff'
       });
 
       // Update bill status
       if (bill.balance_due <= 0) {
         bill.status = 'Paid';
-        bill.paid_at = new Date();
+        bill.paid_at = operationNow();
       } else if (bill.paid_amount > 0) {
         bill.status = 'Partially Paid';
       } else {
@@ -1761,7 +1762,7 @@ exports.updateInvoicePayment = async (req, res) => {
           pharmacy_outstanding_balance: updateAmount,
           ...(isAdvancePayment ? { pharmacy_advance_balance: -amount } : {})
         },
-        last_pharmacy_transaction: new Date()
+        last_pharmacy_transaction: operationNow()
       });
       console.log(`✅ Patient ${patientId} balance updated`);
     }
@@ -1845,7 +1846,7 @@ exports.updateInvoicePayment = async (req, res) => {
 
         if (ipdCharge && !ipdCharge.isBilled && sale.balance_due <= 0) {
           ipdCharge.isBilled = true;
-          ipdCharge.billedAt = new Date();
+          ipdCharge.billedAt = operationNow();
           await ipdCharge.save();
           console.log(`✅ IPD charge marked as billed`);
         }
@@ -1860,7 +1861,7 @@ exports.updateInvoicePayment = async (req, res) => {
       if (patientId) {
         await Patient.findByIdAndUpdate(patientId, {
           $inc: { pharmacy_outstanding_balance: 0 }, // Already handled above
-          last_pharmacy_transaction: new Date()
+          last_pharmacy_transaction: operationNow()
         });
       }
     }

@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const NursingNote = require('../models/NursingNote');
 const IPDVitals = require('../models/IPDVitals');
 const IPDAdmission = require('../models/IPDAdmission');
@@ -34,7 +35,7 @@ exports.createNursingNote = async (req, res) => {
       admissionId,
       patientId,
       nurseId: nurseId || req.user?._id,
-      noteDateTime: noteDateTime || new Date(),
+      noteDateTime: noteDateTime || operationNow(),
       noteType,
       note,
       priority,
@@ -160,7 +161,7 @@ exports.createVitals = async (req, res) => {
       hospitalId: req.body.hospitalId || admission.hospitalId || admission.hospital_id || req.user?.hospital_id,
       recordedBy: req.body.recordedBy || req.user?._id,
       recordedByName: req.body.recordedByName || req.user?.name,
-      recordedAt: req.body.recordedAt || new Date()
+      recordedAt: req.body.recordedAt || operationNow()
     };
     const vitals = new IPDVitals(payload);
     await vitals.save();
@@ -214,7 +215,7 @@ exports.getVitalsChartData = async (req, res) => {
     const { admissionId } = req.params;
     const { days = 7 } = req.query;
 
-    const startDate = new Date();
+    const startDate = operationNow();
     startDate.setDate(startDate.getDate() - parseInt(days));
 
     const vitals = await IPDVitals.find({

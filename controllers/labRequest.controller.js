@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const LabRequest = require('../models/LabRequest');
 const LabTest = require('../models/LabTest');
 const LabStaff = require('../models/LabStaff');
@@ -155,7 +156,7 @@ async function upsertLabReportRecord(request, userId) {
     lab_test_id: request.labTestId,
     report_type: request.testName || 'Laboratory Report',
     report_mode: request.report_mode,
-    report_date: request.processing_completed_at || new Date(),
+    report_date: request.processing_completed_at || operationNow(),
     notes: request.technician_notes || request.pathologist_notes || '',
     created_by: userId
   };
@@ -396,7 +397,7 @@ exports.saveManualReport = async (req, res) => {
       ? req.body.narrativeSections
       : template?.narrativeSections || [];
     const narrativeSections = sourceNarratives.map(toNarrativeSection);
-    const completedAt = new Date();
+    const completedAt = operationNow();
 
     request.report_mode = 'manual';
     request.report_url = undefined;
@@ -443,7 +444,7 @@ exports.saveManualReport = async (req, res) => {
       source: 'LAB',
       encounterId: request.admissionId || request.appointmentId || request._id,
       userId: req.user?._id,
-      usedAt: request.createdAt || new Date()
+      usedAt: request.createdAt || operationNow()
     });
     await upsertLabReportRecord(request, req.user?._id);
 
@@ -723,18 +724,18 @@ exports.updateRequestStatus = async (req, res) => {
     // Update timestamps and staff based on status
     if (status === 'Approved' && previousStatus === 'Pending') {
       request.approvedBy = staffId;
-      request.approvedAt = new Date();
+      request.approvedAt = operationNow();
     } else if (status === 'Sample Collected') {
-      request.sample_collected_at = new Date();
+      request.sample_collected_at = operationNow();
       request.sample_collected_by = staffId;
     } else if (status === 'Processing') {
-      request.processing_started_at = new Date();
+      request.processing_started_at = operationNow();
       request.processed_by = staffId;
     } else if (status === 'Completed') {
-      request.processing_completed_at = new Date();
+      request.processing_completed_at = operationNow();
     } else if (status === 'Verified') {
       request.verifiedBy = staffId;
-      request.verifiedAt = new Date();
+      request.verifiedAt = operationNow();
     }
 
     if (notes) {
@@ -778,7 +779,7 @@ exports.addTestResults = async (req, res) => {
     // Auto-mark as completed if results are added and status was Processing
     if (request.status === 'Processing') {
       request.status = 'Completed';
-      request.processing_completed_at = new Date();
+      request.processing_completed_at = operationNow();
     }
 
     await request.save();
@@ -834,7 +835,7 @@ exports.uploadReport = async (req, res) => {
     request.report_mime_type = req.file.mimetype;
     request.report_file_size = req.file.size;
     request.manual_report = undefined;
-    request.processing_completed_at = request.processing_completed_at || new Date();
+    request.processing_completed_at = request.processing_completed_at || operationNow();
     if (req.body.notes) request.technician_notes = cleanText(req.body.notes);
     
     if (request.status !== 'Reported') {
@@ -998,7 +999,7 @@ exports.markAsBilled = async (req, res) => {
 exports.getDashboardStats = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const today = new Date();
+    const today = operationNow();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);

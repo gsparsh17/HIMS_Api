@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require("mongoose");
 const { DEFAULT_TIMEZONE, EWS_CONFIG } = require("../config/clinicalScoring");
 const { clinicalContext } = require("../utils/clinicalDate");
@@ -92,7 +93,7 @@ const ipdVitalsSchema = new mongoose.Schema(
     devicePayloadReference: { type: String, trim: true },
     recordedAt: {
       type: Date,
-      default: Date.now,
+      default: operationNow,
       index: true,
     },
     recordedTimezone: {

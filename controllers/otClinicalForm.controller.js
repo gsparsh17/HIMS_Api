@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const OTRequest = require('../models/OTRequest');
 const OTClinicalForm = require('../models/OTClinicalForm');
 const OTReadinessChecklist = require('../models/OTReadinessChecklist');
@@ -143,7 +144,7 @@ async function registerEncounterDocument(req, otCase, template, record) {
       category: template.category, documentType: template.id, title: template.title,
       sourceModel, sourceId: record._id, sourceRevision: Number(record.version || 1), rendererKey: template.rendererId || 'ot-structured-form',
       status: record.status === 'Signed' ? 'Final/Signed' : record.status === 'Completed' ? 'Completed/Unsigned' : 'Draft',
-      relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', documentDate: record.completedAt || record.updatedAt || new Date(),
+      relatedCaseId: otCase._id, relatedCaseType: 'OTRequest', documentDate: record.completedAt || record.updatedAt || operationNow(),
       authorUserId: req.user?._id, authorName: req.user?.name, templateId: template.id, templateVersion: String(template.version),
       required: Boolean(template.required), metadata: { pageCount: template.pageCount || 1, sourceReference: template.sourceReference }, visibility: 'clinical',
     } },
@@ -273,7 +274,7 @@ exports.saveCaseForm = async (req, res, next) => {
     };
     if (requestedStatus === 'Completed') {
       update.completedBy = req.user._id;
-      update.completedAt = new Date();
+      update.completedAt = operationNow();
     }
     const record = await OTClinicalForm.findOneAndUpdate(
       { hospitalId, caseId: otCase._id, templateId: template.id },
@@ -355,7 +356,7 @@ exports.finalizeCaseFormPdf = async (req, res, next) => {
       metadata: { missingSignatureRoles: signatureState.missingRoles, sourceReference: template.sourceReference },
     });
     if (signatureState.complete && record.status !== 'Signed') {
-      record.status = 'Signed'; record.signedAt = new Date(); await record.save();
+      record.status = 'Signed'; record.signedAt = operationNow(); await record.save();
     }
     const encounterDocument = await registerEncounterDocument(req, otCase, template, record);
     if (encounterDocument) {

@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const IPDAdmission = require('../models/IPDAdmission');
 const Bed = require('../models/Bed');
 const Ward = require('../models/Ward');
@@ -64,7 +65,7 @@ function normalizedPricingSnapshot2026(quote) {
     amounts: quote.amounts,
     explanation: quote.explanation,
     ruleTrace: quote.ruleTrace,
-    pricedAt: new Date()
+    pricedAt: operationNow()
   };
 }
 
@@ -78,7 +79,7 @@ async function quoteWithStandardFallback2026(input) {
       rateCard: null,
       inputs: {
         payer: 'PENDING_MAPPING',
-        serviceDate: input.serviceDate || new Date(),
+        serviceDate: input.serviceDate || operationNow(),
         fallbackReason: error.message
       },
       amounts: {
@@ -129,7 +130,7 @@ async function createInitialCharge2026({
   internalServiceId,
   externalCode,
   wardEntitlement,
-  serviceDate = new Date(),
+  serviceDate = operationNow(),
   idempotencyKey,
   chargeDateKey,
   session,
@@ -197,7 +198,7 @@ async function generateRegistrationFeeInvoice(admission, patient, registrationFe
       status: 'Paid',
       paid_amount: registrationFee,
       balance_due: 0,
-      paid_at: new Date(),
+      paid_at: operationNow(),
       items: [{
         description: `IPD Registration Fee - ${admission.admissionNumber}`,
         amount: registrationFee,
@@ -222,8 +223,8 @@ async function generateRegistrationFeeInvoice(admission, patient, registrationFe
       customer_name: `${patient.first_name} ${patient.last_name || ''}`.trim(),
       customer_phone: patient.phone,
       bill_id: bill._id,
-      issue_date: new Date(),
-      due_date: new Date(),
+      issue_date: operationNow(),
+      due_date: operationNow(),
       service_items: [{
         description: `IPD Registration Fee - ${admission.admissionNumber}`,
         quantity: 1,
@@ -245,7 +246,7 @@ async function generateRegistrationFeeInvoice(admission, patient, registrationFe
       payment_history: [{
         amount: registrationFee,
         method: paymentMethod || 'Cash',
-        date: new Date(),
+        date: operationNow(),
         status: 'Completed',
         collected_by: createdBy
       }]
@@ -279,7 +280,7 @@ async function generateAdmissionFeeInvoice(admission, patient, admissionFee, pay
       status: 'Paid',
       paid_amount: admissionFee,
       balance_due: 0,
-      paid_at: new Date(),
+      paid_at: operationNow(),
       items: [{
         description: `IPD Admission Fee - ${admission.admissionNumber}`,
         amount: admissionFee,
@@ -303,8 +304,8 @@ async function generateAdmissionFeeInvoice(admission, patient, admissionFee, pay
       customer_name: `${patient.first_name} ${patient.last_name || ''}`.trim(),
       customer_phone: patient.phone,
       bill_id: bill._id,
-      issue_date: new Date(),
-      due_date: new Date(),
+      issue_date: operationNow(),
+      due_date: operationNow(),
       service_items: [{
         description: `IPD Admission Fee - ${admission.admissionNumber}`,
         quantity: 1,
@@ -326,7 +327,7 @@ async function generateAdmissionFeeInvoice(admission, patient, admissionFee, pay
       payment_history: [{
         amount: admissionFee,
         method: paymentMethod || 'Cash',
-        date: new Date(),
+        date: operationNow(),
         status: 'Completed',
         collected_by: createdBy
       }]
@@ -358,7 +359,7 @@ async function createIPDCharge({
   invoiceId = null,
   addedBy,
   notes,
-  chargeDate = new Date()
+  chargeDate = operationNow()
 }) {
   const netAmount = (quantity || 1) * (rate || 0);
 
@@ -505,7 +506,7 @@ exports.createAdmission = async (req, res) => {
         bedId: bed?._id,
         roomId,
         wardId,
-        currentLocationEffectiveAt: new Date(),
+        currentLocationEffectiveAt: operationNow(),
         provisionalDiagnosis: payload.provisionalDiagnosis,
         chiefComplaints: payload.chiefComplaints,
         historyOfPresentIllness: payload.historyOfPresentIllness,
@@ -596,7 +597,7 @@ exports.createAdmission = async (req, res) => {
           wardEntitlement: wardEntitlementFrom(bed.bedType),
           standardAmount: dailyBedCharge,
           quantity: 1,
-          serviceDate: new Date()
+          serviceDate: operationNow()
         });
 
         const [segment] = await IPDAccommodationSegment2026.create([{
@@ -607,13 +608,13 @@ exports.createAdmission = async (req, res) => {
           roomId,
           bedId: bed._id,
           bedType: bed.bedType,
-          startedAt: admission.admissionDate || new Date(),
+          startedAt: admission.admissionDate || operationNow(),
           pricingSnapshot: bedQuote,
           dailyRate: Number(bedQuote.amounts?.contracted ?? dailyBedCharge),
           createdBy: req.user?._id
         }], { session });
 
-        const initialBedChargeDate = admission.admissionDate || new Date();
+        const initialBedChargeDate = admission.admissionDate || operationNow();
         const initialBedChargeKey = dateKeyInTimeZone(initialBedChargeDate);
         const bedCharge = await createInitialCharge2026({
           hospitalId,
@@ -729,7 +730,7 @@ exports.createAdmission = async (req, res) => {
         {
           $set: {
             patient_type: 'ipd',
-            last_pharmacy_visit: new Date()
+            last_pharmacy_visit: operationNow()
           },
           $addToSet: {
             active_admissions: {
@@ -752,7 +753,7 @@ exports.createAdmission = async (req, res) => {
     // The idempotency keys reuse the admission-day bed charge above, so this adds
     // Nursing and RMO/Duty Doctor (and any missed back-dated days) without double billing.
     try {
-      const dailyCatchup = await ensureAdmissionDailyCharges(admission._id, new Date(), req.user);
+      const dailyCatchup = await ensureAdmissionDailyCharges(admission._id, operationNow(), req.user);
       const createdDaily = dailyCatchup.charges.filter((charge) =>
         charge?.sourceModule === 'RecurringDaily' && !charges.some((existing) => String(existing?._id) === String(charge?._id))
       );
@@ -1108,7 +1109,7 @@ exports.completeClinicalAssessment = async (req, res) => {
     }
 
     admission.clinicalAssessmentCompleted = true;
-    admission.clinicalAssessmentCompletedAt = new Date();
+    admission.clinicalAssessmentCompletedAt = operationNow();
     admission.clinicalAssessmentCompletedBy = req.user?._id;
     admission.updatedBy = req.user?._id;
 
@@ -1125,7 +1126,7 @@ exports.completeClinicalAssessment = async (req, res) => {
         admissionId: admission._id,
         patientId: admission.patientId,
         recordedBy: req.user?._id,
-        recordedAt: new Date(),
+        recordedAt: operationNow(),
         temperature: req.body.temperature,
         temperatureUnit: req.body.temperatureUnit || 'Celsius',
         pulse: req.body.pulse,
@@ -1238,7 +1239,7 @@ exports.updateAdmissionStatus = async (req, res) => {
     admission.updatedBy = req.user?._id;
 
     if (status === 'Discharged') {
-      admission.dischargeDate = admission.dischargeDate || new Date();
+      admission.dischargeDate = admission.dischargeDate || operationNow();
 
       await IPDAccommodationSegment2026.updateMany(
         {
@@ -1358,7 +1359,7 @@ exports.deleteAdmission = async (req, res) => {
         {
           $set: {
             status: 'voided',
-            endedAt: new Date()
+            endedAt: operationNow()
           }
         }
       ),
@@ -1384,7 +1385,7 @@ exports.deleteAdmission = async (req, res) => {
 exports.getDashboardStats = async (req, res) => {
   try {
     const hospitalId = requireAdmissionHospitalId(req);
-    const today = new Date();
+    const today = operationNow();
     today.setHours(0, 0, 0, 0);
 
     const [
@@ -1547,7 +1548,7 @@ exports.getAdmissionStatsByWard = async (req, res) => {
 exports.getAdmissionTodaySchedule = async (req, res) => {
   try {
     const hospitalId = requireAdmissionHospitalId(req);
-    const start = new Date();
+    const start = operationNow();
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
@@ -1675,7 +1676,7 @@ exports.updatePharmacyClearance = async (req, res) => {
     }
 
     if (clearanceStatus === 'cleared') {
-      admission.pharmacyClearanceDate = new Date();
+      admission.pharmacyClearanceDate = operationNow();
       admission.pharmacyClearanceBy = req.user?._id;
     }
 
@@ -1760,7 +1761,7 @@ exports.getBedOccupancyReport = async (req, res) => {
     const [data, hospital] = await Promise.all([
       bedOccupancyData({
         hospitalId,
-        asOn: req.query.asOn || new Date()
+        asOn: req.query.asOn || operationNow()
       }),
       Hospital.findById(hospitalId).select('hospitalName name address city state pinCode contact phone email logo licenseNumber registrationNumber').lean()
     ]);

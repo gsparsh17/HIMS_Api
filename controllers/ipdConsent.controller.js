@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const IPDConsent = require('../models/IPDConsent');
 const IPDAdmission = require('../models/IPDAdmission');
 const Doctor = require('../models/Doctor');
@@ -26,7 +27,7 @@ function doctorName(doctor = {}) {
   return /^dr\.?\s/i.test(name) ? name : `Dr. ${name}`;
 }
 
-function indiaDateTimeParts(date = new Date()) {
+function indiaDateTimeParts(date = operationNow()) {
   const shifted = new Date(date.getTime() + (330 * 60 * 1000));
   return {
     date: shifted.toISOString().slice(0, 10),
@@ -299,7 +300,7 @@ exports.saveConsent = async (req, res, next) => {
       role: 'patient',
       name: responses.patientOrRepresentativeName || personName(admission.patientId),
       relation: responses.relationship || '',
-      signedAt: responses.patientSignedAt || new Date(),
+      signedAt: responses.patientSignedAt || operationNow(),
       method: responses.patientSignatureMethod === 'typed_acknowledgement' ? 'typed' : (responses.patientSignatureMethod || 'drawn'),
       assetId: responseAssetId,
       assetModel: 'PatientIdentityAsset'
@@ -332,13 +333,13 @@ exports.saveConsent = async (req, res, next) => {
         rendererId: template.rendererId || 'reference-consent',
         responses,
         ...snapshots,
-        finalizedAt: new Date()
+        finalizedAt: operationNow()
       },
       updatedBy: req.user._id,
       ...(requestedStatus !== 'Draft' ? {
-        completedAt: new Date(),
+        completedAt: operationNow(),
         completedBy: req.user._id,
-        finalizedAt: new Date(),
+        finalizedAt: operationNow(),
         finalizedBy: req.user._id
       } : {})
     };

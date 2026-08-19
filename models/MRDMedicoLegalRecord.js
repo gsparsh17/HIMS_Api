@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const schema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
@@ -8,7 +9,7 @@ const schema = new mongoose.Schema({
   caseNumber: { type: String, required: true, trim: true },
   caseType: { type: String, enum: ['MLC', 'Police', 'Accident', 'Assault', 'Poisoning', 'Burn', 'Unknown', 'Other'], default: 'MLC', index: true },
   incidentAt: Date,
-  registeredAt: { type: Date, default: Date.now, index: true },
+  registeredAt: { type: Date, default: operationNow, index: true },
   policeStation: String,
   policeInformedAt: Date,
   investigatingOfficer: String,

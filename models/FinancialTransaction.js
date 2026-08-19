@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 /**
  * A financial transaction is a movement of money or a financial adjustment.
@@ -31,7 +32,7 @@ const financialTransactionSchema = new mongoose.Schema({
   },
   direction: { type: String, enum: ['CREDIT', 'DEBIT'], required: true },
   amount: { type: Number, required: true, min: 0 },
-  postedAt: { type: Date, default: Date.now, index: true },
+  postedAt: { type: Date, default: operationNow, index: true },
   reversedAt: Date,
   externalMoneyMovement: { type: Boolean, default: true, index: true },
   cashFlowClass: { type: String, enum: ['EXTERNAL_COLLECTION', 'ADVANCE_RECEIPT', 'WALLET_UTILISATION', 'REFUND', 'NON_CASH_ADJUSTMENT'], default: 'EXTERNAL_COLLECTION', index: true },

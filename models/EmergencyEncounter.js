@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const codeSchema = new mongoose.Schema(
   {
@@ -10,7 +11,7 @@ const codeSchema = new mongoose.Schema(
     },
     activatedAt: {
       type: Date,
-      default: Date.now
+      default: operationNow
     },
     activatedBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -31,7 +32,7 @@ const codeSchema = new mongoose.Schema(
           },
           respondedAt: {
             type: Date,
-            default: Date.now
+            default: operationNow
           },
           action: {
             type: String
@@ -87,7 +88,7 @@ const schema = new mongoose.Schema(
     },
     arrivalAt: {
       type: Date,
-      default: Date.now
+      default: operationNow
     },
     triage: {
       category: {

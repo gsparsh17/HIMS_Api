@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const movementSchema = new mongoose.Schema({
   action: { type: String, enum: ['issued', 'returned', 'transferred', 'marked_lost', 'recovered', 'archived'], required: true },
@@ -10,7 +11,7 @@ const movementSchema = new mongoose.Schema({
   toDepartmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
   purpose: String,
   dueAt: Date,
-  performedAt: { type: Date, default: Date.now },
+  performedAt: { type: Date, default: operationNow },
   performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   note: String
 }, { _id: true });

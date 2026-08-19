@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const bedTransferSchema = new mongoose.Schema({
   admissionId: {
@@ -40,7 +41,7 @@ const bedTransferSchema = new mongoose.Schema({
   },
   transferDateTime: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   reason: {
     type: String,

@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const LabRequest = require('../models/LabRequest');
 const { appendDomainEvent } = require('./auditEvent.service');
 const { LAB_TRANSITIONS: TRANSITIONS, ensureWorkflowTransition } = require('./workflowDefinitions.service');
@@ -16,7 +17,7 @@ async function transition({ req, request, to, note, hospitalId, patch = {} }) {
   request.workflowHistory.push({
     from: before,
     to,
-    at: new Date(),
+    at: operationNow(),
     by: req.user?._id,
     note
   });
@@ -24,30 +25,30 @@ async function transition({ req, request, to, note, hospitalId, patch = {} }) {
   Object.assign(request, patch);
 
   if (to === 'Sample Collected') {
-    request.sample_collected_at = patch.sample_collected_at || new Date();
+    request.sample_collected_at = patch.sample_collected_at || operationNow();
     request.collectedByUserId = req.user?._id;
   }
 
   if (to === 'Received') {
-    request.receivedAt = new Date();
+    request.receivedAt = operationNow();
     request.receivedBy = req.user?._id;
   }
 
   if (to === 'Processing') {
-    request.processing_started_at = request.processing_started_at || new Date();
+    request.processing_started_at = request.processing_started_at || operationNow();
   }
 
   if (to === 'Result Entered') {
-    request.resultEnteredAt = new Date();
+    request.resultEnteredAt = operationNow();
   }
 
   if (to === 'Verified') {
-    request.verifiedAt = new Date();
+    request.verifiedAt = operationNow();
     request.verifierUserId = req.user?._id;
   }
 
   if (to === 'Reported') {
-    request.releasedAt = new Date();
+    request.releasedAt = operationNow();
     request.releasedBy = req.user?._id;
   }
 
@@ -55,7 +56,7 @@ async function transition({ req, request, to, note, hospitalId, patch = {} }) {
     request.rejection = {
       ...request.rejection,
       ...patch.rejection,
-      rejectedAt: new Date(),
+      rejectedAt: operationNow(),
       rejectedBy: req.user?._id
     };
   }

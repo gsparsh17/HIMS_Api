@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require('mongoose');
 const { DEFAULT_HOSPITAL_TIME_ZONE, hospitalDateKey, dateKeyToStorageDate } = require('../utils/hospitalDateTime');
 
@@ -50,7 +51,7 @@ const appointmentSchema = new mongoose.Schema({
     },
     cancelledAt: {
       type: Date,
-      default: Date.now
+      default: operationNow
     },
     cancelledBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -129,7 +130,7 @@ const appointmentSchema = new mongoose.Schema({
     ref: 'NotificationDelivery'
   }],
   lifecycleTimestamps: {
-    bookedAt: { type: Date, default: Date.now },
+    bookedAt: { type: Date, default: operationNow },
     checkedInAt: Date,
     consultationStartedAt: Date,
     consultationEndedAt: Date,

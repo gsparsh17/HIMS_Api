@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const DomainEvent = require('../models/DomainEvent');
 const crypto = require('crypto');
@@ -240,7 +241,7 @@ exports.createRadiologyRequest = async (req, res) => {
       source: 'RADIOLOGY',
       encounterId: admissionId || appointmentId || request._id,
       userId: req.user?._id,
-      usedAt: request.createdAt || new Date()
+      usedAt: request.createdAt || operationNow()
     });
 
     // Populate response
@@ -346,13 +347,13 @@ exports.updateRequestStatus = async (req, res) => {
     // Update timestamps based on status
     if (status === 'Approved') {
       request.approvedBy = staffId;
-      request.approvedAt = new Date();
+      request.approvedAt = operationNow();
     } else if (status === 'In Progress') {
       request.performedBy = staffId;
-      request.performedAt = new Date();
+      request.performedAt = operationNow();
     } else if (status === 'Reported') {
       request.reportedBy = staffId;
-      request.reportedAt = new Date();
+      request.reportedAt = operationNow();
     }
 
     if (notes) {
@@ -418,7 +419,7 @@ exports.uploadReport = async (req, res) => {
     
     if (request.status !== 'Reported') {
       request.status = 'Reported';
-      request.reportedAt = new Date();
+      request.reportedAt = operationNow();
     }
 
     await request.save();
@@ -554,7 +555,7 @@ exports.markAsBilled = async (req, res) => {
 exports.getDashboardStats = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const today = new Date();
+    const today = operationNow();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
@@ -617,7 +618,7 @@ exports.referOut = async (req, res) => {
       }, { label:'External radiology provider', allowedHosts:process.env.EXTERNAL_RADIOLOGY_ALLOWED_HOSTS, headers:process.env.EXTERNAL_RADIOLOGY_API_KEY?{Authorization:`Bearer ${process.env.EXTERNAL_RADIOLOGY_API_KEY}`}:{}});
       provider = { configured:true, delivered:true, response:result };
     }
-    row.external_exchange = { ...(row.external_exchange?.toObject?.()||row.external_exchange||{}), status:'sent', sentAt:new Date(), payloadReference:req.body.payloadReference||row.external_reference_number };
+    row.external_exchange = { ...(row.external_exchange?.toObject?.()||row.external_exchange||{}), status:'sent', sentAt:operationNow(), payloadReference:req.body.payloadReference||row.external_reference_number };
     await row.save({ validateBeforeSave:false });
     await DomainEvent.create({eventId:`EVT-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,eventType:'external_radiology_order_sent',hospitalId,patientId:row.patientId?._id||row.patientId,actorUserId:req.user._id,actorRole:req.user.role,entityType:'RadiologyRequest',entityId:row._id,correlationId:row.external_reference_number,afterSummary:{facility:row.external_facility,status:row.external_exchange.status,providerDelivered:provider.delivered}});
     return res.json({ success:true, data:row, provider });
@@ -627,7 +628,7 @@ exports.receiveExternalResult = async (req,res) => {
   try {
     const hospitalId=req.user?.hospital_id; const row=await RadiologyRequest.findOne({_id:req.params.id,hospitalId,is_referred_out:true}); if(!row)return res.status(404).json({error:'Referred radiology request not found'});
     if(!req.body.reportUrl && !req.body.resultSummary)return res.status(400).json({error:'reportUrl or resultSummary is required'});
-    row.external_report_url=req.body.reportUrl||row.external_report_url; row.result_description=req.body.resultSummary||row.result_description; row.external_exchange={...(row.external_exchange?.toObject?.()||row.external_exchange||{}),status:'result_received',resultReceivedAt:new Date(),payloadReference:req.body.payloadReference||row.external_reference_number}; await row.save({validateBeforeSave:false});
+    row.external_report_url=req.body.reportUrl||row.external_report_url; row.result_description=req.body.resultSummary||row.result_description; row.external_exchange={...(row.external_exchange?.toObject?.()||row.external_exchange||{}),status:'result_received',resultReceivedAt:operationNow(),payloadReference:req.body.payloadReference||row.external_reference_number}; await row.save({validateBeforeSave:false});
     await DomainEvent.create({eventId:`EVT-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,eventType:'external_radiology_result_received',hospitalId,patientId:row.patientId,actorUserId:req.user._id,actorRole:req.user.role,entityType:'RadiologyRequest',entityId:row._id,correlationId:row.external_reference_number,afterSummary:{reportUrl:row.external_report_url,status:row.external_exchange.status}});
     return res.json({success:true,data:row});
   } catch(e){return res.status(400).json({error:e.message});}

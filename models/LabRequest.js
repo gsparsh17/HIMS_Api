@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const { sourceBillingFields } = require('../utils/billingLifecycle');
 
 const labObservationSchema = new mongoose.Schema({
@@ -146,7 +147,7 @@ const labRequestSchema = new mongoose.Schema({
   // Scheduling
   requestedDate: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   scheduledDate: {
     type: Date
@@ -378,7 +379,7 @@ const labRequestSchema = new mongoose.Schema({
 // Generate request number before save
 labRequestSchema.pre('save', async function(next) {
   if (this.isNew && !this.requestNumber) {
-    const date = new Date();
+    const date = operationNow();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const count = await mongoose.model('LabRequest').countDocuments({ hospitalId: this.hospitalId, requestedDate: { $gte: new Date(year, date.getMonth(), 1), $lt: new Date(year, date.getMonth() + 1, 1) } });

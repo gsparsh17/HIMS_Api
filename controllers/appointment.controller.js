@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Appointment = require('../models/Appointment');
@@ -165,7 +166,7 @@ async function setDoctorOpdAvailability({ hospitalId, doctorId, status, userId, 
     user_id: profile.user_id,
     status,
     current_location: status === 'in_opd' ? 'OPD' : undefined,
-    valid_from: new Date(),
+    valid_from: operationNow(),
     note,
     hospital_id: hospitalId,
     updated_by: userId
@@ -675,7 +676,7 @@ exports.bulkCreateAppointments = async (req, res) => {
           meetingReference: appointmentData.teleconsultation?.meetingReference,
           consentCaptured: Boolean(appointmentData.teleconsultation?.consentCaptured),
           consentCapturedAt: appointmentData.teleconsultation?.consentCaptured
-            ? (appointmentData.teleconsultation?.consentCapturedAt || new Date())
+            ? (appointmentData.teleconsultation?.consentCapturedAt || operationNow())
             : undefined,
           consentCapturedBy: appointmentData.teleconsultation?.consentCaptured
             ? req.user?._id
@@ -686,7 +687,7 @@ exports.bulkCreateAppointments = async (req, res) => {
             name: item?.name,
             url: item?.url,
             mimeType: item?.mimeType,
-            addedAt: new Date(),
+            addedAt: operationNow(),
             addedBy: req.user?._id
           }))
           : [],
@@ -706,7 +707,7 @@ exports.bulkCreateAppointments = async (req, res) => {
         lifecycleTimestamps: {
           bookedAt: appointmentData.lifecycleTimestamps?.bookedAt
             || appointmentData.offlineCapturedAt
-            || new Date(),
+            || operationNow(),
           checkedInAt: appointmentData.lifecycleTimestamps?.checkedInAt,
           consultationStartedAt: appointmentData.lifecycleTimestamps?.consultationStartedAt,
           consultationEndedAt: appointmentData.lifecycleTimestamps?.consultationEndedAt,
@@ -718,7 +719,7 @@ exports.bulkCreateAppointments = async (req, res) => {
           ? String(appointmentData.cancellationReason || 'Imported historical cancellation')
           : undefined,
         cancelledAt: requestedStatus === 'Cancelled'
-          ? (appointmentData.cancelledAt || appointmentData.lifecycleTimestamps?.cancelledAt || new Date())
+          ? (appointmentData.cancelledAt || appointmentData.lifecycleTimestamps?.cancelledAt || operationNow())
           : undefined,
         cancelledBy: requestedStatus === 'Cancelled' ? req.user?._id : undefined
       });
@@ -864,7 +865,7 @@ exports.bulkCreateAppointments = async (req, res) => {
             source: 'OPD',
             encounterId: appointment._id,
             userId: req.user?._id,
-            usedAt: appointmentData.offlineCapturedAt || appointment.createdAt || new Date(),
+            usedAt: appointmentData.offlineCapturedAt || appointment.createdAt || operationNow(),
             updateLegacyPatientFields: false
           });
         }
@@ -948,8 +949,8 @@ exports.completeAppointment = async (req, res) => {
       { _id: req.params.id, hospital_id: hospitalId },
       {
         status: 'Completed',
-        actual_end_time: new Date(),
-        'lifecycleTimestamps.consultationEndedAt': new Date()
+        actual_end_time: operationNow(),
+        'lifecycleTimestamps.consultationEndedAt': operationNow()
       },
       { new: true }
     );
@@ -1284,7 +1285,7 @@ exports.createAppointment = async (req, res) => {
         meetingUrl: req.body.teleconsultation?.meetingUrl,
         meetingReference: req.body.teleconsultation?.meetingReference,
         consentCaptured: Boolean(req.body.teleconsultation?.consentCaptured),
-        consentCapturedAt: req.body.teleconsultation?.consentCaptured ? new Date() : undefined,
+        consentCapturedAt: req.body.teleconsultation?.consentCaptured ? operationNow() : undefined,
         consentCapturedBy: req.body.teleconsultation?.consentCaptured ? req.user?._id : undefined
       },
       attachments: Array.isArray(req.body.attachments)
@@ -1292,7 +1293,7 @@ exports.createAppointment = async (req, res) => {
           name: item?.name,
           url: item?.url,
           mimeType: item?.mimeType,
-          addedAt: new Date(),
+          addedAt: operationNow(),
           addedBy: req.user?._id
         }))
         : [],
@@ -1305,7 +1306,7 @@ exports.createAppointment = async (req, res) => {
           rawPayload: req.body.externalBooking?.rawPayload || req.body
         }
         : undefined,
-      lifecycleTimestamps: { bookedAt: new Date() }
+      lifecycleTimestamps: { bookedAt: operationNow() }
     });
 
     appointment.token = await nextAppointmentToken({
@@ -1377,7 +1378,7 @@ exports.createAppointment = async (req, res) => {
           source: 'OPD',
           encounterId: appointment._id,
           userId: req.user?._id,
-          usedAt: new Date(),
+          usedAt: operationNow(),
           updateLegacyPatientFields: false
         });
       }
@@ -1550,7 +1551,7 @@ exports.syncExternalAppointment = async (req, res) => {
 exports.checkInAppointment = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const checkedInAt = new Date();
+    const checkedInAt = operationNow();
     const appointment = await Appointment.findOneAndUpdate(
       { _id: req.params.id, hospital_id: hospitalId, status: { $nin: ['Cancelled', 'Completed'] } },
       {
@@ -1599,7 +1600,7 @@ exports.startConsultation = async (req, res) => {
     }
 
     await guardConsultationStart({ hospitalId, appointment: current, user: req.user });
-    const startedAt = new Date();
+    const startedAt = operationNow();
     const appointment = await Appointment.findOneAndUpdate(
       { _id: current._id, hospital_id: hospitalId, status: 'Scheduled' },
       {
@@ -1931,7 +1932,7 @@ exports.updateAppointment = async (req, res) => {
           || existingTeleconsultation.communicationMode
           || 'video',
         consentCaptured: true,
-        consentCapturedAt: existingTeleconsultation.consentCapturedAt || new Date(),
+        consentCapturedAt: existingTeleconsultation.consentCapturedAt || operationNow(),
         consentCapturedBy: existingTeleconsultation.consentCapturedBy || req.user?._id
       }
       : {
@@ -1947,7 +1948,7 @@ exports.updateAppointment = async (req, res) => {
         name: item?.name,
         url: item?.url,
         mimeType: item?.mimeType,
-        addedAt: item?.addedAt || new Date(),
+        addedAt: item?.addedAt || operationNow(),
         addedBy: req.user?._id
       }));
     }
@@ -1964,7 +1965,7 @@ exports.updateAppointment = async (req, res) => {
     }
     appointment.status = targetStatus;
     appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
-    const statusChangedAt = new Date();
+    const statusChangedAt = operationNow();
     if (targetStatus === 'In Progress') {
       appointment.actual_start_time = appointment.actual_start_time || statusChangedAt;
       appointment.lifecycleTimestamps.consultationStartedAt =
@@ -2036,7 +2037,7 @@ exports.cancelAppointment = async (req, res) => {
       return res.status(409).json({ error: 'Appointment is already cancelled' });
     }
 
-    const cancelledAt = new Date();
+    const cancelledAt = operationNow();
     appointment.status = 'Cancelled';
     appointment.cancellationReason = reason;
     appointment.cancelledAt = cancelledAt;
@@ -2259,7 +2260,7 @@ exports.updateAppointmentStatus = async (req, res) => {
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
     const previousStatus = appointment.status;
-    const now = new Date();
+    const now = operationNow();
     appointment.status = status;
     appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
     if (status === 'In Progress') {
@@ -2356,7 +2357,7 @@ exports.updateVitals = async (req, res) => {
       vitalRecord.respiratory_rate = respiratory_rate || vitalRecord.respiratory_rate;
       vitalRecord.random_blood_sugar = random_blood_sugar || vitalRecord.random_blood_sugar;
       vitalRecord.height = height || vitalRecord.height;
-      vitalRecord.recorded_at = new Date();
+      vitalRecord.recorded_at = operationNow();
       vitalRecord.recorded_by = req.user ? req.user._id : vitalRecord.recorded_by;
       await vitalRecord.save();
     } else {
@@ -2405,7 +2406,7 @@ exports.updateHomecareDelivery = async (req, res) => {
     const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: req.user.hospital_id, visit_mode: 'homecare' });
     if (!appointment) return res.status(404).json({ error: 'Home-care appointment not found' });
     appointment.homecare = { ...(appointment.homecare?.toObject?.() || appointment.homecare || {}), ...req.body };
-    if (['delivered','completed'].includes(req.body.deliveryStatus) && !appointment.homecare.deliveredAt) appointment.homecare.deliveredAt = new Date();
+    if (['delivered','completed'].includes(req.body.deliveryStatus) && !appointment.homecare.deliveredAt) appointment.homecare.deliveredAt = operationNow();
     await appointment.save();
     await notifyAppointment(appointment, 'homecare_delivery_update', req.user?._id, { subject: 'Home-care service update', body: `Home-care service status: ${appointment.homecare.deliveryStatus}`, payload: { homecare: appointment.homecare } });
     return res.json({ success: true, data: appointment });
@@ -2416,7 +2417,7 @@ exports.submitHomecareFeedback = async (req, res) => {
     const rating = Number(req.body.rating); if (!Number.isFinite(rating) || rating < 1 || rating > 5) return res.status(400).json({ error: 'rating must be between 1 and 5' });
     const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: req.user.hospital_id, visit_mode: 'homecare' });
     if (!appointment) return res.status(404).json({ error: 'Home-care appointment not found' });
-    appointment.homecare.feedback = { rating, comment: req.body.comment, submittedAt: new Date() }; await appointment.save();
+    appointment.homecare.feedback = { rating, comment: req.body.comment, submittedAt: operationNow() }; await appointment.save();
     return res.json({ success: true, data: appointment.homecare.feedback });
   } catch (error) { return res.status(400).json({ error: error.message }); }
 };

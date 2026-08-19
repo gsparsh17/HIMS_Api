@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 // controllers/ipdClinicalDocuments.controller.js
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDInitialAssessment = require('../models/IPDInitialAssessment');
@@ -343,7 +344,7 @@ function normalizeNursingPayload(input = {}) {
         diastolic: input.vitals.diastolic ? parseInt(input.vitals.diastolic) : undefined
       },
       temperatureUnit: 'Fahrenheit',
-      recordedAt: input.arrivalTime || new Date()
+      recordedAt: input.arrivalTime || operationNow()
     };
   }
 
@@ -553,7 +554,7 @@ exports.getClinicalDocumentStatus = async (req, res) => {
   try {
     const admission = await admissionForRequest(req, req.params.admissionId);
     const hospitalId = admission.hospitalId || admission.hospital_id;
-    const today = dateKey(new Date(), DEFAULT_TIMEZONE);
+    const today = dateKey(operationNow(), DEFAULT_TIMEZONE);
 
     const [doctor, nursing, latestVitals, latestRound, medicationOrders] = await Promise.all([
       IPDInitialAssessment.findOne({ admissionId: admission._id }).select('formStatus updatedAt signedAt').lean(),
@@ -647,7 +648,7 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
         });
         patch.formStatus = 'Amended';
         patch.amendedBy = req.user._id;
-        patch.amendedAt = new Date();
+        patch.amendedAt = operationNow();
       }
       existing.set(patch);
     }
@@ -656,7 +657,7 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
 
     if (isSigning) {
       existing.formStatus = 'Signed';
-      existing.signedAt = new Date();
+      existing.signedAt = operationNow();
       existing.signedBy = req.user._id;
       existing.signerName = req.user.name;
     }
@@ -695,7 +696,7 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
 
         // Update clinical assessment status
         updateData.clinicalAssessmentCompleted = true;
-        updateData.clinicalAssessmentCompletedAt = new Date();
+        updateData.clinicalAssessmentCompletedAt = operationNow();
         updateData.clinicalAssessmentCompletedBy = req.user._id;
         shouldUpdate = true;
 
@@ -739,7 +740,7 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
         recordedBy: req.user._id,
         recordedByName: req.user.name,
         recordedByInitials: initials(req.user.name),
-        recordedAt: new Date(),
+        recordedAt: operationNow(),
         temperature: vitalsData.temp ? parseFloat(vitalsData.temp) : undefined,
         pulse: vitalsData.pulse ? parseInt(vitalsData.pulse) : undefined,
         bloodPressure: {
@@ -856,7 +857,7 @@ exports.saveNursingAdmissionAssessment = async (req, res) => {
         }
         patch.status = 'Amended';
         patch.amendedBy = req.user._id;
-        patch.amendedAt = new Date();
+        patch.amendedAt = operationNow();
       }
       existing.set(patch);
     }
@@ -876,7 +877,7 @@ exports.saveNursingAdmissionAssessment = async (req, res) => {
 
     if (req.body.sign === true || req.body.status === 'Signed') {
       existing.status = 'Signed';
-      existing.signedAt = new Date();
+      existing.signedAt = operationNow();
       existing.signedBy = req.user._id;
     }
 
@@ -893,7 +894,7 @@ exports.saveNursingAdmissionAssessment = async (req, res) => {
         recordedBy: req.user._id,
         recordedByName: req.user.name,
         recordedByInitials: initials(req.user.name),
-        recordedAt: new Date(),
+        recordedAt: operationNow(),
         temperature: vitalsData.temperature ? parseFloat(vitalsData.temperature) : undefined,
         pulse: vitalsData.pulse ? parseInt(vitalsData.pulse) : undefined,
         bloodPressure: {
@@ -955,7 +956,7 @@ exports.createVitals = async (req, res) => {
 
     if (req.body.sign === true || req.body.status === 'Signed') {
       record.status = 'Signed';
-      record.signedAt = new Date();
+      record.signedAt = operationNow();
       record.signedBy = req.user._id;
     }
 
@@ -984,7 +985,7 @@ exports.updateVitals = async (req, res) => {
         throw statusError(400, 'Amendment reason is required');
       }
       record.status = 'Amended';
-      record.amendedAt = new Date();
+      record.amendedAt = operationNow();
       record.amendedBy = req.user._id;
       record.amendmentReason = req.body.amendmentReason;
     }
@@ -1001,7 +1002,7 @@ exports.updateVitals = async (req, res) => {
         throw statusError(409, 'EWS configuration is pending clinical approval; save as Draft only');
       }
       record.status = 'Signed';
-      record.signedAt = new Date();
+      record.signedAt = operationNow();
       record.signedBy = req.user._id;
     }
 

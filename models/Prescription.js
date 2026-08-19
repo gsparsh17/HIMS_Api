@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const prescriptionItemSchema = new mongoose.Schema({
   medicine_name: {
@@ -75,7 +76,7 @@ const labTestRequestSchema = new mongoose.Schema({
   notes: { type: String, trim: true },
   cost: { type: Number, default: 0 },
   request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'LabRequest' }, // Reference to created LabRequest
-  created_at: { type: Date, default: Date.now }
+  created_at: { type: Date, default: operationNow }
 });
 
 // Radiology/Imaging Test Request Schema
@@ -93,7 +94,7 @@ const radiologyTestRequestSchema = new mongoose.Schema({
   notes: { type: String, trim: true },
   cost: { type: Number, default: 0 },
   request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'RadiologyRequest' }, // Reference to created RadiologyRequest
-  created_at: { type: Date, default: Date.now }
+  created_at: { type: Date, default: operationNow }
 });
 
 // Procedure Request Schema
@@ -109,7 +110,7 @@ const procedureRequestSchema = new mongoose.Schema({
   scheduled_date: { type: Date },
   cost: { type: Number, default: 0 },
   request_id: { type: mongoose.Schema.Types.ObjectId, ref: 'ProcedureRequest' }, // Reference to created ProcedureRequest
-  created_at: { type: Date, default: Date.now }
+  created_at: { type: Date, default: operationNow }
 });
 
 const prescriptionSchema = new mongoose.Schema({
@@ -154,7 +155,7 @@ const prescriptionSchema = new mongoose.Schema({
   notes: { type: String, trim: true },
   prescription_image: { type: String },
   status: { type: String, enum: ['Active', 'Completed', 'Cancelled', 'Expired'], default: 'Active' },
-  issue_date: { type: Date, default: Date.now },
+  issue_date: { type: Date, default: operationNow },
   validity_days: { type: Number, default: 30 },
   follow_up_date: { type: Date },
   is_repeatable: { type: Boolean, default: false },
@@ -180,7 +181,7 @@ const prescriptionSchema = new mongoose.Schema({
 prescriptionSchema.pre('save', async function (next) {
   if (this.isNew && !this.prescription_number) {
     const count = await mongoose.model('Prescription').countDocuments();
-    const date = new Date();
+    const date = operationNow();
     const year = date.getFullYear();
     const month = (date.getMonth() + 1).toString().padStart(2, '0');
     this.prescription_number = `RX${year}${month}${(count + 1).toString().padStart(4, '0')}`;

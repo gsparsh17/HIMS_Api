@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const crypto = require('crypto');
 
 const patientSchema = new mongoose.Schema({
@@ -380,7 +381,7 @@ const patientSchema = new mongoose.Schema({
   },
   registered_at: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   updated_at: {
     type: Date,

@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const Procedure = require('../models/Procedure');
 const fileStorage = require('../services/fileStorage.service');
@@ -96,7 +97,7 @@ exports.createProcedureRequest = async (req, res) => {
       source: 'PROCEDURE',
       encounterId: admissionId || appointmentId || request._id,
       userId: req.user?._id,
-      usedAt: request.createdAt || new Date()
+      usedAt: request.createdAt || operationNow()
     });
 
     // Populate response
@@ -212,16 +213,16 @@ exports.updateRequestStatus = async (req, res) => {
     // Update timestamps based on status
     if (status === 'Approved' && previousStatus === 'Pending') {
       request.approvedBy = userId;
-      request.approvedAt = new Date();
+      request.approvedAt = operationNow();
     } else if (status === 'In Progress') {
       request.performedBy = userId;
-      request.performedAt = new Date();
+      request.performedAt = operationNow();
     } else if (status === 'Completed') {
       request.completedBy = userId;
-      request.completedAt = new Date();
+      request.completedAt = operationNow();
     } else if (status === 'Cancelled') {
       request.cancelled_by = userId;
-      request.cancelled_at = new Date();
+      request.cancelled_at = operationNow();
       request.cancellation_reason = notes;
     }
 
@@ -261,7 +262,7 @@ exports.addProcedureFindings = async (req, res) => {
     if (request.status !== 'Completed') {
       request.status = 'Completed';
       request.completedBy = req.user?._id;
-      request.completedAt = new Date();
+      request.completedAt = operationNow();
     }
 
     await request.save();
@@ -310,7 +311,7 @@ exports.uploadAttachment = async (req, res) => {
       name: name || req.file.originalname,
       url: result.secure_url,
       uploaded_by: req.user?._id,
-      uploaded_at: new Date()
+      uploaded_at: operationNow()
     });
 
     await request.save();
@@ -429,7 +430,7 @@ exports.markAsBilled = async (req, res) => {
 // Get dashboard stats
 exports.getDashboardStats = async (req, res) => {
   try {
-    const today = new Date();
+    const today = operationNow();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);

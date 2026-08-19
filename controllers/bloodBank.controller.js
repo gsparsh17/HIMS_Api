@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 'use strict';
 
 const BloodDonor = require('../models/BloodDonor');
@@ -26,7 +27,7 @@ exports.registerDonor = async (req, res) => {
       screening: {
         ...s,
         screenedBy: req.user._id,
-        screenedAt: new Date()
+        screenedAt: operationNow()
       },
       eligibilityStatus: eligible ? 'eligible' : 'deferred',
       deferralReason: eligible
@@ -89,7 +90,7 @@ exports.addUnit = async (req, res) => {
       donorId: donor?._id,
       bloodGroup: req.body.bloodGroup,
       component: req.body.component,
-      collectedAt: req.body.collectedAt || new Date(),
+      collectedAt: req.body.collectedAt || operationNow(),
       expiresAt: req.body.expiresAt,
       storageLocation: req.body.storageLocation || 'Blood Bank',
       volumeMl: req.body.volumeMl,
@@ -110,7 +111,7 @@ exports.addUnit = async (req, res) => {
 exports.inventory = async (req, res) => {
   try {
     const hid = hospitalId(req);
-    const now = new Date();
+    const now = operationNow();
 
     const expired = await BloodUnit.updateMany(
       {
@@ -220,13 +221,13 @@ exports.requestComponents = async (req, res) => {
       timeline: [
         {
           activity: 'requested',
-          at: new Date(),
+          at: operationNow(),
           by: req.user._id,
           note: req.body.note
         },
         {
           activity: isFullyAvailable ? 'stock_reserved' : 'shortage_identified',
-          at: new Date(),
+          at: operationNow(),
           by: req.user._id,
           note: isFullyAvailable
             ? `${available.length} unit(s) reserved`
@@ -300,7 +301,7 @@ exports.dispatch = async (req, res) => {
     );
 
     row.status = 'dispatched';
-    row.dispatchedAt = new Date();
+    row.dispatchedAt = operationNow();
     row.dispatchedBy = req.user._id;
     row.delayReason = req.body.delayReason;
 
@@ -374,7 +375,7 @@ exports.publishUhiStock = async (req, res) => {
         {
           exchangeReference,
           hospitalId: String(hid),
-          publishedAt: new Date().toISOString(),
+          publishedAt: operationNow().toISOString(),
           stock
         },
         {

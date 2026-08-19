@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const otRequestSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
@@ -69,7 +70,7 @@ const otRequestSchema = new mongoose.Schema({
   // Scheduling
   requestedDate: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   preferredDate: Date,
   preferredTime: String,

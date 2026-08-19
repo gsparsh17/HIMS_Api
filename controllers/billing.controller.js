@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
 const Appointment = require('../models/Appointment');
@@ -183,7 +184,7 @@ async function createOrUpdateIPDCharge({
     isBilled: false,
     addedBy,
     notes,
-    chargeDate: new Date()
+    chargeDate: operationNow()
   });
   await charge.save();
   return charge;
@@ -219,7 +220,7 @@ async function markIPDChargeAsBilled(admissionId, sourceModule, sourceId, invoic
   ipdCharge.status = 'INVOICED';
   ipdCharge.invoiceId = invoiceId;
   if (billId) ipdCharge.billId = billId;
-  ipdCharge.billedAt = new Date();
+  ipdCharge.billedAt = operationNow();
   ipdCharge.sourceReference = {
     ...(ipdCharge.sourceReference?.toObject?.() || ipdCharge.sourceReference || {}),
     module: sourceModule,
@@ -296,12 +297,12 @@ exports.createBill = async (req, res) => {
       payment_method,
       status,
       paid_amount: status === 'Paid' ? money(calculatedTotal) : 0,
-      paid_at: status === 'Paid' ? new Date() : undefined,
+      paid_at: status === 'Paid' ? operationNow() : undefined,
       payments: status === 'Paid' ? [{
         method: payment_method,
         amount: money(calculatedTotal),
         reference: transaction_id,
-        date: new Date()
+        date: operationNow()
       }] : [],
       items: items.map(item => ({
         description: item.description,
@@ -438,7 +439,7 @@ exports.createBill = async (req, res) => {
             tax_amount: 0,
             prescription_id: item.prescription_id,
             status: 'Paid',
-            scheduled_date: new Date()
+            scheduled_date: operationNow()
           });
         } else if (item.item_type === 'Lab Test') {
           labTestItems.push({
@@ -451,7 +452,7 @@ exports.createBill = async (req, res) => {
             tax_amount: 0,
             prescription_id: item.prescription_id,
             status: 'Paid',
-            scheduled_date: new Date()
+            scheduled_date: operationNow()
           });
         } else if (item.item_type === 'Radiology') {
           radiologyItems.push({
@@ -464,7 +465,7 @@ exports.createBill = async (req, res) => {
             tax_amount: 0,
             prescription_id: item.prescription_id,
             status: 'Paid',
-            scheduled_date: new Date()
+            scheduled_date: operationNow()
           });
         } else if (item.item_type === 'Medicine') {
           medicineItems.push({
@@ -513,7 +514,7 @@ exports.createBill = async (req, res) => {
         appointment_id: appointment_id,
         prescription_id: prescription_id,
         bill_id: bill._id,
-        issue_date: new Date(),
+        issue_date: operationNow(),
         due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         service_items: serviceItems,
         medicine_items: medicineItems,
@@ -532,7 +533,7 @@ exports.createBill = async (req, res) => {
           reference: transaction_id,
           status: 'Completed',
           collected_by: req.user?._id,
-          date: new Date()
+          date: operationNow()
         }],
         status: 'Paid',
         notes: appointment ? 
@@ -560,7 +561,7 @@ exports.createBill = async (req, res) => {
       bill.invoice_id = invoice._id;
       bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
       bill.document_stage = 'INVOICED';
-      bill.invoiced_at = new Date();
+      bill.invoiced_at = operationNow();
       await bill.save();
 
       // ========== MARK IPD CHARGES AS BILLED ==========
@@ -753,7 +754,7 @@ exports.updateBillStatus = async (req, res) => {
         method: bill.payment_method,
         amount: paymentAmount,
         reference: payment_reference || undefined,
-        date: new Date()
+        date: operationNow()
       });
     } else if (payment_method) {
       bill.payment_method = payment_method;
@@ -769,7 +770,7 @@ exports.updateBillStatus = async (req, res) => {
 
     if (projectedBalance <= 0) {
       bill.status = 'Paid';
-      bill.paid_at = bill.paid_at || new Date();
+      bill.paid_at = bill.paid_at || operationNow();
     } else if (bill.paid_amount > 0) {
       bill.status = 'Partially Paid';
     } else if (status) {
@@ -778,8 +779,8 @@ exports.updateBillStatus = async (req, res) => {
 
     if (notes) {
       bill.notes = bill.notes
-        ? `${bill.notes}\n${new Date().toLocaleDateString()}: ${notes}`
-        : `${new Date().toLocaleDateString()}: ${notes}`;
+        ? `${bill.notes}\n${operationNow().toLocaleDateString()}: ${notes}`
+        : `${operationNow().toLocaleDateString()}: ${notes}`;
     }
 
     await bill.save();
@@ -911,7 +912,7 @@ exports.updateBillStatus = async (req, res) => {
         appointment_id: updatedBill.appointment_id,
         prescription_id: updatedBill.prescription_id,
         bill_id: updatedBill._id,
-        issue_date: new Date(),
+        issue_date: operationNow(),
         due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         service_items: serviceItems,
         medicine_items: medicineItems,
@@ -933,7 +934,7 @@ exports.updateBillStatus = async (req, res) => {
                 reference: entry.reference,
                 status: 'Completed',
                 collected_by: req.user?._id,
-                date: entry.date || new Date()
+                date: entry.date || operationNow()
               }))
           : [{
               amount: money(updatedBill.total_amount),
@@ -941,7 +942,7 @@ exports.updateBillStatus = async (req, res) => {
               reference: payment_reference,
               status: 'Completed',
               collected_by: req.user?._id,
-              date: new Date()
+              date: operationNow()
             }],
         status: 'Paid',
         notes: appointment ? 
@@ -969,7 +970,7 @@ exports.updateBillStatus = async (req, res) => {
       updatedBill.invoice_id = invoice._id;
       updatedBill.invoice_ids = Array.from(new Set([...(updatedBill.invoice_ids || []).map(String), String(invoice._id)]));
       updatedBill.document_stage = 'INVOICED';
-      updatedBill.invoiced_at = new Date();
+      updatedBill.invoiced_at = operationNow();
       await updatedBill.save();
 
       // Mark IPD charges as billed if admission exists
@@ -1041,7 +1042,7 @@ exports.updateBillStatus = async (req, res) => {
           invoice.payment_history.push({
             amount: remainingAmount,
             method: payment_method || updatedBill.payment_method || 'Cash',
-            date: new Date(),
+            date: operationNow(),
             status: 'Completed',
             collected_by: req.user?._id,
             reference: payment_reference || notes || `Payment for bill ${updatedBill.bill_number || updatedBill._id}`
@@ -1081,7 +1082,7 @@ exports.updateBillStatus = async (req, res) => {
           invoice.payment_history.push({
             amount: paymentAmount,
             method: payment_method || updatedBill.payment_method || 'Cash',
-            date: new Date(),
+            date: operationNow(),
             status: 'Completed',
             collected_by: req.user?._id,
             reference: payment_reference || notes || `Payment for bill ${updatedBill.bill_number || updatedBill._id}`
@@ -1116,8 +1117,8 @@ exports.updateBillStatus = async (req, res) => {
         } else if (status === 'Refunded' && invoice.status !== 'Refunded') {
           invoice.status = 'Refunded';
           invoice.notes = invoice.notes 
-            ? `${invoice.notes}\n${new Date().toLocaleDateString()}: Bill marked as Refunded`
-            : `${new Date().toLocaleDateString()}: Bill marked as Refunded`;
+            ? `${invoice.notes}\n${operationNow().toLocaleDateString()}: Bill marked as Refunded`
+            : `${operationNow().toLocaleDateString()}: Bill marked as Refunded`;
           
           if (invoice.procedure_items?.length > 0) {
             invoice.procedure_items.forEach(item => {
@@ -1137,8 +1138,8 @@ exports.updateBillStatus = async (req, res) => {
         } else if (status === 'Cancelled' && invoice.status !== 'Cancelled') {
           invoice.status = 'Cancelled';
           invoice.notes = invoice.notes 
-            ? `${invoice.notes}\n${new Date().toLocaleDateString()}: Bill cancelled`
-            : `${new Date().toLocaleDateString()}: Bill cancelled`;
+            ? `${invoice.notes}\n${operationNow().toLocaleDateString()}: Bill cancelled`
+            : `${operationNow().toLocaleDateString()}: Bill cancelled`;
           
           if (invoice.procedure_items?.length > 0) {
             invoice.procedure_items.forEach(item => {
@@ -1499,7 +1500,7 @@ exports.generateProcedureBill = async (req, res) => {
       prescription_id: prescription._id,
       admission_id: finalAdmissionId,
       bill_id: bill._id,
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       procedure_items: selectedProcedures.map(proc => ({
         procedure_code: proc.procedure_code,
@@ -1528,7 +1529,7 @@ exports.generateProcedureBill = async (req, res) => {
     bill.invoice_id = invoice._id;
     bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
     bill.document_stage = 'INVOICED';
-    bill.invoiced_at = new Date();
+    bill.invoiced_at = operationNow();
     await bill.save();
 
     // Update prescription procedure requests
@@ -1679,7 +1680,7 @@ exports.generateLabTestBill = async (req, res) => {
       prescription_id: prescription._id,
       admission_id: finalAdmissionId,
       bill_id: bill._id,
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       lab_test_items: selectedLabTests.map(test => ({
         lab_test_code: test.lab_test_code,
@@ -1708,7 +1709,7 @@ exports.generateLabTestBill = async (req, res) => {
     bill.invoice_id = invoice._id;
     bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
     bill.document_stage = 'INVOICED';
-    bill.invoiced_at = new Date();
+    bill.invoiced_at = operationNow();
     await bill.save();
 
     // Update prescription lab test requests
@@ -1859,7 +1860,7 @@ exports.generateRadiologyBill = async (req, res) => {
       prescription_id: prescription._id,
       admission_id: finalAdmissionId,
       bill_id: bill._id,
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       radiology_items: selectedRadiology.map(rad => ({
         imaging_test_code: rad.imaging_test_code,
@@ -1889,7 +1890,7 @@ exports.generateRadiologyBill = async (req, res) => {
     bill.invoice_id = invoice._id;
     bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
     bill.document_stage = 'INVOICED';
-    bill.invoiced_at = new Date();
+    bill.invoiced_at = operationNow();
     await bill.save();
 
     // Update prescription radiology test requests
@@ -2372,7 +2373,7 @@ exports.generateInvoiceFromBill = async (req, res, next) => {
       if (existing) return res.json({ success: true, message: 'Invoice already issued', invoice: existing, bill });
     }
 
-    const now = new Date();
+    const now = operationNow();
     const dueDate = new Date(now.getTime() + (Number(req.body?.dueInDays ?? 7) * 86400000));
     const amountPaid = money(bill.paid_amount || 0);
     const total = money(bill.total_amount || 0);

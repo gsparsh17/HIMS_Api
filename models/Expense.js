@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const expenseSchema = new mongoose.Schema({
   // Basic Information
@@ -10,7 +11,7 @@ const expenseSchema = new mongoose.Schema({
   date: {
     type: Date,
     required: true,
-    default: Date.now
+    default: operationNow
   },
   
   // Category & Description

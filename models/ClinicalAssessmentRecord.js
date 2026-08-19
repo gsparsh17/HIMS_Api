@@ -1,5 +1,6 @@
 'use strict';
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const schema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true, index: true },
@@ -14,7 +15,7 @@ const schema = new mongoose.Schema({
   eligible: Boolean,
   result: mongoose.Schema.Types.Mixed,
   treatmentPlan: mongoose.Schema.Types.Mixed,
-  assessedAt: { type: Date, default: Date.now, index: true },
+  assessedAt: { type: Date, default: operationNow, index: true },
   assessedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   supersedesId: { type: mongoose.Schema.Types.ObjectId, ref: 'ClinicalAssessmentRecord' }
 }, { timestamps: true, minimize: false });

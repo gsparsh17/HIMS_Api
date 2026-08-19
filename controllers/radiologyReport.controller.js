@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const fs = require('fs');
 const fileStorage = require('../services/fileStorage.service');
 const RadiologyRequest = require('../models/RadiologyRequest');
@@ -112,13 +113,13 @@ exports.saveManualReport = async (req, res) => {
       radiologistName: clean(payload.radiologistName),
       technicianName: clean(payload.technicianName),
       disclaimer: clean(payload.disclaimer),
-      reportedAt: new Date(),
+      reportedAt: operationNow(),
       reportedBy: req.user?._id
     };
     request.findings = clean(sections.find((item) => /findings/i.test(item.key))?.text || sections.find((item) => /findings/i.test(item.label))?.text);
     request.impression = clean(sections.find((item) => /impression/i.test(item.key))?.text || sections.find((item) => /impression/i.test(item.label))?.text);
     request.status = 'Result Entered';
-    request.resultEnteredAt = new Date();
+    request.resultEnteredAt = operationNow();
     await request.save();
     res.json({ success: true, message: 'Structured radiology report saved', data: request });
   } catch (error) {

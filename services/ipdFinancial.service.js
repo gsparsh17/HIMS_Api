@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require('mongoose');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
@@ -541,7 +542,7 @@ async function listBillingAdmissions(user, query = {}) {
 }
 
 async function getRunningBill(admissionId, user) {
-  await ensureAdmissionDailyCharges(admissionId, new Date(), user);
+  await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
   const snapshot = await calculateAdmissionFinancials(admissionId, { user });
 
   const admission = await IPDAdmission.findOne({
@@ -653,7 +654,7 @@ async function addManualCharge(payload, user) {
     throw error;
   }
 
-  const chargeDate = payload.chargeDate || new Date();
+  const chargeDate = payload.chargeDate || operationNow();
 
   if (payload.chargeType === 'Bed') {
     const existing = await IPDCharge.findOne({
@@ -731,7 +732,7 @@ async function addManualCharge(payload, user) {
     discountAmount: optionalMoney(payload.discountAmount ?? payload.discount),
     discountReason: payload.discountReason,
     discountApprovedBy: payload.discountApprovedBy || (Number(payload.discountAmount ?? payload.discount ?? 0) > 0 ? user?._id : undefined),
-    discountApprovedAt: Number(payload.discountAmount ?? payload.discount ?? 0) > 0 ? new Date() : undefined,
+    discountApprovedAt: Number(payload.discountAmount ?? payload.discount ?? 0) > 0 ? operationNow() : undefined,
     discount: optionalMoney(payload.discountAmount ?? payload.discount),
     taxMode: ['inclusive', 'exempt'].includes(payload.taxMode) ? payload.taxMode : 'exclusive',
     taxName: payload.taxName,
@@ -799,7 +800,7 @@ async function generateBedCharge(admissionId, payload, user) {
     throw error;
   }
 
-  const chargeDate = new Date(payload.date || new Date());
+  const chargeDate = new Date(payload.date || operationNow());
   chargeDate.setHours(0, 0, 0, 0);
 
   const admissionDate = new Date(admission.admissionDate);
@@ -950,19 +951,19 @@ async function applyDiscount(admissionId, payload, user) {
     discountAmount,
     discountReason: payload.discountReason.trim(),
     discountApprovedBy: payload.approvedBy || user?._id,
-    discountApprovedAt: new Date(),
+    discountApprovedAt: operationNow(),
     discount: discountAmount,
     taxAmount: 0,
     tax: 0,
     sourceModule: 'Billing',
     sourceReference: { module: 'Billing' },
-    chargeDate: new Date(),
+    chargeDate: operationNow(),
     notes: payload.notes || payload.discountReason.trim(),
     discountDetails: {
       type: payload.discountType === 'percentage' ? 'percentage' : 'fixed',
       reason: payload.discountReason.trim(),
       approvedBy: payload.approvedBy || user?._id,
-      approvedAt: new Date()
+      approvedAt: operationNow()
     },
     addedBy: user?._id
   });
@@ -1006,7 +1007,7 @@ async function voidCharge(admissionId, chargeId, payload, user) {
   charge.status = 'VOIDED';
   charge.voidReason = payload.reason.trim();
   charge.voidedBy = user?._id;
-  charge.voidedAt = new Date();
+  charge.voidedAt = operationNow();
   await charge.save();
 
   await reverseCoverageUtilization({
@@ -1030,7 +1031,7 @@ async function voidCharge(admissionId, chargeId, payload, user) {
 }
 
 async function previewIPDInvoice(admissionId, payload = {}, user) {
-  await ensureAdmissionDailyCharges(admissionId, payload.throughDate || new Date(), user);
+  await ensureAdmissionDailyCharges(admissionId, payload.throughDate || operationNow(), user);
   const admission = await findAdmission(admissionId, null, user);
   const requested = Array.isArray(payload.chargeIds) ? [...new Set(payload.chargeIds.map(String))] : [];
   const filter = { hospitalId: admission.hospitalId, admissionId, ...UNBILLED_CHARGE_FILTER };
@@ -1047,7 +1048,7 @@ async function previewIPDInvoice(admissionId, payload = {}, user) {
 }
 
 async function issueIPDInvoice(admissionId, payload = {}, user) {
-  await ensureAdmissionDailyCharges(admissionId, payload.throughDate || new Date(), user);
+  await ensureAdmissionDailyCharges(admissionId, payload.throughDate || operationNow(), user);
   const invoiceKind = payload.invoiceKind === 'final' ? 'IPD Final' : 'IPD Interim';
 
   return runFinancialTransaction(async (session) => {
@@ -1173,9 +1174,9 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
       invoice_type: invoiceKind,
       document_stage: 'ISSUED',
       is_final_ipd_invoice: invoiceKind === 'IPD Final',
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: payload.dueDate ? new Date(payload.dueDate) : new Date(),
-      issued_at: new Date(),
+      issued_at: operationNow(),
       subtotal,
       gross_amount: subtotal,
       line_discount_total: lineDiscountTotal,
@@ -1189,7 +1190,7 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
       balance_due: patientInvoiceTotal,
       status: patientInvoiceTotal === 0 ? 'Paid' : 'Issued',
       idempotency_key: payload.idempotencyKey,
-      discount_details: billDiscountTotal > 0 ? { type: 'fixed', reason: 'Authorised IPD charge/final bill discount', approved_by: user?._id, approved_at: new Date() } : undefined,
+      discount_details: billDiscountTotal > 0 ? { type: 'fixed', reason: 'Authorised IPD charge/final bill discount', approved_by: user?._id, approved_at: operationNow() } : undefined,
       payer_allocation: {
         coverage_id: coverage?._id,
         payer_id: coverage?.payerId,
@@ -1237,13 +1238,13 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
     bill.invoice_id = invoice._id;
     bill.invoice_ids = [invoice._id];
     bill.document_stage = 'INVOICED';
-    bill.invoiced_at = new Date();
+    bill.invoiced_at = operationNow();
     await bill.save(sessionOptions(session));
 
     const ids = charges.map((row) => row._id);
     const update = await IPDCharge.updateMany(
       { _id: { $in: ids }, hospitalId, admissionId, ...UNBILLED_CHARGE_FILTER },
-      { $set: { isBilled: true, status: 'INVOICED', billId: bill._id, invoiceId: invoice._id, billedAt: new Date(), sourceReference: { module: 'IPD', documentId: bill._id, invoiceNumber: invoice.invoice_number, billNumber } } },
+      { $set: { isBilled: true, status: 'INVOICED', billId: bill._id, invoiceId: invoice._id, billedAt: operationNow(), sourceReference: { module: 'IPD', documentId: bill._id, invoiceNumber: invoice.invoice_number, billNumber } } },
       sessionOptions(session)
     );
     if (update.modifiedCount !== charges.length) {
@@ -1397,7 +1398,7 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
           type: 'fixed',
           reason: payload.settlementDiscountReason,
           approved_by: payload.discountApprovedBy || user?._id,
-          approved_at: new Date()
+          approved_at: operationNow()
         };
         discountAllocationByInvoice.set(String(invoice._id), applied);
         await invoice.save(sessionOptions(session));
@@ -1481,7 +1482,7 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
       invoice.amount_paid = money(Number(invoice.amount_paid || 0) + entry.amount);
       const projectedBalance = Math.max(0, money(Number(invoice.balance_due || 0) - entry.amount));
       invoice.payment_history.push({
-        date: new Date(),
+        date: operationNow(),
         amount: entry.amount,
         method: paymentMethod,
         reference: payload.reference,
@@ -1787,8 +1788,8 @@ async function createCreditNote(invoiceId, payload, user) {
       invoice_type: 'Credit Note',
       document_stage: 'CREDIT_NOTE',
       linked_invoice_id: invoice._id,
-      issue_date: new Date(),
-      due_date: new Date(),
+      issue_date: operationNow(),
+      due_date: operationNow(),
       subtotal: amount,
       gross_amount: amount,
       discount: 0,
@@ -2031,7 +2032,7 @@ async function getFinancialLedger(admissionId, user) {
 }
 
 async function getFinancialClearance(admissionId, user) {
-  await ensureAdmissionDailyCharges(admissionId, new Date(), user);
+  await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
   const snapshot = await calculateAdmissionFinancials(admissionId, { user });
   const admission = snapshot.admission;
 
@@ -2132,13 +2133,13 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
   }
 
   admission.financialClearanceStatus = clearance.ready ? 'cleared' : 'exception_approved';
-  admission.financialClearedAt = new Date();
+  admission.financialClearedAt = operationNow();
   admission.financialClearedBy = user?._id;
   if (!clearance.ready) {
     admission.financialClearanceException = {
       reason: payload.exceptionReason || 'Authorised financial discharge exception',
       approvedBy: user?._id,
-      approvedAt: new Date(),
+      approvedAt: operationNow(),
       outstandingAccepted: clearance.summary.dueAmount + clearance.summary.pharmacyDue
     };
   }

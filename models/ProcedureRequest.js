@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const { sourceBillingFields } = require('../utils/billingLifecycle');
 
 const procedureRequestSchema = new mongoose.Schema({
@@ -91,7 +92,7 @@ const procedureRequestSchema = new mongoose.Schema({
   // Scheduling
   requestedDate: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   scheduledDate: {
     type: Date
@@ -248,7 +249,7 @@ const procedureRequestSchema = new mongoose.Schema({
 // Generate request number before save
 procedureRequestSchema.pre('save', async function(next) {
   if (this.isNew && !this.requestNumber) {
-    const date = new Date();
+    const date = operationNow();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const count = await mongoose.model('ProcedureRequest').countDocuments();

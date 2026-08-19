@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const episodeSchema = new mongoose.Schema({
   // Unique identifier for the episode
@@ -55,7 +56,7 @@ const episodeSchema = new mongoose.Schema({
   startDate: {
     type: Date,
     required: true,
-    default: Date.now
+    default: operationNow
   },
   
   endDate: {

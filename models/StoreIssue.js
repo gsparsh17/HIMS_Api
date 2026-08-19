@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 function makeIssueNo() {
   const date = new Date();
@@ -10,7 +11,7 @@ function makeIssueNo() {
 
 const storeIssueSchema = new mongoose.Schema({
   issue_number: { type: String, unique: true, trim: true },
-  issue_date: { type: Date, default: Date.now },
+  issue_date: { type: Date, default: operationNow },
   department: { type: String, required: true, trim: true },
   issued_to_name: { type: String, trim: true },
   requested_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

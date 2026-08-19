@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const encounterDocumentSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
@@ -20,7 +21,7 @@ const encounterDocumentSchema = new mongoose.Schema({
   },
   relatedCaseId: { type: mongoose.Schema.Types.ObjectId },
   relatedCaseType: { type: String, trim: true },
-  documentDate: { type: Date, default: Date.now, index: true },
+  documentDate: { type: Date, default: operationNow, index: true },
   authorUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   authorName: { type: String, trim: true },
   fileUrl: { type: String, trim: true },

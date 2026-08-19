@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 // controllers/ipdMedication.controller.js
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDAdmission = require('../models/IPDAdmission');
@@ -31,7 +32,7 @@ function generateTimingSlots(frequency, durationDays) {
   };
 
   const times = freqTimingMap[frequency] || ['08:00'];
-  const today = new Date();
+  const today = operationNow();
   today.setHours(0, 0, 0, 0);
 
   for (let d = 0; d < durationDays; d++) {
@@ -112,7 +113,7 @@ async function addToPatientMedicineStock(admissionId, patientId, medicineId, bat
     stock.medicationChartIds.push(medicationChartId);
   }
 
-  stock.lastIssuedAt = new Date();
+  stock.lastIssuedAt = operationNow();
   await stock.save();
 
   return stock;
@@ -146,7 +147,7 @@ async function deductFromPatientMedicineStock(admissionId, patientId, medicineId
     stock.administeredQtyBaseUnits += deductAmount;
     stock.currentBalanceBaseUnits -= deductAmount;
     if (medicationChartId && !stock.medicationChartIds.some(id => String(id) === String(medicationChartId))) stock.medicationChartIds.push(medicationChartId);
-    stock.lastAdministeredAt = new Date();
+    stock.lastAdministeredAt = operationNow();
     await stock.save();
     remaining -= deductAmount;
   }
@@ -248,7 +249,7 @@ exports.createMedicationOrder = async (req, res) => {
       route,
       dosage,
       frequency,
-      startDate: startDate || new Date(),
+      startDate: startDate || operationNow(),
       endDate,
       duration: duration || 1,
       durationUnit,
@@ -263,7 +264,7 @@ exports.createMedicationOrder = async (req, res) => {
       createdBy: req.user?._id
     });
 
-    const timingSlots = generateMedicationTimingSlots(frequency, duration || 1, startDate || new Date());
+    const timingSlots = generateMedicationTimingSlots(frequency, duration || 1, startDate || operationNow());
     medication.timing = timingSlots;
 
     await medication.save();
@@ -403,7 +404,7 @@ exports.getMedicationsByAdmission = async (req, res) => {
         stockSource: 'INTERNAL_PHARMACY'
       };
 
-      const today = new Date();
+      const today = operationNow();
       today.setHours(0, 0, 0, 0);
       const todaysPendingDoses = (med.timing || []).filter(t => {
         const tDate = t.date ? new Date(t.date) : new Date(t.time);
@@ -498,7 +499,7 @@ exports.changeMedicationOrder = async (req, res) => {
       requiresPharmacyDispense: medication.requiresPharmacyDispense,
       requiredQtyBaseUnits: medication.requiredQtyBaseUnits
     };
-    const changedAt = new Date();
+    const changedAt = operationNow();
     const roundId = req.body.roundId || null;
     const reason = String(req.body.reason || req.body.stoppedReason || '').trim();
 
@@ -767,13 +768,13 @@ exports.acknowledgeStockReceipt = async (req, res) => {
         batchId: medication.pharmacyRequest.dispensedBatchId,
         sourceSaleIds: medication.pharmacyRequest.saleId
       },
-      { $set: { receiptAcknowledged: true, receiptAcknowledgedAt: new Date(), receiptAcknowledgedBy: req.user?._id } },
+      { $set: { receiptAcknowledged: true, receiptAcknowledgedAt: operationNow(), receiptAcknowledgedBy: req.user?._id } },
       { new: true }
     );
     if (!stock) return res.status(409).json({ success: false, error: 'Patient stock allocation for this pharmacy sale was not found. Receipt cannot be acknowledged.' });
 
     medication.pharmacyRequest.stockReceivedByNurse = true;
-    medication.pharmacyRequest.stockReceivedAt = new Date();
+    medication.pharmacyRequest.stockReceivedAt = operationNow();
     medication.pharmacyRequest.stockReceivedBy = req.user?._id;
     medication.stockReceiptStatus = 'RECEIVED';
     medication.status = 'Active';
@@ -869,7 +870,7 @@ exports.requestPharmacy = async (req, res) => {
 // Get today's medication schedule for nurse
 exports.getNurseTodaySchedule = async (req, res) => {
   try {
-    const today = new Date();
+    const today = operationNow();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -922,7 +923,7 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
     if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
     assertAdmissionHospitalAccess(req, admission);
 
-    let targetDate = new Date();
+    let targetDate = operationNow();
     if (date) {
       targetDate = new Date(date);
     }
@@ -1041,7 +1042,7 @@ exports.administerMedication = async (req, res) => {
           if (!stock.medicationChartIds.some(id => String(id) === String(medication._id))) {
             stock.medicationChartIds.push(medication._id);
           }
-          stock.lastAdministeredAt = new Date();
+          stock.lastAdministeredAt = operationNow();
           await stock.save();
           remaining -= deductAmount;
         }
@@ -1066,7 +1067,7 @@ exports.administerMedication = async (req, res) => {
     }
 
     medication.timing[timingIndex].status = 'Administered';
-    medication.timing[timingIndex].administeredAt = new Date();
+    medication.timing[timingIndex].administeredAt = operationNow();
     medication.timing[timingIndex].administeredBy = req.user?._id;
     medication.timing[timingIndex].remarks = remarks || '';
     if (witnessedBy) medication.timing[timingIndex].witnessedBy = witnessedBy;
@@ -1187,7 +1188,7 @@ exports.stopMedication = async (req, res) => {
     medication.status = 'Stopped';
     medication.stoppedReason = stoppedReason;
     medication.stoppedBy = req.user?._id;
-    medication.endDate = new Date();
+    medication.endDate = operationNow();
     await medication.save();
 
     const nursingNote = new NursingNote({
@@ -1215,7 +1216,7 @@ exports.stopMedication = async (req, res) => {
 exports.getTodaySchedule = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const today = new Date();
+    const today = operationNow();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -1351,10 +1352,10 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
       patientStock.issuedQtyBaseUnits += quantity;
       patientStock.currentBalanceBaseUnits += quantity;
       patientStock.receiptAcknowledged = true;
-      patientStock.receiptAcknowledgedAt = new Date();
+      patientStock.receiptAcknowledgedAt = operationNow();
       patientStock.receiptAcknowledgedBy = req.user?._id;
       patientStock.stockSource = 'EXTERNAL_PHARMACY';
-      patientStock.lastIssuedAt = new Date();
+      patientStock.lastIssuedAt = operationNow();
 
       if (!patientStock.medicationChartIds.some(id => String(id) === String(medication._id))) {
         patientStock.medicationChartIds.push(medication._id);
@@ -1381,10 +1382,10 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
         sourceSaleIds: [],
         medicationChartIds: [medication._id],
         receiptAcknowledged: true,
-        receiptAcknowledgedAt: new Date(),
+        receiptAcknowledgedAt: operationNow(),
         receiptAcknowledgedBy: req.user?._id,
         stockSource: 'EXTERNAL_PHARMACY',
-        lastIssuedAt: new Date()
+        lastIssuedAt: operationNow()
       });
 
       await patientStock.save();
@@ -1400,15 +1401,15 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
     }
 
     medication.pharmacyRequest.requestedToPharmacy = false;
-    medication.pharmacyRequest.requestedAt = medication.pharmacyRequest.requestedAt || new Date();
+    medication.pharmacyRequest.requestedAt = medication.pharmacyRequest.requestedAt || operationNow();
     medication.pharmacyRequest.requestedBy = medication.pharmacyRequest.requestedBy || req.user?._id;
     medication.pharmacyRequest.requestedQuantity = quantity;
     medication.pharmacyRequest.pharmacyStatus = 'Approved';
     medication.pharmacyRequest.dispensedFromPharmacy = true;
     medication.pharmacyRequest.dispensedQuantity = quantity;
-    medication.pharmacyRequest.dispensedAt = new Date();
+    medication.pharmacyRequest.dispensedAt = operationNow();
     medication.pharmacyRequest.stockReceivedByNurse = true;
-    medication.pharmacyRequest.stockReceivedAt = new Date();
+    medication.pharmacyRequest.stockReceivedAt = operationNow();
     medication.pharmacyRequest.stockReceivedBy = req.user?._id;
 
     await medication.save();

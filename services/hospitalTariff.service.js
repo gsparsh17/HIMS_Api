@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 'use strict';
 
 const Payer = require('../models/Payer');
@@ -44,7 +45,7 @@ async function findSelfPayer(hospitalId) {
   return Payer.findOne({ hospitalId, isActive: { $ne: false }, $or: [{ code: 'SELF' }, { type: 'self' }] }).lean();
 }
 
-async function findHospitalBasicRateCard(hospitalId, serviceDate = new Date()) {
+async function findHospitalBasicRateCard(hospitalId, serviceDate = operationNow()) {
   const payer = await findSelfPayer(hospitalId);
   if (!payer) return null;
   const when = new Date(serviceDate);
@@ -59,7 +60,7 @@ async function findHospitalBasicRateCard(hospitalId, serviceDate = new Date()) {
   return rateCard ? { payer, rateCard } : null;
 }
 
-async function resolveHospitalTariffRate({ hospitalId, externalCode, wardEntitlement, serviceDate = new Date() }) {
+async function resolveHospitalTariffRate({ hospitalId, externalCode, wardEntitlement, serviceDate = operationNow() }) {
   const context = await findHospitalBasicRateCard(hospitalId, serviceDate);
   if (!context) return null;
   const item = await RateCardItem.findOne({

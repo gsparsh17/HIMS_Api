@@ -1,5 +1,6 @@
 'use strict';
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const schema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   incidentNumber: { type: String, required: true },
@@ -9,7 +10,7 @@ const schema = new mongoose.Schema({
   category: { type: String, required: true, trim: true },
   severity: { type: String, enum: ['low','moderate','high','critical'], default: 'moderate' },
   status: { type: String, enum: ['open','under_review','capa_in_progress','closed'], default: 'open', index: true },
-  occurredAt: { type: Date, default: Date.now },
+  occurredAt: { type: Date, default: operationNow },
   details: { type: mongoose.Schema.Types.Mixed, required: true },
   correctiveActions: [{ action: String, owner: String, dueAt: Date, completedAt: Date, status: { type: String, enum: ['open','completed'], default: 'open' } }],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

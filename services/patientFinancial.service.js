@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require('mongoose');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
@@ -124,7 +125,7 @@ async function addOPDCharge(patientId, payload, user) {
     const quote = await quotePricing({
       hospitalId,
       appointmentId,
-      serviceDate: payload.chargeDate || new Date(),
+      serviceDate: payload.chargeDate || operationNow(),
       chargeType: payload.chargeType,
       serviceType: payload.serviceType || serviceTypeFromCharge(payload.chargeType),
       internalServiceModel: payload.internalServiceModel,
@@ -148,7 +149,7 @@ async function addOPDCharge(patientId, payload, user) {
       nextFinancialNumber({ documentType: 'BILL', hospitalId, session }),
       Hospital.findById(hospitalId, null, sessionOptions(session)).lean()
     ]);
-    const now = new Date();
+    const now = operationNow();
     const itemType = ['Consultation', 'Procedure', 'Lab Test', 'Radiology'].includes(payload.chargeType)
       ? payload.chargeType
       : 'Other';
@@ -404,7 +405,7 @@ async function issueOPDInvoice(patientId, payload, user) {
     const inheritedPayments = billPaymentHistory(bills);
     const invoiceNumber = await nextFinancialNumber({ documentType: 'INVOICE', hospitalId, session });
     const hospital = await Hospital.findById(hospitalId, null, sessionOptions(session)).lean();
-    const now = new Date();
+    const now = operationNow();
     const invoice = new Invoice({
       hospital_id: hospitalId,
       invoice_number: invoiceNumber,
@@ -474,7 +475,7 @@ async function applyToBill(bill, paymentAmount, discountAmount, taxAdjustment, p
     bill.paid_amount = amount(Number(bill.paid_amount || 0) + paymentAmount);
     bill.payment_method = payload.paymentMethod || 'Cash';
     bill.payments = bill.payments || [];
-    bill.payments.push({ method: payload.paymentMethod || 'Cash', amount: paymentAmount, reference: receiptNumber || payload.reference, date: new Date() });
+    bill.payments.push({ method: payload.paymentMethod || 'Cash', amount: paymentAmount, reference: receiptNumber || payload.reference, date: operationNow() });
   }
   await bill.save(sessionOptions(session));
 }
@@ -680,13 +681,13 @@ async function recordOPDPayment(patientId, payload, user) {
         }
         if (discountPart) {
           document.settlement_discount_amount = amount(Number(document.settlement_discount_amount || 0) + discountPart);
-          document.discount_details = { type: 'fixed', reason: payload.settlementDiscountReason, approved_by: payload.discountApprovedBy || user?._id, approved_at: new Date() };
+          document.discount_details = { type: 'fixed', reason: payload.settlementDiscountReason, approved_by: payload.discountApprovedBy || user?._id, approved_at: operationNow() };
         }
         if (paymentPart) {
           document.amount_paid = amount(Number(document.amount_paid || 0) + paymentPart);
           document.payment_history = document.payment_history || [];
           document.payment_history.push({
-            date: new Date(), amount: paymentPart, method: paymentMethod, reference: payload.reference,
+            date: operationNow(), amount: paymentPart, method: paymentMethod, reference: payload.reference,
             status: 'Completed', collected_by: user?._id, transaction_id: receiptNumber,
             receipt_number: receiptNumber, receipt_type: payload.receiptType || 'Payment',
             amount_before_settlement: outstandingBefore, settlement_discount_amount: discountPart,

@@ -1,11 +1,12 @@
 // models/IPDMedicationChart.js
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const medicationTimingSchema = new mongoose.Schema({
   date: {
     type: Date,
     required: true,
-    default: Date.now
+    default: operationNow
   },
   time: {
     type: String,
@@ -204,7 +205,7 @@ const ipdMedicationChartSchema = new mongoose.Schema({
   startDate: {
     type: Date,
     required: true,
-    default: Date.now
+    default: operationNow
   },
   endDate: {
     type: Date
@@ -260,7 +261,7 @@ const ipdMedicationChartSchema = new mongoose.Schema({
     },
     changedAt: {
       type: Date,
-      default: Date.now
+      default: operationNow
     },
     changedBy: {
       type: mongoose.Schema.Types.ObjectId,

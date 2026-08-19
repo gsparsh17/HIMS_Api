@@ -1,5 +1,6 @@
 'use strict';
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 const schema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   donorNumber: { type: String, required: true, trim: true },
@@ -13,7 +14,7 @@ const schema = new mongoose.Schema({
     infectionScreenNegative: { type: Boolean, default: true },
     medicallyFit: { type: Boolean, default: true },
     notes: String,
-    screenedAt: { type: Date, default: Date.now },
+    screenedAt: { type: Date, default: operationNow },
     screenedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
   eligibilityStatus: { type: String, enum: ['eligible','deferred'], required: true, index: true },

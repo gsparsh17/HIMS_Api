@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const Invoice = require('../models/Invoice');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Sale = require('../models/Sale');
@@ -61,7 +62,7 @@ function generateTimingSlots(frequency, durationDays) {
   };
 
   const times = freqTimingMap[frequency] || ['08:00'];
-  const today = new Date();
+  const today = operationNow();
   today.setHours(0, 0, 0, 0);
 
   for (let d = 0; d < durationDays; d++) {
@@ -120,7 +121,7 @@ async function addToPatientMedicineStock(admissionId, patientId, medicineId, bat
       stock.medicationChartIds.push(medicationChartId);
     }
 
-    stock.lastIssuedAt = new Date();
+    stock.lastIssuedAt = operationNow();
     await stock.save();
 
     return stock;
@@ -156,7 +157,7 @@ async function getAdvanceBalance({ admissionId, patientId, walletType }) {
 
 const getPurchaseOrderDateFilter = (dateFilter) => {
   if (!dateFilter) return null;
-  const now = new Date();
+  const now = operationNow();
   const start = new Date(now);
   const end = new Date(now);
   if (dateFilter === 'today') {
@@ -203,8 +204,8 @@ const getMedicineUnitInfo = async (medicineId) => {
 
 // Helper function to generate invoice number
 async function generateInvoiceNumber() {
-  const year = new Date().getFullYear();
-  const month = String(new Date().getMonth() + 1).padStart(2, '0');
+  const year = operationNow().getFullYear();
+  const month = String(operationNow().getMonth() + 1).padStart(2, '0');
 
   const lastInvoice = await Invoice.findOne({
     invoice_number: new RegExp(`^INV-${year}${month}`)
@@ -312,7 +313,7 @@ exports.createPurchaseOrder = async (req, res) => {
       customer_type: 'Supplier',
       customer_name: 'Supplier Purchase',
       purchase_order_id: purchaseOrder._id,
-      issue_date: new Date(),
+      issue_date: operationNow(),
       due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       service_items: validatedItems.map((item) => ({
         description: `Purchase - ${item.medicine_name} (HSN: ${item.hsn_code}, GST: ${item.gst_rate}%)`,
@@ -461,7 +462,7 @@ async function resolveOrderItemMedicine({ order, orderItem, user }) {
   });
   if (existingFromOrder) {
     orderItem.medicine_id = existingFromOrder._id;
-    orderItem.materialized_at = orderItem.materialized_at || new Date();
+    orderItem.materialized_at = orderItem.materialized_at || operationNow();
     return { medicine: existingFromOrder, materialized: false };
   }
 
@@ -490,7 +491,7 @@ async function resolveOrderItemMedicine({ order, orderItem, user }) {
   });
 
   orderItem.medicine_id = medicine._id;
-  orderItem.materialized_at = new Date();
+  orderItem.materialized_at = operationNow();
   return { medicine, materialized: true };
 }
 
@@ -547,7 +548,7 @@ exports.receivePurchaseOrder = async (req, res) => {
       if (!batchNumber) return res.status(400).json({ error: `Batch number is required for ${orderItem.medicine_name}.` });
       if (!expiryDate) return res.status(400).json({ error: `Expiry date is required for ${orderItem.medicine_name}.` });
       const expiry = new Date(expiryDate);
-      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const today = operationNow(); today.setHours(0, 0, 0, 0);
       if (Number.isNaN(expiry.getTime()) || expiry <= today) return res.status(400).json({ error: `Expiry date must be in the future for ${orderItem.medicine_name}.` });
 
       const purchasePricePerPack = roundMoney(receivedItem.purchase_price_per_pack ?? receivedItem.purchase_price ?? orderItem.unit_cost ?? 0);
@@ -572,8 +573,8 @@ exports.receivePurchaseOrder = async (req, res) => {
         purchase_price_per_base_unit: purchasePricePerBaseUnit,
         selling_price_per_base_unit: sellingPricePerBaseUnit,
         supplier_id: order.supplier_id,
-        purchase_date: order.order_date || new Date(),
-        received_date: new Date(),
+        purchase_date: order.order_date || operationNow(),
+        received_date: operationNow(),
         is_active: true,
       });
       await batch.save();
@@ -602,7 +603,7 @@ exports.receivePurchaseOrder = async (req, res) => {
     const totalOrderedPacks = order.items.reduce((sum, item) => sum + toNumber(item.quantity, 0), 0);
     const totalReceivedPacks = order.items.reduce((sum, item) => sum + toNumber(item.received, 0), 0);
     order.status = totalReceivedPacks <= 0 ? 'Ordered' : (totalReceivedPacks < totalOrderedPacks ? 'Partially Received' : 'Received');
-    order.received_date = order.status === 'Received' ? new Date() : order.received_date;
+    order.received_date = order.status === 'Received' ? operationNow() : order.received_date;
     await order.save();
 
     const populatedOrder = await PurchaseOrder.findById(order._id)
@@ -917,7 +918,7 @@ exports.updateSalePayment = async (req, res) => {
       method: payment_method,
       amount: newPaymentAmount,
       reference: req.body.reference,
-      date: new Date()
+      date: operationNow()
     });
     
     await sale.save();
@@ -981,7 +982,7 @@ exports.voidSale = async (req, res) => {
     }
     
     sale.status = 'Cancelled';
-    sale.notes = sale.notes + `\n[CANCELLED] ${new Date().toISOString()}: ${reason || 'No reason provided'}`;
+    sale.notes = sale.notes + `\n[CANCELLED] ${operationNow().toISOString()}: ${reason || 'No reason provided'}`;
     await sale.save();
     
     console.log(`Sale ${sale.sale_number} cancelled by ${req.user?.name} - Reason: ${reason}`);
@@ -1133,7 +1134,7 @@ exports.getRecentSales = async (req, res) => {
       .limit(parseInt(limit))
       .lean();
     
-    const todayStart = new Date();
+    const todayStart = operationNow();
     todayStart.setHours(0, 0, 0, 0);
     
     const todaySales = await Sale.aggregate([
@@ -1263,7 +1264,7 @@ exports.getSalesStatistics = async (req, res) => {
 exports.getDailySalesReport = async (req, res) => {
   try {
     const { date } = req.query;
-    const targetDate = date ? new Date(date) : new Date();
+    const targetDate = date ? new Date(date) : operationNow();
 
     const startOfDay = new Date(targetDate);
     startOfDay.setHours(0, 0, 0, 0);
@@ -1363,8 +1364,8 @@ exports.getDailySalesReport = async (req, res) => {
 exports.getMonthlySalesReport = async (req, res) => {
   try {
     const { year, month } = req.query;
-    const targetYear = parseInt(year) || new Date().getFullYear();
-    const targetMonth = parseInt(month) || new Date().getMonth() + 1;
+    const targetYear = parseInt(year) || operationNow().getFullYear();
+    const targetMonth = parseInt(month) || operationNow().getMonth() + 1;
 
     const startOfMonth = new Date(targetYear, targetMonth - 1, 1);
     const endOfMonth = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999);
@@ -1460,7 +1461,7 @@ exports.getMonthlySalesReport = async (req, res) => {
 exports.getYearlySalesReport = async (req, res) => {
   try {
     const { year } = req.query;
-    const targetYear = parseInt(year) || new Date().getFullYear();
+    const targetYear = parseInt(year) || operationNow().getFullYear();
 
     const startOfYear = new Date(targetYear, 0, 1);
     const endOfYear = new Date(targetYear, 11, 31, 23, 59, 59, 999);
@@ -1546,7 +1547,7 @@ exports.getRevenueComparison = async (req, res) => {
   try {
     const { period = 'month', compareTo = 'previous' } = req.query;
 
-    const currentDate = new Date();
+    const currentDate = operationNow();
     let currentPeriod, previousPeriod;
 
     if (period === 'month') {

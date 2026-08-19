@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 // backend/controllers/ipdDischarge.controller.js
 const IPDAdmission = require('../models/IPDAdmission');
 const DischargeSummary = require('../models/DischargeSummary');
@@ -103,7 +104,7 @@ exports.saveDischargeSummary = async (req, res) => {
         patientId: admission.patientId,
         preparedBy: doctorId,
         admissionDate: admission.admissionDate,
-        dischargeDate: new Date(),
+        dischargeDate: operationNow(),
         finalDiagnosis,
         chiefComplaints,
         historyOfPresentIllness,
@@ -306,8 +307,8 @@ exports.finalizeDischargeSummary = async (req, res) => {
     if (!reviewerDoctorId) reviewerDoctorId = dischargeSummary.preparedBy;
 
     dischargeSummary.reviewedBy = reviewerDoctorId;
-    dischargeSummary.reviewedAt = new Date();
-    dischargeSummary.finalizedAt = new Date();
+    dischargeSummary.reviewedAt = operationNow();
+    dischargeSummary.finalizedAt = operationNow();
 
     const [patientSnapshotSource, hospitalSnapshotSource] = await Promise.all([
       Patient.findById(admission.patientId).lean(),
@@ -358,7 +359,7 @@ exports.finalizeDischargeSummary = async (req, res) => {
         logo: hospitalSnapshotSource.logo
       };
     }
-    dischargeSummary.printSnapshot = { templateVersion: 'reference-discharge-2026-08', finalizedAt: new Date() };
+    dischargeSummary.printSnapshot = { templateVersion: 'reference-discharge-2026-08', finalizedAt: operationNow() };
     await dischargeSummary.save();
 
     await IPDAdmission.findOneAndUpdate({ _id: admissionId, hospitalId: requireHospitalId(req) }, {
@@ -534,14 +535,14 @@ exports.updateDischargeChecklist = async (req, res) => {
       if (patch.note !== undefined) row.note = patch.note;
       if (patch.completed !== undefined) {
         row.completed = Boolean(patch.completed);
-        row.completedAt = row.completed ? new Date() : undefined;
+        row.completedAt = row.completed ? operationNow() : undefined;
         row.completedBy = row.completed ? req.user?._id : undefined;
       }
       checkpointMap.set(row.key, row);
     }
     const delayReasons = (current.delayReasons || []).map((x) => x.toObject ? x.toObject() : x);
-    if (req.body.delayReason) delayReasons.push({ reason: String(req.body.delayReason), recordedAt: new Date(), recordedBy: req.user?._id });
-    admission.dischargeChecklist = { checkpoints: [...checkpointMap.values()], delayReasons, updatedAt: new Date() };
+    if (req.body.delayReason) delayReasons.push({ reason: String(req.body.delayReason), recordedAt: operationNow(), recordedBy: req.user?._id });
+    admission.dischargeChecklist = { checkpoints: [...checkpointMap.values()], delayReasons, updatedAt: operationNow() };
     await admission.save({ validateBeforeSave: false });
     return res.json({ success: true, data: admission.dischargeChecklist });
   } catch (err) {
@@ -573,7 +574,7 @@ exports.completeDischarge = async (req, res) => {
     }
 
     admission.status = 'Discharged';
-    admission.dischargeDate = new Date();
+    admission.dischargeDate = operationNow();
     admission.dischargeReason = dischargeReason;
     admission.isLAMA = Boolean(isLAMA);
     await admission.save();
@@ -648,7 +649,7 @@ exports.reconcileDischargeMedications = async (req, res) => {
     let summary = await DischargeSummary.findOne({ admissionId: admission._id, hospitalId });
     if (!summary) summary = new DischargeSummary({ admissionId: admission._id, patientId: admission.patientId, hospitalId, preparedBy: admission.primaryDoctorId, createdBy: req.user?._id });
     summary.medicationReconciliation = {
-      performedAt: new Date(), performedBy: req.user?._id,
+      performedAt: operationNow(), performedBy: req.user?._id,
       admissionMedicines: Array.isArray(req.body.admissionMedicines) ? req.body.admissionMedicines : [],
       discrepancies: Array.isArray(req.body.discrepancies) ? req.body.discrepancies : [], completed: true
     };

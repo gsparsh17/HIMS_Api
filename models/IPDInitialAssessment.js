@@ -1,5 +1,6 @@
 // models/IPDInitialAssessment.js
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const amendmentSchema = new mongoose.Schema({
   amendedAt: { type: Date, default: Date.now },
@@ -15,7 +16,7 @@ const ipdInitialAssessmentSchema = new mongoose.Schema({
 
   encounterContext: { type: String, enum: ['OPD', 'IPD', 'Emergency'], default: 'IPD' },
   arrivalDateTime: Date,
-  assessmentTime: { type: Date, default: Date.now },
+  assessmentTime: { type: Date, default: operationNow },
   admittedBy: String,
   relation: String,
   caseType: { type: String, enum: ['MLC', 'Non-MLC'], default: 'Non-MLC' },

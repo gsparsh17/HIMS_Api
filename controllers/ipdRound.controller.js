@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const IPDRound = require('../models/IPDRound');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
@@ -56,7 +57,7 @@ exports.createRound = async (req, res) => {
       admissionId,
       patientId,
       doctorId,
-      roundDateTime: roundDateTime || new Date(),
+      roundDateTime: roundDateTime || operationNow(),
       patientCondition,
       complaints,
       symptoms,
@@ -80,7 +81,7 @@ exports.createRound = async (req, res) => {
       admissionId,
       patientId,
       chargeType: 'Doctor Visit',
-      description: `Doctor round by Dr. ${req.user?.name || 'Staff'} on ${new Date().toLocaleDateString()} - ${patientCondition || 'Routine visit'}`,
+      description: `Doctor round by Dr. ${req.user?.name || 'Staff'} on ${operationNow().toLocaleDateString()} - ${patientCondition || 'Routine visit'}`,
       quantity: 1,
       rate: doctorVisitRate,
       amount: doctorVisitRate,
@@ -192,7 +193,7 @@ exports.updateRound = async (req, res) => {
         charge.rate = updates.doctorVisitRate;
         charge.amount = updates.doctorVisitRate;
         charge.netAmount = updates.doctorVisitRate;
-        charge.description = `Doctor round by ${updates.doctorName || 'Staff'} on ${new Date().toLocaleDateString()} - ${updates.patientCondition || 'Routine visit'}`;
+        charge.description = `Doctor round by ${updates.doctorName || 'Staff'} on ${operationNow().toLocaleDateString()} - ${updates.patientCondition || 'Routine visit'}`;
         await charge.save();
         await updateAdmissionTotals(round.admissionId);
       }

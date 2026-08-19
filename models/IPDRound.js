@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require("mongoose");
 
 const ipdRoundSchema = new mongoose.Schema(
@@ -25,7 +26,7 @@ const ipdRoundSchema = new mongoose.Schema(
     },
     roundDateTime: {
       type: Date,
-      default: Date.now,
+      default: operationNow,
     },
 
     patientCondition: {

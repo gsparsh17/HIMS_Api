@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 // controllers/prescription.controller.js
 const Prescription = require('../models/Prescription');
 const Vital = require('../models/Vital');
@@ -205,7 +206,7 @@ function generateTimingSlots(frequency, durationDays) {
   };
 
   const times = freqTimingMap[frequency] || ['08:00'];
-  const today = new Date();
+  const today = operationNow();
   today.setHours(0, 0, 0, 0);
 
   for (let d = 0; d < durationDays; d++) {
@@ -238,7 +239,7 @@ async function createPharmacyRequest(medication, requestedQuantity = null) {
 
     medication.pharmacyRequest = {
       requestedToPharmacy: true,
-      requestedAt: new Date(),
+      requestedAt: operationNow(),
       requestedBy: medication.createdBy || medication.prescribedBy,
       pharmacyId: pharmacy._id,
       pharmacyRequestNumber: requestNumber,
@@ -369,7 +370,7 @@ exports.createPrescription = async (req, res) => {
       hospitalId: prescriptionHospitalId,
       policyType: 'antimicrobial_usage',
       active: true,
-      $or: [{ effectiveTo: null }, { effectiveTo: { $exists: false } }, { effectiveTo: { $gte: new Date() } }]
+      $or: [{ effectiveTo: null }, { effectiveTo: { $exists: false } }, { effectiveTo: { $gte: operationNow() } }]
     }).sort({ effectiveFrom: -1 }).lean();
     const medicationSafetyAlerts = [];
     for (const item of Array.isArray(items) ? items : []) {
@@ -540,7 +541,7 @@ exports.createPrescription = async (req, res) => {
         notes: req.notes,
         cost: req.cost,
         request_id: req.request_id,
-        created_at: new Date()
+        created_at: operationNow()
       }));
     }
 
@@ -556,7 +557,7 @@ exports.createPrescription = async (req, res) => {
         notes: req.notes,
         cost: req.cost,
         request_id: req.request_id,
-        created_at: new Date()
+        created_at: operationNow()
       }));
     }
 
@@ -573,7 +574,7 @@ exports.createPrescription = async (req, res) => {
         notes: req.notes,
         request_id: req.request_id,
         cost: req.cost,
-        created_at: new Date()
+        created_at: operationNow()
       }));
     }
 
@@ -644,7 +645,7 @@ exports.createPrescription = async (req, res) => {
           requiresPharmacyDispense: requiresPharmacyDispense,
           status: requiresPharmacyDispense ? 'Requested' : 'Active',
           stockReceiptStatus: requiresPharmacyDispense ? 'PENDING_RECEIPT' : 'NOT_REQUESTED',
-          startDate: new Date(),
+          startDate: operationNow(),
           createdBy: req.user?._id
         });
 
@@ -758,7 +759,7 @@ exports.downloadBlankPrescriptionPdfByAppointment = async (req, res) => {
         appointment.start_time ||
         appointment.appointment_date ||
         appointment.created_at ||
-        new Date(),
+        operationNow(),
       consultation_fee: '',
       pain_score: null,
       allergy_snapshot: '',
@@ -1544,10 +1545,10 @@ exports.updatePrescription = async (req, res) => {
             scheduled_date: item.scheduled_date || null,
             notes: item.notes || '',
             cost: labTest.base_price || 0,
-            created_at: new Date()
+            created_at: operationNow()
           };
         },
-        toEmbedded: (item) => ({ ...item, created_at: new Date() })
+        toEmbedded: (item) => ({ ...item, created_at: operationNow() })
       });
     }
     if (Array.isArray(updates.radiology_test_requests)) {
@@ -1592,10 +1593,10 @@ exports.updatePrescription = async (req, res) => {
             scheduled_date: item.scheduled_date || null,
             notes: item.notes || '',
             cost: imagingTest.base_price || 0,
-            created_at: new Date()
+            created_at: operationNow()
           };
         },
-        toEmbedded: (item) => ({ ...item, created_at: new Date() })
+        toEmbedded: (item) => ({ ...item, created_at: operationNow() })
       });
     }
     if (Array.isArray(updates.procedure_requests)) {
@@ -1643,10 +1644,10 @@ exports.updatePrescription = async (req, res) => {
             scheduled_date: item.scheduled_date || null,
             notes: item.notes || '',
             cost: procedure.base_price || 0,
-            created_at: new Date()
+            created_at: operationNow()
           };
         },
-        toEmbedded: (item) => ({ ...item, created_at: new Date() })
+        toEmbedded: (item) => ({ ...item, created_at: operationNow() })
       });
     }
 
@@ -1723,7 +1724,7 @@ exports.dispenseMedication = async (req, res) => {
 
     prescription.items[itemIndex].is_dispensed = true;
     prescription.items[itemIndex].dispensed_quantity = quantityToDispense;
-    prescription.items[itemIndex].dispensed_date = new Date();
+    prescription.items[itemIndex].dispensed_date = operationNow();
 
     const allDispensed = prescription.items.every(it => it.is_dispensed);
     if (allDispensed) prescription.status = 'Completed';

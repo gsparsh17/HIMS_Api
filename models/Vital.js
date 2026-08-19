@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const vitalSchema = new mongoose.Schema({
   patient_id: {
@@ -53,7 +54,7 @@ const vitalSchema = new mongoose.Schema({
   },
   recorded_at: {
     type: Date,
-    default: Date.now
+    default: operationNow
   }
 }, {
   timestamps: true

@@ -1,9 +1,10 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const pharmacyLedgerEntrySchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   pharmacyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Pharmacy', index: true },
-  entryDate: { type: Date, default: Date.now, index: true },
+  entryDate: { type: Date, default: operationNow, index: true },
   entryType: {
     type: String,
     enum: [

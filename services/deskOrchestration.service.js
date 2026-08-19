@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Patient = require('../models/Patient');
@@ -383,7 +384,7 @@ async function createClinicalRequest({
     patientId: patient._id,
     doctorId: context.doctorId,
     priority: 'Routine',
-    requestedDate: new Date(),
+    requestedDate: operationNow(),
     patient_notes: `Created from Desk checkout ${idempotencyKey}`,
     billingIntent: row.billingIntent,
     billingState,
@@ -715,7 +716,7 @@ async function commitDeskCheckout(payload, user) {
 
       workflow.result = estimateResult;
       workflow.status = 'COMPLETED';
-      workflow.completedAt = new Date();
+      workflow.completedAt = operationNow();
       await workflow.save();
 
       return estimateResult;
@@ -1000,7 +1001,7 @@ async function commitDeskCheckout(payload, user) {
         source: preferenceSource,
         encounterId: clinicalContext.admissionId || clinicalContext.appointmentId || undefined,
         userId: user?._id,
-        usedAt: new Date()
+        usedAt: operationNow()
       });
     }
 
@@ -1079,7 +1080,7 @@ async function commitDeskCheckout(payload, user) {
     workflow.chargeIds = chargeIds;
     workflow.result = result;
     workflow.status = 'COMPLETED';
-    workflow.completedAt = new Date();
+    workflow.completedAt = operationNow();
     await workflow.save();
 
     return result;

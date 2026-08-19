@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const mongoose = require('mongoose');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
@@ -117,7 +118,7 @@ async function postIPDSourceCharge({
   const quote = await quotePricing({
     hospitalId: admission.hospitalId,
     admissionId: admission._id,
-    serviceDate: request.requestedDate || new Date(),
+    serviceDate: request.requestedDate || operationNow(),
     chargeType: config.chargeType,
     serviceType: config.serviceType,
     internalServiceModel: config.internalServiceModel,

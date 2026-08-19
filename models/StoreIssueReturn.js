@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const lineSchema = new mongoose.Schema({
   issueLineId: mongoose.Schema.Types.ObjectId,
@@ -22,7 +23,7 @@ const schema = new mongoose.Schema({
   lines: [lineSchema],
   returnedByName: String,
   receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  returnedAt: { type: Date, default: Date.now },
+  returnedAt: { type: Date, default: operationNow },
   status: { type: String, enum: ['Draft', 'Received', 'Posted', 'Rejected'], default: 'Draft', index: true },
   notes: String
 }, { timestamps: true });

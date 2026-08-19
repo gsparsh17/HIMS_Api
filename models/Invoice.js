@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const paymentSchema = new mongoose.Schema({
   date: {
@@ -617,7 +618,7 @@ const invoiceSchema = new mongoose.Schema({
     payment_amount: { type: Number, default: 0 },
     settlement_discount_amount: { type: Number, default: 0 },
     credit_note_amount: { type: Number, default: 0 },
-    settled_at: { type: Date, default: Date.now }
+    settled_at: { type: Date, default: operationNow }
   }],
   refunded_amount: { type: Number, default: 0, min: 0 },
   linked_invoice_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
@@ -998,8 +999,9 @@ invoiceSchema.pre('validate', function (next) {
 invoiceSchema.pre('save', async function (next) {
   if (this.isNew && !this.invoice_number) {
     try {
-      const year = new Date().getFullYear();
-      const month = String(new Date().getMonth() + 1).padStart(2, '0');
+      const invoiceDate = operationNow();
+      const year = invoiceDate.getFullYear();
+      const month = String(invoiceDate.getMonth() + 1).padStart(2, '0');
 
       let prefix = 'INV';
       switch (this.invoice_type) {

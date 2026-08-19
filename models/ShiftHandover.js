@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const isbarSchema = new mongoose.Schema({
   // I - Identify
@@ -55,7 +56,7 @@ const shiftHandoverSchema = new mongoose.Schema({
   handoverDate: {
     type: Date,
     required: true,
-    default: Date.now
+    default: operationNow
   },
   outgoingShift: {
     type: String,

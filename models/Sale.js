@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const paymentBreakupSchema = new mongoose.Schema({
   transactionGroupId: { type: String, index: true },
@@ -19,13 +20,13 @@ const saleReturnRefSchema = new mongoose.Schema({
   return_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PharmacyReturn' },
   return_number: { type: String },
   amount: { type: Number, default: 0 },
-  returned_at: { type: Date, default: Date.now }
+  returned_at: { type: Date, default: operationNow }
 }, { _id: false });
 
 const settlementRefSchema = new mongoose.Schema({
   sale_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
   amount: { type: Number, default: 0 },
-  settled_at: { type: Date, default: Date.now }
+  settled_at: { type: Date, default: operationNow }
 }, { _id: false });
 
 const saleItemSchema = new mongoose.Schema({
@@ -137,7 +138,7 @@ const saleSchema = new mongoose.Schema({
 
   customer_name: { type: String },
   customer_phone: { type: String },
-  sale_date: { type: Date, default: Date.now, index: true },
+  sale_date: { type: Date, default: operationNow, index: true },
   items: [saleItemSchema],
 
   gross_amount: { type: Number, default: 0 },

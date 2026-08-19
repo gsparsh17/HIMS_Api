@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const nursingNoteSchema = new mongoose.Schema({
   admissionId: {
@@ -18,7 +19,7 @@ const nursingNoteSchema = new mongoose.Schema({
   },
   noteDateTime: {
     type: Date,
-    default: Date.now
+    default: operationNow
   },
   noteType: {
     type: String,

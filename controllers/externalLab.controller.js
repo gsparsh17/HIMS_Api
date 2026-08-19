@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const Prescription = require('../models/Prescription');
 const LabReport = require('../models/LabReport');
 const Patient = require('../models/Patient');
@@ -45,14 +46,14 @@ exports.markAsReferredOut = async (req, res) => {
             contact_person,
             contact_phone,
             reference_number,
-            referred_out_date: new Date()
+            referred_out_date: operationNow()
         };
 
         // Add sample handover log entry
         labTest.sample_handover_log = labTest.sample_handover_log || [];
         labTest.sample_handover_log.push({
             handed_over_by: req.user?._id,
-            handed_over_at: new Date(),
+            handed_over_at: operationNow(),
             courier_name: courier_name || '',
             tracking_number: tracking_number || '',
             notes: handover_notes || '',
@@ -95,7 +96,7 @@ exports.addSampleHandoverLog = async (req, res) => {
         labTest.sample_handover_log = labTest.sample_handover_log || [];
         labTest.sample_handover_log.push({
             handed_over_by: req.user?._id,
-            handed_over_at: new Date(),
+            handed_over_at: operationNow(),
             courier_name,
             tracking_number,
             notes,
@@ -206,11 +207,11 @@ exports.uploadExternalReport = async (req, res) => {
 
         // Update lab test with external report
         labTest.external_lab_details.external_report_url = fileUrl;
-        labTest.external_lab_details.external_report_received_date = new Date();
+        labTest.external_lab_details.external_report_received_date = operationNow();
         labTest.status = 'Completed';
-        labTest.completed_date = new Date();
+        labTest.completed_date = operationNow();
         labTest.external_report_uploaded_by = req.user?._id;
-        labTest.external_report_uploaded_at = new Date();
+        labTest.external_report_uploaded_at = operationNow();
 
         // Add to lab reports collection
         const labReport = new LabReport({
@@ -224,7 +225,7 @@ exports.uploadExternalReport = async (req, res) => {
             resource_type: resourceType,
             file_size: req.file.size,
             file_name: req.file.originalname,
-            report_date: new Date(),
+            report_date: operationNow(),
             notes: notes || `External lab report. Reference: ${reference_number || 'N/A'}`,
             created_by: req.user?._id,
             is_external: true,
@@ -365,7 +366,7 @@ exports.updateExternalLabStatus = async (req, res) => {
         }
 
         if (status === 'Completed') {
-            prescription.recommendedLabTests[labIndex].completed_date = new Date();
+            prescription.recommendedLabTests[labIndex].completed_date = operationNow();
         }
 
         await prescription.save();

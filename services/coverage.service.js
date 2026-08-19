@@ -1,3 +1,4 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const AdmissionCoverage = require('../models/AdmissionCoverage');
 const IPDAdmission = require('../models/IPDAdmission');
 const Appointment = require('../models/Appointment');
@@ -65,7 +66,7 @@ async function activeAppointmentCoverage(hospitalId, appointmentId, session) {
   return activeEncounterCoverage({ hospitalId, encounterType: 'OPD', encounterId: appointmentId, session });
 }
 
-async function resolveEffectiveRateCard({ hospitalId, payerId, serviceDate = new Date(), explicitRateCardId, session, allowDemo = false }) {
+async function resolveEffectiveRateCard({ hospitalId, payerId, serviceDate = operationNow(), explicitRateCardId, session, allowDemo = false }) {
   const when = new Date(serviceDate);
   const filter = {
     hospitalId,
@@ -121,7 +122,7 @@ async function createEncounterCoverage({ req, hospitalId, encounterType, encount
   const rateCard = payer.type === 'self' ? null : await resolveEffectiveRateCard({
     hospitalId,
     payerId: payer._id,
-    serviceDate: payload.effectiveFrom || new Date(),
+    serviceDate: payload.effectiveFrom || operationNow(),
     explicitRateCardId: payload.rateCardId,
     session,
     allowDemo: simulationOnly

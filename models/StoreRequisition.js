@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 function makeReqNo() {
   const date = new Date();
@@ -10,7 +11,7 @@ function makeReqNo() {
 
 const storeRequisitionSchema = new mongoose.Schema({
   requisition_number: { type: String, unique: true, trim: true },
-  request_date: { type: Date, default: Date.now },
+  request_date: { type: Date, default: operationNow },
   department: { type: String, required: true, trim: true },
   requested_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

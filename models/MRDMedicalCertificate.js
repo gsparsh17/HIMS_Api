@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const schema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
@@ -7,7 +8,7 @@ const schema = new mongoose.Schema({
   admissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAdmission', index: true },
   appointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', index: true },
   certificateType: { type: String, enum: ['medical', 'fitness', 'sick_leave', 'disability', 'treatment', 'hospitalisation', 'other'], required: true, index: true },
-  issueDate: { type: Date, default: Date.now, index: true },
+  issueDate: { type: Date, default: operationNow, index: true },
   validFrom: Date,
   validTo: Date,
   diagnosisSummary: String,
