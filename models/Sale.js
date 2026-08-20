@@ -136,6 +136,19 @@ const saleSchema = new mongoose.Schema({
     package_absorbed: { type: Number, default: 0 },
     fallback_count: { type: Number, default: 0 }
   },
+  selected_billing_mode: {
+    type: String,
+    enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'],
+    index: true
+  },
+  required_now_amount: { type: Number, default: 0, min: 0 },
+  financial_clearance_state: {
+    type: String,
+    enum: ['CLEARED', 'PAYMENT_REQUIRED', 'POSTPAID_ALLOWED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'EXCEPTION_APPROVED', 'HOLD'],
+    default: 'PAYMENT_REQUIRED',
+    index: true
+  },
+  financial_policy_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   customer_name: { type: String },
   customer_phone: { type: String },

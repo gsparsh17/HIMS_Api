@@ -9,8 +9,7 @@ const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const PharmacyLedgerSettlement = require('../models/PharmacyLedgerSettlement');
 
 const {
-  buildSaleItems,
-  calculateTotals,
+  prepareSaleFinancialQuote,
   createUnifiedSale,
   getHospitalId,
 } = require('../services/pharmacyTransaction.service');
@@ -311,6 +310,10 @@ function createReceiptSummary(sale, allocation = null, deposit = null) {
       sale?.advance_deposit_wallet_type ||
       null,
     deferredOutstanding,
+    selectedMode: sale?.selected_billing_mode || null,
+    requiredNow: money(sale?.required_now_amount),
+    clearanceState: sale?.financial_clearance_state || null,
+    financialPolicySnapshot: sale?.financial_policy_snapshot || {},
     paymentArrangement: getPaymentArrangement(
       payments,
       deferredOutstanding,
@@ -323,21 +326,33 @@ function createReceiptSummary(sale, allocation = null, deposit = null) {
 
 exports.quotePos = async (req, res) => {
   try {
-
-    const items = await buildSaleItems(
-      req.body.items || [],
-      buildSaleItemOptions(req.body)
-    );
-    const totals = calculateTotals(items, req.body);
-    const allocation = buildPaymentAllocation(req.body, totals.total);
+    const prepared = await prepareSaleFinancialQuote(req.body || {}, req);
+    const policy = prepared.financialPolicy;
+    const collectionTarget = money(prepared.totals.patientPayable);
+    const allocation = buildPaymentAllocation(req.body, collectionTarget);
     const deposit = buildAdvanceDepositAllocation(req.body);
-    assertAdvanceDepositRules({ body: req.body, total: totals.total, allocation, deposit });
+    assertAdvanceDepositRules({ body: req.body, total: collectionTarget, allocation, deposit });
 
     res.json({
       success: true,
       quote: {
-        items: items.map(({ _batch, _medicine, ...item }) => item),
-        netAmount: money(totals.total),
+        items: prepared.items.map(({ _batch, _medicine, _pricingQuote, ...item }) => item),
+        standardValue: money(prepared.totals.standardTotal),
+        contractedValue: money(prepared.totals.total),
+        grossAmount: money(prepared.totals.grossAmount),
+        discountAmount: money(prepared.totals.discountAmount),
+        taxableAmount: money(prepared.totals.taxableAmount),
+        taxAmount: money(prepared.totals.tax),
+        patientLiability: collectionTarget,
+        sponsorLiability: money(prepared.totals.sponsorPayable),
+        netAmount: money(prepared.totals.total),
+        allowedModes: policy.allowedModes,
+        defaultMode: policy.defaultMode,
+        selectedMode: policy.selectedMode,
+        requiredNow: money(policy.requiredNow),
+        clearanceState: policy.clearanceState,
+        partial: policy.partial,
+        policySnapshot: policy.policySnapshot,
         immediatePaymentTotal: allocation.paymentTotal,
         immediateExternalPaymentTotal: allocation.immediateExternalPayment,
         advanceApplied: allocation.advanceApplied,
@@ -354,9 +369,11 @@ exports.quotePos = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(error.status || 400).json({
+    res.status(error.status || error.statusCode || 400).json({
       success: false,
+      code: error.code,
       message: error.message,
+      details: error.details,
     });
   }
 };
@@ -386,14 +403,22 @@ exports.completePos = async (req, res) => {
       });
     }
 
-    const items = await buildSaleItems(
-      req.body.items || [],
-      buildSaleItemOptions(req.body)
-    );
-    const totals = calculateTotals(items, req.body);
-    const allocation = buildPaymentAllocation(req.body, totals.total);
+    const prepared = await prepareSaleFinancialQuote(req.body || {}, req);
+    const policy = prepared.financialPolicy;
+    const collectionTarget = money(prepared.totals.patientPayable);
+    const allocation = buildPaymentAllocation(req.body, collectionTarget);
     const deposit = buildAdvanceDepositAllocation(req.body);
-    assertAdvanceDepositRules({ body: req.body, total: totals.total, allocation, deposit });
+    assertAdvanceDepositRules({ body: req.body, total: collectionTarget, allocation, deposit });
+
+    if (policy.selectedMode === 'FULL_PREPAY' && allocation.paymentTotal + MONEY_EPSILON < collectionTarget) {
+      throw httpError(`Full prepay requires ₹${collectionTarget.toFixed(2)} before dispensing.`, 409);
+    }
+    if (policy.selectedMode === 'PARTIAL_PREPAY' && allocation.paymentTotal + MONEY_EPSILON < money(policy.requiredNow)) {
+      throw httpError(`Partial prepay requires at least ₹${money(policy.requiredNow).toFixed(2)} before dispensing.`, 409);
+    }
+    if (policy.selectedMode === 'TPA_SPONSOR' && policy.clearanceState === 'PAYMENT_REQUIRED' && allocation.paymentTotal + MONEY_EPSILON < collectionTarget) {
+      throw httpError('Sponsor clearance is not satisfied for this sale; patient liability must be collected.', 409);
+    }
 
     const transactionGroupId = createTransactionGroupId(
       req.body.transactionGroupId || idempotencyKey
@@ -431,6 +456,10 @@ exports.completePos = async (req, res) => {
           ? 'Split'
           : allocation.payments[0]?.method ||
             (paymentDeferred ? 'Deferred' : 'Cash'),
+      selectedMode: policy.selectedMode,
+      selectedBillingMode: policy.selectedMode,
+      requestedDeposit: req.body.requestedDeposit,
+      discountReason: req.body.discountReason || req.body.discount_reason,
       payment_deferred: paymentDeferred,
       noPayment: allocation.paymentTotal === 0 && paymentDeferred,
       pay_nothing: allocation.paymentTotal === 0 && paymentDeferred,
@@ -495,9 +524,11 @@ exports.completePos = async (req, res) => {
       }
     }
     console.log('Error completing POS sale:', error);
-    res.status(error.status || 400).json({
+    res.status(error.status || error.statusCode || 400).json({
       success: false,
+      code: error.code,
       message: error.message,
+      details: error.details,
     });
   }
 };

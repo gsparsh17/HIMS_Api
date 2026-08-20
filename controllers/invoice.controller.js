@@ -1085,62 +1085,18 @@ exports.getInvoicesWithRadiology = async (req, res) => {
 
 // Generate pharmacy invoice with stock management
 exports.generatePharmacyInvoice = async (req, res) => {
-  try {
-    const { prescription_id, patient_id, items, discount = 0, notes, payment_method } = req.body;
-
-    if (!items || items.length === 0) {
-      return res.status(400).json({ message: 'Invoice must contain at least one item.' });
-    }
-
-    const subtotal = items.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
-    const tax = items.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
-    const total = subtotal + tax - discount;
-
-    const invoice = new Invoice({
-      hospital_id: requestHospitalId(req),
-      invoice_type: 'Pharmacy',
-      patient_id: patient_id,
-      customer_type: 'Patient',
-      medicine_items: items,
-      subtotal: subtotal,
-      discount: discount,
-      tax: tax,
-      total: total,
-      status: 'Issued',
-      payment_method: payment_method,
-      notes: notes,
-      is_pharmacy_sale: true,
-      created_by: req.user._id,
-      dispensing_date: operationNow(),
-      dispensed_by: req.user._id
-    });
-
-    const createdInvoice = await invoice.save();
-
-    for (const item of items) {
-      await Medicine.findByIdAndUpdate(
-        item.medicine_id,
-        { $inc: { stock_quantity: -item.quantity } }
-      );
-    }
-
-    if (prescription_id) {
-      await Prescription.findByIdAndUpdate(prescription_id, { $set: { status: 'Completed' } });
-    }
-
-    const populatedInvoice = await Invoice.findById(createdInvoice._id)
-      .populate('patient_id')
-      .populate('medicine_items.medicine_id');
-
-    res.status(201).json({
-      message: 'Pharmacy invoice created successfully',
-      invoice: populatedInvoice
-    });
-
-  } catch (err) {
-    console.error('Error generating pharmacy invoice:', err);
-    res.status(400).json({ error: err.message });
-  }
+  // Legacy Finance invoice creation used browser unit prices/tax/discount and
+  // independently decremented stock. That is no longer a monetary authority.
+  // Pharmacy invoices are produced by the canonical POS sale transaction so
+  // stock, pricing, tax, discount, payer allocation and settlement share one
+  // idempotent source event.
+  return res.status(409).json({
+    success: false,
+    code: 'PHARMACY_POS_REQUIRED',
+    error: 'Direct pharmacy invoice creation is retired. Use Pharmacy POS quote/complete so hospital financial policy is applied server-side.',
+    canonicalQuoteEndpoint: '/api/pharmacy/pos/quote',
+    canonicalCompleteEndpoint: '/api/pharmacy/pos/complete'
+  });
 };
 
 // Get pharmacy invoices
@@ -1256,60 +1212,16 @@ exports.updateMedicineStock = async (medicineId, quantity) => {
 
 // Generate invoice for appointment
 exports.generateAppointmentInvoice = async (req, res) => {
-  try {
-    const { appointment_id, payment_method, items, discount = 0, notes } = req.body;
-
-    const appointment = await Appointment.findOne({ _id: appointment_id, hospital_id: requestHospitalId(req) })
-      .populate('patient_id')
-      .populate('doctor_id');
-
-    if (!appointment) {
-      return res.status(404).json({ error: 'Appointment not found' });
-    }
-
-    if (!appointment.patient_id) {
-      return res.status(400).json({ error: 'Appointment has no associated patient. Please check the appointment record.' });
-    }
-
-    const subtotal = items.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
-    const tax = items.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
-    const total = subtotal + tax - discount;
-
-    const invoice = new Invoice({
-      hospital_id: requestHospitalId(req),
-      invoice_type: 'Appointment',
-      patient_id: appointment.patient_id._id,
-      customer_type: 'Patient',
-      customer_name: `${appointment.patient_id.first_name} ${appointment.patient_id.last_name}`,
-      customer_phone: appointment.patient_id.phone,
-      appointment_id: appointment_id,
-      issue_date: operationNow(),
-      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      service_items: items,
-      subtotal: subtotal,
-      discount: discount,
-      tax: tax,
-      total: total,
-      status: 'Issued',
-      notes: notes,
-      created_by: req.user ? req.user._id : null
-    });
-
-    await invoice.save();
-
-    const populatedInvoice = await Invoice.findById(invoice._id)
-      .populate('patient_id')
-      .populate('appointment_id');
-
-    res.status(201).json({
-      message: 'Appointment invoice generated successfully',
-      invoice: populatedInvoice
-    });
-
-  } catch (err) {
-    console.error('Error generating appointment invoice:', err);
-    res.status(400).json({ error: err.message });
-  }
+  // This legacy endpoint accepted browser-computed item totals/discount/tax.
+  // Keep it as an explicit compatibility guard; the canonical /billing
+  // appointment branch resolves doctor tariff + financial policy, snapshots it
+  // and uses encounter-linked idempotency.
+  return res.status(409).json({
+    success: false,
+    code: 'CANONICAL_APPOINTMENT_BILLING_REQUIRED',
+    error: 'Direct appointment invoice creation is retired. Use the canonical appointment billing workflow.',
+    canonicalEndpoint: '/api/billing'
+  });
 };
 
 // ============== PURCHASE INVOICE FUNCTIONS ==============

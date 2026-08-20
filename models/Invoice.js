@@ -272,7 +272,8 @@ const medicineItemSchema = new mongoose.Schema({
 
   dispensed_at: {
     type: Date
-  }
+  },
+  pricing_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} }
 });
 
 const procedureItemSchema = new mongoose.Schema({

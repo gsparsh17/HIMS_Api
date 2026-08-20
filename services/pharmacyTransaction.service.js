@@ -1,6 +1,7 @@
 const { operationNow } = require('../utils/operationTimeContext');
 // services/pharmacyTransaction.service.js
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Medicine = require('../models/Medicine');
 const MedicineBatch = require('../models/MedicineBatch');
 const Sale = require('../models/Sale');
@@ -23,6 +24,7 @@ const pharmacyCoveragePricing = require('./pharmacyCoveragePricing.service');
 const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
 const { recordPackageUtilization } = require('./packageAdjudication.service');
 const { replaceCoverageUtilization } = require('./coverageUtilization.service');
+const { resolveFinancialPolicy, calculateRequiredNow } = require('./financialPolicy.service');
 
 function objectIdOrUndefined(id) {
   return id && mongoose.Types.ObjectId.isValid(id) ? id : undefined;
@@ -318,7 +320,7 @@ async function handleDeferredPaymentReturn(originalSale, returnAmount) {
 }
 
 // ========== buildSaleItems - Allocate bill discount proportionally before tax calculation ==========
-async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoctor = {}, billDiscount = 0, billDiscountType = 'percentage' } = {}) {
+async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoctor = {}, billDiscount = 0, billDiscountType = 'percentage', allowPriceOverride = false } = {}) {
   const tempItems = [];
   let totalGross = 0;
 
@@ -340,7 +342,12 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
       throw new Error(`Insufficient stock for ${medicine.name}. Available ${available} ${medicine.base_unit || 'unit'}, requested ${quantityBaseUnits}.`);
     }
 
-    const ratePerBaseUnit = Number(rawItem.rate_per_base_unit || rawItem.unit_price || batch.selling_price_per_base_unit || (batch.selling_price || 0) / unitsPerPack || 0);
+    const serverRatePerBaseUnit = Number(batch.selling_price_per_base_unit || (batch.selling_price || 0) / unitsPerPack || medicine.selling_price_per_base_unit || (medicine.selling_price || 0) / unitsPerPack || 0);
+    const requestedRate = Number(rawItem.rate_per_base_unit ?? rawItem.unit_price ?? serverRatePerBaseUnit);
+    const ratePerBaseUnit = allowPriceOverride ? requestedRate : serverRatePerBaseUnit;
+    if (!allowPriceOverride && Math.abs(requestedRate - serverRatePerBaseUnit) > 0.009) {
+      console.warn(`Ignoring browser medicine price for ${medicine.name}; server batch/master rate is authoritative.`);
+    }
     const grossAmount = normalizeMoney(quantityBaseUnits * ratePerBaseUnit);
     totalGross += grossAmount;
 
@@ -385,13 +392,6 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
       taxRate = Number(medicine.gst_rate);
       taxSource = 'medicine.gst_rate';
       console.log(`⚠️ Using medicine.gst_rate: ${taxRate}% for batch ${batch.batch_number} (${medicine.name}) - No tax_snapshot found`);
-    } else if (rawItem.force_override_tax === true && (rawItem.tax_rate !== undefined || rawItem.taxRate !== undefined)) {
-      taxRate = Number(rawItem.tax_rate ?? rawItem.taxRate);
-      taxSource = 'frontend_override';
-      console.log(`⚠️ MANUAL OVERRIDE: Using frontend tax_rate: ${taxRate}% for batch ${batch.batch_number} (${medicine.name})`);
-      if (taxRate === 0 && batch.tax_snapshot?.gst_rate > 0) {
-        console.warn(`⚠️⚠️⚠️ TAX COMPLIANCE WARNING: Overriding tax from ${batch.tax_snapshot.gst_rate}% to 0% for ${medicine.name}`);
-      }
     } else {
       taxRate = 0;
       taxSource = 'default';
@@ -671,6 +671,15 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
       prescription_id: sale.prescription_id || undefined,
       is_dispensed: true,
       dispensed_at: operationNow(),
+      pricing_snapshot: {
+        ...(item.pricing_snapshot || {}),
+        financialPolicy: sale.financial_policy_snapshot || {},
+        selectedMode: sale.selected_billing_mode,
+        requiredNow: sale.required_now_amount,
+        clearanceState: sale.financial_clearance_state,
+        tax: { source: item.tax_source, rate: item.tax_rate, amount: item.tax_amount },
+        discount: { type: sale.discount_type, amount: item.discount_amount }
+      },
       ...pharmacyCoveragePricing.lineAllocation(item)
     })),
     subtotal: invoiceSubtotal,
@@ -689,7 +698,7 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
     dispensing_date: operationNow(),
     dispensed_by: createdBy,
     created_by: createdBy,
-    notes: isDeferred ? `Deferred payment - ${sale.notes || ''}` : sale.notes
+    notes: `${sale.notes || ''}${sale.selected_billing_mode ? ` | Mode: ${sale.selected_billing_mode}` : ''}`.trim()
   });
 
   sale.invoice_id = invoice._id;
@@ -726,6 +735,15 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
     admission_id: admissionId,
     doctor_id: item.doctor_id,
     doctor_name: item.doctor_name,
+    pricing_snapshot: {
+      ...(item.pricing_snapshot || {}),
+      financialPolicy: sale.financial_policy_snapshot || {},
+      selectedMode: sale.selected_billing_mode,
+      requiredNow: sale.required_now_amount,
+      clearanceState: sale.financial_clearance_state,
+      tax: { source: item.tax_source, rate: item.tax_rate, amount: item.tax_amount },
+      discount: { type: sale.discount_type, amount: item.discount_amount }
+    },
     ...pharmacyCoveragePricing.lineAllocation(item)
   }));
 
@@ -834,7 +852,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
     paid_amount: paymentAmount,
     balance_due: billBalanceDue,
     created_by: createdBy,
-    notes: isDeferred || sale.payment_deferred ? `Deferred payment - ${sale.notes || 'Pending settlement'}` : (sale.notes || `Pharmacy sale: ${sale.sale_number}`),
+    notes: `${isDeferred || sale.payment_deferred ? `Deferred payment - ${sale.notes || 'Pending settlement'}` : (sale.notes || `Pharmacy sale: ${sale.sale_number}`)}${sale.selected_billing_mode ? ` | Mode: ${sale.selected_billing_mode}` : ''}`,
     is_pharmacy_bill: true,
     pharmacy_outstanding_before: pharmacyOutstandingBefore,
     pharmacy_outstanding_after: pharmacyOutstandingAfter,
@@ -1115,6 +1133,171 @@ async function markIpdMedicationSaleDispatched({ preparedIpdItems, sale, created
 }
 
 // ========== UPDATED: createUnifiedSale ==========
+
+function pharmacyClearanceState(policy, sponsorLiability = 0, patientLiability = 0) {
+  if (policy.selectedMode === 'POSTPAID') return 'POSTPAID_ALLOWED';
+  if (policy.selectedMode === 'AUTHORIZED_EXCEPTION') return 'EXCEPTION_APPROVED';
+  if (policy.selectedMode === 'TPA_SPONSOR') {
+    return Number(sponsorLiability || 0) > 0 ? 'TPA_PENDING' : (Number(patientLiability || 0) > 0 ? 'PAYMENT_REQUIRED' : 'CLEARED');
+  }
+  return Number(policy.requiredNow || 0) > 0 ? 'PAYMENT_REQUIRED' : 'CLEARED';
+}
+
+function pharmacyClearanceAfterSettlement(policy, paidAgainstSale = 0, sponsorLiability = 0, patientLiability = 0) {
+  const selectedMode = policy?.selectedMode;
+  if (selectedMode === 'POSTPAID') return 'POSTPAID_ALLOWED';
+  if (selectedMode === 'AUTHORIZED_EXCEPTION') return 'EXCEPTION_APPROVED';
+  if (selectedMode === 'TPA_SPONSOR') {
+    if (Number(sponsorLiability || 0) > 0) return 'TPA_PENDING';
+    return Number(paidAgainstSale || 0) + 0.009 >= Number(patientLiability || 0) ? 'CLEARED' : 'PAYMENT_REQUIRED';
+  }
+  const threshold = Number(policy?.requiredNow || 0);
+  return Number(paidAgainstSale || 0) + 0.009 >= threshold ? 'CLEARED' : 'PAYMENT_REQUIRED';
+}
+
+function refreshPolicySnapshotHash(snapshot = {}) {
+  if (!snapshot || typeof snapshot !== 'object') return snapshot;
+  const copy = { ...snapshot };
+  delete copy.hash;
+  return {
+    ...snapshot,
+    hash: crypto.createHash('sha256').update(JSON.stringify(copy)).digest('hex'),
+  };
+}
+
+async function prepareSaleFinancialQuote(payload, req = {}, resolved = {}) {
+  const hospitalId = resolved.hospitalId || getHospitalId(req, payload.hospitalId || payload.hospital_id);
+  if (!hospitalId) {
+    const err = new Error('Hospital context is required for a pharmacy transaction');
+    err.statusCode = 403;
+    throw err;
+  }
+  const patientId = resolved.patientId || objectIdOrUndefined(payload.patient_id || payload.patientId);
+  const admissionId = resolved.admissionId || objectIdOrUndefined(payload.admission_id || payload.admissionId);
+  const prescriptionId = resolved.prescriptionId || objectIdOrUndefined(payload.prescription_id || payload.prescriptionId);
+  const context = resolved.context || await resolvePatientContext({ hospitalId, patientId, admissionId, prescriptionId, explicit: payload });
+  if (patientId && !context.patient) { const err = new Error('Patient not found for this hospital'); err.statusCode = 404; throw err; }
+  if (admissionId && !context.admission) { const err = new Error('IPD admission not found for this hospital'); err.statusCode = 404; throw err; }
+  const appointmentId = resolved.appointmentId || objectIdOrUndefined(payload.appointment_id || payload.appointmentId || context.prescription?.appointment_id);
+  const defaultDoctor = { doctorId: context.doctorId, doctorName: context.doctorName };
+
+  // First pass is deliberately discount-free so the policy resolver validates
+  // the requested concession against the real server-priced liability.
+  const baseItems = await buildSaleItems(payload.items || [], {
+    honorLooseSale: payload.allowLooseSale !== false,
+    defaultDoctor,
+    billDiscount: 0,
+    billDiscountType: 'fixed',
+    allowPriceOverride: false,
+  });
+  const crossHospitalItem = baseItems.find((item) => item._medicine?.hospitalId && String(item._medicine.hospitalId) !== String(hospitalId));
+  if (crossHospitalItem) {
+    const err = new Error(`Medicine ${crossHospitalItem.medicine_name} does not belong to this hospital`);
+    err.statusCode = 403;
+    throw err;
+  }
+  const basePricing = await pharmacyCoveragePricing.pricePharmacyItems({
+    hospitalId, admissionId, appointmentId, prescriptionId, items: baseItems,
+    serviceDate: payload.bill_date || operationNow()
+  });
+  const inheritedMode = context.admission?.financialPolicySnapshot?.selectedMode || context.admission?.selectedBillingMode;
+  const policy = await resolveFinancialPolicy({
+    hospitalId,
+    user: req.user,
+    encounterType: admissionId ? 'IPD' : 'OPD',
+    serviceType: 'pharmacy',
+    serviceCategory: 'PHARMACY',
+    serviceCode: 'PHARMACY_SALE',
+    payerCategory: basePricing.coverage?.payerCategory || basePricing.coverage?.payerId?.type || (basePricing.coverage ? 'SPONSORED' : 'SELF'),
+    departmentId: payload.departmentId || payload.department_id,
+    urgency: payload.urgency || (context.admission?.isEmergency ? 'EMERGENCY' : 'ROUTINE'),
+    effectiveAt: payload.bill_date || operationNow(),
+    selectedMode: payload.selectedMode || payload.selectedBillingMode,
+    inheritedMode,
+    requestedDeposit: payload.requestedDeposit,
+    patientLiability: basePricing.allocation.patient_liability,
+    sponsorLiability: basePricing.allocation.sponsor_liability,
+    contractedAmount: basePricing.allocation.contracted_amount,
+    adjustments: {
+      discountType: payload.discountType || payload.discount_type,
+      discountValue: payload.discountValue ?? payload.discount,
+      discountRate: payload.discountRate,
+      discountAmount: payload.discountAmount,
+      discountReason: payload.discountReason || payload.discount_reason,
+      taxMode: payload.taxMode,
+      taxRate: payload.taxRate,
+      taxReason: payload.taxReason,
+    },
+    taxAuthority: 'UPSTREAM_MASTER',
+    overrideReason: payload.billingModeOverrideReason || payload.overrideReason,
+  });
+
+  // Apply only the policy-approved concession. GST remains derived from the
+  // batch/medicine master and is recalculated after discount by buildSaleItems.
+  const approvedDiscountType = policy.amounts.discountType === 'fixed' ? 'fixed' : 'percentage';
+  const approvedDiscountValue = approvedDiscountType === 'fixed'
+    ? Number(policy.amounts.discountAmount || 0)
+    : Number(policy.amounts.discountRate || 0);
+  const items = await buildSaleItems(payload.items || [], {
+    honorLooseSale: payload.allowLooseSale !== false,
+    defaultDoctor,
+    billDiscount: approvedDiscountValue,
+    billDiscountType: approvedDiscountType,
+    allowPriceOverride: false,
+  });
+  const cashTotals = calculateTotals(items, {});
+  const pharmacyPricing = await pharmacyCoveragePricing.pricePharmacyItems({
+    hospitalId, admissionId, appointmentId, prescriptionId, items,
+    serviceDate: payload.bill_date || operationNow()
+  });
+  items.splice(0, items.length, ...pharmacyPricing.pricedItems);
+  const totals = {
+    ...cashTotals,
+    standardTotal: pharmacyPricing.allocation.standard_amount,
+    total: pharmacyPricing.allocation.contracted_amount,
+    patientPayable: pharmacyPricing.allocation.patient_liability,
+    sponsorPayable: pharmacyPricing.allocation.sponsor_liability,
+    payerAllocation: pharmacyPricing.allocation,
+  };
+  policy.requiredNow = calculateRequiredNow(policy.selectedMode, totals.patientPayable, policy.partial, payload.requestedDeposit);
+  policy.clearanceState = pharmacyClearanceState(policy, totals.sponsorPayable, totals.patientPayable);
+  policy.amounts = {
+    ...policy.amounts,
+    grossAmount: totals.grossAmount,
+    discountType: approvedDiscountType,
+    discountRate: approvedDiscountType === 'percentage' ? approvedDiscountValue : 0,
+    discountAmount: totals.discountAmount,
+    taxableAmount: totals.taxableAmount,
+    taxMode: 'upstream_master',
+    taxRate: null,
+    taxAmount: totals.tax,
+    patientLiability: totals.patientPayable,
+    sponsorLiability: totals.sponsorPayable,
+    totalLiability: totals.total,
+    netAmount: totals.total,
+  };
+  policy.policySnapshot = {
+    ...(policy.policySnapshot || {}),
+    requiredNow: policy.requiredNow,
+    clearanceState: policy.clearanceState,
+    appliedAmounts: {
+      ...((policy.policySnapshot || {}).appliedAmounts || {}),
+      grossAmount: totals.grossAmount,
+      discountType: approvedDiscountType,
+      discountRate: approvedDiscountType === 'percentage' ? approvedDiscountValue : 0,
+      discountAmount: totals.discountAmount,
+      taxableAmount: totals.taxableAmount,
+      taxMode: 'upstream_master',
+      taxAmount: totals.tax,
+      patientLiability: totals.patientPayable,
+      sponsorLiability: totals.sponsorPayable,
+      totalLiability: totals.total,
+    }
+  };
+  policy.policySnapshot = refreshPolicySnapshotHash(policy.policySnapshot);
+  return { hospitalId, patientId, admissionId, prescriptionId, appointmentId, context, items, totals, pharmacyPricing, financialPolicy: policy };
+}
+
 async function createUnifiedSale(payload, req = {}) {
 
   const createdBy = getCreatedBy(req);
@@ -1208,12 +1391,13 @@ async function createUnifiedSale(payload, req = {}) {
     }
   }
 
-  const items = await buildSaleItems(payload.items || [], {
-    honorLooseSale: payload.allowLooseSale !== false,
-    defaultDoctor: { doctorId: context.doctorId, doctorName: context.doctorName },
-    billDiscount: payload.discount || 0,
-    billDiscountType: payload.discount_type || payload.discountType || 'percentage'
+  const authoritativeQuote = await prepareSaleFinancialQuote(payload, req, {
+    hospitalId, patientId, admissionId, prescriptionId, appointmentId, context
   });
+  const items = authoritativeQuote.items;
+  const totals = authoritativeQuote.totals;
+  const pharmacyPricing = authoritativeQuote.pharmacyPricing;
+  const financialPolicy = authoritativeQuote.financialPolicy;
 
   // Enforce the medicine master's dispensing controls at the API boundary.
   // A walk-in/direct sale cannot bypass prescription_required/high-risk flags.
@@ -1246,40 +1430,19 @@ async function createUnifiedSale(payload, req = {}) {
     items, patientId, admissionId
   });
 
-  const cashTotals = calculateTotals(items, payload);
-  const pharmacyPricing = await pharmacyCoveragePricing.pricePharmacyItems({
-    hospitalId,
-    admissionId,
-    appointmentId,
-    prescriptionId,
-    items,
-    serviceDate: payload.bill_date || operationNow()
-  });
-  items.splice(0, items.length, ...pharmacyPricing.pricedItems);
-  const totals = {
-    ...cashTotals,
-    standardTotal: pharmacyPricing.allocation.standard_amount,
-    total: pharmacyPricing.allocation.contracted_amount,
-    patientPayable: pharmacyPricing.allocation.patient_liability,
-    sponsorPayable: pharmacyPricing.allocation.sponsor_liability,
-    payerAllocation: pharmacyPricing.allocation
-  };
   const collectionTarget = normalizeMoney(totals.patientPayable);
   const previousOutstanding = await getPatientOutstanding({ patientId, admissionId });
   const previousPharmacyAdvance = await getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD' });
   const noPayment = payload.noPayment === true || payload.pay_nothing === true;
-
-  const deferPayment = payload.payment_deferred === true ||
-    payload.defer_payment === true ||
-    payload.payment_method === 'Deferred' ||
-    payload.payment_method === 'Defer' ||
-    payload.payment_method === 'Will Pay Later';
-
-  const paymentDeferred = deferPayment || noPayment;
+  const selectedFinancialMode = financialPolicy.selectedMode;
+  const policyAllowsOutstanding = ['PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'].includes(selectedFinancialMode);
+  // Browser payment_deferred is compatibility metadata only. Whether an
+  // outstanding balance may exist is decided by the resolved hospital policy.
+  const paymentDeferred = policyAllowsOutstanding;
 
   let deferralReason = undefined;
   if (paymentDeferred) {
-    deferralReason = payload.deferral_reason || payload.defer_reason || 'will_pay_later';
+    deferralReason = payload.deferral_reason || payload.defer_reason || `policy:${selectedFinancialMode}`;
   }
 
   const expectedPaymentDate = payload.expected_payment_date ? new Date(payload.expected_payment_date) : null;
@@ -1300,6 +1463,22 @@ async function createUnifiedSale(payload, req = {}) {
       0
     )
   );
+
+  if (deferredPaymentTotal > collectionTarget + 0.009) {
+    throw new Error('Immediate payment allocations cannot exceed the patient liability.');
+  }
+  if (selectedFinancialMode === 'FULL_PREPAY' && deferredPaymentTotal + 0.009 < collectionTarget) {
+    const err = new Error(`Full prepay requires ₹${collectionTarget.toFixed(2)} before dispensing.`);
+    err.statusCode = 409; err.code = 'PHARMACY_FULL_PREPAY_REQUIRED'; throw err;
+  }
+  if (selectedFinancialMode === 'PARTIAL_PREPAY' && deferredPaymentTotal + 0.009 < Number(financialPolicy.requiredNow || 0)) {
+    const err = new Error(`Partial prepay requires at least ₹${Number(financialPolicy.requiredNow || 0).toFixed(2)} before dispensing.`);
+    err.statusCode = 409; err.code = 'PHARMACY_PARTIAL_PREPAY_REQUIRED'; throw err;
+  }
+  if (selectedFinancialMode === 'TPA_SPONSOR' && financialPolicy.clearanceState === 'PAYMENT_REQUIRED' && deferredPaymentTotal + 0.009 < collectionTarget) {
+    const err = new Error('Sponsor clearance is unavailable for this sale; patient liability must be settled before dispensing.');
+    err.statusCode = 409; err.code = 'PHARMACY_SPONSOR_CLEARANCE_REQUIRED'; throw err;
+  }
 
   if (paymentDeferred) {
     if (deferredPaymentTotal > collectionTarget + 0.009) {
@@ -1388,19 +1567,23 @@ async function createUnifiedSale(payload, req = {}) {
         payer_id: pharmacyPricing.coverage?.payerId?._id || pharmacyPricing.coverage?.payerId,
         ...pharmacyPricing.allocation
       },
+      selected_billing_mode: financialPolicy.selectedMode,
+      required_now_amount: financialPolicy.requiredNow,
+      financial_clearance_state: pharmacyClearanceAfterSettlement(financialPolicy, amountPaid, totals.sponsorPayable, collectionTarget),
+      financial_policy_snapshot: financialPolicy.policySnapshot,
       customer_name: context.patientName,
       customer_phone: context.patientPhone,
       items: items.map(({ _batch, _medicine, ...item }) => item),
       subtotal: totals.subtotal,
       gross_amount: totals.grossAmount,
       item_discount_amount: totals.itemDiscount,
-      discount: Number(payload.discount || 0),
-      discount_type: payload.discount_type || payload.discountType || 'percentage',
+      discount: financialPolicy.amounts.discountType === 'percentage' ? Number(financialPolicy.amounts.discountRate || 0) : Number(financialPolicy.amounts.discountAmount || 0),
+      discount_type: financialPolicy.amounts.discountType || 'percentage',
       discount_amount: totals.discountAmount,
       taxable_amount: totals.taxableAmount,
       discount_reason: payload.discount_reason || payload.discountReason || (paymentDeferred ? 'Payment deferred' : undefined),
       discount_approved_by: objectIdOrUndefined(payload.discount_approved_by || payload.discountApprovedBy),
-      tax_rate: payload.tax_rate || payload.taxRate || 0,
+      tax_rate: 0,
       tax: totals.tax,
       total_amount: totals.total,
       current_bill_amount: totals.total,
@@ -1777,19 +1960,23 @@ async function createUnifiedSale(payload, req = {}) {
       payer_id: pharmacyPricing.coverage?.payerId?._id || pharmacyPricing.coverage?.payerId,
       ...pharmacyPricing.allocation
     },
+    selected_billing_mode: financialPolicy.selectedMode,
+    required_now_amount: financialPolicy.requiredNow,
+    financial_clearance_state: pharmacyClearanceAfterSettlement(financialPolicy, amountPaidForBill, totals.sponsorPayable, collectionTarget),
+    financial_policy_snapshot: financialPolicy.policySnapshot,
     customer_name: context.patientName,
     customer_phone: context.patientPhone,
     items: items.map(({ _batch, _medicine, ...item }) => item),
     subtotal: totals.subtotal,
     gross_amount: totals.grossAmount,
     item_discount_amount: totals.itemDiscount,
-    discount: Number(payload.discount || 0),
-    discount_type: payload.discount_type || payload.discountType || 'percentage',
+    discount: financialPolicy.amounts.discountType === 'percentage' ? Number(financialPolicy.amounts.discountRate || 0) : Number(financialPolicy.amounts.discountAmount || 0),
+    discount_type: financialPolicy.amounts.discountType || 'percentage',
     discount_amount: totals.discountAmount,
     taxable_amount: totals.taxableAmount,
     discount_reason: payload.discount_reason || payload.discountReason,
     discount_approved_by: objectIdOrUndefined(payload.discount_approved_by || payload.discountApprovedBy),
-    tax_rate: payload.tax_rate || payload.taxRate || 0,
+    tax_rate: 0,
     tax: totals.tax,
     total_amount: totals.total,
     current_bill_amount: totals.total,
