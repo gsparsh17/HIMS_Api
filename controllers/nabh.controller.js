@@ -18,6 +18,10 @@ const FinancialTransaction = require('../models/FinancialTransaction');
 const ClaimCase = require('../models/ClaimCase');
 const Doctor = require('../models/Doctor');
 const Department = require('../models/Department');
+const LabTest = require('../models/LabTest');
+const ImagingTest = require('../models/ImagingTest');
+const Procedure = require('../models/Procedure');
+const Payer = require('../models/Payer');
 const User = require('../models/User');
 const coverage = require('../config/nabhCoverage');
 const workflowTemplates = require('../config/nabhWorkflowTemplates');
@@ -30,6 +34,12 @@ const {
   staffingForecast
 } = require('../services/nabhRules.service');
 const { requireHospitalId, objectId } = require('../services/tenantScope.service');
+const {
+  DEFAULT_FINANCIAL_POLICY_TEMPLATE_VERSION,
+  DEFAULT_FINANCIAL_POLICY_TEMPLATE_NAME,
+  mergeFinancialPolicyWithDefaults,
+  financialPolicyDefaultsPending
+} = require('../config/defaultFinancialPolicy');
 
 const ALLOWED_DOMAINS = new Set(['AAC', 'COP', 'MOM', 'DAC', 'DOM', 'FPM', 'HRM', 'IMS']);
 const ALLOWED_STATUSES = new Set([
@@ -399,7 +409,136 @@ exports.getCoverage = async (_req, res) => {
 
 exports.getSettings = async (req, res) => {
   const setting = await getOrCreateNabhSetting(requireHospitalId(req), req.user?._id);
-  res.json({ success: true, data: setting });
+  const data = publicSetting(setting);
+  const defaultsPending = financialPolicyDefaultsPending(data.financialPolicy || {});
+  data.financialPolicy = mergeFinancialPolicyWithDefaults(data.financialPolicy || {});
+  res.json({
+    success: true,
+    data,
+    meta: {
+      financialPolicyDefaultsPending: defaultsPending,
+      financialPolicyTemplateVersion: DEFAULT_FINANCIAL_POLICY_TEMPLATE_VERSION,
+      financialPolicyTemplateName: DEFAULT_FINANCIAL_POLICY_TEMPLATE_NAME
+    }
+  });
+};
+
+exports.getFinancialPolicyOptions = async (req, res) => {
+  const hospitalId = requireHospitalId(req);
+  const requestedType = String(req.query.serviceType || '').trim().toUpperCase();
+  const query = String(req.query.q || '').trim();
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = query ? new RegExp(escaped, 'i') : /.*/i;
+  const limit = Math.min(Math.max(Number(req.query.limit || 60), 1), 100);
+
+  const serviceTypes = [
+    { value: 'LABORATORY', label: 'Lab / Pathology' },
+    { value: 'RADIOLOGY', label: 'Radiology / Imaging' },
+    { value: 'PROCEDURE', label: 'Procedure' },
+    { value: 'OPERATION_THEATRE', label: 'Operation Theatre / Surgery' },
+    { value: 'PHARMACY', label: 'Pharmacy POS' },
+    { value: 'CONSULTATION', label: 'Doctor consultation / round' },
+    { value: 'REGISTRATION', label: 'Registration' },
+    { value: 'ADMISSION', label: 'IPD admission' },
+    { value: 'BED', label: 'Bed / room accommodation' },
+    { value: 'OTHER', label: 'Nursing / other recurring charge' }
+  ];
+
+  const payerCategories = [
+    ['SELF', 'Self / Cash'],
+    ['PMJAY', 'PM-JAY / Ayushman Bharat'],
+    ['CGHS', 'CGHS'],
+    ['STATE_SCHEME', 'State government scheme'],
+    ['ECHS', 'ECHS'],
+    ['ESIC', 'ESIC'],
+    ['GOVERNMENT_OTHER', 'Other government payer'],
+    ['CORPORATE', 'Corporate'],
+    ['PRIVATE_INSURER', 'Private insurer'],
+    ['TPA', 'TPA'],
+    ['TPA_MANAGED', 'TPA managed'],
+    ['OTHER', 'Other payer']
+  ].map(([value, label]) => ({ value, label }));
+
+  const [departments, payers, labCategories, imagingCategories, procedureCategories] = await Promise.all([
+    Department.find({ hospitalId, active: { $ne: false }, isDeleted: { $ne: true } })
+      .select('_id code name departmentType clinical').sort({ name: 1 }).lean(),
+    Payer.find({ hospitalId, isActive: { $ne: false }, isDeleted: { $ne: true } })
+      .select('_id code name type').sort({ name: 1 }).lean(),
+    LabTest.distinct('category', { hospitalId, is_active: { $ne: false } }),
+    ImagingTest.distinct('category', { hospitalId, is_active: { $ne: false } }),
+    Procedure.distinct('category', { hospitalId, is_active: { $ne: false } })
+  ]);
+
+  const categories = {
+    LABORATORY: labCategories.filter(Boolean).map((value) => String(value).trim().toUpperCase()).filter(Boolean).sort(),
+    RADIOLOGY: imagingCategories.filter(Boolean).map((value) => String(value).trim().toUpperCase()).filter(Boolean).sort(),
+    PROCEDURE: procedureCategories.filter(Boolean).map((value) => String(value).trim().toUpperCase()).filter(Boolean).sort(),
+    OPERATION_THEATRE: procedureCategories.filter(Boolean).map((value) => String(value).trim().toUpperCase()).filter(Boolean).sort(),
+    PHARMACY: ['PHARMACY'],
+    CONSULTATION: ['DOCTOR_VISIT'],
+    REGISTRATION: ['REGISTRATION'],
+    ADMISSION: ['ADMISSION'],
+    BED: ['ACCOMMODATION'],
+    OTHER: ['NURSING']
+  };
+
+  const masterQuery = (extra = {}) => ({
+    hospitalId,
+    is_active: { $ne: false },
+    ...extra,
+    ...(query ? { $or: [{ name: match }, { code: match }, { category: match }] } : {})
+  });
+
+  const mapService = (serviceType, row) => ({
+    id: row._id,
+    serviceType,
+    code: String(row.code || '').trim().toUpperCase(),
+    name: String(row.name || '').trim(),
+    category: String(row.category || '').trim().toUpperCase()
+  });
+
+  let services = [];
+  if (!requestedType || requestedType === 'LABORATORY') {
+    const rows = await LabTest.find(masterQuery()).select('_id code name category').sort({ name: 1 }).limit(limit).lean();
+    services.push(...rows.map((row) => mapService('LABORATORY', row)));
+  }
+  if (!requestedType || requestedType === 'RADIOLOGY') {
+    const rows = await ImagingTest.find(masterQuery()).select('_id code name category').sort({ name: 1 }).limit(limit).lean();
+    services.push(...rows.map((row) => mapService('RADIOLOGY', row)));
+  }
+  if (!requestedType || requestedType === 'PROCEDURE' || requestedType === 'OPERATION_THEATRE') {
+    const rows = await Procedure.find(masterQuery()).select('_id code name category').sort({ name: 1 }).limit(limit).lean();
+    const mappedType = requestedType === 'OPERATION_THEATRE' ? 'OPERATION_THEATRE' : 'PROCEDURE';
+    services.push(...rows.map((row) => mapService(mappedType, row)));
+  }
+
+  const virtualServices = [
+    { serviceType: 'PHARMACY', code: 'PHARMACY_SALE', name: 'All Pharmacy POS sales', category: 'PHARMACY' },
+    { serviceType: 'CONSULTATION', code: '', name: 'All doctor consultations / IPD rounds', category: 'DOCTOR_VISIT' },
+    { serviceType: 'REGISTRATION', code: '', name: 'All registration charges', category: 'REGISTRATION' },
+    { serviceType: 'ADMISSION', code: '', name: 'All admission charges', category: 'ADMISSION' },
+    { serviceType: 'BED', code: '', name: 'All bed / room accommodation charges', category: 'ACCOMMODATION' },
+    { serviceType: 'OTHER', code: '', name: 'All nursing / other recurring charges', category: 'NURSING' }
+  ].filter((row) => (!requestedType || row.serviceType === requestedType)
+    && (!query || match.test(row.name) || match.test(row.code) || match.test(row.category)));
+  services.push(...virtualServices);
+
+  if (query) {
+    services = services.filter((row) => match.test(row.name) || match.test(row.code) || match.test(row.category));
+  }
+  services = services.slice(0, limit);
+
+  res.json({
+    success: true,
+    data: {
+      serviceTypes,
+      payerCategories,
+      departments: departments.map((row) => ({ id: row._id, code: row.code, name: row.name, departmentType: row.departmentType, clinical: row.clinical })),
+      payers: payers.map((row) => ({ id: row._id, code: row.code, name: row.name, type: String(row.type || '').toUpperCase() })),
+      categories,
+      services
+    }
+  });
 };
 
 exports.updateSettings = async (req, res) => {
@@ -413,11 +552,14 @@ exports.updateSettings = async (req, res) => {
     if (req.body[key] === undefined) continue;
     const existing = setting.get(key)?.toObject?.() || setting.get(key) || {};
     const incoming = req.body[key];
-    const merged = mergeDefined(existing, incoming);
+    let merged = mergeDefined(existing, incoming);
     if (key === 'notifications' && Array.isArray(incoming?.channels)) {
       merged.channels = mergeNotificationChannels(existing.channels, incoming.channels);
     }
-    if (key === 'financialPolicy') validateFinancialPolicyConfig(merged);
+    if (key === 'financialPolicy') {
+      merged = mergeFinancialPolicyWithDefaults(merged);
+      validateFinancialPolicyConfig(merged);
+    }
     setting.set(key, merged);
   }
   setting.updatedBy = req.user?._id;

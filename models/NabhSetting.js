@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { buildDefaultFinancialPolicy } = require('../config/defaultFinancialPolicy');
 
 const notificationChannelSchema = new mongoose.Schema({
   channel: {
@@ -38,6 +39,7 @@ const paymentModeSchema = new mongoose.Schema({
 }, { _id: false });
 
 const financialPolicyRuleSchema = new mongoose.Schema({
+  templateKey: { type: String, trim: true, uppercase: true },
   enabled: { type: Boolean, default: true },
   encounterType: { type: String, enum: ['ANY', 'OPD', 'IPD', 'EMERGENCY'], default: 'ANY' },
   urgency: { type: String, enum: ['ANY', 'ROUTINE', 'URGENT', 'STAT', 'EMERGENCY'], default: 'ANY' },
@@ -119,35 +121,37 @@ const nabhSettingSchema = new mongoose.Schema({
   },
 
   financialPolicy: {
+    templateVersion: { type: Number },
+    templateName: { type: String, trim: true },
     enabled: { type: Boolean, default: true },
     payment: {
-      OPD: { type: paymentModeSchema, default: () => ({ allowedModes: ['FULL_PREPAY', 'POSTPAID'], defaultMode: 'FULL_PREPAY' }) },
-      IPD: { type: paymentModeSchema, default: () => ({ allowedModes: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID'], defaultMode: 'POSTPAID' }) },
-      EMERGENCY: { type: paymentModeSchema, default: () => ({ allowedModes: ['POSTPAID', 'AUTHORIZED_EXCEPTION'], defaultMode: 'POSTPAID' }) }
+      OPD: { type: paymentModeSchema, default: () => buildDefaultFinancialPolicy().payment.OPD },
+      IPD: { type: paymentModeSchema, default: () => buildDefaultFinancialPolicy().payment.IPD },
+      EMERGENCY: { type: paymentModeSchema, default: () => buildDefaultFinancialPolicy().payment.EMERGENCY }
     },
     discount: {
-      enabled: { type: Boolean, default: true },
-      defaultType: { type: String, enum: ['percentage', 'fixed'], default: 'percentage' },
-      defaultValue: { type: Number, min: 0, default: 0 },
-      maxPercentage: { type: Number, min: 0, max: 100, default: 0 },
-      maxFixedAmount: { type: Number, min: 0, default: 0 },
-      registrarMaxPercentage: { type: Number, min: 0, max: 100, default: 0 },
-      financeMaxPercentage: { type: Number, min: 0, max: 100, default: 0 },
-      requireReasonAbove: { type: Number, min: 0, default: 0 },
-      allowFixed: { type: Boolean, default: true },
-      allowPercentage: { type: Boolean, default: true }
+      enabled: { type: Boolean, default: () => buildDefaultFinancialPolicy().discount.enabled },
+      defaultType: { type: String, enum: ['percentage', 'fixed'], default: () => buildDefaultFinancialPolicy().discount.defaultType },
+      defaultValue: { type: Number, min: 0, default: () => buildDefaultFinancialPolicy().discount.defaultValue },
+      maxPercentage: { type: Number, min: 0, max: 100, default: () => buildDefaultFinancialPolicy().discount.maxPercentage },
+      maxFixedAmount: { type: Number, min: 0, default: () => buildDefaultFinancialPolicy().discount.maxFixedAmount },
+      registrarMaxPercentage: { type: Number, min: 0, max: 100, default: () => buildDefaultFinancialPolicy().discount.registrarMaxPercentage },
+      financeMaxPercentage: { type: Number, min: 0, max: 100, default: () => buildDefaultFinancialPolicy().discount.financeMaxPercentage },
+      requireReasonAbove: { type: Number, min: 0, default: () => buildDefaultFinancialPolicy().discount.requireReasonAbove },
+      allowFixed: { type: Boolean, default: () => buildDefaultFinancialPolicy().discount.allowFixed },
+      allowPercentage: { type: Boolean, default: () => buildDefaultFinancialPolicy().discount.allowPercentage }
     },
     tax: {
-      enabled: { type: Boolean, default: true },
-      mode: { type: String, enum: ['exclusive', 'inclusive', 'exempt'], default: 'exempt' },
-      name: { type: String, trim: true, default: 'Healthcare exempt' },
-      code: { type: String, trim: true, default: '' },
-      defaultRate: { type: Number, min: 0, max: 100, default: 0 },
-      minRate: { type: Number, min: 0, max: 100, default: 0 },
-      maxRate: { type: Number, min: 0, max: 100, default: 0 },
-      exemptionReason: { type: String, trim: true, default: 'Configured hospital healthcare tax policy' }
+      enabled: { type: Boolean, default: () => buildDefaultFinancialPolicy().tax.enabled },
+      mode: { type: String, enum: ['exclusive', 'inclusive', 'exempt'], default: () => buildDefaultFinancialPolicy().tax.mode },
+      name: { type: String, trim: true, default: () => buildDefaultFinancialPolicy().tax.name },
+      code: { type: String, trim: true, default: () => buildDefaultFinancialPolicy().tax.code },
+      defaultRate: { type: Number, min: 0, max: 100, default: () => buildDefaultFinancialPolicy().tax.defaultRate },
+      minRate: { type: Number, min: 0, max: 100, default: () => buildDefaultFinancialPolicy().tax.minRate },
+      maxRate: { type: Number, min: 0, max: 100, default: () => buildDefaultFinancialPolicy().tax.maxRate },
+      exemptionReason: { type: String, trim: true, default: () => buildDefaultFinancialPolicy().tax.exemptionReason }
     },
-    rules: { type: [financialPolicyRuleSchema], default: [] }
+    rules: { type: [financialPolicyRuleSchema], default: () => buildDefaultFinancialPolicy().rules }
   },
   dischargePolicy: {
     pendingInvestigations: {

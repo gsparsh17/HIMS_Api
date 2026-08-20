@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const NabhSetting = require('../models/NabhSetting');
 const { money } = require('../utils/financeNumbers');
 const { _hasActionPermission, hasFeatureAccess } = require('../middlewares/auth');
+const { mergeFinancialPolicyWithDefaults } = require('../config/defaultFinancialPolicy');
 
 const MODES = Object.freeze([
   'FULL_PREPAY',
@@ -90,19 +91,13 @@ function mergeDefined(base, override) {
 
 async function loadFinancialPolicy(hospitalId) {
   const setting = await NabhSetting.findOne({ hospitalId }).lean();
-  const policy = setting?.financialPolicy || {};
-  // Preserve safe hybrid defaults even before an admin opens the new settings UI.
+  // Legacy hospitals created before the policy template existed receive the
+  // same recommended baseline in-memory until an admin explicitly saves it.
+  // Existing custom rules are preserved by mergeFinancialPolicyWithDefaults.
+  const policy = mergeFinancialPolicyWithDefaults(setting?.financialPolicy || {});
   return {
-    settingsVersion: Number(setting?.version || 0),
-    enabled: policy.enabled !== false,
-    payment: {
-      OPD: mergeDefined({ allowedModes: ['FULL_PREPAY', 'POSTPAID'], defaultMode: 'FULL_PREPAY', partial: { type: 'PERCENTAGE', percentage: 30 } }, policy.payment?.OPD),
-      IPD: mergeDefined({ allowedModes: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID'], defaultMode: 'POSTPAID', partial: { type: 'PERCENTAGE', percentage: 30 } }, policy.payment?.IPD),
-      EMERGENCY: mergeDefined({ allowedModes: ['POSTPAID', 'AUTHORIZED_EXCEPTION'], defaultMode: 'POSTPAID', partial: { type: 'PERCENTAGE', percentage: 0 } }, policy.payment?.EMERGENCY)
-    },
-    discount: mergeDefined({ enabled: true, defaultType: 'percentage', defaultValue: 0, maxPercentage: 0, maxFixedAmount: 0, registrarMaxPercentage: 0, financeMaxPercentage: 0, requireReasonAbove: 0, allowFixed: true, allowPercentage: true }, policy.discount),
-    tax: mergeDefined({ enabled: true, mode: 'exempt', name: 'Healthcare exempt', code: '', defaultRate: 0, minRate: 0, maxRate: 0, exemptionReason: 'Configured hospital healthcare tax policy' }, policy.tax),
-    rules: Array.isArray(policy.rules) ? policy.rules : []
+    ...policy,
+    settingsVersion: Number(setting?.version || 0)
   };
 }
 
@@ -321,6 +316,15 @@ async function resolveFinancialPolicy({
   const mergedPayment = mergeDefined(basePayment, rule ? { allowedModes: rule.allowedModes?.length ? rule.allowedModes : undefined, defaultMode: rule.defaultMode, partial: rule.partial } : {});
   let allowedModes = uniqueModes(mergedPayment.allowedModes);
   if (!allowedModes.length) allowedModes = context.encounterType === 'IPD' ? ['POSTPAID'] : ['FULL_PREPAY'];
+
+  // TPA/SPONSOR is only a meaningful normal choice when payer/coverage context
+  // indicates a sponsored encounter. Keeping it out of a SELF/CASH response
+  // prevents a cashier from selecting a sponsor workflow with no sponsor.
+  const payerCategoryNormalized = upper(context.payerCategory || 'SELF');
+  const sponsoredContext = Number(sponsorLiability || 0) > 0
+    || !['', 'SELF', 'CASH', 'PATIENT'].includes(payerCategoryNormalized);
+  if (!sponsoredContext) allowedModes = allowedModes.filter((mode) => mode !== 'TPA_SPONSOR');
+
   let defaultMode = upper(mergedPayment.defaultMode);
   if (!allowedModes.includes(defaultMode)) defaultMode = allowedModes[0];
   const explicitSelection = clean(selectedMode) ? upper(selectedMode) : '';
@@ -359,13 +363,22 @@ async function resolveFinancialPolicy({
   const partial = normalizePartial(mergedPayment.partial);
   const requiredNow = calculateRequiredNow(effectiveMode, amountPolicy.patientLiability, partial, requestedDeposit);
   let clearanceState = CLEARANCE_BY_MODE[effectiveMode] || 'PAYMENT_REQUIRED';
-  if (effectiveMode === 'TPA_SPONSOR' && amountPolicy.sponsorLiability <= 0 && amountPolicy.patientLiability > 0) clearanceState = 'PAYMENT_REQUIRED';
-  if (requiredNow <= 0 && clearanceState === 'PAYMENT_REQUIRED') clearanceState = 'CLEARED';
+  if (effectiveMode === 'TPA_SPONSOR' && !sponsoredContext) {
+    clearanceState = 'AUTHORIZATION_REQUIRED';
+  } else if (effectiveMode === 'TPA_SPONSOR' && amountPolicy.sponsorLiability <= 0) {
+    // A sponsored payer may still be waiting for eligibility/pre-authorisation
+    // or allocation. Zero sponsor liability is never auto-converted to CLEARED.
+    clearanceState = 'TPA_PENDING';
+  }
+  if (requiredNow <= 0 && clearanceState === 'PAYMENT_REQUIRED' && amountPolicy.patientLiability <= 0) clearanceState = 'CLEARED';
   const overrideAt = new Date();
   const policySnapshot = {
     settingsVersion: policy.settingsVersion,
+    policyTemplateVersion: Number(policy.templateVersion || 0),
+    policyTemplateName: clean(policy.templateName),
     context,
     matchedRuleId: rule?._id || null,
+    matchedRuleKey: clean(rule?.templateKey),
     allowedModes,
     defaultMode,
     selectedMode: effectiveMode,

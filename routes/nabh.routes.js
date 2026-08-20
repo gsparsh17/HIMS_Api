@@ -24,6 +24,7 @@ router.get('/coverage', view, asyncRoute(controller.getCoverage));
 router.get('/dashboard', view, asyncRoute(controller.dashboard));
 router.get('/master-data', view, asyncRoute(controller.masterData));
 
+router.get('/settings/financial-policy/options', settingsView, asyncRoute(controller.getFinancialPolicyOptions));
 router.get('/settings', settingsView, asyncRoute(controller.getSettings));
 router.put(
   '/settings',

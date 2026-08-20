@@ -1,6 +1,7 @@
 'use strict';
 
 const NabhSetting = require('../models/NabhSetting');
+const { buildDefaultFinancialPolicy } = require('../config/defaultFinancialPolicy');
 
 async function getOrCreateNabhSetting(hospitalId, userId, { includeSecrets = false } = {}) {
   const buildQuery = () => {
@@ -14,7 +15,7 @@ async function getOrCreateNabhSetting(hospitalId, userId, { includeSecrets = fal
   let setting = await buildQuery();
   if (!setting) {
     try {
-      setting = await NabhSetting.create({ hospitalId, updatedBy: userId });
+      setting = await NabhSetting.create({ hospitalId, updatedBy: userId, financialPolicy: buildDefaultFinancialPolicy() });
     } catch (error) {
       // Concurrent first requests can both observe a missing settings document.
       // The unique hospital index decides the winner; the loser should simply
