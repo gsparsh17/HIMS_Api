@@ -16,16 +16,19 @@ const asyncRoute = (handler) => (req, res, next) => {
 
 const view = requireModuleAccess('mis', 'view');
 const manage = requireModuleAccess('mis', 'manage');
+const settingsView = requireModuleAccess('masters_settings', 'view');
+const settingsManage = requireModuleAccess('masters_settings', 'manage');
 const clinicalManage = requireModuleAccess('opd', 'manage');
 
 router.get('/coverage', view, asyncRoute(controller.getCoverage));
 router.get('/dashboard', view, asyncRoute(controller.dashboard));
 router.get('/master-data', view, asyncRoute(controller.masterData));
 
-router.get('/settings', view, asyncRoute(controller.getSettings));
+router.get('/settings', settingsView, asyncRoute(controller.getSettings));
 router.put(
   '/settings',
   authorize('admin', 'mediqliq_super_admin'),
+  settingsManage,
   asyncRoute(controller.updateSettings)
 );
 

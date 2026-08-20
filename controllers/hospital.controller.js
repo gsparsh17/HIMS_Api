@@ -6,7 +6,7 @@ const fs = require('fs');
 
 const HOSPITAL_PROFILE_FIELDS = new Set([
   'registryNo', 'hospitalName', 'logo', 'companyName', 'licenseNumber', 'name',
-  'address', 'contact', 'pinCode', 'city', 'state', 'email', 'fireNOC',
+  'address', 'contact', 'pinCode', 'city', 'state', 'timezone', 'email', 'fireNOC',
   'policyDetails', 'healthBima', 'additionalInfo', 'vitalsEnabled', 'vitalsController'
 ]);
 
