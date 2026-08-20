@@ -148,12 +148,15 @@ const ipdRoundSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
+    // Client/business idempotency key. Frontend keeps this stable across retry.
+    idempotencyKey: { type: String, trim: true },
   },
   { timestamps: true }
 );
 
 ipdRoundSchema.index({ hospitalId: 1, admissionId: 1, roundDateTime: -1 });
 ipdRoundSchema.index({ doctorId: 1, roundDateTime: -1 });
+ipdRoundSchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, sparse: true });
 
 addSoftDeleteFields(ipdRoundSchema);
 

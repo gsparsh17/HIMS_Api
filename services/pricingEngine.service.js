@@ -56,13 +56,54 @@ async function findItem({
   externalCode,
   internalServiceModel,
   internalServiceId,
+  serviceType,
+  doctorId,
+  encounterType,
+  visitType,
+  wardEntitlement,
 }) {
-  const match = {
-    hospitalId,
-    rateCardId,
-    active: true,
-  };
+  const base = { hospitalId, rateCardId, active: true };
 
+  // Clinician tariffs are a first-class rate-card dimension. Prefer the most
+  // specific doctor/encounter/visit/ward match and gracefully fall back to
+  // ANY dimensions. This is deliberately separate from Doctor.amount payroll.
+  if (doctorId) {
+    const ctx = {
+      ...base,
+      serviceType: serviceType || 'consultation',
+      'clinicianContext.doctorId': doctorId,
+      'clinicianContext.encounterType': { $in: [String(encounterType || 'ANY').toUpperCase(), 'ANY'] },
+      'clinicianContext.visitType': { $in: [String(visitType || 'ANY').toUpperCase(), 'ANY'] },
+      'clinicianContext.wardEntitlement': { $in: [String(wardEntitlement || 'ANY') === 'ANY' ? 'ANY' : String(wardEntitlement).toLowerCase(), 'ANY'] },
+    };
+    if (externalCode) ctx.externalCode = String(externalCode).toUpperCase();
+
+    const candidates = await RateCardItem.find(ctx).lean();
+    if (candidates.length) {
+      const wantedEncounter = String(encounterType || 'ANY').toUpperCase();
+      const wantedVisit = String(visitType || 'ANY').toUpperCase();
+      const wantedWard = String(wardEntitlement || 'ANY') === 'ANY' ? 'ANY' : String(wardEntitlement).toLowerCase();
+      const score = (row) => {
+        const c = row.clinicianContext || {};
+        return (String(c.encounterType || 'ANY') === wantedEncounter ? 4 : 0)
+          + (String(c.visitType || 'ANY') === wantedVisit ? 2 : 0)
+          + (String(c.wardEntitlement || 'ANY') === wantedWard ? 1 : 0);
+      };
+      candidates.sort((a, b) => score(b) - score(a));
+      return candidates[0];
+    }
+  }
+
+  const match = { ...base };
+  // A generic fallback must never accidentally pick a clinician-specific row
+  // belonging to another doctor. Legacy/general rows either have no doctorId
+  // or an explicitly null doctorId.
+  if (doctorId) {
+    match.$or = [
+      { 'clinicianContext.doctorId': { $exists: false } },
+      { 'clinicianContext.doctorId': null },
+    ];
+  }
   if (externalCode) {
     match.externalCode = String(externalCode).toUpperCase();
   } else if (internalServiceModel && internalServiceId) {
@@ -443,6 +484,11 @@ async function selfTariffQuote(input, standardUnit, quantity, serviceDate) {
     externalCode: input.externalCode || input.payerServiceCode,
     internalServiceModel: input.internalServiceModel,
     internalServiceId: input.internalServiceId,
+    serviceType: input.serviceType || serviceTypeFromCharge(input.chargeType),
+    doctorId: input.doctorId,
+    encounterType: input.encounterType,
+    visitType: input.visitType,
+    wardEntitlement: input.wardEntitlement,
   });
 
   if (!item) {
@@ -670,6 +716,11 @@ async function quotePricing(input) {
     externalCode: input.externalCode || input.payerServiceCode,
     internalServiceModel: input.internalServiceModel,
     internalServiceId: input.internalServiceId,
+    serviceType: input.serviceType || serviceTypeFromCharge(input.chargeType),
+    doctorId: input.doctorId,
+    encounterType: input.encounterType,
+    visitType: input.visitType,
+    wardEntitlement: input.wardEntitlement,
   });
 
   if (!item) {

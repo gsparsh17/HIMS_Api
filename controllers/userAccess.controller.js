@@ -45,6 +45,16 @@ const ALLOWED_ACTIONS = new Set([
   'billing_delete_charge',
   'billing_apply_discount',
   'billing_finalize',
+  'billing_mode_override',
+  'tax_override',
+  'ipd_admission_manage',
+  'ipd_round_write',
+  'ipd_clinical_write',
+  'ipd_nursing_write',
+  'ipd_medication_write',
+  'ipd_discharge_write',
+  'ipd_discharge_support',
+  'ipd_discharge_override',
   'pharmacy_finance_access'
 ]);
 

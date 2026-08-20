@@ -25,6 +25,7 @@ const { finaliseDiagnosticReport } = require('../services/diagnosticReport.servi
 const { assertPatientReadyForContext } = require('../services/patientRegistration.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
+const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
 
 // Configure Cloudinary
 
@@ -615,12 +616,31 @@ exports.createLabRequest = async (req, res) => {
       }
     });
 
+    // Automatic source finance for LabRequest: creating the clinical request creates/reuses
+    // the authoritative obligation. Pricing/clearance failures do not delete the clinical
+    // order; the request remains PENDING_CHARGE and can be resumed from Front Desk/Finance.
+    let financial = null;
+    let financialWarning = null;
+    if ((request.sourceType === 'IPD' && request.admissionId) || (request.sourceType === 'OPD' && request.appointmentId)) {
+      try {
+        financial = await postSourceCharge({
+          sourceModule: 'LabRequest',
+          sourceId: request._id,
+          idempotencyKey: `LabRequest:${request._id}:charge`,
+          user: req.user
+        });
+      } catch (financeError) {
+        financialWarning = { code: financeError.code || 'SOURCE_FINANCE_PENDING', message: financeError.message };
+        console.warn('LabRequest automatic source-finance pending:', financeError.message);
+      }
+    }
+
     const populated = await LabRequest.findOne({ _id: request._id, hospitalId })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
       .populate('labTestId', 'code name category report_template_id report_template_name report_template_version');
 
-    return res.status(201).json({ success: true, data: populated });
+    return res.status(201).json({ success: true, data: populated, financial: financial ? { chargeId: financial.charge?._id || null, billId: financial.bill?._id || null, invoiceId: financial.invoice?._id || null, financialPolicy: financial.financialPolicy || null } : null, financialWarning });
   } catch (error) {
     console.error('Error creating lab request:', error);
     const status = ['ValidationError', 'CastError'].includes(error?.name)
@@ -710,6 +730,9 @@ exports.updateRequestStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, notes } = req.body;
+    if (status === 'Cancelled' && !String(notes || '').trim()) {
+      return res.status(400).json({ error: 'Cancellation reason is required so the financial reversal is auditable' });
+    }
     const staffId = req.user?.labStaffId;
 
     const request = await LabRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
@@ -745,7 +768,18 @@ exports.updateRequestStatus = async (req, res) => {
 
     await request.save();
 
-    res.json({ success: true, message: `Request status updated to ${status}`, data: request });
+    let financialReversal = null;
+    let financialWarning = null;
+    if (status === 'Cancelled') {
+      try {
+        financialReversal = await reverseSourceFinancials({ sourceModule: 'LabRequest', sourceId: request._id, reason: notes, user: req.user });
+      } catch (financeError) {
+        financialWarning = financeError.message;
+        console.warn('LabRequest cancellation financial reversal pending:', financeError.message);
+      }
+    }
+
+    res.json({ success: true, message: `Request status updated to ${status}`, data: request, financialReversal, financialWarning });
   } catch (error) {
     console.error('Error updating request status:', error);
     res.status(500).json({ error: error.message });

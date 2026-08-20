@@ -13,6 +13,8 @@ const fs = require('fs');
 const mongoose = require('mongoose');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
+const { postSourceCharge, getSourceFinancialStatus } = require('../services/chargePosting.service');
+const ipdFinancial = require('../services/ipdFinancial.service');
 
 // Configure Cloudinary
 
@@ -102,107 +104,64 @@ exports.createOTRequest = async (req, res) => {
 // NEW: Process payment for OT request (like lab tests and procedures)
 exports.processOTPayment = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const { id } = req.params;
     const { payment_method, amount, reference, notes } = req.body;
+    const request = await OTRequest.findOne({ _id: id, hospitalId });
+    if (!request) return res.status(404).json({ error: 'OT request not found' });
+    if (['Completed', 'Cancelled'].includes(request.status)) return res.status(409).json({ error: `Cannot settle an OT request in ${request.status} status` });
 
-    const request = await OTRequest.findById(id)
-      .populate('patientId', 'first_name last_name patientId phone');
-
-    if (!request) {
-      return res.status(404).json({ error: 'OT request not found' });
-    }
-
-    if (request.status === 'Completed') {
-      return res.status(400).json({ error: 'Completed surgeries cannot be billed' });
-    }
-
-    if (request.is_billed) {
-      return res.status(409).json({ error: 'OT request already has a bill' });
-    }
-
-    const paymentAmount = amount || request.total_cost;
-    const finalStatus = paymentAmount >= request.total_cost ? 'Paid' : 'Generated';
-
-    // Create bill items
-    const billItems = [{
-      description: `${request.procedureCode} - ${request.procedureName}`,
-      amount: request.total_cost,
-      quantity: 1,
-      item_type: 'Procedure',
-      procedure_code: request.procedureCode,
-      procedure_id: request._id,
-      prescription_id: null,
-      admission_id: request.admissionId
-    }];
-
-    // Call billing controller to create bill
-    const billingController = await getBillingController();
-
-    // Create a mock request object for billing controller
-    const mockReq = {
-      body: {
-        patient_id: request.patientId,
-        admission_id: request.admissionId,
-        items: billItems,
-        total_amount: request.total_cost,
-        subtotal: request.total_cost,
-        payment_method: payment_method,
-        status: finalStatus,
-        notes: notes || `OT Procedure: ${request.procedureName} - ${request.requestNumber}`
+    // Ensure the canonical source obligation/invoice exists. Browser amount is
+    // settlement only; it never becomes the OT tariff.
+    await postSourceCharge({
+      sourceModule: 'OTRequest', sourceId: request._id,
+      selectedMode: req.body.selectedMode, requestedDeposit: req.body.requestedDeposit,
+      adjustments: {
+        discountType: req.body.discountType, discountRate: req.body.discountRate, discountAmount: req.body.discountAmount,
+        discountValue: req.body.discountValue, discountReason: req.body.discountReason, taxMode: req.body.taxMode,
+        taxRate: req.body.taxRate, taxReason: req.body.taxReason
       },
-      user: req.user
-    };
-
-    const mockRes = {
-      status: function (code) { this.statusCode = code; return this; },
-      json: function (data) { this.data = data; return this; }
-    };
-
-    await billingController.createBill(mockReq, mockRes);
-
-    if (mockRes.data && mockRes.data.success) {
-      const bill = mockRes.data.bill;
-      const invoice = mockRes.data.invoice;
-
-      // Update OT request with billing info
-      request.is_billed = true;
-      request.billId = bill._id;
-      request.invoiceId = invoice?._id;
-      request.paidAmount = finalStatus === 'Paid' ? request.total_cost : paymentAmount;
-      request.dueAmount = request.total_cost - request.paidAmount;
-      request.paymentStatus = finalStatus === 'Paid' ? 'Completed' : 'Partial';
-      request.paymentReceivedAt = operationNow();
-      request.paymentReceivedBy = req.user?._id;
-
-      // Update status to move forward
-      if (finalStatus === 'Paid') {
-        request.status = 'Payment Received';
-      } else {
-        request.status = 'Payment Pending';
-      }
-
-      await request.save();
-
-      res.json({
-        success: true,
-        message: `Payment processed successfully. OT request is now ${request.status}.`,
-        bill: bill,
-        invoice: invoice,
-        request: {
-          id: request._id,
-          requestNumber: request.requestNumber,
-          status: request.status,
-          paymentStatus: request.paymentStatus,
-          paidAmount: request.paidAmount,
-          dueAmount: request.dueAmount
-        }
-      });
-    } else {
-      throw new Error(mockRes.data?.error || 'Failed to create bill');
+      overrideReason: req.body.overrideReason, idempotencyKey: `OTRequest:${request._id}:charge`, user: req.user
+    });
+    let status = await getSourceFinancialStatus({ sourceModule: 'OTRequest', sourceId: request._id, user: req.user });
+    const requestedPayment = Number(amount || 0);
+    if (requestedPayment > 0) {
+      const invoice = status.invoices.find((row) => Number(row.balance_due || 0) > 0);
+      if (!invoice) return res.status(409).json({ error: 'No payable OT invoice exists for this request', clearanceState: status.clearanceState });
+      await ipdFinancial.recordIPDPayment(request.admissionId, {
+        invoiceId: invoice._id, amount: requestedPayment, paymentMethod: payment_method || 'Cash',
+        reference, notes, sourceModule: 'OTRequest',
+        idempotencyKey: req.body.idempotencyKey || req.get('Idempotency-Key') || `OTRequest:${request._id}:payment:${invoice._id}`
+      }, req.user);
+      status = await getSourceFinancialStatus({ sourceModule: 'OTRequest', sourceId: request._id, user: req.user });
     }
+
+    request.is_billed = Boolean(status.charge || status.bill || status.invoices.length);
+    request.billId = status.bill?._id || request.billId;
+    request.invoiceId = status.invoices[0]?._id || request.invoiceId;
+    request.total_cost = Number((Number(status.charge?.patientLiability || 0) + Number(status.charge?.sponsorLiability || 0)).toFixed(2));
+    request.paidAmount = Number(status.paidNow || 0);
+    request.dueAmount = Number(Math.max(0, request.total_cost - request.paidAmount).toFixed(2));
+    request.selectedBillingMode = status.selectedMode;
+    request.requiredNowAmount = status.requiredNow;
+    request.financialClearanceState = status.clearanceState;
+    request.billingClosureStatus = ['CLEARED', 'POSTPAID_ALLOWED'].includes(status.clearanceState) ? 'Cleared'
+      : (status.clearanceState === 'EXCEPTION_APPROVED' ? 'Exception Approved' : 'Pending');
+    if (['CLEARED', 'POSTPAID_ALLOWED', 'EXCEPTION_APPROVED'].includes(status.clearanceState) && ['Requested', 'Payment Pending', 'Readiness Pending'].includes(request.status)) {
+      request.status = 'Approved';
+    } else if (status.clearanceState === 'PAYMENT_REQUIRED') {
+      request.status = 'Payment Pending';
+    }
+    if (requestedPayment > 0) { request.paymentReceivedAt = operationNow(); request.paymentReceivedBy = req.user?._id; }
+    await request.save();
+
+    return res.json({
+      success: true, message: requestedPayment > 0 ? 'OT settlement recorded against the canonical invoice' : 'OT financial clearance refreshed',
+      request, financial: status
+    });
   } catch (error) {
-    console.error('Error processing OT payment:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error processing OT financial clearance:', error);
+    res.status(error.statusCode || 500).json({ error: error.message, code: error.code, details: error.details });
   }
 };
 
@@ -379,12 +338,12 @@ exports.assignOTRoom = async (req, res) => {
       return res.status(404).json({ error: 'OT request not found' });
     }
 
-    // Check if payment is completed before scheduling
-    if (request.paymentStatus !== 'Completed') {
-      return res.status(400).json({
-        error: 'Payment must be completed before scheduling. Please process payment first.',
-        paymentStatus: request.paymentStatus,
-        dueAmount: request.dueAmount
+    // Scheduling is governed by server-computed financial clearance, not Paid status.
+    if (!['CLEARED', 'POSTPAID_ALLOWED', 'EXCEPTION_APPROVED'].includes(request.financialClearanceState)) {
+      return res.status(409).json({
+        error: 'Financial clearance is not satisfied for scheduling',
+        financialClearanceState: request.financialClearanceState,
+        requiredNow: request.requiredNowAmount
       });
     }
 
@@ -475,10 +434,8 @@ exports.startSurgery = async (req, res) => {
       return res.status(404).json({ error: 'OT request not found' });
     }
 
-    if (request.paymentStatus !== 'Completed') {
-      return res.status(400).json({
-        error: 'Payment must be completed before starting surgery'
-      });
+    if (!['CLEARED', 'POSTPAID_ALLOWED', 'EXCEPTION_APPROVED'].includes(request.financialClearanceState)) {
+      return res.status(409).json({ error: 'Financial clearance is required before starting surgery', financialClearanceState: request.financialClearanceState });
     }
 
     if (request.status !== 'Scheduled') {

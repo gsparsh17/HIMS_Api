@@ -15,6 +15,15 @@ function sourceBillingFields(mongoose) {
     billIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Bill' }],
     invoiceIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' }],
     pricingSnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+    financialPolicySnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+    selectedBillingMode: { type: String, enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'] },
+    requiredNowAmount: { type: Number, default: 0, min: 0 },
+    financialClearanceState: {
+      type: String,
+      enum: ['CLEARED', 'PAYMENT_REQUIRED', 'POSTPAID_ALLOWED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'EXCEPTION_APPROVED', 'HOLD'],
+      default: 'PAYMENT_REQUIRED',
+      index: true
+    },
     billingHistory: [{
       from: String, to: String, action: String,
       documentId: mongoose.Schema.Types.ObjectId,

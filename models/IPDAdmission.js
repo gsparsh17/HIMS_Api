@@ -126,6 +126,12 @@ const ipdAdmissionSchema = new mongoose.Schema({
     mobile: { type: String, trim: true },
     address: { type: String, trim: true }
   },
+  selectedBillingMode: {
+    type: String,
+    enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION']
+  },
+  financialPolicySnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  requiredNowAmount: { type: Number, default: 0, min: 0 },
   paymentType: {
     type: String,
     enum: ['Cash', 'Insurance', 'Government Scheme', 'Corporate', 'Other'],
@@ -191,6 +197,23 @@ const ipdAdmissionSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  // Canonical discharge outcome used by clinical summaries and final finance documents.
+  // Historical status values (DAMA/Expired/etc.) remain readable through controller
+  // normalization but new writes use this stable vocabulary.
+  dischargeType: {
+    type: String,
+    enum: ['Normal', 'DOR', 'LAMA', 'Referred', 'Death'],
+    default: 'Normal',
+    index: true
+  },
+  deathDetails: {
+    chiefComplaints: { type: String, trim: true },
+    causeOfDeath: { type: String, trim: true },
+    summary: { type: String, trim: true },
+    deathDate: Date,
+    deathTime: { type: String, trim: true },
+    deathAt: Date
+  },
   isLAMA: {
     type: Boolean,
     default: false
@@ -201,6 +224,12 @@ const ipdAdmissionSchema = new mongoose.Schema({
     enum: ['PLANNED', 'LAMA', 'DAMA', 'DISAPPEARED', 'TRANSFER', 'OTHER']
   },
   plannedDischargeReason: { type: String, trim: true },
+  dischargeClinicalException: {
+    reason: { type: String, trim: true },
+    categories: [{ type: String, enum: ['LAB_PENDING', 'RADIOLOGY_PENDING', 'MEDICATION_PENDING', 'OTHER'] }],
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approvedAt: Date
+  },
   dischargeChecklist: {
     checkpoints: [{
       key: { type: String, required: true },

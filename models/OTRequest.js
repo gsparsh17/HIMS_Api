@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { operationNow } = require('../utils/operationTimeContext');
+const { sourceBillingFields } = require('../utils/billingLifecycle');
 
 const otRequestSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
@@ -22,6 +23,7 @@ const otRequestSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  idempotencyKey: { type: String, trim: true, index: true },
   
   // Source References
   admissionId: {
@@ -228,7 +230,11 @@ const otRequestSchema = new mongoose.Schema({
     uploaded_at: Date
   }],
   
-  // Billing
+  // Canonical source-finance lifecycle. Legacy total/payment fields below are
+  // maintained as compatibility projections only; they are never tariff authority.
+  ...sourceBillingFields(mongoose),
+
+  // Billing compatibility projection
   estimated_cost: { type: Number, default: 0 },
   total_cost: { type: Number, default: 0 },
   is_billed: { type: Boolean, default: false },
@@ -242,9 +248,12 @@ otRequestSchema.pre('save', function(next) {
   this.paidAmount = Math.max(0, Number(this.paidAmount || 0));
   this.dueAmount = Math.max(0, this.total_cost - this.paidAmount);
 
-  // Zero-value/insured cases may be explicitly marked as not requiring payment.
-  if (this.paymentStatus === 'Not Required' && this.total_cost === 0) return next();
-  if (this.paidAmount >= this.total_cost && this.total_cost > 0) {
+  // Compatibility status is derived from canonical clearance/payment state.
+  // POSTPAID/TPA/approved exception are valid workflows without fabricating a
+  // paid result. Only actual settlement reaches Completed.
+  if (this.financialClearanceState === 'POSTPAID_ALLOWED' || this.financialClearanceState === 'EXCEPTION_APPROVED') {
+    this.paymentStatus = 'Not Required';
+  } else if (this.paidAmount >= this.total_cost && this.total_cost > 0) {
     this.paymentStatus = 'Completed';
   } else if (this.paidAmount > 0) {
     this.paymentStatus = 'Partial';
@@ -256,6 +265,8 @@ otRequestSchema.pre('save', function(next) {
 });
 
 // Generate request number
+otRequestSchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } });
+
 otRequestSchema.pre('validate', async function(next) {
   try {
     if (this.isNew && !this.requestNumber) {

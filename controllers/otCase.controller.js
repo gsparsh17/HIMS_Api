@@ -12,6 +12,8 @@ const OTRecoveryRecord = require('../models/OTRecoveryRecord');
 const OTCaseInventoryUsage = require('../models/OTCaseInventoryUsage');
 const OTSpecimen = require('../models/OTSpecimen');
 const IPDAdmission = require('../models/IPDAdmission');
+const Procedure = require('../models/Procedure');
+const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
 const Room = require('../models/Room');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { transitionDocument, transitionError } = require('../services/workflowTransition.service');
@@ -142,33 +144,86 @@ async function getOrCreateSafety(otCase) {
 exports.createCase = async (req, res, next) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const admission = await IPDAdmission.findById(req.body.admissionId);
+    const admission = await IPDAdmission.findOne({ _id: req.body.admissionId, hospitalId });
     if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
     if (['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'].includes(admission.status)) return res.status(400).json({ error: `Cannot create OT case: IPD admission status is ${admission.status}` });
     const patientId = req.body.patientId || admission.patientId;
     if (String(patientId) !== String(admission.patientId)) return res.status(400).json({ error: 'Patient does not match admission' });
+
+    const idempotencyKey = String(req.body.idempotencyKey || req.get('Idempotency-Key') || '').trim();
+    if (idempotencyKey) {
+      const existing = await OTRequest.findOne({ hospitalId, idempotencyKey });
+      if (existing) {
+        const financial = await postSourceCharge({
+          sourceModule: 'OTRequest', sourceId: existing._id, selectedMode: req.body.selectedMode, requestedDeposit: req.body.requestedDeposit,
+          adjustments: {
+            discountType: req.body.discountType, discountRate: req.body.discountRate, discountAmount: req.body.discountAmount,
+            discountValue: req.body.discountValue, discountReason: req.body.discountReason, taxMode: req.body.taxMode,
+            taxRate: req.body.taxRate, taxReason: req.body.taxReason
+          },
+          overrideReason: req.body.overrideReason, idempotencyKey: `OTRequest:${existing._id}:charge`, user: req.user
+        });
+        const populatedExisting = await casePopulate(OTRequest.findById(existing._id));
+        return res.json({ success: true, reused: true, message: 'Existing OT case resumed', data: populatedExisting, financial });
+      }
+    }
+
+    let procedure = null;
+    if (req.body.procedureId) procedure = await Procedure.findOne({ _id: req.body.procedureId, hospitalId, is_active: { $ne: false } });
+    if (!procedure && req.body.procedureCode) procedure = await Procedure.findOne({ hospitalId, code: String(req.body.procedureCode).trim().toUpperCase(), is_active: { $ne: false } });
+    if (!procedure) {
+      const error = new Error('OT procedure must be mapped to the hospital Procedure master before financial posting');
+      error.statusCode = 409; error.code = 'SOURCE_SERVICE_MASTER_REQUIRED'; throw error;
+    }
+
     const otCase = await OTRequest.create({
       ...req.body,
       hospitalId,
+      idempotencyKey: idempotencyKey || undefined,
       encounterType: 'IPD',
       encounterId: admission._id,
       admissionId: admission._id,
       patientId,
       doctorId: req.body.doctorId || admission.primaryDoctorId,
-      procedureCode: req.body.procedureCode || req.body.procedureName,
-      procedureName: req.body.procedureName,
+      procedureId: procedure._id,
+      procedureCode: procedure.code,
+      procedureName: procedure.name,
+      procedureCategory: procedure.category,
       status: 'Readiness Pending',
       readinessStatus: 'Pending',
-      paymentStatus: req.body.paymentStatus || 'Pending',
-      total_cost: Number(req.body.total_cost || req.body.estimated_cost || 0),
-      estimated_cost: Number(req.body.estimated_cost || 0),
+      paymentStatus: 'Pending',
+      // Compatibility amount fields are populated from the canonical server quote below.
+      total_cost: 0,
+      estimated_cost: 0,
       createdBy: req.user._id
     });
+
+    const financial = await postSourceCharge({
+      sourceModule: 'OTRequest', sourceId: otCase._id, selectedMode: req.body.selectedMode, requestedDeposit: req.body.requestedDeposit,
+      adjustments: {
+        discountType: req.body.discountType, discountRate: req.body.discountRate, discountAmount: req.body.discountAmount,
+        discountValue: req.body.discountValue, discountReason: req.body.discountReason, taxMode: req.body.taxMode,
+        taxRate: req.body.taxRate, taxReason: req.body.taxReason
+      },
+      overrideReason: req.body.overrideReason, idempotencyKey: `OTRequest:${otCase._id}:charge`, user: req.user
+    });
+    const canonicalTotal = Number(financial?.financialPolicy?.amounts?.totalLiability ?? financial?.charge?.patientLiability ?? 0)
+      + Number(financial?.charge?.sponsorLiability || 0);
+    otCase.total_cost = Number(canonicalTotal.toFixed(2));
+    otCase.estimated_cost = otCase.total_cost;
+    otCase.selectedBillingMode = financial?.financialPolicy?.selectedMode;
+    otCase.requiredNowAmount = Number(financial?.financialPolicy?.requiredNow || 0);
+    otCase.financialClearanceState = financial?.financialPolicy?.clearanceState || 'PAYMENT_REQUIRED';
+    otCase.financialPolicySnapshot = financial?.financialPolicy?.policySnapshot || {};
+    otCase.billingClosureStatus = ['CLEARED', 'POSTPAID_ALLOWED'].includes(otCase.financialClearanceState) ? 'Cleared'
+      : (otCase.financialClearanceState === 'EXCEPTION_APPROVED' ? 'Exception Approved' : 'Pending');
+    await otCase.save();
+
     await getOrCreateReadiness(otCase, req.user._id);
     await getOrCreateSafety(otCase);
-    await appendDomainEvent({ req, eventType: 'ot.case.requested', entityType: 'OTRequest', entityId: otCase._id, hospitalId, patientId, encounterId: admission._id, afterSummary: { requestNumber: otCase.requestNumber, procedureName: otCase.procedureName, status: otCase.status } });
+    await appendDomainEvent({ req, eventType: 'ot.case.requested', entityType: 'OTRequest', entityId: otCase._id, hospitalId, patientId, encounterId: admission._id, afterSummary: { requestNumber: otCase.requestNumber, procedureName: otCase.procedureName, status: otCase.status, financialClearanceState: otCase.financialClearanceState } });
     const populated = await casePopulate(OTRequest.findById(otCase._id));
-    res.status(201).json({ success: true, message: 'OT case created and readiness workflow started', data: populated });
+    res.status(201).json({ success: true, message: 'OT case created with canonical financial obligation and readiness workflow', data: populated, financial });
   } catch (error) { next(error); }
 };
 
@@ -301,7 +356,9 @@ exports.scheduleCase = async (req, res, next) => {
       const otCase = await findCase(req, req.params.id, session);
       if (!['Approved', 'Payment Received', 'Scheduled', 'Postponed'].includes(otCase.status)) throw transitionError(`Case cannot be scheduled while status is ${otCase.status}`);
       if (otCase.readinessStatus === 'Pending' && otCase.urgency !== 'Emergency' && !otCase.emergencyOverride?.enabled) throw transitionError('OT readiness is incomplete');
-      if (booleanEnv('OT_REQUIRE_PAYMENT_BEFORE_SCHEDULE', false) && !['Completed', 'Not Required'].includes(otCase.paymentStatus) && !otCase.emergencyOverride?.enabled) throw transitionError('Payment/payer clearance is required before scheduling');
+      if (!['CLEARED', 'POSTPAID_ALLOWED', 'EXCEPTION_APPROVED'].includes(otCase.financialClearanceState) && !otCase.emergencyOverride?.enabled) {
+        throw transitionError(`Financial clearance is required before scheduling (${otCase.financialClearanceState || 'PAYMENT_REQUIRED'})`);
+      }
       const scheduledStart = parseDateTime(req.body.scheduledStart || req.body.scheduledDate, req.body.scheduledTime);
       if (!scheduledStart || Number.isNaN(scheduledStart.getTime())) throw Object.assign(new Error('Valid schedule start is required'), { statusCode: 400 });
       const duration = Number(req.body.durationMinutes || req.body.estimated_duration_minutes || otCase.estimated_duration_minutes || 60);
@@ -385,7 +442,17 @@ exports.transitionCase = async (req, res, next) => {
     if (['cancel', 'postpone'].includes(action)) await OTSchedule.findOneAndUpdate({ hospitalId: otCase.hospitalId, requestId: otCase._id }, { $set: { status: action === 'cancel' ? 'Cancelled' : 'Rescheduled' } });
     if (action === 'start') await OTSchedule.findOneAndUpdate({ hospitalId: otCase.hospitalId, requestId: otCase._id }, { $set: { status: 'In Progress' } });
     if (['recover', 'close'].includes(action)) await OTSchedule.findOneAndUpdate({ hospitalId: otCase.hospitalId, requestId: otCase._id }, { $set: { status: 'Completed' } });
-    res.json({ success: true, message: `OT case ${action} completed`, data: updated });
+    let financialReversal = null;
+    if (action === 'cancel') {
+      try {
+        financialReversal = await reverseSourceFinancials({ sourceModule: 'OTRequest', sourceId: otCase._id, reason: req.body.reason || 'OT case cancelled', user: req.user });
+      } catch (error) {
+        if (error?.code !== 'FINANCE_REVERSAL_REQUIRED') throw error;
+        financialReversal = { pendingFinanceAction: true, code: error.code, details: error.details };
+        await OTRequest.updateOne({ _id: otCase._id, hospitalId: otCase.hospitalId }, { $set: { billingClosureStatus: 'Pending', financialClearanceState: 'HOLD' } });
+      }
+    }
+    res.json({ success: true, message: `OT case ${action} completed`, data: updated, financialReversal });
   } catch (error) { next(error); }
 };
 

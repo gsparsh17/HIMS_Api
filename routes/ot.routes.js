@@ -8,7 +8,7 @@ const cases = require('../controllers/otCase.controller');
 const clinicalForms = require('../controllers/otClinicalForm.controller');
 const OTStaff = require('../models/OTStaff');
 const OTRequest = require('../models/OTRequest');
-const { protect, authorize } = require('../middlewares/auth');
+const { protect, authorize, requireActionPermission } = require('../middlewares/auth');
 const { requireHospitalId } = require('../services/tenantScope.service');
 
 const router = express.Router();
@@ -85,7 +85,7 @@ router.post('/requests/:id/complete', cases.completeSurgeryLegacy);
 router.patch('/requests/:id/cancel', (req, _res, next) => { req.body.action = 'cancel'; next(); }, cases.transitionCase);
 
 // Existing payment/report/billing adapters retained for compatibility.
-router.post('/requests/:id/payment', ensureCaseTenant, legacy.processOTPayment);
+router.post('/requests/:id/payment', ensureCaseTenant, requireActionPermission('settlement'), legacy.processOTPayment);
 router.post('/requests/:id/upload-report', ensureCaseTenant, upload.single('report'), legacy.uploadSurgeryReport);
 router.get('/requests/:id/download-report', ensureCaseTenant, legacy.downloadSurgeryReport);
 router.post('/requests/:id/transfer-patient', ensureCaseTenant, legacy.transferPatientPostOp);

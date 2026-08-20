@@ -19,6 +19,9 @@ const { userHospitalId } = require('../utils/hospitalScope');
 const { registerPatient, assertPatientReadyForContext } = require('./patientRegistration.service');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('./requestPayerContext.service');
 const { resolveDeclaredCoveragePreference } = require('./patientCoveragePreference.service');
+const { quotePricing } = require('./pricingEngine.service');
+const { resolveFinancialPolicy } = require('./financialPolicy.service');
+const { _hasActionPermission } = require('../middlewares/auth');
 
 const round = value => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 const stableHash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -59,16 +62,87 @@ function normalizeCart(cart, encounterType) {
   });
 }
 
-async function authoritativeCart({ user, cart, encounterType }) {
+async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
   const rows = normalizeCart(cart, encounterType);
   const out = [];
+  const hospitalId = userHospitalId(user);
+  let declaredCoverage = null;
+  if (payload.coverage?.payerId) {
+    declaredCoverage = await resolveDeclaredCoveragePreference({ hospitalId, coverage: payload.coverage });
+  }
+  const simulatedCoverage = declaredCoverage?.payerId ? {
+    _id: declaredCoverage.coverageId || undefined,
+    payerId: declaredCoverage.payer,
+    payerCategory: declaredCoverage.payerCategory,
+    tpaId: declaredCoverage.tpaId,
+    planName: declaredCoverage.planName,
+    beneficiary: declaredCoverage.beneficiary || {},
+    preAuthorisation: declaredCoverage.preAuthorisation || {},
+    eligibility: { status: 'verified' },
+    simulationOnly: true,
+    fallbackPolicy: 'cash_fallback'
+  } : undefined;
+  const encounterContext = normalizeEncounterContext(payload.encounterContext);
 
   for (const row of rows) {
+    const requestedAdjustments = {
+      discountType: row.discountType,
+      discountRate: row.discountRate,
+      discountAmount: row.discountAmount,
+      discountValue: row.discountValue,
+      discountReason: row.discountReason,
+      taxMode: row.taxMode,
+      taxRate: row.taxRate
+    };
     if (!row.masterId || row.serviceType === 'MANUAL') {
-      if (row.serviceType === 'MANUAL' && !String(row.name || '').trim()) {
-        throw checkoutError('Manual service description is required');
+      if (row.serviceType === 'MANUAL') {
+        if (!String(row.name || '').trim()) throw checkoutError('Manual service description is required');
+        if (!_hasActionPermission(user, 'pricing_override')) {
+          throw checkoutError('Manual service pricing requires pricing override permission', 403, 'MANUAL_PRICING_PERMISSION_REQUIRED');
+        }
       }
-      out.push(row);
+      const manualAmount = round(Number(row.rate || 0) * Number(row.quantity || 1));
+      const policy = await resolveFinancialPolicy({
+        hospitalId,
+        user,
+        encounterType,
+        serviceType: row.serviceType || 'MANUAL',
+        serviceCategory: row.category,
+        serviceCode: row.code,
+        payerCategory: declaredCoverage?.payerCategory || 'SELF',
+        departmentId: encounterContext.departmentId,
+        selectedMode: row.selectedMode,
+        requestedDeposit: row.requestedDeposit,
+        patientLiability: manualAmount,
+        sponsorLiability: 0,
+        contractedAmount: manualAmount,
+        adjustments: requestedAdjustments,
+        overrideReason: row.overrideReason
+      });
+      out.push({
+        ...row,
+        rate: row.rate,
+        standardRate: row.rate,
+        gross: manualAmount,
+        standardAmount: manualAmount,
+        contractedAmount: manualAmount,
+        discountAmount: policy.amounts.discountAmount,
+        taxAmount: policy.amounts.taxAmount,
+        netAmount: policy.amounts.netAmount,
+        patientLiability: policy.amounts.patientLiability,
+        sponsorLiability: policy.amounts.sponsorLiability,
+        requiredNow: policy.requiredNow,
+        outstanding: policy.amounts.patientLiability,
+        allowedModes: policy.allowedModes,
+        defaultMode: policy.defaultMode,
+        selectedMode: policy.selectedMode,
+        partialPolicy: policy.partial,
+        clearanceState: policy.clearanceState,
+        financialPolicySnapshot: policy.policySnapshot,
+        policyPermissions: policy.permissions,
+        billingIntent: policy.billingIntent,
+        requestedAdjustments
+      });
       continue;
     }
 
@@ -78,23 +152,104 @@ async function authoritativeCart({ user, cart, encounterType }) {
       encounterType,
       limit: 60
     });
-
     const match = matches.find(item =>
-      String(item.masterId || '') === String(row.masterId) &&
-      item.serviceType === row.serviceType
+      String(item.masterId || '') === String(row.masterId) && item.serviceType === row.serviceType
     );
+    if (!match) throw checkoutError(`Service is inactive or unavailable: ${row.name || row.code}`);
 
-    if (!match) {
-      throw checkoutError(`Service is inactive or unavailable: ${row.name || row.code}`);
+    const serviceTypeMap = { LAB: 'laboratory', RADIOLOGY: 'radiology', PROCEDURE: 'procedure', CONSULTATION: 'consultation', OT: 'ot', NURSING: 'other' };
+    const quote = await quotePricing({
+      hospitalId,
+      admissionId: encounterType === 'IPD' ? payload.admissionId : undefined,
+      appointmentId: encounterType === 'OPD' ? encounterContext.appointmentId : undefined,
+      coverage: simulatedCoverage,
+      serviceDate: operationNow(),
+      chargeType: row.serviceType,
+      serviceType: serviceTypeMap[row.serviceType] || String(row.serviceType || 'other').toLowerCase(),
+      internalServiceModel: match.internalServiceModel,
+      internalServiceId: match.internalServiceId,
+      internalCode: match.code,
+      standardAmount: match.internalServiceId ? undefined : match.defaultRate,
+      quantity: row.quantity
+    });
+    const policy = await resolveFinancialPolicy({
+      hospitalId,
+      user,
+      encounterType,
+      serviceType: row.serviceType,
+      serviceCategory: match.category || row.category,
+      serviceCode: match.code,
+      payerCategory: declaredCoverage?.payerCategory || (quote.inputs?.coverageId ? 'SPONSORED' : 'SELF'),
+      departmentId: encounterContext.departmentId,
+      selectedMode: row.selectedMode,
+      requestedDeposit: row.requestedDeposit,
+      patientLiability: quote.amounts.patientLiability,
+      sponsorLiability: quote.amounts.sponsorLiability,
+      contractedAmount: quote.amounts.contracted,
+      adjustments: requestedAdjustments,
+      overrideReason: row.overrideReason
+    });
+
+    if (['NO_CHARGE', 'EXTERNAL_REFERRAL'].includes(row.billingIntent)) {
+      if (!_hasActionPermission(user, 'pricing_override')) {
+        throw checkoutError(`${row.billingIntent === 'NO_CHARGE' ? 'No-charge treatment' : 'External referral'} requires privileged approval`, 403, 'NON_LIABILITY_PERMISSION_REQUIRED');
+      }
+      if (!String(row.overrideReason || '').trim()) {
+        throw checkoutError('A reason is required for no-charge/external-referral handling', 400, 'NON_LIABILITY_REASON_REQUIRED');
+      }
+    }
+    if (row.billingIntent === 'PACKAGE_INCLUDED' && quote.resultType !== 'package_included' && !_hasActionPermission(user, 'pricing_override')) {
+      throw checkoutError('This service is not included in the active package', 409, 'PACKAGE_NOT_INCLUDED');
     }
 
+    const noLiabilityIntent = ['NO_CHARGE', 'EXTERNAL_REFERRAL'].includes(row.billingIntent)
+      ? row.billingIntent
+      : quote.resultType === 'package_included'
+        ? 'PACKAGE_INCLUDED'
+        : null;
+    const effectiveIntent = noLiabilityIntent || policy.billingIntent;
+    const standardAmount = round(quote.amounts.hospitalStandard);
+    const contractedAmount = round(quote.amounts.contracted);
+    const unitRate = row.quantity ? round(contractedAmount / row.quantity) : contractedAmount;
     out.push({
       ...row,
       name: match.name,
       code: match.code,
-      rate: match.defaultRate,
-      gross: round(row.quantity * match.defaultRate),
-      pricingDifference: round(match.defaultRate - Number(row.rate || 0))
+      category: match.category,
+      internalServiceModel: match.internalServiceModel,
+      internalServiceId: match.internalServiceId,
+      rate: unitRate,
+      standardRate: row.quantity ? round(standardAmount / row.quantity) : standardAmount,
+      gross: standardAmount,
+      standardAmount,
+      contractedAmount,
+      eligibleAmount: round(quote.amounts.eligible),
+      discountType: policy.amounts.discountType,
+      discountRate: policy.amounts.discountRate,
+      discountAmount: policy.amounts.discountAmount,
+      discountReason: policy.amounts.discountReason,
+      taxableAmount: policy.amounts.taxableAmount,
+      taxMode: policy.amounts.taxMode,
+      taxName: policy.amounts.taxName,
+      taxCode: policy.amounts.taxCode,
+      taxRate: policy.amounts.taxRate,
+      taxAmount: policy.amounts.taxAmount,
+      netAmount: policy.amounts.netAmount,
+      patientLiability: noLiabilityIntent ? 0 : policy.amounts.patientLiability,
+      sponsorLiability: noLiabilityIntent ? 0 : policy.amounts.sponsorLiability,
+      requiredNow: noLiabilityIntent ? 0 : policy.requiredNow,
+      outstanding: noLiabilityIntent ? 0 : policy.amounts.patientLiability,
+      allowedModes: policy.allowedModes,
+      defaultMode: policy.defaultMode,
+      selectedMode: policy.selectedMode,
+      partialPolicy: policy.partial,
+      clearanceState: noLiabilityIntent ? 'CLEARED' : policy.clearanceState,
+      financialPolicySnapshot: policy.policySnapshot,
+      policyPermissions: policy.permissions,
+      billingIntent: effectiveIntent,
+      pricingResultType: quote.resultType,
+      pricingDifference: round(unitRate - Number(row.rate || 0)),
+      requestedAdjustments
     });
   }
 
@@ -147,22 +302,26 @@ async function resolvePatient({ hospitalId, patientSelection, quickPatient, user
 }
 
 function previewTotals(rows) {
-  const gross = round(rows.reduce((sum, row) => sum + row.gross, 0));
+  const sum = (field) => round(rows.reduce((total, row) => total + Number(row[field] || 0), 0));
   const noLiability = round(rows
     .filter(row => ['PACKAGE_INCLUDED', 'NO_CHARGE', 'EXTERNAL_REFERRAL'].includes(row.billingIntent))
-    .reduce((sum, row) => sum + row.gross, 0)
-  );
-
+    .reduce((total, row) => total + Number(row.standardAmount || row.gross || 0), 0));
   return {
-    gross,
-    lineDiscount: 0,
-    tax: 0,
-    noLiability,
-    net: round(gross - noLiability),
-    payableNow: round(rows
-      .filter(row => ['BILL_NOW', 'ADD_TO_OPD_CART'].includes(row.billingIntent))
-      .reduce((sum, row) => sum + row.gross, 0)
-    )
+    gross: sum('standardAmount'),
+    standardAmount: sum('standardAmount'),
+    contractedAmount: sum('contractedAmount'),
+    lineDiscount: sum('discountAmount'),
+    discountAmount: sum('discountAmount'),
+    taxableAmount: sum('taxableAmount'),
+    tax: sum('taxAmount'),
+    taxAmount: sum('taxAmount'),
+    net: sum('netAmount'),
+    patientLiability: sum('patientLiability'),
+    sponsorLiability: sum('sponsorLiability'),
+    requiredNow: sum('requiredNow'),
+    payableNow: sum('requiredNow'),
+    outstanding: sum('outstanding'),
+    noLiability
   };
 }
 
@@ -396,9 +555,17 @@ async function createClinicalRequest({
       source: 'Desk',
       serviceCode: row.code,
       quantity: row.quantity,
-      rate: row.rate,
-      gross: row.gross
+      standardAmount: row.standardAmount,
+      contractedAmount: row.contractedAmount,
+      patientLiability: row.patientLiability,
+      sponsorLiability: row.sponsorLiability,
+      taxAmount: row.taxAmount,
+      discountAmount: row.discountAmount
     },
+    financialPolicySnapshot: row.financialPolicySnapshot || {},
+    selectedBillingMode: row.selectedMode,
+    requiredNowAmount: row.requiredNow,
+    financialClearanceState: row.clearanceState,
     billingHistory: [{
       from: 'PENDING_CHARGE',
       to: billingState,
@@ -407,7 +574,7 @@ async function createClinicalRequest({
       by: user?._id,
       reason: `Desk checkout ${idempotencyKey}`
     }],
-    cost: row.gross,
+    cost: row.standardAmount,
     is_billed: Boolean(invoiceId),
     invoiceId: invoiceId || null,
     createdBy: user?._id
@@ -464,6 +631,7 @@ async function createClinicalRequest({
   } else {
     master = await Procedure.findOne({
       _id: row.masterId,
+      hospitalId,
       is_active: { $ne: false }
     });
     if (!master) throw checkoutError(`Procedure is no longer available: ${row.name}`, 409);
@@ -574,7 +742,7 @@ async function previewDeskCheckout(payload, user) {
     throw checkoutError('Encounter type must be OPD or IPD');
   }
 
-  const rows = await authoritativeCart({ user, cart: payload.serviceCart, encounterType });
+  const rows = await authoritativeCart({ user, cart: payload.serviceCart, encounterType, payload });
 
   const decoratedRows = rows.map(row => ({
     ...row,
@@ -583,6 +751,13 @@ async function previewDeskCheckout(payload, user) {
   }));
 
   const totals = previewTotals(decoratedRows);
+  if (Number(payload.payment?.settlementDiscountAmount || 0) !== 0 || Number(payload.payment?.taxAdjustmentAmount || 0) !== 0) {
+    throw checkoutError(
+      'Apply discount/tax through the policy-controlled service rows, not by changing the payment amount',
+      409,
+      'DESK_LINE_POLICY_REQUIRED'
+    );
+  }
   const payment = previewPayment(totals, payload.payment, encounterType);
   const clinicalContext = await resolveClinicalContext({
     payload,
@@ -774,6 +949,21 @@ async function commitDeskCheckout(payload, user) {
           chargeHead: row.serviceType,
           quantity: row.quantity,
           rate: row.rate,
+          serviceType: String(row.serviceType || '').toLowerCase(),
+          internalServiceModel: row.internalServiceModel,
+          internalServiceId: row.internalServiceId || row.masterId,
+          serviceCode: row.code,
+          selectedMode: row.selectedMode,
+          requestedDeposit: row.requestedDeposit,
+          discountType: row.requestedAdjustments?.discountType,
+          discountRate: row.requestedAdjustments?.discountRate,
+          discountAmount: row.requestedAdjustments?.discountAmount,
+          discountValue: row.requestedAdjustments?.discountValue,
+          discountReason: row.requestedAdjustments?.discountReason,
+          taxMode: row.requestedAdjustments?.taxMode,
+          taxRate: row.requestedAdjustments?.taxRate,
+          overrideReason: row.overrideReason,
+          departmentId: financialEncounterContext.departmentId,
           appointmentId: financialEncounterContext.appointmentId || undefined,
           idempotencyKey: rowKey,
           notes: `Desk checkout ${idempotencyKey}`
@@ -807,8 +997,18 @@ async function commitDeskCheckout(payload, user) {
           description: row.name,
           quantity: row.quantity,
           rate: row.rate,
+          selectedMode: row.selectedMode,
+          requestedDeposit: row.requestedDeposit,
+          discountType: row.requestedAdjustments?.discountType,
+          discountRate: row.requestedAdjustments?.discountRate,
+          discountAmount: row.requestedAdjustments?.discountAmount,
+          discountValue: row.requestedAdjustments?.discountValue,
+          discountReason: row.requestedAdjustments?.discountReason,
+          taxMode: row.requestedAdjustments?.taxMode,
+          taxRate: row.requestedAdjustments?.taxRate,
+          overrideReason: row.overrideReason,
           idempotencyKey: rowKey,
-          allowStandardFallback: true,
+          allowStandardFallback: !row.internalServiceId && !row.masterId,
           notes: `Desk checkout ${idempotencyKey}`
         }, user);
 

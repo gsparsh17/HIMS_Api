@@ -1,287 +1,266 @@
+const mongoose = require('mongoose');
 const { operationNow } = require('../utils/operationTimeContext');
 const IPDRound = require('../models/IPDRound');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
 const { requestHospitalId } = require('../utils/hospitalScope');
+const { resolveDoctorTariff } = require('../services/doctorTariff.service');
+const { resolveFinancialPolicy } = require('../services/financialPolicy.service');
 
-// Helper function to update admission totals
-async function updateAdmissionTotals(admissionId, hospitalId) {
-  const charges = await IPDCharge.find({ admissionId, ...(hospitalId ? { hospitalId } : {}), is_active: { $ne: false } });
-  const totalBillAmount = charges.reduce((sum, c) => sum + c.netAmount, 0);
-  
-  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId: requestHospitalId(req) });
+function money(value) { return Number(Number(value || 0).toFixed(2)); }
+function clientKey(req) {
+  return String(req.body?.idempotencyKey || req.get?.('Idempotency-Key') || '').trim() || null;
+}
+function chargeKey(hospitalId, roundId) { return `${hospitalId}:DoctorRound:${roundId}:charge`; }
+
+async function updateAdmissionTotals(admissionId, hospitalId, session = null) {
+  const charges = await IPDCharge.find({ admissionId, hospitalId, is_active: { $ne: false }, status: { $ne: 'VOIDED' } }).session(session || null);
+  const totalBillAmount = money(charges.reduce((sum, c) => sum + Number(c.netAmount || 0), 0));
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId, is_active: { $ne: false } }).session(session || null);
   if (admission) {
     admission.totalBillAmount = totalBillAmount;
-    admission.dueAmount = totalBillAmount - (admission.paidAmount || 0);
-    await admission.save();
+    admission.dueAmount = money(totalBillAmount - Number(admission.paidAmount || 0));
+    await admission.save({ session: session || undefined });
   }
   return totalBillAmount;
 }
 
-// Create round entry with doctor visit charge (rate from frontend)
+async function buildDoctorRoundCharge({ req, admission, round, session }) {
+  const tariff = await resolveDoctorTariff({
+    hospitalId: admission.hospitalId,
+    doctorId: round.doctorId,
+    encounterType: 'IPD',
+    visitType: 'ROUND',
+    admissionId: admission._id,
+    serviceDate: round.roundDateTime,
+  });
+  const q = tariff.quote || {};
+  const amounts = q.amounts || {};
+  const patientBefore = Number(amounts.patientLiability ?? amounts.contracted ?? tariff.amount ?? 0);
+  const sponsorBefore = Number(amounts.sponsorLiability || 0);
+  const contracted = Number(amounts.contracted ?? tariff.amount ?? patientBefore + sponsorBefore);
+  const policy = await resolveFinancialPolicy({
+    hospitalId: admission.hospitalId,
+    user: req.user,
+    encounterType: 'IPD',
+    serviceType: 'CONSULTATION',
+    serviceCode: q.serviceCode || 'DOCTOR_ROUND',
+    payerCategory: admission.sponsorType && admission.sponsorType !== 'self' ? 'SPONSOR' : 'SELF',
+    departmentId: admission.departmentId,
+    selectedMode: admission.selectedBillingMode || undefined,
+    patientLiability: patientBefore,
+    sponsorLiability: sponsorBefore,
+    contractedAmount: contracted,
+    adjustments: {},
+  });
+  const a = policy.amounts;
+  const rate = money(a.grossAmount || contracted);
+  const description = `Doctor round on ${new Date(round.roundDateTime).toLocaleDateString('en-IN')} - ${round.patientCondition || 'Routine visit'}`;
+  const pricingSnapshot = {
+    rateCardId: q.rateCard?.id || null,
+    rateCardVersion: q.rateCard?.version || null,
+    rateCardItemId: q.rateCardItemId || null,
+    serviceCode: q.serviceCode || 'DOCTOR_ROUND',
+    resultType: q.resultType || 'self',
+    inputs: { ...(q.inputs || {}), doctorId: round.doctorId, encounterType: 'IPD', visitType: 'ROUND', wardEntitlement: tariff.wardEntitlement },
+    amounts: {
+      hospitalStandard: Number(amounts.hospitalStandard ?? rate),
+      contracted: Number(a.netAmount ?? contracted),
+      eligible: Number(amounts.eligible ?? contracted),
+      sponsorLiability: Number(a.sponsorLiability || 0),
+      patientLiability: Number(a.patientLiability || 0),
+      nonAdmissible: Number(amounts.nonAdmissible || 0),
+      hospitalAdjustment: Number(amounts.hospitalAdjustment || 0),
+      hospitalConcession: Number(amounts.hospitalConcession || 0) + Number(a.discountAmount || 0),
+      packageAbsorbed: Number(amounts.packageAbsorbed || 0),
+    },
+    explanation: [...(q.explanation || []), 'Doctor tariff resolved server-side; payroll amount was not used'],
+    ruleTrace: q.ruleTrace || [],
+    pricedAt: operationNow(),
+  };
+  const charge = new IPDCharge({
+    hospitalId: admission.hospitalId,
+    admissionId: admission._id,
+    patientId: admission.patientId,
+    chargeType: 'Doctor Visit',
+    description,
+    quantity: 1,
+    rate,
+    discountType: a.discountType || 'fixed',
+    discountRate: a.discountRate || 0,
+    discountAmount: a.discountAmount || 0,
+    discountReason: a.discountReason || undefined,
+    taxMode: a.taxMode || 'exempt',
+    taxName: a.taxName || undefined,
+    taxCode: a.taxCode || undefined,
+    taxRate: a.taxRate || 0,
+    taxAmount: a.taxAmount || 0,
+    taxExemptionReason: a.taxExemptionReason || undefined,
+    sourceModule: 'DoctorRound',
+    sourceId: round._id,
+    sourceReference: { module: 'DoctorVisit', documentId: round._id, lineKey: `DoctorRound:${round._id}` },
+    idempotencyKey: chargeKey(admission.hospitalId, round._id),
+    isAutoGenerated: true,
+    isBilled: false,
+    addedBy: req.user?._id,
+    notes: round.notes || undefined,
+    pricingSnapshot,
+    financialPolicySnapshot: policy.policySnapshot,
+    selectedBillingMode: policy.selectedMode,
+    requiredNowAmount: policy.requiredNow,
+    clearanceState: policy.clearanceState,
+  });
+  await charge.save({ session });
+  return { charge, policy, tariff };
+}
+
+exports.getDoctorTariff = async (req, res) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const { admissionId, doctorId } = req.query;
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId, is_active: { $ne: false } }).lean();
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    const tariff = await resolveDoctorTariff({ hospitalId, doctorId: doctorId || admission.primaryDoctorId, encounterType: 'IPD', visitType: 'ROUND', admissionId });
+    const amounts = tariff.quote?.amounts || {};
+    const policy = await resolveFinancialPolicy({
+      hospitalId, user: req.user, encounterType: 'IPD', serviceType: 'CONSULTATION',
+      serviceCode: tariff.quote?.serviceCode || 'DOCTOR_ROUND', departmentId: admission.departmentId,
+      selectedMode: admission.selectedBillingMode || undefined,
+      patientLiability: Number(amounts.patientLiability ?? tariff.amount ?? 0),
+      sponsorLiability: Number(amounts.sponsorLiability || 0),
+      contractedAmount: Number(amounts.contracted ?? tariff.amount ?? 0), adjustments: {}
+    });
+    return res.json({ success: true, tariff: { ...tariff, financialPolicy: policy } });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
+  }
+};
+
 exports.createRound = async (req, res) => {
-  try {
-    const {
-      admissionId,
-      patientId,
-      doctorId,
-      roundDateTime,
-      patientCondition,
-      complaints,
-      symptoms,
-      examinationFindings,
-      diagnosis,
-      treatmentPlan,
-      advice,
-      dischargeSuggested,
-      painScore,
-      notes,
-      templateId,
-      copiedFromRoundId,
-      doctorVisitRate  // Rate sent from frontend
-    } = req.body;
-    
-    // Verify admission exists
-    const admission = await IPDAdmission.findById(admissionId);
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-    
-    // Validate doctor visit rate
-    if (!doctorVisitRate && doctorVisitRate !== 0) {
-      return res.status(400).json({ error: 'Doctor visit rate is required' });
-    }
-    
-    // Create round
-    const round = new IPDRound({
-      admissionId,
-      patientId,
-      doctorId,
-      roundDateTime: roundDateTime || operationNow(),
-      patientCondition,
-      complaints,
-      symptoms,
-      examinationFindings,
-      diagnosis,
-      treatmentPlan,
-      advice,
-      dischargeSuggested,
-      painScore,
-      notes,
-      templateId: templateId || null,
-      copiedFromRoundId: copiedFromRoundId || null,
-      createdBy: req.user?._id
-    });
-    
-    await round.save();
-    
-    // Create IPD charge for doctor visit with rate from frontend
-    const doctorVisitCharge = new IPDCharge({
-      hospitalId: admission.hospitalId,
-      admissionId,
-      patientId,
-      chargeType: 'Doctor Visit',
-      description: `Doctor round by Dr. ${req.user?.name || 'Staff'} on ${operationNow().toLocaleDateString()} - ${patientCondition || 'Routine visit'}`,
-      quantity: 1,
-      rate: doctorVisitRate,
-      amount: doctorVisitRate,
-      netAmount: doctorVisitRate,
-      sourceModule: 'DoctorRound',
-      sourceId: round._id,
-      isAutoGenerated: true,
-      isBilled: false,
-      addedBy: req.user?._id,
-      notes: notes || `Round notes: ${patientCondition || 'No specific condition'}`
-    });
-    
-    await doctorVisitCharge.save();
-    
-    // Update admission totals
-    await updateAdmissionTotals(admissionId, admission.hospitalId);
-    
-    // Update admission status if discharge suggested
-    if (dischargeSuggested && admission.canProceedToDischarge) {
-      admission.status = 'Discharge Initiated';
-      await admission.save();
-    }
-    
-    res.status(201).json({
-      success: true,
-      message: 'Round note added successfully',
-      round,
-      charge: doctorVisitCharge
-    });
-  } catch (err) {
-    console.error('Error creating round:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
+  const hospitalId = requestHospitalId(req);
+  const key = clientKey(req);
+  const {
+    admissionId, patientId, doctorId, roundDateTime, patientCondition, complaints, symptoms,
+    examinationFindings, dailyHistoryAndExamination, diagnosis, treatmentPlan, medicationChanges,
+    advice, dischargeSuggested, painScore, notes, templateId, copiedFromRoundId, safetyChecklist,
+    vitalId, vitalSnapshot, dischargeAssessment,
+  } = req.body || {};
 
-// Get rounds by admission
-exports.getRoundsByAdmission = async (req, res) => {
   try {
-    const { admissionId } = req.params;
-    
-    const rounds = await IPDRound.find({ admissionId, is_active: { $ne: false } })
-      .populate('doctorId', 'firstName lastName specialization')
-      .populate({
-        path: 'prescriptionId',
-        select: 'diagnosis items lab_test_requests radiology_test_requests procedure_requests issue_date createdAt'
-      })
-      .populate('templateId', 'name diseaseName templateType')
-      .populate('copiedFromRoundId', 'roundDateTime diagnosis')
-      .sort({ roundDateTime: -1 });
-    
-    res.json({ success: true, rounds });
-  } catch (err) {
-    console.error('Error fetching rounds:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-// Get round by ID
-exports.getRoundById = async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const round = await IPDRound.findById(id)
-      .populate('doctorId', 'firstName lastName specialization')
-      .populate('admissionId', 'admissionNumber patientId')
-      .populate('prescriptionId');
-    
-    if (!round) {
-      return res.status(404).json({ error: 'Round not found' });
-    }
-    
-    // Get associated charge
-    const charge = await IPDCharge.findOne({
-      sourceModule: 'DoctorRound',
-      sourceId: round._id
-    });
-    
-    res.json({ 
-      success: true, 
-      round,
-      charge: charge || null
-    });
-  } catch (err) {
-    console.error('Error fetching round:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-// Update round
-exports.updateRound = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updates = req.body;
-    
-    const round = await IPDRound.findByIdAndUpdate(id, updates, { new: true });
-    if (!round) {
-      return res.status(404).json({ error: 'Round not found' });
-    }
-    
-    // Update associated charge if rate is provided
-    if (updates.doctorVisitRate !== undefined) {
-      const charge = await IPDCharge.findOne({
-        sourceModule: 'DoctorRound',
-        sourceId: round._id,
-        isBilled: false
-      });
-      
-      if (charge) {
-        charge.rate = updates.doctorVisitRate;
-        charge.amount = updates.doctorVisitRate;
-        charge.netAmount = updates.doctorVisitRate;
-        charge.description = `Doctor round by ${updates.doctorName || 'Staff'} on ${operationNow().toLocaleDateString()} - ${updates.patientCondition || 'Routine visit'}`;
-        await charge.save();
-        await updateAdmissionTotals(round.admissionId);
+    if (key) {
+      const existing = await IPDRound.findOne({ hospitalId, idempotencyKey: key, is_active: { $ne: false } });
+      if (existing) {
+        const charge = await IPDCharge.findOne({ hospitalId, sourceModule: 'DoctorRound', sourceId: existing._id, is_active: { $ne: false } });
+        return res.status(200).json({ success: true, reused: true, round: existing, charge });
       }
     }
-    
-    res.json({
-      success: true,
-      message: 'Round updated successfully',
-      round
-    });
+
+    const session = await mongoose.startSession();
+    let result;
+    try {
+      await session.withTransaction(async () => {
+        const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId, is_active: { $ne: false } }).session(session);
+        if (!admission) throw Object.assign(new Error('Admission not found'), { statusCode: 404 });
+        if (patientId && String(patientId) !== String(admission.patientId)) throw Object.assign(new Error('Patient does not match admission'), { statusCode: 409 });
+
+        const round = new IPDRound({
+          hospitalId, admissionId: admission._id, patientId: admission.patientId, doctorId,
+          roundDateTime: roundDateTime || operationNow(), patientCondition, complaints, symptoms,
+          examinationFindings, dailyHistoryAndExamination, diagnosis, treatmentPlan, medicationChanges,
+          advice, dischargeSuggested, painScore, notes, templateId: templateId || null,
+          copiedFromRoundId: copiedFromRoundId || null, safetyChecklist, vitalId, vitalSnapshot,
+          dischargeAssessment, createdBy: req.user?._id, idempotencyKey: key,
+        });
+        await round.save({ session });
+        const { charge, policy } = await buildDoctorRoundCharge({ req, admission, round, session });
+        await updateAdmissionTotals(admission._id, hospitalId, session);
+        if (dischargeSuggested && admission.canProceedToDischarge) {
+          admission.status = 'Discharge Initiated';
+          await admission.save({ session });
+        }
+        result = { round, charge, financialPolicy: policy };
+      });
+    } finally {
+      await session.endSession();
+    }
+    return res.status(201).json({ success: true, message: 'Round note added successfully', ...result });
   } catch (err) {
-    console.error('Error updating round:', err);
-    res.status(500).json({ error: err.message });
+    if (err?.code === 11000 && key) {
+      const existing = await IPDRound.findOne({ hospitalId, idempotencyKey: key, is_active: { $ne: false } });
+      const charge = existing ? await IPDCharge.findOne({ hospitalId, sourceModule: 'DoctorRound', sourceId: existing._id, is_active: { $ne: false } }) : null;
+      if (existing) return res.status(200).json({ success: true, reused: true, round: existing, charge });
+    }
+    console.error('Error creating round:', err);
+    return res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
   }
 };
 
-// Delete round
+exports.getRoundsByAdmission = async (req, res) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const rounds = await IPDRound.find({ hospitalId, admissionId: req.params.admissionId, is_active: { $ne: false } })
+      .populate('doctorId', 'firstName lastName specialization')
+      .populate({ path: 'prescriptionId', select: 'diagnosis items lab_test_requests radiology_test_requests procedure_requests issue_date createdAt' })
+      .populate('templateId', 'name diseaseName templateType')
+      .populate('copiedFromRoundId', 'roundDateTime diagnosis').sort({ roundDateTime: -1 });
+    res.json({ success: true, rounds });
+  } catch (err) { res.status(err.statusCode || 500).json({ error: err.message }); }
+};
+
+exports.getRoundById = async (req, res) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const round = await IPDRound.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } })
+      .populate('doctorId', 'firstName lastName specialization').populate('admissionId', 'admissionNumber patientId').populate('prescriptionId');
+    if (!round) return res.status(404).json({ error: 'Round not found' });
+    const charge = await IPDCharge.findOne({ hospitalId, sourceModule: 'DoctorRound', sourceId: round._id, is_active: { $ne: false } });
+    res.json({ success: true, round, charge: charge || null });
+  } catch (err) { res.status(err.statusCode || 500).json({ error: err.message }); }
+};
+
+exports.updateRound = async (req, res) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const forbidden = ['doctorVisitRate', 'rate', 'amount', 'netAmount', 'hospitalId', 'admissionId', 'patientId', 'idempotencyKey'];
+    const updates = { ...(req.body || {}) };
+    forbidden.forEach(k => delete updates[k]);
+    const round = await IPDRound.findOneAndUpdate({ _id: req.params.id, hospitalId, is_active: { $ne: false } }, updates, { new: true, runValidators: true });
+    if (!round) return res.status(404).json({ error: 'Round not found' });
+    // Historical patient tariff is never changed by editing clinical prose. If doctor/time
+    // changes require repricing, Finance must use the audited repricing workflow.
+    res.json({ success: true, message: 'Round updated successfully', round });
+  } catch (err) { res.status(err.statusCode || 500).json({ error: err.message }); }
+};
+
 exports.deleteRound = async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    const round = await IPDRound.findById(id);
-    if (!round) {
-      return res.status(404).json({ error: 'Round not found' });
-    }
-    
-    // Delete associated charge
-    const now = new Date();
+    const hospitalId = requestHospitalId(req);
+    const round = await IPDRound.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
+    if (!round) return res.status(404).json({ error: 'Round not found' });
+    const charge = await IPDCharge.findOne({ hospitalId, sourceModule: 'DoctorRound', sourceId: round._id, is_active: { $ne: false } });
+    if (charge?.isBilled || charge?.status === 'INVOICED') return res.status(409).json({ error: 'Billed doctor-round charges must be reversed/credited through Finance, not deleted' });
+    const now = operationNow();
     const reason = String(req.body?.reason || 'IPD round archived by user').trim();
-    await IPDCharge.updateMany(
-      { sourceModule: 'DoctorRound', sourceId: round._id, is_active: { $ne: false } },
-      { $set: { is_active: false, deleted_at: now, deleted_by: req.user?._id || null, deletion_reason: reason } }
-    );
-
-    round.is_active = false;
-    round.deleted_at = now;
-    round.deleted_by = req.user?._id || null;
-    round.deletion_reason = reason;
+    if (charge) {
+      charge.is_active = false; charge.status = 'VOIDED'; charge.deleted_at = now; charge.deleted_by = req.user?._id || null; charge.deletion_reason = reason; charge.voidedAt = now; charge.voidedBy = req.user?._id || null; charge.voidReason = reason;
+      await charge.save();
+    }
+    round.is_active = false; round.deleted_at = now; round.deleted_by = req.user?._id || null; round.deletion_reason = reason;
     await round.save();
-    
-    // Update admission totals
-    await updateAdmissionTotals(round.admissionId);
-    
-    res.json({
-      success: true,
-      message: 'Round and associated charge archived successfully'
-    });
-  } catch (err) {
-    console.error('Error deleting round:', err);
-    res.status(500).json({ error: err.message });
-  }
+    await updateAdmissionTotals(round.admissionId, hospitalId);
+    res.json({ success: true, message: 'Round and unbilled source charge archived successfully' });
+  } catch (err) { res.status(err.statusCode || 500).json({ error: err.message }); }
 };
 
-// Get rounds by doctor
 exports.getRoundsByDoctor = async (req, res) => {
   try {
-    const { doctorId } = req.params;
-    const { startDate, endDate } = req.query;
-    
-    const filter = { doctorId, is_active: { $ne: false } };
-    if (startDate && endDate) {
-      filter.roundDateTime = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    }
-    
-    const rounds = await IPDRound.find(filter)
-      .populate('admissionId', 'admissionNumber patientId')
-      .populate('patientId', 'first_name last_name patientId')
-      .sort({ roundDateTime: -1 });
-    
-    // Get associated charges for each round
-    const roundsWithCharges = await Promise.all(rounds.map(async (round) => {
-      const charge = await IPDCharge.findOne({
-        sourceModule: 'DoctorRound',
-        sourceId: round._id,
-        is_active: { $ne: false }
-      });
-      return {
-        ...round.toObject(),
-        charge: charge || null
-      };
-    }));
-    
-    res.json({ success: true, rounds: roundsWithCharges });
-  } catch (err) {
-    console.error('Error fetching rounds by doctor:', err);
-    res.status(500).json({ error: err.message });
-  }
+    const hospitalId = requestHospitalId(req);
+    const filter = { hospitalId, doctorId: req.params.doctorId, is_active: { $ne: false } };
+    if (req.query.startDate && req.query.endDate) filter.roundDateTime = { $gte: new Date(req.query.startDate), $lte: new Date(req.query.endDate) };
+    const rounds = await IPDRound.find(filter).populate('admissionId', 'admissionNumber patientId').populate('patientId', 'first_name last_name patientId').sort({ roundDateTime: -1 });
+    const ids = rounds.map(r => r._id);
+    const charges = await IPDCharge.find({ hospitalId, sourceModule: 'DoctorRound', sourceId: { $in: ids }, is_active: { $ne: false } });
+    const map = new Map(charges.map(c => [String(c.sourceId), c]));
+    res.json({ success: true, rounds: rounds.map(round => ({ ...round.toObject(), charge: map.get(String(round._id)) || null })) });
+  } catch (err) { res.status(err.statusCode || 500).json({ error: err.message }); }
 };

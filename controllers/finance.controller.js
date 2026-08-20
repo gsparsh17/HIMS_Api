@@ -4,6 +4,8 @@ const mis = require('../services/misReporting.service');
 const patientFinancial = require('../services/patientFinancial.service');
 const financialProjection = require('../services/financialProjection.service');
 const pharmacyFinanceProjection = require('../services/pharmacyFinanceProjection.service');
+const financialPolicy = require('../services/financialPolicy.service');
+const { assertUserHospital } = require('../utils/hospitalScope');
 
 function sendError(res, error) {
   console.error('Finance module error:', error);
@@ -58,6 +60,30 @@ async function exportReport(res, report, format) {
   res.end();
 }
 
+
+
+exports.resolveFinancialPolicy = async (req, res) => {
+  try {
+    const hospitalId = assertUserHospital(req.user);
+    const result = await financialPolicy.resolveFinancialPolicy({
+      hospitalId,
+      user: req.user,
+      encounterType: req.body?.encounterType || req.query?.encounterType,
+      serviceType: req.body?.serviceType || req.query?.serviceType,
+      serviceCode: req.body?.serviceCode || req.query?.serviceCode,
+      payerCategory: req.body?.payerCategory || req.query?.payerCategory || 'SELF',
+      departmentId: req.body?.departmentId || req.query?.departmentId,
+      selectedMode: req.body?.selectedMode,
+      requestedDeposit: req.body?.requestedDeposit,
+      patientLiability: req.body?.patientLiability || 0,
+      sponsorLiability: req.body?.sponsorLiability || 0,
+      contractedAmount: req.body?.contractedAmount || req.body?.patientLiability || 0,
+      adjustments: req.body?.adjustments || {},
+      overrideReason: req.body?.overrideReason
+    });
+    res.json({ success: true, data: result });
+  } catch (error) { sendError(res, error); }
+};
 
 exports.getCanonicalKpis = async (req, res) => {
   try {

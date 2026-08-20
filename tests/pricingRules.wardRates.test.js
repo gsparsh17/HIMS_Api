@@ -5,13 +5,14 @@ const { applyConfiguredRateRules } = require('../services/pricingRules.service')
 test('explicit ward rates are selected without applying a global ward factor', () => {
   const item = {
     category: 'General Surgery',
+    pricingMode: 'exact_ward',
     rates: {
-      tierI: { nabh: 99999 }
-    },
-    wardRates: {
-      general: 33200,
-      semi_private: 38300,
-      private: 45000
+      tierI: { nabh: 99999 },
+      exactWard: {
+        general: 33200,
+        semiPrivate: 38300,
+        private: 45000
+      }
     }
   };
 
@@ -32,7 +33,8 @@ test('explicit ward rates are selected without applying a global ward factor', (
 test('same-session factors are still applied after selecting an explicit ward rate', () => {
   const result = applyConfiguredRateRules({
     item: {
-      wardRates: { semi_private: 23800 }
+      pricingMode: 'exact_ward',
+      rates: { exactWard: { semiPrivate: 23800 } }
     },
     wardEntitlement: 'semi_private',
     sameOtSessionIndex: 2,

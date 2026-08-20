@@ -13,6 +13,8 @@ const { quotePricing, pricingSnapshot, serviceTypeFromCharge } = require('./pric
 const { activeAppointmentCoverage } = require('./coverage.service');
 const { activatePackageEpisode, recordPackageUtilization } = require('./packageAdjudication.service');
 const { replaceCoverageUtilization } = require('./coverageUtilization.service');
+const { resolveFinancialPolicy } = require('./financialPolicy.service');
+const { _hasActionPermission } = require('../middlewares/auth');
 
 const PAYMENT_METHODS = [
   'Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme',
@@ -114,12 +116,22 @@ async function addOPDCharge(patientId, payload, user) {
     const { patient, hospitalId } = await findPatient(patientId, user, session);
     if (payload.idempotencyKey) {
       const existing = await Bill.findOne({ hospital_id: hospitalId, idempotency_key: payload.idempotencyKey }, null, sessionOptions(session));
-      if (existing) return { bill: existing, alreadyExists: true };
+      if (existing) {
+        const snapshot = existing.items?.[0]?.source_snapshot || {};
+        return {
+          bill: existing,
+          financialPolicy: {
+            selectedMode: snapshot.selectedMode,
+            requiredNow: Number(snapshot.requiredNow || 0),
+            clearanceState: snapshot.clearanceState,
+            policySnapshot: snapshot.financialPolicy || {}
+          },
+          alreadyExists: true
+        };
+      }
     }
     const cashLine = calculateLineAmounts(payload);
     if (!String(payload.description || '').trim()) throw financialError('Charge description is required');
-    if (cashLine.discountAmount > 0 && !String(payload.discountReason || '').trim()) throw financialError('Discount reason is required');
-    if (cashLine.taxMode === 'exempt' && !String(payload.taxExemptionReason || '').trim()) throw financialError('Tax exemption reason is required');
 
     const appointmentId = payload.appointmentId || null;
     const quote = await quotePricing({
@@ -135,7 +147,7 @@ async function addOPDCharge(patientId, payload, user) {
       // Existing OPD inputs express rate per unit. The cash calculation remains
       // available for tax/discount display, while payer allocation uses the
       // hospital's undiscounted service unit as its standard amount.
-      standardAmount: cashLine.rate,
+      standardAmount: payload.internalServiceId ? undefined : cashLine.rate,
       quantity: cashLine.quantity,
       nonAdmissibleAmount: payload.nonAdmissibleAmount,
       sponsorApprovalCap: payload.sponsorApprovalCap,
@@ -145,6 +157,43 @@ async function addOPDCharge(patientId, payload, user) {
 
     const contracted = amount(quote.amounts.contracted);
     const standard = amount(quote.amounts.hospitalStandard);
+    const coverage = appointmentId ? await activeAppointmentCoverage(hospitalId, appointmentId, session) : null;
+    const policy = await resolveFinancialPolicy({
+      hospitalId,
+      user,
+      encounterType: 'OPD',
+      serviceType: payload.serviceType || serviceTypeFromCharge(payload.chargeType),
+      serviceCategory: payload.serviceCategory,
+      serviceCode: payload.serviceCode || payload.payerServiceCode,
+      payerCategory: coverage?.payerCategory || (coverage ? 'SPONSORED' : 'SELF'),
+      departmentId: payload.departmentId,
+      urgency: payload.urgency,
+      effectiveAt: payload.effectiveAt || payload.chargeDate || operationNow(),
+      selectedMode: payload.selectedMode,
+      inheritedMode: payload.inheritedMode,
+      requestedDeposit: payload.requestedDeposit,
+      patientLiability: quote.amounts.patientLiability,
+      sponsorLiability: quote.amounts.sponsorLiability,
+      contractedAmount: contracted,
+      adjustments: {
+        discountType: payload.discountType,
+        discountRate: payload.discountRate,
+        discountAmount: payload.discountAmount,
+        discountValue: payload.discountValue,
+        discountReason: payload.discountReason,
+        taxMode: payload.taxMode,
+        taxRate: payload.taxRate,
+        taxReason: payload.taxReason
+      },
+      overrideReason: payload.overrideReason
+    });
+    const adjusted = policy.amounts;
+    quote.amounts = {
+      ...quote.amounts,
+      patientLiability: adjusted.patientLiability,
+      sponsorLiability: adjusted.sponsorLiability,
+      hospitalConcession: amount(Number(quote.amounts.hospitalConcession || 0) + adjusted.discountAmount)
+    };
     const [billNumber, hospital] = await Promise.all([
       nextFinancialNumber({ documentType: 'BILL', hospitalId, session }),
       Hospital.findById(hospitalId, null, sessionOptions(session)).lean()
@@ -159,7 +208,6 @@ async function addOPDCharge(patientId, payload, user) {
       internalServiceModel: payload.internalServiceModel,
       internalServiceId: payload.internalServiceId
     });
-    const coverage = appointmentId ? await activeAppointmentCoverage(hospitalId, appointmentId, session) : null;
     const bill = new Bill({
       hospital_id: hospitalId,
       bill_number: billNumber,
@@ -167,18 +215,18 @@ async function addOPDCharge(patientId, payload, user) {
       patient_id: patient._id,
       appointment_id: appointmentId || undefined,
       gross_amount: standard,
-      subtotal: standard,
-      line_discount_total: 0,
+      subtotal: contracted,
+      line_discount_total: adjusted.discountAmount,
       bill_discount_total: 0,
-      discount: 0,
-      discount_type: 'fixed',
-      discount_reason: payload.discountReason,
-      taxable_amount: contracted,
-      tax_amount: 0,
+      discount: adjusted.discountAmount,
+      discount_type: adjusted.discountType,
+      discount_reason: adjusted.discountReason,
+      taxable_amount: adjusted.taxableAmount,
+      tax_amount: adjusted.taxAmount,
       rounding_adjustment: 0,
-      total_amount: contracted,
+      total_amount: adjusted.netAmount,
       paid_amount: 0,
-      balance_due: quote.amounts.patientLiability,
+      balance_due: adjusted.patientLiability,
       payment_method: 'Pending',
       status: quote.amounts.patientLiability <= 0 ? 'Paid' : 'Pending',
       generated_at: now,
@@ -195,8 +243,8 @@ async function addOPDCharge(patientId, payload, user) {
         standard_amount: quote.amounts.hospitalStandard,
         contracted_amount: quote.amounts.contracted,
         eligible_amount: quote.amounts.eligible,
-        patient_liability: quote.amounts.patientLiability,
-        sponsor_liability: quote.amounts.sponsorLiability,
+        patient_liability: adjusted.patientLiability,
+        sponsor_liability: adjusted.sponsorLiability,
         non_admissible_amount: quote.amounts.nonAdmissible,
         contractual_adjustment: quote.amounts.hospitalAdjustment,
         hospital_concession: quote.amounts.hospitalConcession,
@@ -210,19 +258,19 @@ async function addOPDCharge(patientId, payload, user) {
         charge_date: payload.chargeDate || now,
         quantity: lineQuantity,
         unit_price: lineUnitPrice,
-        gross_amount: standard,
-        discount_type: 'fixed',
-        discount_rate: 0,
-        discount_amount: 0,
-        discount_reason: payload.discountReason,
-        taxable_amount: contracted,
-        tax_mode: 'exempt',
-        tax_name: payload.taxName,
-        tax_code: payload.taxCode,
-        tax_rate: 0,
-        tax_amount: 0,
-        net_amount: contracted,
-        amount: contracted,
+        gross_amount: contracted,
+        discount_type: adjusted.discountType,
+        discount_rate: adjusted.discountRate,
+        discount_amount: adjusted.discountAmount,
+        discount_reason: adjusted.discountReason,
+        taxable_amount: adjusted.taxableAmount,
+        tax_mode: adjusted.taxMode,
+        tax_name: adjusted.taxName,
+        tax_code: adjusted.taxCode,
+        tax_rate: adjusted.taxRate,
+        tax_amount: adjusted.taxAmount,
+        net_amount: adjusted.netAmount,
+        amount: adjusted.netAmount,
         item_type: itemType,
         procedure_id: payload.internalServiceModel === 'Procedure' ? payload.internalServiceId : undefined,
         procedure_code: payload.internalServiceModel === 'Procedure' ? payload.serviceCode : undefined,
@@ -234,8 +282,8 @@ async function addOPDCharge(patientId, payload, user) {
         standard_amount: quote.amounts.hospitalStandard,
         contracted_amount: quote.amounts.contracted,
         eligible_amount: quote.amounts.eligible,
-        patient_liability: quote.amounts.patientLiability,
-        sponsor_liability: quote.amounts.sponsorLiability,
+        patient_liability: adjusted.patientLiability,
+        sponsor_liability: adjusted.sponsorLiability,
         non_admissible_amount: quote.amounts.nonAdmissible,
         contractual_adjustment: quote.amounts.hospitalAdjustment,
         hospital_concession: quote.amounts.hospitalConcession,
@@ -245,7 +293,11 @@ async function addOPDCharge(patientId, payload, user) {
           taxExemptionReason: payload.taxExemptionReason || '',
           createdFrom: payload.createdFrom || 'OPDRevenueWorkspace',
           pricingResultType: quote.resultType,
-          fallbackReason: quote.fallbackReason
+          fallbackReason: quote.fallbackReason,
+          financialPolicy: policy.policySnapshot,
+          selectedMode: policy.selectedMode,
+          requiredNow: policy.requiredNow,
+          clearanceState: policy.clearanceState
         }
       }]
     });
@@ -299,7 +351,7 @@ async function addOPDCharge(patientId, payload, user) {
         session
       });
     }
-    return { bill, quote, alreadyExists: false };
+    return { bill, quote, financialPolicy: policy, alreadyExists: false };
   });
 }
 
@@ -631,6 +683,30 @@ async function recordOPDPayment(patientId, payload, user) {
       invoices.reduce((sum, row) => sum + Number(row.balance_due || 0), 0) +
       bills.reduce((sum, row) => sum + Number(row.balance_due || 0), 0)
     );
+    if (discountRequested > 0) {
+      await resolveFinancialPolicy({
+        hospitalId,
+        user,
+        encounterType: 'OPD',
+        serviceType: 'SETTLEMENT',
+        serviceCode: 'OPD-SETTLEMENT',
+        payerCategory: 'SELF',
+        patientLiability: outstandingBefore,
+        sponsorLiability: 0,
+        contractedAmount: outstandingBefore,
+        adjustments: {
+          discountType: 'fixed',
+          discountAmount: discountRequested,
+          discountReason: payload.settlementDiscountReason
+        }
+      });
+    }
+    if (taxAdjustment !== 0 && !_hasActionPermission(user, 'tax_override')) {
+      throw financialError('Tax adjustment requires dedicated tax override permission', 403, 'TAX_OVERRIDE_PERMISSION_REQUIRED');
+    }
+    if (taxAdjustment !== 0 && !String(payload.taxAdjustmentReason || payload.notes || '').trim()) {
+      throw financialError('Tax adjustment reason is required', 400, 'TAX_OVERRIDE_REASON_REQUIRED');
+    }
     const effectiveOutstanding = amount(outstandingBefore + taxAdjustment);
     if (effectiveOutstanding < 0) throw financialError('Tax adjustment cannot reduce the outstanding amount below zero');
     if (discountRequested > effectiveOutstanding + 0.01) throw financialError('Settlement discount cannot exceed outstanding amount');

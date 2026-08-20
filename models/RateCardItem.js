@@ -41,6 +41,14 @@ const rateCardItemSchema = new mongoose.Schema({
   externalCode: { type: String, required: true, trim: true, uppercase: true },
   externalName: { type: String, required: true, trim: true },
   serviceType: { type: String, enum: ['consultation', 'laboratory', 'radiology', 'procedure', 'ot', 'bed', 'pharmacy', 'equipment', 'other'], required: true },
+  // Optional clinician-specific tariff dimensions. This keeps patient-facing
+  // consultation pricing in the central rate-card rather than Doctor payroll fields.
+  clinicianContext: {
+    doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', index: true },
+    encounterType: { type: String, enum: ['OPD', 'IPD', 'ANY'], default: 'ANY' },
+    visitType: { type: String, enum: ['NEW', 'FOLLOW_UP', 'ROUND', 'ANY'], default: 'ANY' },
+    wardEntitlement: { type: String, enum: ['general', 'semi_private', 'private', 'deluxe', 'icu', 'day_care', 'not_applicable', 'ANY'], default: 'ANY' }
+  },
   specialty: { type: String, trim: true },
   category: { type: String, trim: true },
   normalizedCategory: { type: String, trim: true, lowercase: true, index: true },
@@ -115,9 +123,20 @@ const rateCardItemSchema = new mongoose.Schema({
   sourceRow: { page: Number, serialNumber: Number, sheet: String, annexure: String, raw: mongoose.Schema.Types.Mixed }
 }, { timestamps: true });
 
-rateCardItemSchema.index({ rateCardId: 1, externalCode: 1 }, { unique: true });
+// One external payer code may legitimately have multiple clinician-context
+// variants (doctor/new-vs-follow-up/IPD ward). Keep normal service rows unique
+// while allowing those tariff dimensions to coexist in the same rate card.
+rateCardItemSchema.index({
+  rateCardId: 1,
+  externalCode: 1,
+  'clinicianContext.doctorId': 1,
+  'clinicianContext.encounterType': 1,
+  'clinicianContext.visitType': 1,
+  'clinicianContext.wardEntitlement': 1
+}, { unique: true, name: 'rateCard_external_clinician_context_unique' });
 rateCardItemSchema.index({ hospitalId: 1, 'internalService.model': 1, 'internalService.id': 1, 'internalService.mappingStatus': 1 });
 rateCardItemSchema.index({ hospitalId: 1, serviceType: 1, normalizedCategory: 1 });
+rateCardItemSchema.index({ hospitalId: 1, rateCardId: 1, 'clinicianContext.doctorId': 1, 'clinicianContext.encounterType': 1, 'clinicianContext.visitType': 1, 'clinicianContext.wardEntitlement': 1 });
 
 rateCardItemSchema.pre('validate', function normalize(next) {
   this.externalCode = String(this.externalCode || '').trim().toUpperCase();

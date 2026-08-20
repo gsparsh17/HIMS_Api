@@ -14,6 +14,9 @@ function dto({ serviceType, row, name, code, rate, category, source }) {
     name: clean(name),
     aliases: [],
     department: row?.department_id || null,
+    category: clean(category || row?.category),
+    internalServiceModel: source === 'LabTest' ? 'LabTest' : source === 'ImagingTest' ? 'ImagingTest' : source === 'Procedure' ? 'Procedure' : undefined,
+    internalServiceId: row?._id || null,
     defaultRate: Number(rate || 0),
     taxProfile: { mode: 'exclusive', rate: 0 },
     billingPolicy: serviceType === 'MANUAL' ? 'PERMISSION_REQUIRED' : 'STANDARD',
@@ -32,7 +35,7 @@ async function searchServiceCatalog({ user, query, encounterType = 'OPD', limit 
   const [labs, imaging, procedures, charges] = await Promise.all([
     LabTest.find({ hospitalId, is_active: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
     ImagingTest.find({ hospitalId, is_active: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
-    Procedure.find({ is_active: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
+    Procedure.find({ hospitalId, is_active: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
     HospitalCharges.findOne({ hospital: hospitalId }).sort({ effectiveFrom: -1 }).lean()
   ]);
 

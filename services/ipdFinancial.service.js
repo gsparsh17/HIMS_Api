@@ -10,6 +10,7 @@ const FinancialTransaction = require('../models/FinancialTransaction');
 const Sale = require('../models/Sale');
 const { money, nextFinancialNumber } = require('../utils/financeNumbers');
 const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
+const { resolveFinancialPolicy } = require('./financialPolicy.service');
 const { activatePackageEpisode, recordPackageUtilization, reversePackageUtilization } = require('./packageAdjudication.service');
 const { activeCoverage } = require('./coverage.service');
 const { replaceCoverageUtilization, reverseCoverageUtilization } = require('./coverageUtilization.service');
@@ -689,7 +690,7 @@ async function addManualCharge(payload, user) {
       internalServiceId: payload.internalServiceId,
       payerServiceCode: payload.externalCode,
       internalCode: payload.serviceCode,
-      standardAmount: standardRate,
+      standardAmount: payload.internalServiceId ? undefined : standardRate,
       quantity,
       sameOtSessionIndex: payload.sameOtSessionIndex,
       bilateralSecond: payload.bilateralSecond,
@@ -719,6 +720,39 @@ async function addManualCharge(payload, user) {
   }
 
   const contracted = money(quote.amounts.contracted);
+  const coverageForPolicy = await activeCoverage(admission.hospitalId, admission._id);
+  const policy = await resolveFinancialPolicy({
+    hospitalId: admission.hospitalId,
+    user,
+    encounterType: 'IPD',
+    serviceType: payload.serviceType || payload.chargeType,
+    serviceCategory: payload.serviceCategory,
+    serviceCode: payload.serviceCode || payload.externalCode,
+    payerCategory: coverageForPolicy?.payerCategory || (coverageForPolicy ? 'SPONSORED' : 'SELF'),
+    departmentId: admission.departmentId,
+    selectedMode: payload.selectedMode || admission.financialPolicySnapshot?.selectedMode,
+    requestedDeposit: payload.requestedDeposit,
+    patientLiability: quote.amounts.patientLiability,
+    sponsorLiability: quote.amounts.sponsorLiability,
+    contractedAmount: contracted,
+    adjustments: {
+      discountType: payload.discountType,
+      discountRate: payload.discountRate,
+      discountAmount: payload.discountAmount ?? payload.discount,
+      discountValue: payload.discountValue,
+      discountReason: payload.discountReason,
+      taxMode: payload.taxMode,
+      taxRate: payload.taxRate
+    },
+    overrideReason: payload.overrideReason
+  });
+  const adjusted = policy.amounts;
+  quote.amounts = {
+    ...quote.amounts,
+    patientLiability: adjusted.patientLiability,
+    sponsorLiability: adjusted.sponsorLiability,
+    hospitalConcession: money(Number(quote.amounts.hospitalConcession || 0) + adjusted.discountAmount)
+  };
 
   const charge = await IPDCharge.create({
     hospitalId: admission.hospitalId,
@@ -728,20 +762,20 @@ async function addManualCharge(payload, user) {
     description: payload.description,
     quantity,
     rate: money(contracted / quantity),
-    discountType: payload.discountType === 'percentage' ? 'percentage' : 'fixed',
-    discountRate: optionalMoney(payload.discountRate),
-    discountAmount: optionalMoney(payload.discountAmount ?? payload.discount),
-    discountReason: payload.discountReason,
-    discountApprovedBy: payload.discountApprovedBy || (Number(payload.discountAmount ?? payload.discount ?? 0) > 0 ? user?._id : undefined),
-    discountApprovedAt: Number(payload.discountAmount ?? payload.discount ?? 0) > 0 ? operationNow() : undefined,
-    discount: optionalMoney(payload.discountAmount ?? payload.discount),
-    taxMode: ['inclusive', 'exempt'].includes(payload.taxMode) ? payload.taxMode : 'exclusive',
-    taxName: payload.taxName,
-    taxCode: payload.taxCode,
-    taxRate: optionalMoney(payload.taxRate),
-    taxAmount: optionalMoney(payload.taxAmount ?? payload.tax),
-    taxExemptionReason: payload.taxExemptionReason,
-    tax: optionalMoney(payload.taxAmount ?? payload.tax),
+    discountType: adjusted.discountType,
+    discountRate: adjusted.discountRate,
+    discountAmount: adjusted.discountAmount,
+    discountReason: adjusted.discountReason,
+    discountApprovedBy: adjusted.discountAmount > 0 ? user?._id : undefined,
+    discountApprovedAt: adjusted.discountAmount > 0 ? operationNow() : undefined,
+    discount: adjusted.discountAmount,
+    taxMode: adjusted.taxMode,
+    taxName: adjusted.taxName,
+    taxCode: adjusted.taxCode,
+    taxRate: adjusted.taxRate,
+    taxAmount: adjusted.taxAmount,
+    taxExemptionReason: adjusted.taxExemptionReason,
+    tax: adjusted.taxAmount,
     sourceModule: payload.sourceModule || 'Manual',
     sourceId: payload.sourceId,
     sourceReference: payload.sourceReference,
@@ -754,12 +788,16 @@ async function addManualCharge(payload, user) {
       internalServiceModel: payload.internalServiceModel,
       internalServiceId: payload.internalServiceId
     }),
-    patientLiability: quote.amounts.patientLiability,
-    sponsorLiability: quote.amounts.sponsorLiability,
-    nonAdmissibleAmount: quote.amounts.nonAdmissible
+    patientLiability: adjusted.patientLiability,
+    sponsorLiability: adjusted.sponsorLiability,
+    nonAdmissibleAmount: quote.amounts.nonAdmissible,
+    financialPolicySnapshot: policy.policySnapshot,
+    selectedBillingMode: policy.selectedMode,
+    requiredNowAmount: policy.requiredNow,
+    clearanceState: policy.clearanceState
   });
 
-  const coverage = await activeCoverage(admission.hospitalId, admission._id);
+  const coverage = coverageForPolicy;
   await replaceCoverageUtilization({
     coverage,
     quote,
@@ -1753,7 +1791,7 @@ async function createCreditNote(invoiceId, payload, user) {
       throw error;
     }
 
-    if (!['IPD Interim', 'IPD Final', 'Pharmacy', 'Mixed', 'Other'].includes(invoice.invoice_type) ||
+    if (!['Appointment', 'Procedure', 'Lab Test', 'Radiology', 'IPD Interim', 'IPD Final', 'Pharmacy', 'Mixed', 'Other'].includes(invoice.invoice_type) ||
         invoice.document_stage === 'VOID') {
       const error = new Error('This invoice cannot receive a credit note');
       error.statusCode = 409;

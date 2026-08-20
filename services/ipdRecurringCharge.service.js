@@ -8,6 +8,7 @@ const HospitalCharges = require('../models/HospitalCharges');
 const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
 const { activeCoverage } = require('./coverage.service');
 const { replaceCoverageUtilization } = require('./coverageUtilization.service');
+const { resolveFinancialPolicy } = require('./financialPolicy.service');
 const { DAILY_TARIFF_CODES, resolveHospitalTariffRate, wardEntitlementFrom } = require('./hospitalTariff.service');
 const { userHospitalId, normalizeObjectId } = require('../utils/hospitalScope');
 
@@ -178,6 +179,32 @@ async function createDailyCharge({
     quantity: 1
   });
 
+  const coverage = await activeCoverage(admission.hospitalId, admission._id);
+  const policy = await resolveFinancialPolicy({
+    hospitalId: admission.hospitalId,
+    user,
+    encounterType: 'IPD',
+    serviceType,
+    serviceCategory: kind === 'bed' ? 'ACCOMMODATION' : (kind === 'nursing' ? 'NURSING' : 'DOCTOR_VISIT'),
+    serviceCode: externalCode,
+    payerCategory: coverage?.payerCategory || (coverage ? 'SPONSORED' : 'SELF'),
+    departmentId: admission.departmentId,
+    urgency: 'ROUTINE',
+    effectiveAt: chargeDate,
+    selectedMode: undefined,
+    inheritedMode: admission.selectedBillingMode,
+    patientLiability: quote.amounts.patientLiability,
+    sponsorLiability: quote.amounts.sponsorLiability,
+    contractedAmount: quote.amounts.contracted,
+    adjustments: {}
+  });
+  quote.amounts = {
+    ...quote.amounts,
+    patientLiability: policy.amounts.patientLiability,
+    sponsorLiability: policy.amounts.sponsorLiability,
+    hospitalConcession: Number((Number(quote.amounts.hospitalConcession || 0) + Number(policy.amounts.discountAmount || 0)).toFixed(2))
+  };
+
   try {
     const charge = await IPDCharge.create({
       hospitalId: admission.hospitalId,
@@ -186,7 +213,17 @@ async function createDailyCharge({
       chargeType,
       description,
       quantity: 1,
-      rate: Number(quote.amounts.contracted ?? rate ?? 0),
+      rate: Number(policy.amounts.grossAmount || quote.amounts.contracted || rate || 0),
+      discountType: policy.amounts.discountType,
+      discountRate: policy.amounts.discountRate,
+      discountAmount: policy.amounts.discountAmount,
+      discountReason: policy.amounts.discountReason || undefined,
+      taxMode: policy.amounts.taxMode,
+      taxName: policy.amounts.taxName,
+      taxCode: policy.amounts.taxCode,
+      taxRate: policy.amounts.taxRate,
+      taxAmount: policy.amounts.taxAmount,
+      taxExemptionReason: policy.amounts.taxExemptionReason || undefined,
       sourceModule: 'RecurringDaily',
       sourceId: segment?._id || bed?._id,
       sourceReference: {
@@ -204,13 +241,15 @@ async function createDailyCharge({
         internalServiceModel,
         internalServiceId
       }),
+      financialPolicySnapshot: policy.policySnapshot,
+      selectedBillingMode: policy.selectedMode,
+      requiredNowAmount: policy.requiredNow,
+      clearanceState: policy.clearanceState,
       patientLiability: quote.amounts.patientLiability,
       sponsorLiability: quote.amounts.sponsorLiability,
       nonAdmissibleAmount: quote.amounts.nonAdmissible,
       notes: `Automatic IPD daily charge (${externalCode})`
     });
-
-    const coverage = await activeCoverage(admission.hospitalId, admission._id);
 
     await replaceCoverageUtilization({
       coverage,

@@ -78,6 +78,13 @@ const appointmentSchema = new mongoose.Schema({
   coverageId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdmissionCoverage', index: true },
   sponsorType: { type: String, default: 'self' },
   sponsorName: { type: String, trim: true },
+  selectedBillingMode: {
+    type: String,
+    enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION']
+  },
+  financialPolicySnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  requiredNowAmount: { type: Number, default: 0, min: 0 },
+  financialClearanceState: { type: String, trim: true },
 
   visit_mode: {
     type: String,

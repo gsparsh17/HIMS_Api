@@ -114,7 +114,7 @@ const ROLE_PRESET = Object.freeze({
   registrar: {
     dashboard: 'manage',
     registration_opd: 'manage',
-    ipd: 'view',
+    ipd: 'manage',
     billing_finance: 'manage',
     abdm: 'manage',
     reports: 'view'
@@ -122,7 +122,7 @@ const ROLE_PRESET = Object.freeze({
   receptionist: {
     dashboard: 'manage',
     registration_opd: 'manage',
-    ipd: 'view',
+    ipd: 'manage',
     billing_finance: 'manage',
     abdm: 'manage',
     reports: 'view'
@@ -218,37 +218,31 @@ const ROLE_PRESET = Object.freeze({
 });
 
 const ROLE_ACTION_PRESET = Object.freeze({
-  nurse: { ipd: ['transfer_complete'] },
-  staff: { ipd: ['transfer_reserve'] },
+  nurse: { ipd: ['transfer_complete', 'ipd_nursing_write', 'ipd_medication_write', 'ipd_discharge_support'] },
+  staff: { ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support', 'billing_create'] },
   registrar: {
-    ipd: ['transfer_reserve'],
+    ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support'],
     billing_finance: [
-      'pricing_override',
       'settlement',
-      'final_clearance',
       'billing_create',
       'billing_edit',
-      'billing_delete_charge',
-      'billing_apply_discount',
-      'billing_finalize'
+      'billing_apply_discount'
     ]
   },
   receptionist: {
-    ipd: ['transfer_reserve'],
+    ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support'],
     billing_finance: [
-      'pricing_override',
       'settlement',
-      'final_clearance',
       'billing_create',
       'billing_edit',
-      'billing_delete_charge',
-      'billing_apply_discount',
-      'billing_finalize'
+      'billing_apply_discount'
     ]
   },
   bed_manager: { ipd: ['transfer_reserve', 'transfer_approve'] },
-  doctor: { ipd: [] },
-  ot_staff: { ipd: ['transfer_complete'] },
+  doctor: { ipd: ['ipd_round_write', 'ipd_clinical_write', 'ipd_discharge_write', 'billing_create'] },
+  pathology_staff: { laboratory: ['billing_create'] },
+  radiology_staff: { radiology: ['billing_create'] },
+  ot_staff: { ipd: ['transfer_complete'], operation_theatre: ['billing_create'] },
   hr: { hr_staff: ['payroll_publish', 'biometric_manage', 'user_access_manage'] },
   hr_manager: { hr_staff: ['payroll_publish', 'biometric_manage', 'user_access_manage'] },
   accountant: {
@@ -258,12 +252,16 @@ const ROLE_ACTION_PRESET = Object.freeze({
       'claim_export',
       'preauth_decide',
       'pricing_override',
+      'discount_override',
       'settlement',
+      'refund',
       'final_clearance',
       'billing_create',
       'billing_edit',
       'billing_delete_charge',
       'billing_apply_discount',
+      'billing_mode_override',
+      'tax_override',
       'billing_finalize'
     ]
   },
@@ -274,12 +272,16 @@ const ROLE_ACTION_PRESET = Object.freeze({
       'claim_export',
       'preauth_decide',
       'pricing_override',
+      'discount_override',
       'settlement',
+      'refund',
       'final_clearance',
       'billing_create',
       'billing_edit',
       'billing_delete_charge',
       'billing_apply_discount',
+      'billing_mode_override',
+      'tax_override',
       'billing_finalize'
     ]
   }

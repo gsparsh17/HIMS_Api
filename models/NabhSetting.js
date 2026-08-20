@@ -15,6 +15,74 @@ const notificationChannelSchema = new mongoose.Schema({
   headers: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { _id: false });
 
+
+const paymentModeSchema = new mongoose.Schema({
+  allowedModes: {
+    type: [String],
+    enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'],
+    default: undefined
+  },
+  defaultMode: {
+    type: String,
+    enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION']
+  },
+  partial: {
+    type: { type: String, enum: ['PERCENTAGE', 'FIXED', 'MINIMUM'], default: 'PERCENTAGE' },
+    percentage: { type: Number, min: 0, max: 100, default: 30 },
+    fixedAmount: { type: Number, min: 0, default: 0 },
+    minimumAmount: { type: Number, min: 0, default: 0 },
+    allowUserAmount: { type: Boolean, default: false },
+    minUserAmount: { type: Number, min: 0, default: 0 },
+    maxUserAmount: { type: Number, min: 0, default: 0 }
+  }
+}, { _id: false });
+
+const financialPolicyRuleSchema = new mongoose.Schema({
+  enabled: { type: Boolean, default: true },
+  encounterType: { type: String, enum: ['ANY', 'OPD', 'IPD', 'EMERGENCY'], default: 'ANY' },
+  urgency: { type: String, enum: ['ANY', 'ROUTINE', 'URGENT', 'STAT', 'EMERGENCY'], default: 'ANY' },
+  effectiveFrom: Date,
+  effectiveTo: Date,
+  serviceType: { type: String, trim: true, uppercase: true },
+  serviceCategory: { type: String, trim: true, uppercase: true },
+  serviceCode: { type: String, trim: true, uppercase: true },
+  payerCategory: { type: String, trim: true, uppercase: true },
+  departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+  allowedModes: [{ type: String, enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'] }],
+  defaultMode: { type: String, enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'] },
+  partial: {
+    type: { type: String, enum: ['PERCENTAGE', 'FIXED', 'MINIMUM'] },
+    percentage: { type: Number, min: 0, max: 100 },
+    fixedAmount: { type: Number, min: 0 },
+    minimumAmount: { type: Number, min: 0 },
+    allowUserAmount: Boolean,
+    minUserAmount: { type: Number, min: 0 },
+    maxUserAmount: { type: Number, min: 0 }
+  },
+  discount: {
+    enabled: Boolean,
+    defaultType: { type: String, enum: ['percentage', 'fixed'] },
+    defaultValue: { type: Number, min: 0 },
+    maxPercentage: { type: Number, min: 0, max: 100 },
+    maxFixedAmount: { type: Number, min: 0 },
+    registrarMaxPercentage: { type: Number, min: 0, max: 100 },
+    financeMaxPercentage: { type: Number, min: 0, max: 100 },
+    requireReasonAbove: { type: Number, min: 0 },
+    allowFixed: Boolean,
+    allowPercentage: Boolean
+  },
+  tax: {
+    enabled: Boolean,
+    mode: { type: String, enum: ['exclusive', 'inclusive', 'exempt'] },
+    name: String,
+    code: String,
+    defaultRate: { type: Number, min: 0, max: 100 },
+    minRate: { type: Number, min: 0, max: 100 },
+    maxRate: { type: Number, min: 0, max: 100 },
+    exemptionReason: String
+  }
+}, { _id: true });
+
 const nabhSettingSchema = new mongoose.Schema({
   hospitalId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -48,6 +116,48 @@ const nabhSettingSchema = new mongoose.Schema({
       type: [String],
       default: ['cash', 'card', 'upi', 'insurance', 'credit']
     }
+  },
+
+  financialPolicy: {
+    enabled: { type: Boolean, default: true },
+    payment: {
+      OPD: { type: paymentModeSchema, default: () => ({ allowedModes: ['FULL_PREPAY', 'POSTPAID'], defaultMode: 'FULL_PREPAY' }) },
+      IPD: { type: paymentModeSchema, default: () => ({ allowedModes: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID'], defaultMode: 'POSTPAID' }) },
+      EMERGENCY: { type: paymentModeSchema, default: () => ({ allowedModes: ['POSTPAID', 'AUTHORIZED_EXCEPTION'], defaultMode: 'POSTPAID' }) }
+    },
+    discount: {
+      enabled: { type: Boolean, default: true },
+      defaultType: { type: String, enum: ['percentage', 'fixed'], default: 'percentage' },
+      defaultValue: { type: Number, min: 0, default: 0 },
+      maxPercentage: { type: Number, min: 0, max: 100, default: 0 },
+      maxFixedAmount: { type: Number, min: 0, default: 0 },
+      registrarMaxPercentage: { type: Number, min: 0, max: 100, default: 0 },
+      financeMaxPercentage: { type: Number, min: 0, max: 100, default: 0 },
+      requireReasonAbove: { type: Number, min: 0, default: 0 },
+      allowFixed: { type: Boolean, default: true },
+      allowPercentage: { type: Boolean, default: true }
+    },
+    tax: {
+      enabled: { type: Boolean, default: true },
+      mode: { type: String, enum: ['exclusive', 'inclusive', 'exempt'], default: 'exempt' },
+      name: { type: String, trim: true, default: 'Healthcare exempt' },
+      code: { type: String, trim: true, default: '' },
+      defaultRate: { type: Number, min: 0, max: 100, default: 0 },
+      minRate: { type: Number, min: 0, max: 100, default: 0 },
+      maxRate: { type: Number, min: 0, max: 100, default: 0 },
+      exemptionReason: { type: String, trim: true, default: 'Configured hospital healthcare tax policy' }
+    },
+    rules: { type: [financialPolicyRuleSchema], default: [] }
+  },
+  dischargePolicy: {
+    pendingInvestigations: {
+      blockLab: { type: Boolean, default: true },
+      blockRadiology: { type: Boolean, default: true },
+      allowAuthorisedException: { type: Boolean, default: true }
+    },
+    requireMedicationCompletion: { type: Boolean, default: true },
+    requireSummaryFinalized: { type: Boolean, default: true },
+    requireFinancialClearance: { type: Boolean, default: true }
   },
   notifications: {
     channels: {

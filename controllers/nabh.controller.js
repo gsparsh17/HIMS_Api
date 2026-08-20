@@ -68,6 +68,93 @@ function mergeNotificationChannels(existingChannels = [], incomingChannels) {
   });
 }
 
+const FINANCIAL_MODES = new Set(['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION']);
+
+function validatePaymentModeConfig(config = {}, label = 'financial policy') {
+  const allowedModes = Array.from(new Set((config.allowedModes || []).map((value) => String(value || '').trim().toUpperCase()).filter(Boolean)));
+  if (allowedModes.some((mode) => !FINANCIAL_MODES.has(mode))) {
+    const error = new Error(`${label} contains an unsupported payment mode`);
+    error.statusCode = 400;
+    throw error;
+  }
+  const defaultMode = String(config.defaultMode || '').trim().toUpperCase();
+  if (defaultMode && allowedModes.length && !allowedModes.includes(defaultMode)) {
+    const error = new Error(`${label} default mode must be included in allowed modes`);
+    error.statusCode = 400;
+    throw error;
+  }
+  const partial = config.partial || {};
+  if (partial.percentage !== undefined && (Number(partial.percentage) < 0 || Number(partial.percentage) > 100)) {
+    const error = new Error(`${label} partial percentage must be between 0 and 100`);
+    error.statusCode = 400;
+    throw error;
+  }
+  if (partial.allowUserAmount && Number(partial.maxUserAmount || 0) > 0 && Number(partial.minUserAmount || 0) > Number(partial.maxUserAmount || 0)) {
+    const error = new Error(`${label} minimum user deposit cannot exceed maximum user deposit`);
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function validateDiscountTaxConfig(discount = {}, tax = {}, label = 'financial policy') {
+  const maxPct = Number(discount.maxPercentage ?? 0);
+  const registrarMax = Number(discount.registrarMaxPercentage ?? maxPct);
+  const financeMax = Number(discount.financeMaxPercentage ?? maxPct);
+  for (const [name, value] of [['maximum discount', maxPct], ['registrar maximum discount', registrarMax], ['finance maximum discount', financeMax]]) {
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
+      const error = new Error(`${label} ${name} must be between 0 and 100`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+  if (registrarMax > maxPct) {
+    const error = new Error(`${label} registrar discount limit cannot exceed the hospital maximum`);
+    error.statusCode = 400;
+    throw error;
+  }
+  if (financeMax > maxPct) {
+    const error = new Error(`${label} finance discount limit cannot exceed the hospital maximum`);
+    error.statusCode = 400;
+    throw error;
+  }
+  const defaultType = String(discount.defaultType || 'percentage').toLowerCase();
+  const defaultValue = Number(discount.defaultValue || 0);
+  if (defaultType === 'percentage' && defaultValue > maxPct) {
+    const error = new Error(`${label} default discount cannot exceed the hospital percentage maximum`);
+    error.statusCode = 400;
+    throw error;
+  }
+  if (defaultType === 'fixed' && defaultValue > Number(discount.maxFixedAmount || 0)) {
+    const error = new Error(`${label} default fixed discount cannot exceed the hospital fixed maximum`);
+    error.statusCode = 400;
+    throw error;
+  }
+  const taxMin = Number(tax.minRate ?? 0);
+  const taxDefault = Number(tax.defaultRate ?? 0);
+  const taxMax = Number(tax.maxRate ?? taxDefault);
+  if ([taxMin, taxDefault, taxMax].some((value) => !Number.isFinite(value) || value < 0 || value > 100) || taxMin > taxDefault || taxDefault > taxMax) {
+    const error = new Error(`${label} tax rates must satisfy 0 <= minimum <= default <= maximum <= 100`);
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function validateFinancialPolicyConfig(policy = {}) {
+  for (const encounter of ['OPD', 'IPD', 'EMERGENCY']) {
+    validatePaymentModeConfig(policy.payment?.[encounter] || {}, `${encounter} financial policy`);
+  }
+  validateDiscountTaxConfig(policy.discount || {}, policy.tax || {}, 'Hospital financial policy');
+  for (const [index, rule] of (policy.rules || []).entries()) {
+    if (rule.effectiveFrom && rule.effectiveTo && new Date(rule.effectiveFrom) > new Date(rule.effectiveTo)) {
+      const error = new Error(`Financial rule ${index + 1} effective-from date cannot be after effective-to date`);
+      error.statusCode = 400;
+      throw error;
+    }
+    validatePaymentModeConfig(rule || {}, `Financial rule ${index + 1}`);
+    validateDiscountTaxConfig(rule.discount || policy.discount || {}, rule.tax || policy.tax || {}, `Financial rule ${index + 1}`);
+  }
+}
+
 function publicSetting(setting) {
   const data = setting?.toObject ? setting.toObject() : { ...(setting || {}) };
   for (const channel of data.notifications?.channels || []) delete channel.apiKey;
@@ -318,7 +405,7 @@ exports.getSettings = async (req, res) => {
 exports.updateSettings = async (req, res) => {
   const hospitalId = requireHospitalId(req);
   const allowed = [
-    'patientRegistration', 'notifications', 'security', 'clinical',
+    'patientRegistration', 'financialPolicy', 'dischargePolicy', 'notifications', 'security', 'clinical',
     'medication', 'operations', 'interoperability'
   ];
   const setting = await getOrCreateNabhSetting(hospitalId, req.user?._id, { includeSecrets: true });
@@ -330,6 +417,7 @@ exports.updateSettings = async (req, res) => {
     if (key === 'notifications' && Array.isArray(incoming?.channels)) {
       merged.channels = mergeNotificationChannels(existing.channels, incoming.channels);
     }
+    if (key === 'financialPolicy') validateFinancialPolicyConfig(merged);
     setting.set(key, merged);
   }
   setting.updatedBy = req.user?._id;

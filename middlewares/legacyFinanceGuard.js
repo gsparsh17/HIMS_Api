@@ -15,7 +15,7 @@ async function blockLegacyIpdDirectBilling(req, res, next) {
       success: false,
       code: 'LEGACY_IPD_BILLING_DISABLED',
       error: 'Direct IPD Bill/Invoice creation is disabled. Post an operational charge and use the centralized IPD invoice workflow.',
-      canonicalEndpoint: '/api/finance/charges/post'
+      canonicalEndpoint: '/api/source-finance/:sourceModule/:sourceId/charge'
     });
   } catch (error) { return next(error); }
 }

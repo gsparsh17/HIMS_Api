@@ -6,6 +6,7 @@ const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
+const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
 
 
 
@@ -101,13 +102,32 @@ exports.createProcedureRequest = async (req, res) => {
       usedAt: request.createdAt || operationNow()
     });
 
+    // Automatic source finance for ProcedureRequest: creating the clinical request creates/reuses
+    // the authoritative obligation. Pricing/clearance failures do not delete the clinical
+    // order; the request remains PENDING_CHARGE and can be resumed from Front Desk/Finance.
+    let financial = null;
+    let financialWarning = null;
+    if ((request.sourceType === 'IPD' && request.admissionId) || (request.sourceType === 'OPD' && request.appointmentId)) {
+      try {
+        financial = await postSourceCharge({
+          sourceModule: 'ProcedureRequest',
+          sourceId: request._id,
+          idempotencyKey: `ProcedureRequest:${request._id}:charge`,
+          user: req.user
+        });
+      } catch (financeError) {
+        financialWarning = { code: financeError.code || 'SOURCE_FINANCE_PENDING', message: financeError.message };
+        console.warn('ProcedureRequest automatic source-finance pending:', financeError.message);
+      }
+    }
+
     // Populate response
-    const populated = await ProcedureRequest.findById(request._id)
+    const populated = await ProcedureRequest.findOne({ _id: request._id, hospitalId })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
       .populate('procedureId', 'code name category base_price');
 
-    res.status(201).json({ success: true, data: populated });
+    res.status(201).json({ success: true, data: populated, financial: financial ? { chargeId: financial.charge?._id || null, billId: financial.bill?._id || null, invoiceId: financial.invoice?._id || null, financialPolicy: financial.financialPolicy || null } : null, financialWarning });
   } catch (error) {
     console.error('Error creating procedure request:', error);
     const status = Number(error?.statusCode || (['ValidationError', 'CastError'].includes(error?.name) ? 400 : 500));
@@ -131,7 +151,8 @@ exports.getProcedureRequests = async (req, res) => {
       limit = 20
     } = req.query;
 
-    const filter = {};
+    const hospitalId = requireHospitalId(req);
+    const filter = { hospitalId };
     if (status) filter.status = status;
     if (patientId) filter.patientId = patientId;
     if (doctorId) filter.doctorId = doctorId;
@@ -175,7 +196,8 @@ exports.getProcedureRequests = async (req, res) => {
 exports.getProcedureRequestById = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await ProcedureRequest.findById(id)
+    const hospitalId = requireHospitalId(req);
+    const request = await ProcedureRequest.findOne({ _id: id, hospitalId })
       .populate('patientId', 'first_name last_name patientId phone dob gender')
       .populate('doctorId', 'firstName lastName specialization')
       .populate('procedureId', 'code name category base_price pre_procedure_instructions post_procedure_instructions')
@@ -199,9 +221,13 @@ exports.updateRequestStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, notes } = req.body;
+    if (status === 'Cancelled' && !String(notes || '').trim()) {
+      return res.status(400).json({ error: 'Cancellation reason is required so the financial reversal is auditable' });
+    }
     const userId = req.user?._id;
+    const hospitalId = requireHospitalId(req);
 
-    const request = await ProcedureRequest.findById(id);
+    const request = await ProcedureRequest.findOne({ _id: id, hospitalId });
     if (!request) {
       return res.status(404).json({ error: 'Procedure request not found' });
     }
@@ -232,10 +258,23 @@ exports.updateRequestStatus = async (req, res) => {
 
     await request.save();
 
+    let financialReversal = null;
+    let financialWarning = null;
+    if (status === 'Cancelled') {
+      try {
+        financialReversal = await reverseSourceFinancials({ sourceModule: 'ProcedureRequest', sourceId: request._id, reason: notes, user: req.user });
+      } catch (financeError) {
+        financialWarning = financeError.message;
+        console.warn('ProcedureRequest cancellation financial reversal pending:', financeError.message);
+      }
+    }
+
     res.json({ 
       success: true, 
       message: `Request status updated to ${status}`, 
-      data: request 
+      data: request,
+      financialReversal,
+      financialWarning
     });
   } catch (error) {
     console.error('Error updating request status:', error);
@@ -248,8 +287,9 @@ exports.addProcedureFindings = async (req, res) => {
   try {
     const { id } = req.params;
     const { findings, complications, post_procedure_instructions } = req.body;
+    const hospitalId = requireHospitalId(req);
 
-    const request = await ProcedureRequest.findById(id);
+    const request = await ProcedureRequest.findOne({ _id: id, hospitalId });
     if (!request) {
       return res.status(404).json({ error: 'Procedure request not found' });
     }
@@ -282,12 +322,13 @@ exports.uploadAttachment = async (req, res) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
+    const hospitalId = requireHospitalId(req);
 
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const request = await ProcedureRequest.findById(id);
+    const request = await ProcedureRequest.findOne({ _id: id, hospitalId });
     if (!request) {
       fs.unlinkSync(req.file.path);
       return res.status(404).json({ error: 'Procedure request not found' });
@@ -337,8 +378,9 @@ exports.getRequestsByAdmission = async (req, res) => {
       return res.status(400).json({ error: 'Admission ID is required' });
     }
     
+    const hospitalId = requireHospitalId(req);
     const requests = await ProcedureRequest.find({ 
-      admissionId, 
+      hospitalId, admissionId, 
       sourceType: 'IPD' 
     })
       .populate('patientId', 'first_name last_name patientId')
@@ -365,8 +407,9 @@ exports.getPendingIPDRequests = async (req, res) => {
       return res.status(400).json({ error: 'Admission ID is required' });
     }
     
+    const hospitalId = requireHospitalId(req);
     const requests = await ProcedureRequest.find({
-      admissionId,
+      hospitalId, admissionId,
       sourceType: 'IPD',
       status: { $in: ['Pending', 'Approved', 'Scheduled'] }
     })
@@ -390,7 +433,8 @@ exports.getRequestsByPatient = async (req, res) => {
       return res.status(400).json({ error: 'Patient ID is required' });
     }
     
-    const requests = await ProcedureRequest.find({ patientId })
+    const hospitalId = requireHospitalId(req);
+    const requests = await ProcedureRequest.find({ hospitalId, patientId })
       .populate('procedureId', 'code name category')
       .populate('doctorId', 'firstName lastName')
       .populate('admissionId', 'admissionNumber admissionDate')
@@ -408,9 +452,10 @@ exports.markAsBilled = async (req, res) => {
   try {
     const { id } = req.params;
     const { invoiceId } = req.body;
+    const hospitalId = requireHospitalId(req);
     
-    const request = await ProcedureRequest.findByIdAndUpdate(
-      id,
+    const request = await ProcedureRequest.findOneAndUpdate(
+      { _id: id, hospitalId },
       { is_billed: true, invoiceId },
       { new: true }
     );
@@ -429,26 +474,28 @@ exports.markAsBilled = async (req, res) => {
 // Get dashboard stats
 exports.getDashboardStats = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const today = operationNow();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
 
     const [pending, todayScheduled, totalRequests, completedToday] = await Promise.all([
-      ProcedureRequest.countDocuments({ status: 'Pending' }),
+      ProcedureRequest.countDocuments({ hospitalId, status: 'Pending' }),
       ProcedureRequest.countDocuments({ 
-        scheduledDate: { $gte: today, $lt: tomorrow },
+        hospitalId, scheduledDate: { $gte: today, $lt: tomorrow },
         status: { $in: ['Scheduled', 'Approved'] }
       }),
-      ProcedureRequest.countDocuments(),
+      ProcedureRequest.countDocuments({ hospitalId }),
       ProcedureRequest.countDocuments({ 
-        status: 'Completed',
+        hospitalId, status: 'Completed',
         completedAt: { $gte: today, $lt: tomorrow }
       })
     ]);
 
     // Category-wise breakdown
     const categoryBreakdown = await ProcedureRequest.aggregate([
+      { $match: { hospitalId } },
       { $group: { _id: '$category', count: { $sum: 1 } } },
       { $sort: { count: -1 } }
     ]);

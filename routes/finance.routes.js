@@ -1,10 +1,15 @@
 const express = require('express');
-const { protect, authorize, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
+const { protect, authorize, requireModuleAccess, requireActionPermission, requireAnyModuleAccess } = require('../middlewares/auth');
 const finance = require('../controllers/finance.controller');
 const reconciliation = require('../controllers/reconciliation.controller');
 
 const router = express.Router();
-router.use(protect, requireModuleAccess('billing_finance'));
+router.use(protect);
+// Front Desk/admission users need the server policy contract even when they do
+// not have Finance workspace access. This endpoint only resolves policy/quotes;
+// it does not collect, invoice, refund or override accounting records.
+router.post('/policy/resolve', requireAnyModuleAccess(['billing_finance', 'registration_opd', 'ipd']), finance.resolveFinancialPolicy);
+router.use(requireModuleAccess('billing_finance'));
 
 router.get('/dashboard', finance.getDashboard);
 router.get('/kpis', finance.getCanonicalKpis);

@@ -1,11 +1,13 @@
 const express = require('express');
-const { protect, authorize } = require('../middlewares/auth');
+const { protect } = require('../middlewares/auth');
+const { requireDeskView, requireDeskPreview, requireDeskCommit } = require('../middlewares/deskAuthorization');
 const controller = require('../controllers/desk.controller');
 const router = express.Router();
-router.use(protect, authorize('admin', 'staff', 'registrar', 'receptionist', 'accountant'));
-router.get('/patients/search', controller.searchPatients);
-router.get('/services/search', controller.searchServices);
-router.get('/patients/:patientId/admissions', controller.getPatientAdmissions);
-router.post('/checkout/preview', controller.preview);
-router.post('/checkout/commit', controller.commit);
+
+router.use(protect);
+router.get('/patients/search', requireDeskView, controller.searchPatients);
+router.get('/services/search', requireDeskView, controller.searchServices);
+router.get('/patients/:patientId/admissions', requireDeskView, controller.getPatientAdmissions);
+router.post('/checkout/preview', requireDeskPreview, controller.preview);
+router.post('/checkout/commit', requireDeskCommit, controller.commit);
 module.exports = router;

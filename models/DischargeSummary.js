@@ -16,7 +16,10 @@ const dischargeMedicationSchema = new mongoose.Schema({
   noon: { type: String, trim: true },
   evening: { type: String, trim: true },
   extra: { type: String, trim: true },
-  unit: { type: String, trim: true }
+  unit: { type: String, trim: true },
+  medicineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Medicine' },
+  source: { type: String, enum: ['formulary', 'prescription', 'mar', 'free_text'], default: 'free_text' },
+  freeTextReason: { type: String, trim: true }
 }, { _id: true });
 
 const dischargeSummarySchema = new mongoose.Schema({
@@ -28,7 +31,16 @@ const dischargeSummarySchema = new mongoose.Schema({
   preparedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', required: true },
   admissionDate: { type: Date, required: true },
   dischargeDate: { type: Date, required: true },
-  dischargeType: { type: String, trim: true, default: 'Normal' },
+  dischargeType: { type: String, enum: ['Normal', 'DOR', 'LAMA', 'Referred', 'Death'], default: 'Normal' },
+
+  deathDetails: {
+    chiefComplaints: { type: String, trim: true },
+    causeOfDeath: { type: String, trim: true },
+    summary: { type: String, trim: true },
+    deathDate: Date,
+    deathTime: { type: String, trim: true },
+    deathAt: Date
+  },
 
   finalDiagnosis: { type: String, trim: true },
   chiefComplaints: { type: String, trim: true },

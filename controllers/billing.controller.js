@@ -18,6 +18,10 @@ const { syncLegacyInvoiceReceipt, makeChargeLineKey } = require('../services/leg
 const { requestHospitalId } = require('../utils/hospitalScope');
 const { nextFinancialNumber, money } = require('../utils/financeNumbers');
 const billingPatientService = require('../services/billingPatient.service');
+const patientFinancial = require('../services/patientFinancial.service');
+const { resolveDoctorTariff } = require('../services/doctorTariff.service');
+const { resolveFinancialPolicy } = require('../services/financialPolicy.service');
+const { _hasActionPermission } = require('../middlewares/auth');
 
 // ========== OPD billing scope + ledger helpers ==========
 function billScope(req, extra = {}) {
@@ -355,6 +359,187 @@ async function applyAuthoritativeOpdAppointmentPricing({ hospitalId, patientId, 
   };
 }
 
+
+async function createCanonicalAppointmentBilling(req, payload) {
+  const hospitalId = requestHospitalId(req);
+  const appointment = await Appointment.findOne({
+    _id: payload.appointment_id,
+    hospital_id: hospitalId,
+    is_active: { $ne: false }
+  }).lean();
+  if (!appointment) {
+    const error = new Error('Active appointment not found for this hospital');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (String(appointment.patient_id) !== String(payload.patient_id)) {
+    const error = new Error('Bill patient does not match the appointment patient');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const rootKey = String(
+    req.get('Idempotency-Key') || payload.idempotencyKey || `appointment:${appointment._id}:billing`
+  ).trim();
+  const existingInvoice = await Invoice.findOne({
+    hospital_id: hospitalId,
+    idempotency_key: `${rootKey}:invoice`
+  });
+  if (existingInvoice) {
+    const bills = await Bill.find({ _id: { $in: existingInvoice.bill_ids?.length ? existingInvoice.bill_ids : [existingInvoice.bill_id].filter(Boolean) } });
+    return { bill: bills[0] || null, bills, invoice: existingInvoice, alreadyExists: true };
+  }
+
+  const unsafeClinicalItems = (payload.items || []).filter((item) =>
+    ['Procedure', 'Lab Test', 'Radiology'].includes(item?.item_type)
+      || item?.procedure_id || item?.lab_test_id || item?.radiology_test_id
+  );
+  if (unsafeClinicalItems.length) {
+    const error = new Error('Clinical requests must post their source-linked charge through the canonical source-finance workflow');
+    error.statusCode = 409;
+    error.code = 'SOURCE_FINANCE_REQUIRED';
+    error.canonicalEndpoint = '/api/source-finance/:sourceModule/:sourceId/charge';
+    throw error;
+  }
+
+  const hospitalCharges = await HospitalCharges.findOne({
+    hospital: hospitalId,
+    effectiveFrom: { $lte: operationNow() },
+    is_active: { $ne: false }
+  }).sort({ effectiveFrom: -1, updatedAt: -1 }).lean();
+  const tariff = await resolveDoctorTariff({
+    hospitalId,
+    doctorId: appointment.doctor_id,
+    encounterType: 'OPD',
+    visitType: appointment.appointment_type,
+    appointmentId: appointment._id,
+    serviceDate: appointment.appointment_date
+  });
+  const selectedMode = payload.selectedMode || payload.selectedBillingMode || appointment.selectedBillingMode;
+  const created = [];
+  const sourceItems = Array.isArray(payload.items) ? payload.items : [];
+  let lineNo = 0;
+  for (const item of sourceItems) {
+    const type = String(item.item_type || 'Other');
+    let rate;
+    let description = String(item.description || '').trim();
+    let chargeType = type;
+    let serviceType = type;
+    let serviceCode;
+    let pricingSnapshot;
+    if (type === 'Consultation' || /consultation/i.test(description)) {
+      rate = Number(tariff.amount || 0);
+      description = description || 'OPD Consultation';
+      chargeType = 'Consultation';
+      serviceType = 'consultation';
+      serviceCode = appointment.appointment_type === 'follow-up' ? 'OPD-CONS-FOLLOWUP' : 'OPD-CONS-NEW';
+      pricingSnapshot = tariff.pricingSnapshot;
+    } else if (type === 'Registration Fee' || /registration\s+fee/i.test(description)) {
+      rate = Number(hospitalCharges?.opdCharges?.registrationFee || 0);
+      description = 'OPD Registration Fee';
+      chargeType = 'Registration Fee';
+      serviceType = 'registration';
+      serviceCode = 'OPD-REG';
+    } else {
+      if (!_hasActionPermission(req.user, 'pricing_override')) {
+        const error = new Error('Manual OPD line pricing requires pricing override permission');
+        error.statusCode = 403;
+        error.code = 'MANUAL_PRICING_PERMISSION_REQUIRED';
+        throw error;
+      }
+      rate = Number(item.amount || 0) / Math.max(1, Number(item.quantity || 1));
+      if (!description) throw Object.assign(new Error('Manual bill item description is required'), { statusCode: 400 });
+    }
+
+    const result = await patientFinancial.addOPDCharge(payload.patient_id, {
+      appointmentId: appointment._id,
+      description,
+      chargeType,
+      serviceType,
+      serviceCode,
+      rate,
+      quantity: Math.max(1, Number(item.quantity || 1)),
+      selectedMode,
+      requestedDeposit: payload.requestedDeposit,
+      discountType: payload.discountType,
+      discountValue: payload.discountValue,
+      discountRate: payload.discountRate,
+      discountAmount: payload.discountAmount,
+      discountReason: payload.discountReason,
+      taxMode: payload.taxMode,
+      taxRate: payload.taxRate,
+      overrideReason: payload.billingModeOverrideReason,
+      idempotencyKey: `${rootKey}:line:${lineNo}`,
+      notes: payload.notes,
+      createdFrom: 'AppointmentBillingCompatibility'
+    }, req.user);
+    if (pricingSnapshot && result?.bill?.items?.[0]) {
+      result.bill.items[0].pricing_snapshot = {
+        ...(result.bill.items[0].pricing_snapshot || {}),
+        doctorTariff: pricingSnapshot
+      };
+      await result.bill.save();
+    }
+    created.push(result);
+    lineNo += 1;
+  }
+
+  if (!created.length) {
+    const result = await patientFinancial.addOPDCharge(payload.patient_id, {
+      appointmentId: appointment._id,
+      description: 'OPD Consultation',
+      chargeType: 'Consultation',
+      serviceType: 'consultation',
+      serviceCode: appointment.appointment_type === 'follow-up' ? 'OPD-CONS-FOLLOWUP' : 'OPD-CONS-NEW',
+      rate: Number(tariff.amount || 0),
+      quantity: 1,
+      selectedMode,
+      requestedDeposit: payload.requestedDeposit,
+      idempotencyKey: `${rootKey}:line:0`,
+      createdFrom: 'AppointmentBillingCompatibility'
+    }, req.user);
+    created.push(result);
+  }
+
+  const bills = created.map((row) => row.bill).filter(Boolean);
+  const invoiceResult = await patientFinancial.issueOPDInvoice(payload.patient_id, {
+    billIds: bills.map((bill) => bill._id),
+    idempotencyKey: `${rootKey}:invoice`,
+    notes: payload.notes || `Appointment ${appointment._id} invoice`
+  }, req.user);
+  const invoice = invoiceResult.invoice;
+  const requiredNow = money(created.reduce((sum, row) => sum + Number(row.financialPolicy?.requiredNow || 0), 0));
+  const explicitPayment = payload.paymentAmount ?? payload.amountPaid;
+  const shouldCollect = explicitPayment !== undefined || String(payload.status || '').toLowerCase() === 'paid';
+  let payment = null;
+  if (shouldCollect && Number(invoice.balance_due || 0) > 0) {
+    const amountToCollect = explicitPayment !== undefined
+      ? money(Math.min(Number(explicitPayment || 0), Number(invoice.balance_due || 0)))
+      : money(Number(invoice.balance_due || 0));
+    if (amountToCollect > 0) {
+      payment = await patientFinancial.recordOPDPayment(payload.patient_id, {
+        invoiceId: invoice._id,
+        amount: amountToCollect,
+        amountApplied: amountToCollect,
+        amountTendered: amountToCollect,
+        paymentMethod: payload.payment_method || 'Cash',
+        reference: payload.transaction_id,
+        idempotencyKey: `${rootKey}:payment`
+      }, req.user);
+    }
+  }
+  const refreshedInvoice = await Invoice.findOne({ _id: invoice._id, hospital_id: hospitalId });
+  return {
+    bill: bills[0] || null,
+    bills,
+    invoice: refreshedInvoice || invoice,
+    payment,
+    financialPolicy: created.map((row) => row.financialPolicy),
+    requiredNow,
+    alreadyExists: false
+  };
+}
+
 // ========== MAIN CREATE BILL FUNCTION ==========
 exports.createBill = async (req, res) => {
   try {
@@ -383,7 +568,58 @@ exports.createBill = async (req, res) => {
       return res.status(400).json({ error: 'At least one bill item is required' });
     }
 
+    if (appointment_id && !admission_id) {
+      const result = await createCanonicalAppointmentBilling(req, {
+        ...req.body,
+        patient_id,
+        appointment_id,
+        payment_method,
+        items,
+        status,
+        transaction_id,
+        notes
+      });
+      return res.status(result.alreadyExists ? 200 : 201).json({ success: true, ...result });
+    }
+    if (admission_id) {
+      return res.status(409).json({
+        success: false,
+        code: 'LEGACY_IPD_BILLING_DISABLED',
+        error: 'Direct IPD Bill creation is retired. Add a canonical IPD/source charge and invoice it through Finance.',
+        canonicalChargeEndpoint: `/api/finance/ipd/${admission_id}/charges`,
+        canonicalInvoiceEndpoint: `/api/finance/ipd/${admission_id}/invoices`
+      });
+    }
+
     const hospitalId = requestHospitalId(req);
+
+    // Remaining direct /billing use is a genuine Finance manual-adjustment path.
+    // Clinical source documents must never use it, and manual pricing requires
+    // an explicit pricing-override capability plus an auditable reason.
+    const unsafeClinicalItems = (items || []).filter((item) =>
+      ['Procedure', 'Lab Test', 'Radiology'].includes(item?.item_type)
+        || item?.procedure_id || item?.lab_test_id || item?.radiology_test_id
+    );
+    if (unsafeClinicalItems.length) {
+      return res.status(409).json({
+        success: false,
+        code: 'SOURCE_FINANCE_REQUIRED',
+        error: 'Clinical requests must use the canonical source-finance workflow',
+        canonicalEndpoint: '/api/source-finance/:sourceModule/:sourceId/charge'
+      });
+    }
+    if (!_hasActionPermission(req.user, 'pricing_override')) {
+      return res.status(403).json({
+        success: false,
+        code: 'MANUAL_PRICING_PERMISSION_REQUIRED',
+        error: 'Direct manual billing requires pricing override permission'
+      });
+    }
+    const pricingOverrideReason = String(req.body?.pricingOverrideReason || req.body?.overrideReason || notes || '').trim();
+    if (!pricingOverrideReason) {
+      return res.status(400).json({ success: false, code: 'PRICING_OVERRIDE_REASON_REQUIRED', error: 'Manual pricing reason is required' });
+    }
+
     let billingItems = items.map((item) => ({ ...item }));
     if (appointment_id && !admission_id) {
       const priced = await applyAuthoritativeOpdAppointmentPricing({
@@ -395,17 +631,43 @@ exports.createBill = async (req, res) => {
       billingItems = priced.items;
     }
 
-    let calculatedSubtotal = subtotal;
-    let calculatedTotal = total_amount;
-
-    // For OPD appointment bills, the server always recalculates from authoritative
-    // doctor/hospital pricing instead of trusting a browser-submitted total.
-    if (appointment_id && !admission_id) {
-      calculatedSubtotal = billingItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
-      calculatedTotal = calculatedSubtotal + Number(tax_amount || 0) - Number(discount || 0);
-    } else if (subtotal === undefined || subtotal === null || total_amount === undefined || total_amount === null) {
-      calculatedSubtotal = billingItems.reduce((sum, item) => sum + (Number(item.amount || 0) * (item.quantity || 1)), 0);
-      calculatedTotal = calculatedSubtotal + Number(tax_amount || 0) - Number(discount || 0);
+    // Even manual Finance billing never trusts browser subtotal/total. The
+    // manually-entered line prices are the audited exception; discount/tax still
+    // pass through hospital policy/ranges and are snapshotted on the bill.
+    const calculatedSubtotal = money(billingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0));
+    const manualPolicy = await resolveFinancialPolicy({
+      hospitalId,
+      user: req.user,
+      encounterType: 'OPD',
+      serviceType: 'other',
+      patientLiability: calculatedSubtotal,
+      sponsorLiability: 0,
+      contractedAmount: calculatedSubtotal,
+      selectedMode: req.body?.selectedMode || req.body?.selectedBillingMode,
+      requestedDeposit: req.body?.requestedDeposit,
+      adjustments: {
+        discountType: req.body?.discountType || (Number(discount || 0) ? 'fixed' : undefined),
+        discountAmount: req.body?.discountAmount ?? (Number(discount || 0) || undefined),
+        discountRate: req.body?.discountRate,
+        discountValue: req.body?.discountValue,
+        discountReason: req.body?.discountReason || pricingOverrideReason,
+        taxMode: req.body?.taxMode,
+        taxRate: req.body?.taxRate,
+        taxReason: req.body?.taxReason
+      },
+      overrideReason: req.body?.billingModeOverrideReason
+    });
+    const calculatedTotal = money(manualPolicy.amounts.totalLiability);
+    const resolvedTaxAmount = money(manualPolicy.amounts.taxAmount || 0);
+    const resolvedDiscountAmount = money(manualPolicy.amounts.discountAmount || 0);
+    const manualKey = String(req.get('Idempotency-Key') || req.body?.idempotencyKey || '').trim();
+    if (!manualKey) {
+      return res.status(400).json({ success: false, code: 'IDEMPOTENCY_KEY_REQUIRED', error: 'Manual billing requires an idempotency key' });
+    }
+    const existingManualBill = await Bill.findOne({ hospital_id: hospitalId, idempotency_key: manualKey });
+    if (existingManualBill) {
+      const existingInvoice = existingManualBill.invoice_id ? await Invoice.findOne({ _id: existingManualBill.invoice_id, hospital_id: hospitalId }) : null;
+      return res.json({ success: true, reused: true, bill: existingManualBill, invoice: existingInvoice });
     }
 
     const billNumber = await nextFinancialNumber({
@@ -423,18 +685,12 @@ exports.createBill = async (req, res) => {
       prescription_id,
       total_amount: calculatedTotal,
       subtotal: calculatedSubtotal,
-      tax_amount: tax_amount || 0,
-      discount: discount || 0,
-      payment_method,
-      status,
-      paid_amount: status === 'Paid' ? money(calculatedTotal) : 0,
-      paid_at: status === 'Paid' ? operationNow() : undefined,
-      payments: status === 'Paid' ? [{
-        method: payment_method,
-        amount: money(calculatedTotal),
-        reference: transaction_id,
-        date: operationNow()
-      }] : [],
+      tax_amount: resolvedTaxAmount,
+      discount: resolvedDiscountAmount,
+      payment_method: 'Pending',
+      status: status === 'Draft' ? 'Draft' : (calculatedTotal <= 0 ? 'Paid' : 'Pending'),
+      paid_amount: 0,
+      payments: [],
       items: billingItems.map(item => ({
         description: item.description,
         amount: Number(item.amount || 0),
@@ -448,9 +704,16 @@ exports.createBill = async (req, res) => {
         radiology_test_id: item.radiology_test_id,
         prescription_id: item.prescription_id,
         admission_id: admission_id,
-        pricing_snapshot: item.pricing_snapshot || {}
+        pricing_snapshot: {
+          ...(item.pricing_snapshot || {}),
+          manualPricingOverride: { reason: pricingOverrideReason, actorId: req.user?._id },
+          financialPolicy: manualPolicy.policySnapshot,
+          tax: { mode: manualPolicy.amounts.taxMode, rate: manualPolicy.amounts.taxRate, amount: manualPolicy.amounts.taxAmount },
+          discount: { type: manualPolicy.amounts.discountType, rate: manualPolicy.amounts.discountRate, amount: manualPolicy.amounts.discountAmount }
+        }
       })),
-      notes,
+      notes: notes || pricingOverrideReason,
+      idempotency_key: manualKey,
       created_by: req.user?._id
     });
 
@@ -520,302 +783,23 @@ exports.createBill = async (req, res) => {
     }
 
     let invoice = null;
-    if (status === 'Paid') {
-      let appointment = null;
-      let admission = null;
-      
-      if (appointment_id) {
-        appointment = await Appointment.findById(appointment_id).populate('patient_id').populate('doctor_id');
-      }
-      
-      if (admission_id) {
-        admission = await IPDAdmission.findById(admission_id).populate('patientId');
-      }
-
-      const hasProcedures = billingItems.some(item => item.item_type === 'Procedure');
-      const hasLabTests = billingItems.some(item => item.item_type === 'Lab Test');
-      const hasRadiology = billingItems.some(item => item.item_type === 'Radiology');
-      const hasMedicines = billingItems.some(item => item.item_type === 'Medicine');
-
-      let invoiceType = 'Appointment';
-      if (hasMedicines && (hasProcedures || hasLabTests || hasRadiology)) {
-        invoiceType = 'Mixed';
-      } else if (hasProcedures) {
-        invoiceType = 'Procedure';
-      } else if (hasLabTests) {
-        invoiceType = 'Lab Test';
-      } else if (hasRadiology) {
-        invoiceType = 'Radiology';
-      } else if (hasMedicines) {
-        invoiceType = 'Pharmacy';
-      }
-
-      const serviceItems = [];
-      const medicineItems = [];
-      const procedureItems = [];
-      const labTestItems = [];
-      const radiologyItems = [];
-
-      for (const item of billingItems) {
-        const qty = item.quantity || 1;
-        const unitPrice = qty > 0 ? (Number(item.amount || 0) / qty) : Number(item.amount || 0);
-
-        if (item.item_type === 'Procedure') {
-          procedureItems.push({
-            procedure_code: item.procedure_code,
-            procedure_name: item.description,
-            quantity: qty,
-            unit_price: unitPrice,
-            total_price: Number(item.amount || 0),
-            tax_rate: 0,
-            tax_amount: 0,
-            prescription_id: item.prescription_id,
-            status: 'Paid',
-            scheduled_date: operationNow()
-          });
-        } else if (item.item_type === 'Lab Test') {
-          labTestItems.push({
-            lab_test_code: item.lab_test_code,
-            lab_test_name: item.description,
-            quantity: qty,
-            unit_price: unitPrice,
-            total_price: Number(item.amount || 0),
-            tax_rate: 0,
-            tax_amount: 0,
-            prescription_id: item.prescription_id,
-            status: 'Paid',
-            scheduled_date: operationNow()
-          });
-        } else if (item.item_type === 'Radiology') {
-          radiologyItems.push({
-            imaging_test_code: item.radiology_test_code,
-            imaging_test_name: item.description,
-            quantity: qty,
-            unit_price: unitPrice,
-            total_price: Number(item.amount || 0),
-            tax_rate: 0,
-            tax_amount: 0,
-            prescription_id: item.prescription_id,
-            status: 'Paid',
-            scheduled_date: operationNow()
-          });
-        } else if (item.item_type === 'Medicine') {
-          medicineItems.push({
-            medicine_name: item.description,
-            quantity: qty,
-            unit_price: unitPrice,
-            total_price: Number(item.amount || 0),
-            tax_rate: 0,
-            tax_amount: 0,
-            prescription_id: item.prescription_id,
-            is_dispensed: false
-          });
-        } else {
-          serviceItems.push({
-            description: item.description,
-            quantity: qty,
-            unit_price: unitPrice,
-            total_price: Number(item.amount || 0),
-            tax_rate: 0,
-            tax_amount: 0,
-            service_type: item.item_type,
-            prescription_id: item.prescription_id,
-            bill_id: bill._id
-          });
-        }
-      }
-
-      const invoiceNumber = await nextFinancialNumber({
-        documentType: 'INVOICE',
-        hospitalId
-      });
-
-      invoice = new Invoice({
-        hospital_id: hospitalId,
-        invoice_number: invoiceNumber,
-        invoice_type: invoiceType,
-        document_stage: 'ISSUED',
-        patient_id: patient_id,
-        admission_id: admission_id,
-        customer_type: 'Patient',
-        customer_name: appointment?.patient_id ? 
-          `${appointment.patient_id.first_name} ${appointment.patient_id.last_name}` :
-          (admission?.patientId ? 
-            `${admission.patientId.first_name} ${admission.patientId.last_name}` : 'Patient'),
-        customer_phone: appointment?.patient_id?.phone || admission?.patientId?.phone,
-        appointment_id: appointment_id,
-        prescription_id: prescription_id,
-        bill_id: bill._id,
-        issue_date: operationNow(),
-        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        service_items: serviceItems,
-        medicine_items: medicineItems,
-        procedure_items: procedureItems,
-        lab_test_items: labTestItems,
-        radiology_items: radiologyItems,
-        subtotal: calculatedSubtotal,
-        tax: tax_amount || 0,
-        discount: discount || 0,
-        total: calculatedTotal,
-        amount_paid: calculatedTotal,
-        balance_due: 0,
-        payment_history: [{
-          amount: money(calculatedTotal),
-          method: payment_method,
+    if (status !== 'Draft') {
+      const issued = await patientFinancial.issueOPDInvoice(patient_id, {
+        billIds: [bill._id],
+        idempotencyKey: `${manualKey}:invoice`,
+        notes: notes || pricingOverrideReason
+      }, req.user);
+      invoice = issued.invoice;
+      if (status === 'Paid' && calculatedTotal > 0) {
+        await patientFinancial.recordOPDPayment(patient_id, {
+          invoiceId: invoice._id,
+          amount: calculatedTotal,
+          paymentMethod: payment_method,
           reference: transaction_id,
-          status: 'Completed',
-          collected_by: req.user?._id,
-          date: operationNow()
-        }],
-        status: 'Paid',
-        notes: appointment ? 
-          `Bill for appointment on ${appointment?.appointment_date?.toLocaleDateString() || ''}` :
-          (admission ? `Bill for IPD admission ${admission?.admissionNumber || ''}` : 'Bill'),
-        created_by: req.user?._id,
-        has_procedures: procedureItems.length > 0,
-        procedures_status: procedureItems.length > 0 ? 'Paid' : 'None',
-        has_lab_tests: labTestItems.length > 0,
-        lab_tests_status: labTestItems.length > 0 ? 'Paid' : 'None',
-        has_radiology: radiologyItems.length > 0,
-        radiology_status: radiologyItems.length > 0 ? 'Paid' : 'None'
-      });
-
-      await invoice.save();
-      await syncLegacyInvoiceReceipt({
-        invoice,
-        bill,
-        user: req.user,
-        paymentMethod: payment_method,
-        reference: transaction_id,
-        remarks: notes
-      });
-
-      bill.invoice_id = invoice._id;
-      bill.invoice_ids = Array.from(new Set([...(bill.invoice_ids || []).map(String), String(invoice._id)]));
-      bill.document_stage = 'INVOICED';
-      bill.invoiced_at = operationNow();
-      await bill.save();
-
-      // ========== MARK IPD CHARGES AS BILLED ==========
-      if (admission_id) {
-        for (const [itemIndex, item] of billingItems.entries()) {
-          let sourceModule = null;
-          let sourceId = null;
-          
-          if (item.item_type === 'Procedure' && item.procedure_id) {
-            sourceModule = 'Procedure';
-            sourceId = item.procedure_id;
-          } else if (item.item_type === 'Lab Test' && item.lab_test_id) {
-            sourceModule = 'Lab';
-            sourceId = item.lab_test_id;
-          } else if (item.item_type === 'Radiology' && item.radiology_test_id) {
-            sourceModule = 'Radiology';
-            sourceId = item.radiology_test_id;
-          } else if (item.item_type === 'Medicine') {
-            sourceModule = 'Pharmacy';
-            sourceId = item.sale_id || item.pharmacy_sale_id || bill._id;
-          } else {
-            sourceModule = 'Manual';
-            sourceId = bill._id;
-          }
-          
-          if (sourceModule && sourceId) {
-            await markIPDChargeAsBilled(
-              admission_id,
-              sourceModule,
-              sourceId,
-              invoice._id,
-              invoice.invoice_number,
-              makeChargeLineKey(bill._id, itemIndex, sourceId),
-              bill._id
-            );
-          }
-        }
-      }
-
-      // Update prescription billing status
-      if (prescription_id) {
-        const prescription = await Prescription.findById(prescription_id);
-        if (prescription) {
-          let needsUpdate = false;
-          
-          if (prescription.procedure_requests?.length > 0) {
-            for (const item of billingItems) {
-              if (item.item_type === 'Procedure' && item.procedure_id) {
-                const procIndex = prescription.procedure_requests.findIndex(
-                  p => p._id.toString() === item.procedure_id
-                );
-                if (procIndex !== -1) {
-                  prescription.procedure_requests[procIndex].is_billed = true;
-                  prescription.procedure_requests[procIndex].invoice_id = invoice._id;
-                  prescription.procedure_requests[procIndex].cost = Number(item.amount || 0);
-                  needsUpdate = true;
-                }
-              }
-            }
-          }
-
-          if (prescription.lab_test_requests?.length > 0) {
-            for (const item of billingItems) {
-              if (item.item_type === 'Lab Test' && item.lab_test_id) {
-                const testIndex = prescription.lab_test_requests.findIndex(
-                  t => t._id.toString() === item.lab_test_id
-                );
-                if (testIndex !== -1) {
-                  prescription.lab_test_requests[testIndex].is_billed = true;
-                  prescription.lab_test_requests[testIndex].invoice_id = invoice._id;
-                  prescription.lab_test_requests[testIndex].cost = Number(item.amount || 0);
-                  needsUpdate = true;
-                }
-              }
-            }
-          }
-
-          if (prescription.radiology_test_requests?.length > 0) {
-            for (const item of billingItems) {
-              if (item.item_type === 'Radiology' && item.radiology_test_id) {
-                const radIndex = prescription.radiology_test_requests.findIndex(
-                  r => r._id.toString() === item.radiology_test_id
-                );
-                if (radIndex !== -1) {
-                  prescription.radiology_test_requests[radIndex].is_billed = true;
-                  prescription.radiology_test_requests[radIndex].invoice_id = invoice._id;
-                  prescription.radiology_test_requests[radIndex].cost = Number(item.amount || 0);
-                  needsUpdate = true;
-                }
-              }
-            }
-          }
-
-          if (needsUpdate) {
-            await prescription.save();
-          }
-        }
-      }
-
-      // Update actual request documents
-      const procedureIds = billingItems.filter(i => i.item_type === 'Procedure' && i.procedure_id).map(i => i.procedure_id);
-      if (procedureIds.length > 0) {
-        await ProcedureRequest.updateMany(
-          { _id: { $in: procedureIds } },
-          { is_billed: true, invoiceId: invoice._id }
-        );
-      }
-
-      const labTestIds = billingItems.filter(i => i.item_type === 'Lab Test' && i.lab_test_id).map(i => i.lab_test_id);
-      if (labTestIds.length > 0) {
-        await LabRequest.updateMany(
-          { _id: { $in: labTestIds } },
-          { is_billed: true, invoiceId: invoice._id }
-        );
-      }
-
-      const radiologyTestIds = billingItems.filter(i => i.item_type === 'Radiology' && i.radiology_test_id).map(i => i.radiology_test_id);
-      if (radiologyTestIds.length > 0) {
-        await RadiologyRequest.updateMany(
-          { _id: { $in: radiologyTestIds } },
-          { is_billed: true, invoiceId: invoice._id }
-        );
+          notes: notes || pricingOverrideReason,
+          idempotencyKey: `${manualKey}:payment`
+        }, req.user);
+        invoice = await Invoice.findById(invoice._id);
       }
     }
 

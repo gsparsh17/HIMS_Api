@@ -137,6 +137,10 @@ const ipdChargeSchema = new mongoose.Schema({
   rateCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'RateCard' },
   rateCardVersion: String,
   packageCode: String,
+  financialPolicySnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  selectedBillingMode: { type: String, enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'] },
+  requiredNowAmount: { type: Number, default: 0, min: 0 },
+  clearanceState: { type: String, trim: true },
   accommodationSegmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDAccommodationSegment' },
 }, { timestamps: true });
 

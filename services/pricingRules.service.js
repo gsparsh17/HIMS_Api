@@ -94,7 +94,7 @@ function applyConfiguredRateRules({
     ruleTrace.push({ rule: 'within_package_period', factor });
     explanation.push(`Within-package-period factor ${factor} applied`);
   }
-  return { contractedUnit, explanation, ruleTrace, wardUniform: Boolean(item?.wardUniform) };
+  return { contractedUnit, explanation, ruleTrace, wardUniform: Boolean(item?.wardUniform), usedExplicitWardRate: wardRate !== null };
 }
 
 module.exports = { roundMoney, mapValue, tierRate, exactWardRate, applyConfiguredRateRules };

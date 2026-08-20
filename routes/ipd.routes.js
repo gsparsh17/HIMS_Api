@@ -4,6 +4,7 @@ const {
   protect,
   authorize,
   requireModuleAccess,
+  requireActionPermission,
   requireAnyActionPermission,
 } = require('../middlewares/auth');
 const {
@@ -49,17 +50,13 @@ router.get(
 
 router.post(
   '/admissions/:admissionId/initial-assessment',
-  protect,  // ✅ Added for saveDoctorAssessment()
-  // ...doctors,
-  // requireModuleAccess('ipd.initial_assessment.doctor', 'edit'),
+  requireActionPermission('ipd_clinical_write'),
   clinical.saveDoctorInitialAssessment
 );
 
 router.put(
   '/admissions/:admissionId/initial-assessment',
-  protect,  // ✅ Added for saveDoctorAssessment()
-  // ...doctors,
-  // requireModuleAccess('ipd.initial_assessment.doctor', 'edit'),
+  requireActionPermission('ipd_clinical_write'),
   clinical.saveDoctorInitialAssessment
 );
 
@@ -81,17 +78,13 @@ router.get(
 
 router.post(
   '/admissions/:admissionId/nursing-admission-assessment',
-  protect,  // ✅ Added for saveNursingAssessment()
-  // ...nurses,
-  // requireModuleAccess('ipd.initial_assessment.nursing', 'edit'),
+  requireActionPermission('ipd_nursing_write'),
   clinical.saveNursingAdmissionAssessment
 );
 
 router.put(
   '/admissions/:admissionId/nursing-admission-assessment',
-  protect,  // ✅ Added for saveNursingAssessment()
-  // ...nurses,
-  // requireModuleAccess('ipd.initial_assessment.nursing', 'edit'),
+  requireActionPermission('ipd_nursing_write'),
   clinical.saveNursingAdmissionAssessment
 );
 
@@ -107,17 +100,13 @@ router.get(
 // ============== VITALS ==============
 router.post(
   '/vitals',
-  protect,  // ✅ Added for saveVitals()
-  // ...nurses,
-  // requireModuleAccess('ipd.vitals', 'edit'),
+  requireAnyActionPermission(['ipd_nursing_write', 'ipd_clinical_write']),
   clinical.createVitals
 );
 
 router.put(
   '/vitals/:id',
-  protect,  // ✅ Added for saveVitals() (update)
-  // ...nurses,
-  // requireModuleAccess('ipd.vitals', 'edit'),
+  requireAnyActionPermission(['ipd_nursing_write', 'ipd_clinical_write']),
   clinical.updateVitals
 );
 
@@ -164,8 +153,7 @@ router.get(
 // ============== ADMISSIONS ==============
 router.post(
   '/admissions',
-  // ...read,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_admission_manage'),
   admissions.createAdmission
 );
 
@@ -200,15 +188,13 @@ router.get(
 
 router.put(
   '/admissions/:id',
-  // ...read,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_admission_manage'),
   admissions.updateAdmission
 );
 
 router.patch(
   '/admissions/:id/status',
-  // ...read,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_admission_manage'),
   admissions.updateAdmissionStatus
 );
 
@@ -244,8 +230,7 @@ router.get(
 
 router.post(
   '/admissions/:id/complete-clinical-assessment',
-  // ...read,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_clinical_write'),
   admissions.completeClinicalAssessment
 );
 
@@ -303,8 +288,7 @@ router.put(
 
 router.patch(
   '/beds/:id/status',
-  // ...nurses,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireAnyActionPermission(['ipd_admission_manage', 'ipd_nursing_write']),
   beds.updateBedStatus
 );
 
@@ -326,16 +310,17 @@ router.post(
 
 // ============== CLINICAL TEMPLATES ==============
 router.get('/clinical-templates', clinicalTemplates.listTemplates);
-router.post('/clinical-templates', clinicalTemplates.createTemplate);
-router.put('/clinical-templates/:id', clinicalTemplates.updateTemplate);
-router.delete('/clinical-templates/:id', clinicalTemplates.deactivateTemplate);
-router.post('/clinical-templates/:id/use', clinicalTemplates.recordTemplateUse);
+router.post('/clinical-templates', requireActionPermission('ipd_clinical_write'), clinicalTemplates.createTemplate);
+router.put('/clinical-templates/:id', requireActionPermission('ipd_clinical_write'), clinicalTemplates.updateTemplate);
+router.delete('/clinical-templates/:id', requireActionPermission('ipd_clinical_write'), clinicalTemplates.deactivateTemplate);
+router.post('/clinical-templates/:id/use', requireAnyActionPermission(['ipd_clinical_write', 'ipd_nursing_write']), clinicalTemplates.recordTemplateUse);
 
 // ============== ROUNDS ==============
+router.get('/rounds/tariff', rounds.getDoctorTariff);
+
 router.post(
   '/rounds',
-  // ...doctors,
-  // requireModuleAccess('ipd.rounds', 'edit'),
+  requireActionPermission('ipd_round_write'),
   rounds.createRound
 );
 
@@ -362,23 +347,20 @@ router.get(
 
 router.put(
   '/rounds/:id',
-  // ...doctors,
-  // requireModuleAccess('ipd.rounds', 'edit'),
+  requireActionPermission('ipd_round_write'),
   rounds.updateRound
 );
 
 router.delete(
   '/rounds/:id',
-  // ...doctors,
-  // requireModuleAccess('ipd.rounds', 'edit'),
+  requireActionPermission('ipd_round_write'),
   rounds.deleteRound
 );
 
 // ============== NURSING NOTES ==============
 router.post(
   '/nursing-notes',
-  // ...nurses,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_nursing_write'),
   nursing.createNursingNote
 );
 
@@ -398,15 +380,13 @@ router.get(
 
 router.put(
   '/nursing-notes/:id',
-  // ...nurses,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_nursing_write'),
   nursing.updateNursingNote
 );
 
 router.delete(
   '/nursing-notes/:id',
-  // ...nurses,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_nursing_write'),
   nursing.deleteNursingNote
 );
 
@@ -428,8 +408,7 @@ router.get(
 // ============== MEDICATION CHART / MAR ==============
 router.post(
   '/medications',
-  // ...doctors,
-  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  requireAnyActionPermission(['ipd_clinical_write', 'ipd_medication_write']),
   meds.createMedicationOrder
 );
 
@@ -456,58 +435,52 @@ router.get(
 
 router.patch(
   '/medications/:id/doctor-change',
+  requireActionPermission('ipd_clinical_write'),
   meds.changeMedicationOrder
 );
 
 router.patch(
   '/medications/:id/administer',
-  // ...nurses,
-  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  requireActionPermission('ipd_medication_write'),
   validateAdministration,
   meds.administerMedication
 );
 
 router.patch(
   '/medications/:id/skip',
-  // ...nurses,
-  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  requireActionPermission('ipd_medication_write'),
   meds.skipMedication
 );
 
 router.patch(
   '/medications/:id/stop',
-  // ...doctors,
-  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  requireAnyActionPermission(['ipd_clinical_write', 'ipd_medication_write']),
   meds.stopMedication
 );
 
 router.patch(
   '/medications/:id/hold',
-  // ...read,
-  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  requireAnyActionPermission(['ipd_clinical_write', 'ipd_medication_write']),
   meds.holdMedication
 );
 
 router.patch(
   '/medications/:id/request-pharmacy',
-  // ...nurses,
-  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  requireActionPermission('ipd_medication_write'),
   validateIndent,
   meds.requestPharmacy
 );
 
 router.patch(
   '/medications/:id/receive-external',
-  // ...nurses,
-  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  requireActionPermission('ipd_medication_write'),
   validateIndent,
   meds.receiveExternalPharmacyStock
 );
 
 router.patch(
   '/medications/:id/acknowledge-receipt',
-  // ...nurses,
-  // requireModuleAccess('ipd.medication_chart', 'edit'),
+  requireActionPermission('ipd_medication_write'),
   meds.acknowledgeStockReceipt
 );
 
@@ -690,19 +663,17 @@ router.patch(
 // ============== DISCHARGE ==============
 router.post(
   '/discharge/:admissionId/initiate',
-  // ...doctors,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireAnyActionPermission(['ipd_discharge_write', 'ipd_discharge_support']),
   discharge.initiateDischarge
 );
 
 router.post(
   '/discharge/:admissionId/summary',
-  // ...doctors,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireAnyActionPermission(['ipd_discharge_write', 'ipd_discharge_support']),
   discharge.saveDischargeSummary
 );
 
-router.post('/discharge/:admissionId/medication-reconciliation', discharge.reconcileDischargeMedications);
+router.post('/discharge/:admissionId/medication-reconciliation', requireAnyActionPermission(['ipd_discharge_write', 'ipd_discharge_support']), discharge.reconcileDischargeMedications);
 
 router.get(
   '/discharge/:admissionId/summary',
@@ -720,15 +691,13 @@ router.get(
 
 router.post(
   '/discharge/:admissionId/summary/finalize',
-  // ...doctors,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_discharge_write'),
   discharge.finalizeDischargeSummary
 );
 
 router.post(
   '/discharge/:admissionId/staff-complete',
-  // ...nurses,
-  // requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_discharge_support'),
   discharge.staffCompleteDischargeSummary
 );
 
@@ -741,17 +710,20 @@ router.get(
 
 router.patch(
   '/discharge/:admissionId/checklist',
-  protect,
-  requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_discharge_support'),
   discharge.updateDischargeChecklist
 );
 
 router.post(
   '/discharge/:admissionId/complete',
-  protect,
-  authorize('admin', 'registrar'),
-  requireModuleAccess('ipd.patient_file', 'edit'),
+  requireActionPermission('ipd_discharge_write'),
   discharge.completeDischarge
+);
+
+router.post(
+  '/discharge/:admissionId/clinical-exception',
+  requireActionPermission('ipd_discharge_override'),
+  discharge.approveClinicalDischargeException
 );
 
 router.get(

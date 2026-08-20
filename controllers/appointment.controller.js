@@ -22,6 +22,7 @@ const AdmissionCoverage = require('../models/AdmissionCoverage');
 const HRStaffProfile = require('../models/HRStaffProfile');
 const StaffAvailability = require('../models/StaffAvailability');
 const { rememberDeclaredPreference } = require('../services/patientCoveragePreference.service');
+const { resolveFinancialPolicy } = require('../services/financialPolicy.service');
 const {
   DEFAULT_HOSPITAL_TIME_ZONE,
   hospitalDateKey,
@@ -1386,6 +1387,36 @@ exports.createAppointment = async (req, res) => {
     } catch (coverageError) {
       await Appointment.deleteOne({ _id: appointment._id, hospital_id: hospitalId }).catch(() => {});
       throw coverageError;
+    }
+
+    // Snapshot the encounter-level financial mode independently from the patient.
+    // The actual consultation/service charge will resolve the same policy again
+    // with authoritative tariff amounts, but the appointment preserves the user's
+    // allowed selection for safe resume/retry and subsequent source charges.
+    try {
+      const appointmentPolicy = await resolveFinancialPolicy({
+        hospitalId,
+        user: req.user,
+        encounterType: 'OPD',
+        serviceType: 'CONSULTATION',
+        serviceCode: 'OPD-CONS',
+        payerCategory: encounterCoverage?.payerCategory || req.body.coverage?.payerCategory || 'SELF',
+        departmentId: appointment.department_id,
+        selectedMode: req.body.selectedMode || req.body.selectedBillingMode,
+        patientLiability: 0,
+        sponsorLiability: 0,
+        contractedAmount: 0,
+        overrideReason: req.body.billingModeOverrideReason
+      });
+      appointment.selectedBillingMode = appointmentPolicy.selectedMode;
+      appointment.financialPolicySnapshot = appointmentPolicy.policySnapshot;
+      await appointment.save();
+    } catch (policyError) {
+      await Appointment.deleteOne({ _id: appointment._id, hospital_id: hospitalId }).catch(() => {});
+      if (encounterCoverage?._id) {
+        await AdmissionCoverage.deleteMany({ hospitalId, appointmentId: appointment._id }).catch(() => {});
+      }
+      throw policyError;
     }
 
     try {
