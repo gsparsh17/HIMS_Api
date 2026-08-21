@@ -14,6 +14,7 @@ const OTStaff = require('../models/OTStaff'); // Add OT Staff model
 const HRStaffProfile = require('../models/HRStaffProfile');
 const jwt = require('jsonwebtoken');
 const { effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
+const { activeSnapshot, publicLicense } = require('../services/licenseSnapshot.service');
 const NabhSetting = require('../models/NabhSetting');
 const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
 const {
@@ -417,11 +418,18 @@ async function completeSuccessfulLogin(user, hospital, req, res, securityOverrid
     ? { mfaSetupRequired: true }
     : {};
   const response = await enrichLoginResponse(user, hospital, tokenClaims);
+  const licenseSnapshot = user.hospital_id ? await activeSnapshot(user.hospital_id, { refreshIfDue: true }) : null;
+  if (licenseSnapshot) {
+    response.license = publicLicense(licenseSnapshot);
+    response.entitlements = response.license?.entitlements || {};
+    response.user = { ...(response.user || {}), license: response.license, entitlements: response.entitlements };
+  }
   const setting = user.hospital_id ? await getOrCreateNabhSetting(user.hospital_id, user._id) : null;
   response.security = {
     mfaEnabled: Boolean(user.mfa?.enabled),
     idleLockMinutes: Number(setting?.security?.idleLockMinutes || 15),
     passwordExpiryDays: Number(setting?.security?.passwordPolicy?.expiryDays || 90),
+    passwordChangeRequired: Boolean(user.mustChangePassword),
     ...securityOverrides
   };
   setAuthCookie(res, response.token);
@@ -432,7 +440,13 @@ exports.getCurrentUser = async (req, res) => {
   const setting = req.user.hospital_id
     ? await getOrCreateNabhSetting(req.user.hospital_id, req.user._id)
     : null;
+  const licenseSnapshot = req.user.hospital_id
+    ? await activeSnapshot(req.user.hospital_id, { refreshIfDue: true })
+    : null;
+  const license = licenseSnapshot ? publicLicense(licenseSnapshot) : null;
   return res.json({
+    license,
+    entitlements: license?.entitlements || {},
     success: true,
     user: {
       _id: req.user._id,
@@ -445,6 +459,8 @@ exports.getCurrentUser = async (req, res) => {
       enforceModulePermissions: Boolean(req.user.enforceModulePermissions),
       sidebarAccess: Array.isArray(req.user.sidebarAccess) ? req.user.sidebarAccess : [],
       modulePermissions: effectiveMainFeaturePermissions(req.user),
+      license,
+      entitlements: license?.entitlements || {},
       security: {
         mfaEnabled: Boolean(req.user.mfa?.enabled),
         mfaMode: setting?.security?.mfaMode || 'optional',
@@ -452,7 +468,8 @@ exports.getCurrentUser = async (req, res) => {
           mfaRequiredForUser(req.user, setting) && !req.user.mfa?.enabled
         ),
         idleLockMinutes: Number(setting?.security?.idleLockMinutes || 15),
-        passwordPolicy: setting?.security?.passwordPolicy
+        passwordPolicy: setting?.security?.passwordPolicy,
+        passwordChangeRequired: Boolean(req.user.mustChangePassword)
       }
     }
   });
@@ -491,6 +508,19 @@ exports.loginUser = async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     if (!user.is_active) return res.status(403).json({ error: 'Account is deactivated. Please contact admin.' });
+
+    if (user.hospital_id) {
+      try {
+        await activeSnapshot(user.hospital_id, { refreshIfDue: true });
+      } catch (licenseError) {
+        return res.status(licenseError.statusCode || 403).json({
+          error: licenseError.message,
+          message: licenseError.message,
+          code: licenseError.code || 'LICENSE_INACTIVE',
+          expiresAt: licenseError.expiresAt
+        });
+      }
+    }
 
     const expiryDays = Number(setting?.security?.passwordPolicy?.expiryDays ?? 90);
     if (expiryDays > 0 && user.passwordChangedAt) {
@@ -537,6 +567,12 @@ exports.completeMfaLogin = async (req, res) => {
       return res.status(401).json({ error: 'Invalid authentication code', code: 'INVALID_MFA_CODE' });
     }
     const hospital = user.hospital_id ? await Hospital.findById(user.hospital_id) : await Hospital.findOne({});
+    if (user.hospital_id) {
+      try { await activeSnapshot(user.hospital_id, { refreshIfDue: true }); }
+      catch (licenseError) {
+        return res.status(licenseError.statusCode || 403).json({ error: licenseError.message, message: licenseError.message, code: licenseError.code || 'LICENSE_INACTIVE', expiresAt: licenseError.expiresAt });
+      }
+    }
     return completeSuccessfulLogin(user, hospital, req, res);
   } catch (error) {
     return res.status(401).json({ error: 'Invalid or expired MFA challenge', code: 'INVALID_MFA_CHALLENGE' });
@@ -617,9 +653,31 @@ exports.ssoAssertionLogin = async (req, res) => {
     if (!verification.valid) return res.status(401).json({ error: verification.reason });
     if (!user.is_active) return res.status(403).json({ error: 'Account is deactivated' });
     const hospital = await Hospital.findById(user.hospital_id);
+    try { await activeSnapshot(user.hospital_id, { refreshIfDue: true }); }
+    catch (licenseError) { return res.status(licenseError.statusCode || 403).json({ error: licenseError.message, message: licenseError.message, code: licenseError.code || 'LICENSE_INACTIVE', expiresAt: licenseError.expiresAt }); }
     return completeSuccessfulLogin(user, hospital, req, res);
   } catch (error) {
     return res.status(401).json({ error: 'Unable to validate SSO assertion' });
+  }
+};
+
+
+exports.changeOwnPassword = async (req, res) => {
+  try {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+    if (!currentPassword || !newPassword) return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+    const user = await User.findById(req.user._id);
+    if (!user || !(await user.matchPassword(currentPassword))) return res.status(401).json({ error: 'Current password is incorrect' });
+    const setting = user.hospital_id ? await getOrCreateNabhSetting(user.hospital_id, user._id) : null;
+    const errors = passwordPolicyErrors(newPassword, setting?.security?.passwordPolicy || {});
+    if (errors.length) return res.status(400).json({ error: errors.join(' '), code: 'PASSWORD_POLICY_FAILED' });
+    user.password = newPassword;
+    user.mustChangePassword = false;
+    await user.save();
+    return res.json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 };
 

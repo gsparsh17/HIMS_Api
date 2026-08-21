@@ -40,6 +40,7 @@ const userSchema = new mongoose.Schema({
   resetPasswordToken: String,
   resetPasswordExpire: Date,
   passwordChangedAt: Date,
+  mustChangePassword: { type: Boolean, default: false },
   passwordHistory: {
     type: [{
       hash: { type: String, required: true },

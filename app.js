@@ -174,7 +174,11 @@ function preloadHospitalModels() {
     './models/NabhRecord',
     './models/NotificationDelivery',
     './models/TerminologyCode',
-    './models/PatientVerification'
+    './models/PatientVerification',
+    './models/LicenseSnapshot',
+    './models/PlatformInternalRequest',
+    './models/PlatformProvisioningReceipt',
+    './models/SupportTicketOutbox'
   ].forEach((modelPath) => require(modelPath));
 }
 
@@ -194,9 +198,18 @@ function mountHospitalRoutes() {
   app.use('/api/public/hospital-profile', require('./routes/publicHospitalProfile.routes.js'));
   // Patient portal has its own patient-scoped JWT boundary and must be mounted before staff auth.
   app.use('/api/patient-portal', require('./routes/patientPortal.routes.js'));
+  // Master control-plane callbacks use independent platform HMAC authentication and never browser auth.
+  app.use('/internal/platform', require('./routes/platform.routes.js'));
   const authMiddleware = require('./middlewares/auth');
   app.use('/api', authMiddleware.protect);
+  app.use('/api', (req, res, next) => {
+    if (!req.user?.mustChangePassword) return next();
+    return res.status(403).json({ success: false, code: 'PASSWORD_CHANGE_REQUIRED', message: 'Change the temporary password before using the hospital application.' });
+  });
   app.use('/api', authMiddleware.requireCompletedMfaSetup);
+  const { requireActiveLicense, requireRouteEntitlement } = require('./middlewares/licenseAccess');
+  app.use('/api', requireActiveLicense);
+  app.use('/api', requireRouteEntitlement);
   app.use('/api', require('./middlewares/operationTime'));
 
 

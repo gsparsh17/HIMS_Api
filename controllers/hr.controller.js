@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 const generateToken = require('../utils/generateToken');
 const User = require('../models/User');
+const { getSnapshot } = require('../services/licenseSnapshot.service');
+const { isEntitled } = require('../utils/entitlements');
 const Staff = require('../models/Staff');
 const Nurse = require('../models/Nurse');
 const Doctor = require('../models/Doctor');
@@ -778,6 +780,20 @@ exports.updateEmployee = async (req, res) => {
   }
 };
 
+
+async function assertLoginPermissionsWithinEntitlements(hospitalId, permissions) {
+  const { snapshot } = await getSnapshot(hospitalId);
+  if (!snapshot) throw new Error('Hospital license snapshot is not available');
+  const denied = (permissions || [])
+    .filter((permission) => String(permission.access || 'none') !== 'none' && !isEntitled(snapshot.effectiveEntitlements || {}, permission.moduleKey))
+    .map((permission) => permission.moduleKey);
+  if (denied.length) {
+    const error = new Error(`Cannot grant features outside the hospital plan: ${Array.from(new Set(denied)).join(', ')}`);
+    error.code = 'ENTITLEMENT_DELEGATION_DENIED';
+    throw error;
+  }
+}
+
 exports.setEmployeeLogin = async (req, res) => {
   try {
     const employee = await HRStaffProfile.findById(req.params.id);
@@ -807,6 +823,8 @@ exports.setEmployeeLogin = async (req, res) => {
             grantedBy: getUserId(req)
           })
         : defaultFeaturePermissions(role, { grantedBy: getUserId(req) });
+
+    await assertLoginPermissionsWithinEntitlements(employee.hospital_id || req.user?.hospital_id, modulePermissions);
 
     if (user) {
       user.name = employee.full_name;

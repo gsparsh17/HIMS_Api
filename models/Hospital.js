@@ -23,6 +23,7 @@ async function generateUniqueHospitalId(HospitalModel) {
 const hospitalSchema = new mongoose.Schema(
   {
     hospitalID: { type: String, required: true, unique: true, trim: true, uppercase: true },
+    masterHospitalId: { type: String, unique: true, sparse: true, trim: true, index: true },
     tenantCode: { type: String, unique: true, sparse: true, trim: true, uppercase: true, index: true },
     registryNo: { type: String, required: true, trim: true },
     hospitalName: { type: String, required: true, trim: true },
@@ -69,7 +70,7 @@ const hospitalSchema = new mongoose.Schema(
       environment: { type: String, enum: ['development', 'sandbox', 'production'], default: 'production' },
       status: {
         type: String,
-        enum: ['PLANNED', 'PROVISIONING', 'READY', 'SUSPENDED'],
+        enum: ['PLANNED', 'PROVISIONING', 'READY', 'PROVISIONING_FAILED', 'SUSPENDED'],
         default: 'PLANNED'
       },
       provisionedAt: Date

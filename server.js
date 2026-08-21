@@ -50,6 +50,9 @@ const startServer = async () => {
     server.keepAliveTimeout = Number(process.env.KEEP_ALIVE_TIMEOUT_MS || 5000);
 
     if (abdmConfig.isHospital) {
+      const { startPlatformSyncJob } = require('./jobs/platformSyncJob');
+      startPlatformSyncJob();
+
       const { startCalendarJob } = require('./jobs/calendarJob');
       startCalendarJob();
     }
@@ -75,6 +78,9 @@ const startServer = async () => {
 
     const shutdown = (signal) => {
       console.log(`\n${signal} received. Closing HTTP server...`);
+      if (abdmConfig.isHospital) {
+        try { require('./jobs/platformSyncJob').stopPlatformSyncJob(); } catch (_) {}
+      }
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(1), 10000).unref();
     };

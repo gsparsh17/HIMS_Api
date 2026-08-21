@@ -3,6 +3,8 @@
 const User = require('../models/User');
 const { MAIN_FEATURE_KEYS, toMainFeatureKey } = require('../utils/mainFeatureAccess');
 const { normalizeRole } = require('../utils/insuranceWorkflowAuthority');
+const { getSnapshot } = require('../services/licenseSnapshot.service');
+const { isEntitled } = require('../utils/entitlements');
 
 const HR_PERMISSION_MANAGER_ROLES = new Set(['hr', 'hr_manager']);
 const ADMIN_ROLES = new Set(['admin', 'mediqliq_super_admin']);
@@ -105,6 +107,27 @@ function normalizePermissions(rows, actor) {
   });
 }
 
+
+async function assertPermissionsWithinHospitalEntitlements(hospitalId, permissions) {
+  const { snapshot } = await getSnapshot(hospitalId);
+  if (!snapshot) {
+    const error = new Error('Hospital license snapshot is not available');
+    error.code = 'LICENSE_NOT_PROVISIONED';
+    throw error;
+  }
+  const entitlements = snapshot.effectiveEntitlements || {};
+  const denied = (permissions || [])
+    .filter((permission) => permission.access !== 'none' && !isEntitled(entitlements, permission.moduleKey))
+    .map((permission) => permission.moduleKey);
+  if (denied.length) {
+    const error = new Error(`Cannot grant features outside the hospital plan: ${Array.from(new Set(denied)).join(', ')}`);
+    error.code = 'ENTITLEMENT_DELEGATION_DENIED';
+    error.entitlements = denied;
+    throw error;
+  }
+  return permissions;
+}
+
 function ensurePermissionManagerActions(permissions, role) {
   if (!HR_PERMISSION_MANAGER_ROLES.has(normalizeRole(role))) return permissions;
   let row = permissions.find((permission) => permission.moduleKey === 'hr_staff');
@@ -187,6 +210,7 @@ exports.createUser = async (req, res) => {
     }
 
     const permissions = ensurePermissionManagerActions(normalizePermissions(modulePermissions, req.user._id), role);
+    await assertPermissionsWithinHospitalEntitlements(hospital_id || req.user.hospital_id, permissions);
 
     const user = await User.create({
       name,
@@ -271,6 +295,7 @@ exports.updateUserPermissions = async (req, res) => {
     }
 
     const permissions = ensurePermissionManagerActions(normalizePermissions(modulePermissions, req.user._id), role || user.role);
+    await assertPermissionsWithinHospitalEntitlements(user.hospital_id, permissions);
 
     if (role) {
       user.role = role;
