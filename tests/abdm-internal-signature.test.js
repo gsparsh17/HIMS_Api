@@ -31,3 +31,18 @@ test('connector signature changes when the body changes', () => {
   assert.equal(safeEqual(first, first), true);
   assert.equal(safeEqual(first, second), false);
 });
+
+test('canonical JSON serializes Date values as ISO strings', () => {
+  const date = new Date('2026-08-23T07:11:14.283Z');
+  assert.equal(
+    canonicalJson({ updatedAt: date }),
+    '{"updatedAt":"2026-08-23T07:11:14.283Z"}'
+  );
+});
+
+test('canonical JSON rejects invalid Date values', () => {
+  assert.throws(
+    () => canonicalJson({ updatedAt: new Date('invalid') }),
+    /invalid Date/i
+  );
+});

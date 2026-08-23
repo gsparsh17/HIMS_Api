@@ -3,6 +3,7 @@ const Hospital = require('../models/Hospital');
 const platformConfig = require('../config/platform.config');
 const { mergeEntitlements, normalizeEntitlements, isEntitled } = require('../utils/entitlements');
 const { platformRequest } = require('./platformClient.service');
+const { parseOptionalDate, parseDateOrNow } = require('../utils/platformDates');
 
 function daysRemaining(expiresAt) {
   if (!expiresAt) return null;
@@ -65,8 +66,8 @@ function applyRemotePayload(snapshot, hospital, payload, source) {
   target.status = payload.status;
   target.planCode = payload.planCode;
   target.planVersion = Number(payload.planVersion || 1);
-  target.startsAt = payload.startsAt;
-  target.expiresAt = payload.expiresAt;
+  target.startsAt = parseOptionalDate(payload.startsAt, 'license.startsAt');
+  target.expiresAt = parseOptionalDate(payload.expiresAt, 'license.expiresAt');
   target.entitlementSnapshot = normalizeEntitlements(payload.entitlementSnapshot || payload.entitlements || {});
   target.entitlementOverrides = payload.entitlementOverrides || {};
   target.effectiveEntitlements = mergeEntitlements(target.entitlementSnapshot, target.entitlementOverrides);
@@ -75,7 +76,7 @@ function applyRemotePayload(snapshot, hospital, payload, source) {
   target.checkedAt = new Date();
   target.lastSyncStatus = source;
   target.lastSyncError = undefined;
-  target.sourceUpdatedAt = payload.updatedAt ? new Date(payload.updatedAt) : new Date();
+  target.sourceUpdatedAt = parseDateOrNow(payload.updatedAt, 'license.updatedAt');
   return target;
 }
 

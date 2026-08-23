@@ -33,7 +33,7 @@ async function consumeRequestId(requestId) {
 
 async function verifyPlatformInbound(req, res, next) {
   try {
-    platformConfig.assertPlatformConnector();
+    platformConfig.assertPlatformInboundConnector();
     const h = headers(req);
     if (!h.tenantCode || !h.keyId || !h.timestamp || !h.requestId || !h.signature) {
       return res.status(401).json({ success: false, error: 'Missing MediQliq platform signature headers' });

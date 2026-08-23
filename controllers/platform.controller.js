@@ -5,6 +5,7 @@ const LicenseSnapshot = require('../models/LicenseSnapshot');
 const PlatformProvisioningReceipt = require('../models/PlatformProvisioningReceipt');
 const { normalizeEntitlements, mergeEntitlements } = require('../utils/entitlements');
 const { upsertFromRemotePayload, publicLicense } = require('../services/licenseSnapshot.service');
+const { parseOptionalDate, parseDateOrNow } = require('../utils/platformDates');
 
 exports.health = async (_req, res) => {
   const hospital = await Hospital.findOne({ is_active: { $ne: false } }).select('hospitalID tenantCode hospitalName deployment');
@@ -122,8 +123,8 @@ exports.provision = async (req, res) => {
             status: license.status,
             planCode: license.planCode,
             planVersion: Number(license.planVersion || 1),
-            startsAt: license.startsAt,
-            expiresAt: license.expiresAt,
+            startsAt: parseOptionalDate(license.startsAt, 'license.startsAt'),
+            expiresAt: parseOptionalDate(license.expiresAt, 'license.expiresAt'),
             entitlementSnapshot,
             entitlementOverrides,
             effectiveEntitlements: mergeEntitlements(entitlementSnapshot, entitlementOverrides),
@@ -131,7 +132,7 @@ exports.provision = async (req, res) => {
             licenseVersion: Number(license.licenseVersion || 1),
             checkedAt: new Date(),
             lastSyncStatus: 'PROVISIONED',
-            sourceUpdatedAt: license.updatedAt ? new Date(license.updatedAt) : new Date()
+            sourceUpdatedAt: parseDateOrNow(license.updatedAt, 'license.updatedAt')
           }
         },
         { upsert: true, new: true, runValidators: true, session }

@@ -8,7 +8,7 @@ const fetchFn = (...args) => {
 };
 
 async function platformRequest(path, body, options = {}) {
-  platformConfig.assertPlatformConnector();
+  platformConfig.assertPlatformOutboundConnector();
   const method = String(options.method || 'POST').toUpperCase();
   const timestamp = new Date().toISOString();
   const requestId = options.requestId || crypto.randomUUID();

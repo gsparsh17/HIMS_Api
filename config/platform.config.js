@@ -12,13 +12,30 @@ const config = {
   requestTimeoutMs: Number(process.env.PLATFORM_REQUEST_TIMEOUT_MS || 15000)
 };
 
-function assertPlatformConnector() {
+function assertPlatformInboundConnector() {
   const missing = [];
-  if (!config.masterUrl) missing.push('PLATFORM_MASTER_URL');
   if (!config.tenantCode) missing.push('PLATFORM_TENANT_CODE');
   if (!config.connectorKeyId) missing.push('PLATFORM_CONNECTOR_KEY_ID');
   if (!config.connectorSecret) missing.push('PLATFORM_CONNECTOR_SECRET');
   if (missing.length) throw new Error(`Hospital platform connector is missing: ${missing.join(', ')}`);
 }
 
-module.exports = { ...config, assertPlatformConnector };
+function assertPlatformOutboundConnector() {
+  assertPlatformInboundConnector();
+  if (!config.masterUrl) {
+    throw new Error('Hospital platform connector is missing: PLATFORM_MASTER_URL');
+  }
+}
+
+// Backward-compatible alias for callers that historically required the full
+// outbound connector configuration.
+function assertPlatformConnector() {
+  assertPlatformOutboundConnector();
+}
+
+module.exports = {
+  ...config,
+  assertPlatformInboundConnector,
+  assertPlatformOutboundConnector,
+  assertPlatformConnector
+};
