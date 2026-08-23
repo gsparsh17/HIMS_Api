@@ -28,6 +28,7 @@ const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
 const { queueNotification } = require('../services/nabhNotification.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { getPatientCoveragePreference } = require('../services/patientCoveragePreference.service');
+const { accessiblePatientIds, sanitizePatientForDecision, assertPatientAccess, autoPurpose } = require('../services/patientAccessPolicy.service');
 
 
 async function nextShareRecordNumber(hospitalId) {
@@ -349,6 +350,9 @@ exports.getAllPatients = async (req, res) => {
     const safeSortBy = allowedSortFields.has(String(sortBy)) ? String(sortBy) : 'registered_at';
 
     const filter = { hospitalId, is_active: { $ne: false } };
+    const listPurpose = autoPurpose(req.user);
+    const accessibleIds = await accessiblePatientIds(req.user, hospitalId, listPurpose);
+    if (Array.isArray(accessibleIds)) filter._id = { $in: accessibleIds };
 
     if (search) {
       const regex = new RegExp(escapeRegex(search), 'i');
@@ -376,8 +380,11 @@ exports.getAllPatients = async (req, res) => {
       Patient.countDocuments(filter)
     ]);
 
+    const listDecision = { dataScope: listPurpose === 'TREATMENT' ? 'FULL' : 'MINIMIZED' };
+    const safePatients = patients.map((patient) => sanitizePatientForDecision(patient, listDecision, { list: true }));
+
     return res.json({
-      patients,
+      patients: safePatients,
       total,
       totalPages: Math.ceil(total / safeLimit),
       currentPage: safePage,
@@ -391,7 +398,7 @@ exports.getAllPatients = async (req, res) => {
 exports.getPatientById = async (req, res) => {
   try {
     const patient = await ensureOwned(req, res);
-    if (patient) res.json(patient);
+    if (patient) res.json(sanitizePatientForDecision(patient, req.patientAccessDecision));
   } catch (error) {
     fail(res, error);
   }
@@ -510,9 +517,10 @@ exports.getPatientByPhone = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
 
-    return res.json({
-      patient: await Patient.findOne({ hospitalId, phone: req.params.phone, is_active: { $ne: false } })
-    });
+    const patient = await Patient.findOne({ hospitalId, phone: req.params.phone, is_active: { $ne: false } });
+    if (!patient) return res.json({ patient: null });
+    const decision = await assertPatientAccess({ user: req.user, patientId: patient._id, hospitalId, purpose: autoPurpose(req.user), scope: 'clinical_read' });
+    return res.json({ patient: sanitizePatientForDecision(patient, decision) });
   } catch (error) {
     return fail(res, error);
   }
@@ -660,8 +668,9 @@ exports.getPatientByTempId = async (req, res) => {
     const patient = log?.serverId
       ? await Patient.findOne({ _id: log.serverId, hospitalId })
       : null;
-
-    return res.json({ patient });
+    if (!patient) return res.json({ patient: null });
+    const decision = await assertPatientAccess({ user: req.user, patientId: patient._id, hospitalId, purpose: autoPurpose(req.user), scope: 'clinical_read' });
+    return res.json({ patient: sanitizePatientForDecision(patient, decision) });
   } catch (error) {
     return fail(res, error);
   }

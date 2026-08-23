@@ -1,5 +1,6 @@
 const express = require('express');
 
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 const router = express.Router();
 
 const operations = require('../controllers/pharmacyOperations.controller');
@@ -56,7 +57,7 @@ router.post(
 );
 
 // ========== LEDGER ==========
-router.get('/ledger/patient/:patientId', financial.groupedLedger);
+router.get('/ledger/patient/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), financial.groupedLedger);
 router.get('/ledger/daily', pharmacyFinanceView, operations.getLedgerDaily);
 router.get('/inventory/ledger', operations.getInventoryLedger);
 

@@ -52,6 +52,7 @@ const isbarSchema = new mongoose.Schema({
 });
 
 const shiftHandoverSchema = new mongoose.Schema({
+  hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   // Shift info
   handoverDate: {
     type: Date,
@@ -111,8 +112,8 @@ const shiftHandoverSchema = new mongoose.Schema({
 });
 
 // Index for efficient queries
-shiftHandoverSchema.index({ outgoingNurse: 1, handoverDate: -1 });
-shiftHandoverSchema.index({ incomingNurse: 1, status: 1 });
+shiftHandoverSchema.index({ hospitalId: 1, outgoingNurse: 1, handoverDate: -1 });
+shiftHandoverSchema.index({ hospitalId: 1, incomingNurse: 1, status: 1 });
 shiftHandoverSchema.index({ handoverDate: 1, outgoingShift: 1 });
 
 module.exports = mongoose.model('ShiftHandover', shiftHandoverSchema);

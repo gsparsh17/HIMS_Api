@@ -1,4 +1,10 @@
 const express = require('express');
+
+if (String(process.env.NODE_ENV || '').toLowerCase() === 'production' &&
+    String(process.env.DISABLE_PERMISSION_CHECKS || 'false').toLowerCase() === 'true') {
+  throw new Error('DISABLE_PERMISSION_CHECKS cannot be enabled in production');
+}
+
 const cors = require('cors');
 const morgan = require('morgan');
 const helmet = require('helmet');
@@ -36,7 +42,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Request-Id', 'X-Master-Admin-Key', 'X-Effective-Operation-Time', 'X-Effective-Operation-Source'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-Request-Id', 'X-Master-Admin-Key', 'X-MediQliq-Device-Id', 'X-MediQliq-Operation-Id', 'X-Effective-Operation-Time', 'X-Effective-Operation-Source'],
     maxAge: 86400
   })
 );
@@ -219,6 +225,7 @@ function mountHospitalRoutes() {
   app.use('/api/admin/config/service-masters', require('./routes/serviceMaster.routes.js'));
   app.use('/api/clinical-ai', require('./routes/clinicalAi.routes.js'));
   app.use('/api/setup-assistant', require('./routes/setupAssistant.routes.js'));
+  app.use('/api/security-access', require('./routes/securityAccess.routes'));
   app.use('/api/audit-logs', require('./routes/auditLog.routes'));
   app.use('/api/nabh', require('./routes/nabh.routes'));
   app.use('/api/patients', require('./routes/patient.routes'));

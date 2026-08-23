@@ -13,6 +13,7 @@ const Hospital = require('../models/Hospital');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 const { requireHospitalId } = require('../services/tenantScope.service');
+const { accessiblePatientIds, autoPurpose, assertPatientAccess } = require('../services/patientAccessPolicy.service');
 const { nextAppointmentToken } = require('../utils/appointmentNumber');
 const { queueNotification } = require('../services/nabhNotification.service');
 const { assertPatientReadyForContext } = require('../services/patientRegistration.service');
@@ -35,6 +36,15 @@ const {
   canonicalBookingFingerprint
 } = require('../utils/hospitalDateTime');
 
+
+async function applyAppointmentPatientScope(req, filter) {
+  const hospitalId = requireHospitalId(req);
+  const allowed = await accessiblePatientIds(req.user, hospitalId, autoPurpose(req.user));
+  if (Array.isArray(allowed)) {
+    filter.patient_id = { $in: allowed };
+  }
+  return filter;
+}
 
 function appointmentDaySelector(dateKey, timeZone = DEFAULT_HOSPITAL_TIME_ZONE) {
   const key = hospitalDateKey(dateKey, timeZone);
@@ -402,6 +412,7 @@ exports.getAppointmentByTempId = async (req, res) => {
         .populate('hospital_id');
 
       if (appointment) {
+        await assertPatientAccess({ user: req.user, patientId: appointment.patient_id?._id || appointment.patient_id, hospitalId, purpose: 'AUTO', scope: 'clinical_read' });
         return res.json({ appointment });
       }
     }
@@ -422,6 +433,7 @@ exports.getAppointmentByTempId = async (req, res) => {
         .populate('hospital_id');
 
       if (appointment) {
+        await assertPatientAccess({ user: req.user, patientId: appointment.patient_id?._id || appointment.patient_id, hospitalId, purpose: 'AUTO', scope: 'clinical_read' });
         return res.json({ appointment });
       }
     }
@@ -515,7 +527,7 @@ exports.bulkCreateAppointments = async (req, res) => {
         });
         if (patient) {
           patientId = patient._id;
-          console.log(`Found patient by patientId/uhid: ${suppliedPatientIdentifier} -> ${patientId}`);
+          console.log('Resolved appointment-sync patient identifier within the current hospital scope.');
         }
       }
 
@@ -554,6 +566,12 @@ exports.bulkCreateAppointments = async (req, res) => {
           failedImports.push({ localId: appointmentData.localId, reason: 'Mapped patient is not available in this hospital.' });
           continue;
         }
+      }
+      try {
+        await assertPatientAccess({ user: req.user, patientId, hospitalId, purpose: 'AUTO', scope: 'clinical_write' }); // eslint-disable-line no-await-in-loop
+      } catch (accessError) {
+        failedImports.push({ localId: appointmentData.localId, reason: accessError.message, code: accessError.code || 'PATIENT_CONTEXT_ACCESS_DENIED' });
+        continue;
       }
 
       // Get doctor
@@ -1154,6 +1172,7 @@ exports.createAppointment = async (req, res) => {
     if (!type || !doctor_id || !department_id || !appointment_date || !req.body.patient_id) {
       return res.status(400).json({ error: 'Missing required fields', code: 'VALIDATION_ERROR' });
     }
+    await assertPatientAccess({ user: req.user, patientId: req.body.patient_id, hospitalId, purpose: 'AUTO', scope: 'clinical_write' });
 
     let dateKey;
     try {
@@ -1686,12 +1705,14 @@ exports.getCurrentQueue = async (req, res) => {
 
     await recalculateQueue({ hospitalId, departmentId, date: dateKey, timeZone });
     const daySelector = appointmentDaySelector(dateKey, timeZone);
-    const rows = await Appointment.find({
+    const queueFilter = {
       hospital_id: hospitalId,
       department_id: departmentId,
       status: { $in: ['Scheduled', 'In Progress'] },
       ...daySelector
-    })
+    };
+    await applyAppointmentPatientScope(req, queueFilter);
+    const rows = await Appointment.find(queueFilter)
       .populate('patient_id', 'first_name last_name patientId uhid')
       .populate('doctor_id', 'firstName lastName')
       .sort({ queuePosition: 1, start_time: 1, serial_number: 1 });
@@ -1706,6 +1727,7 @@ exports.getAllAppointments = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const filter = { hospital_id: hospitalId, is_active: { $ne: false } };
+    await applyAppointmentPatientScope(req, filter);
     if (req.query.status) filter.status = req.query.status;
     if (req.query.visit_mode) filter.visit_mode = req.query.visit_mode;
     if (req.query.from || req.query.to) {
@@ -2193,7 +2215,9 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
     const { doctorId } = req.params;
     const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId, is_active: { $ne: false } });
     if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
-    const appointments = await Appointment.find({ doctor_id: doctorId, hospital_id: hospitalId, is_active: { $ne: false } })
+    const filter = { doctor_id: doctorId, hospital_id: hospitalId, is_active: { $ne: false } };
+    await applyAppointmentPatientScope(req, filter);
+    const appointments = await Appointment.find(filter)
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -2220,7 +2244,9 @@ exports.getAppointmentsByDepartmentId = async (req, res) => {
     const { departmentId } = req.params;
     const departmentExists = await Department.exists({ _id: departmentId, hospitalId });
     if (!departmentExists) return res.status(404).json({ error: 'Department not found' });
-    const appointments = await Appointment.find({ department_id: departmentId, hospital_id: hospitalId, is_active: { $ne: false } })
+    const filter = { department_id: departmentId, hospital_id: hospitalId, is_active: { $ne: false } };
+    await applyAppointmentPatientScope(req, filter);
+    const appointments = await Appointment.find(filter)
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -2244,7 +2270,9 @@ exports.getAppointmentsByHospitalId = async (req, res) => {
     if (String(hospitalId) !== String(scopedHospitalId)) {
       return res.status(403).json({ error: 'Hospital scope mismatch', code: 'TENANT_SCOPE_MISMATCH' });
     }
-    const appointments = await Appointment.find({ hospital_id: scopedHospitalId, is_active: { $ne: false } })
+    const filter = { hospital_id: scopedHospitalId, is_active: { $ne: false } };
+    await applyAppointmentPatientScope(req, filter);
+    const appointments = await Appointment.find(filter)
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
@@ -2272,11 +2300,13 @@ exports.getTodaysAppointmentsByDoctorId = async (req, res) => {
     const todayKey = hospitalTodayKey(timeZone);
     const daySelector = appointmentDaySelector(todayKey, timeZone);
 
-    const appointments = await Appointment.find({
+    const filter = {
       doctor_id: doctorId,
       hospital_id: hospitalId,
       ...daySelector
-    })
+    };
+    await applyAppointmentPatientScope(req, filter);
+    const appointments = await Appointment.find(filter)
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')

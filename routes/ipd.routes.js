@@ -1,4 +1,6 @@
 const express = require('express');
+const IPDAdmission = require('../models/IPDAdmission');
+const { requireResourcePatientAccess } = require('../middlewares/patientAccess');
 const router = express.Router();
 const {
   protect,
@@ -34,6 +36,7 @@ router.use((req, res, next) => req.method === 'GET' ? next() : requireModuleAcce
 // ============== CLINICAL DOCUMENTS ==============
 router.get(
   '/admissions/:admissionId/clinical-documents/status',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for getStatus()
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),
@@ -42,6 +45,7 @@ router.get(
 
 router.get(
   '/admissions/:admissionId/initial-assessment',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for getDoctorAssessment()
   // ...read,
   // requireModuleAccess('ipd.initial_assessment.doctor', 'view'),
@@ -50,18 +54,21 @@ router.get(
 
 router.post(
   '/admissions/:admissionId/initial-assessment',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }),
   requireActionPermission('ipd_clinical_write'),
   clinical.saveDoctorInitialAssessment
 );
 
 router.put(
   '/admissions/:admissionId/initial-assessment',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }),
   requireActionPermission('ipd_clinical_write'),
   clinical.saveDoctorInitialAssessment
 );
 
 router.get(
   '/admissions/:admissionId/initial-assessment/print',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for printDoctorAssessment()
   // ...read,
   // requireModuleAccess('ipd.initial_assessment.doctor', 'view'),
@@ -70,6 +77,7 @@ router.get(
 
 router.get(
   '/admissions/:admissionId/nursing-admission-assessment',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for getNursingAssessment()
   // ...read,
   // requireModuleAccess('ipd.initial_assessment.nursing', 'view'),
@@ -78,18 +86,21 @@ router.get(
 
 router.post(
   '/admissions/:admissionId/nursing-admission-assessment',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }),
   requireActionPermission('ipd_nursing_write'),
   clinical.saveNursingAdmissionAssessment
 );
 
 router.put(
   '/admissions/:admissionId/nursing-admission-assessment',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }),
   requireActionPermission('ipd_nursing_write'),
   clinical.saveNursingAdmissionAssessment
 );
 
 router.get(
   '/admissions/:admissionId/nursing-admission-assessment/print',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for printNursingAssessment()
   // ...read,
   // requireModuleAccess('ipd.initial_assessment.nursing', 'view'),
@@ -112,6 +123,7 @@ router.put(
 
 router.get(
   '/vitals/admission/:admissionId',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for listVitals()
   // ...read,
   // requireModuleAccess('ipd.vitals', 'view'),
@@ -120,6 +132,7 @@ router.get(
 
 router.get(
   '/vitals/admission/:admissionId/print/ews',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for printVitalsEws()
   // ...read,
   // requireModuleAccess('ipd.vitals', 'view'),
@@ -128,6 +141,7 @@ router.get(
 
 router.get(
   '/vitals/admission/:admissionId/print/patient-care-flow',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for printPatientCareFlow()
   // ...read,
   // requireModuleAccess('ipd.vitals', 'view'),
@@ -136,6 +150,7 @@ router.get(
 
 router.get(
   '/medications/admission/:admissionId/print',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for printMedicationChart()
   // ...read,
   // requireModuleAccess('ipd.medication_chart', 'view'),
@@ -144,6 +159,7 @@ router.get(
 
 router.get(
   '/rounds/admission/:admissionId/print',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   protect,  // ✅ Added for printRounds()
   // ...read,
   // requireModuleAccess('ipd.rounds', 'view'),
@@ -181,6 +197,7 @@ router.get('/reports/bed-occupancy', admissions.getBedOccupancyReport);
 
 router.get(
   '/admissions/:id',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'id', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),
   admissions.getAdmissionById
@@ -188,18 +205,21 @@ router.get(
 
 router.put(
   '/admissions/:id',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'id', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }),
   requireActionPermission('ipd_admission_manage'),
   admissions.updateAdmission
 );
 
 router.patch(
   '/admissions/:id/status',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'id', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }),
   requireActionPermission('ipd_admission_manage'),
   admissions.updateAdmissionStatus
 );
 
 router.delete(
   '/admissions/:id',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'id', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }),
   protect,
   authorize('admin'),
   requireModuleAccess('ipd.patient_file', 'edit'),
@@ -326,6 +346,7 @@ router.post(
 
 router.get(
   '/rounds/admission/:admissionId',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   // ...read,
   // requireModuleAccess('ipd.rounds', 'view'),
   rounds.getRoundsByAdmission
@@ -393,6 +414,7 @@ router.delete(
 // Legacy vitals chart endpoints
 router.get(
   '/vitals/admission/:admissionId/chart',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   // ...read,
   // requireModuleAccess('ipd.vitals', 'view'),
   nursing.getVitalsChartData
@@ -400,6 +422,7 @@ router.get(
 
 router.get(
   '/vitals/admission/:admissionId/latest',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   // ...read,
   // requireModuleAccess('ipd.vitals', 'view'),
   nursing.getLatestVitals
@@ -414,6 +437,7 @@ router.post(
 
 router.get(
   '/medications/admission/:admissionId',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   // ...read,
   // requireModuleAccess('ipd.medication_chart', 'view'),
   meds.getMedicationsByAdmission
@@ -421,6 +445,7 @@ router.get(
 
 router.get(
   '/medications/admission/:admissionId/today',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   // ...read,
   // requireModuleAccess('ipd.medication_chart', 'view'),
   meds.getTodaySchedule
@@ -486,6 +511,7 @@ router.patch(
 
 router.get(
   '/medications/admission/:admissionId/pending-receipts',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   // ...nurses,
   // requireModuleAccess('ipd.medication_chart', 'view'),
   meds.getPendingStockReceipts
@@ -522,6 +548,7 @@ router.get(
 
 router.get(
   '/medications/admission/:admissionId/summary',
+  requireResourcePatientAccess(IPDAdmission, { idParam: 'admissionId', patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }),
   // ...read,
   // requireModuleAccess('ipd.medication_chart', 'view'),
   meds.getMedicationSummary

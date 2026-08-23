@@ -1,6 +1,6 @@
 const express = require('express');
 const controller = require('../controllers/mis.controller');
-const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
+const { protect, authorize, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
 const router = express.Router();
 
 router.use(protect, authorize('admin', 'mediqliq_super_admin', 'doctor', 'staff', 'registrar', 'receptionist', 'nurse', 'ot_staff', 'store', 'store_manager', 'inventory_manager', 'accountant', 'insurance_desk', 'hr', 'hr_manager', 'pathology_staff', 'radiology_staff', 'pharmacy'), requireModuleAccess('reports', 'view'));
@@ -8,12 +8,12 @@ router.get('/catalog', controller.catalog);
 router.post('/query', controller.query);
 router.get('/reports/:key', controller.run);
 router.get('/exports', controller.listExports);
-router.post('/exports', controller.createExport);
+router.post('/exports', requireActionPermission('mis_export'), controller.createExport);
 router.get('/exports/:id', controller.getExport);
 router.get('/exports/:id/download', controller.downloadExport);
 router.get('/schedules', controller.listSchedules);
-router.post('/schedules', controller.createSchedule);
-router.put('/schedules/:id', controller.updateSchedule);
+router.post('/schedules', requireActionPermission('mis_export'), controller.createSchedule);
+router.put('/schedules/:id', requireActionPermission('mis_export'), controller.updateSchedule);
 router.delete('/schedules/:id', controller.deleteSchedule);
 router.get('/snapshots', controller.listSnapshots);
 router.post('/snapshots', controller.createSnapshot);

@@ -2,6 +2,7 @@
 
 const express = require('express');
 const c = require('../controllers/clinicalAssessment.controller');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 
 const router = express.Router();
 
@@ -15,11 +16,11 @@ router.post('/mortality', c.mortality);
 router.post('/rehabilitation', c.rehabilitation);
 
 // Patient assessments
-router.get('/patients/:patientId', c.patientAssessments);
+router.get('/patients/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), c.patientAssessments);
 
 // Diet management
 router.post('/diets', c.createDiet);
 router.get('/diets', c.activeDiets);
-router.get('/diets/:patientId', c.dietHistory);
+router.get('/diets/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), c.dietHistory);
 
 module.exports = router;

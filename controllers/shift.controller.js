@@ -4,6 +4,32 @@ const ShiftHandover = require('../models/ShiftHandover');
 const IPDAdmission = require('../models/IPDAdmission');
 const NursingNote = require('../models/NursingNote');
 const IPDVitals = require('../models/IPDVitals');
+const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
+
+function hospitalFor(req) {
+  const hospitalId = userHospitalId(req.user);
+  if (!hospitalId && !isPlatformAdmin(req.user)) {
+    const error = new Error('Hospital context is required');
+    error.statusCode = 403;
+    throw error;
+  }
+  return hospitalId;
+}
+
+async function scopedStaff(req, id) {
+  const hospitalId = hospitalFor(req);
+  const row = await Staff.findOne({ _id: id, ...(hospitalId ? { hospitalId } : {}) });
+  return row;
+}
+
+async function currentStaff(req) {
+  const hospitalId = hospitalFor(req);
+  return Staff.findOne({ ...(hospitalId ? { hospitalId } : {}), $or: [{ user_id: req.user._id }, { email: req.user.email }] });
+}
+
+function mayActForOtherNurse(req) {
+  return ['admin', 'hr_manager', 'mediqliq_super_admin'].includes(String(req.user?.role || '').toLowerCase());
+}
 
 // ========== BASIC SHIFT CRUD ==========
 
@@ -107,6 +133,13 @@ const findShiftDoc = async (shiftName) => {
 exports.getAvailableNursesForHandover = async (req, res) => {
   try {
     const { outgoingNurseId } = req.params;
+    const hospitalId = hospitalFor(req);
+    const outgoingNurse = await scopedStaff(req, outgoingNurseId);
+    if (!outgoingNurse) return res.status(404).json({ error: 'Outgoing nurse not found in this hospital' });
+    if (!mayActForOtherNurse(req)) {
+      const actor = await currentStaff(req);
+      if (!actor || String(actor._id) !== String(outgoingNurseId)) return res.status(403).json({ error: 'Nurses may only initiate handover for their own staff identity' });
+    }
     const currentShift = getCurrentShift();
     const nextShiftName = getNextShift(currentShift);
 
@@ -115,6 +148,7 @@ exports.getAvailableNursesForHandover = async (req, res) => {
 
     // Fetch ALL hospital nurses (except outgoing) so user has full visibility
     const availableNurses = await Staff.find({
+      hospitalId,
       role: { $regex: /nurse/i },
       _id: { $ne: outgoingNurseId }
     }).populate('shift', 'name start_time end_time')
@@ -127,6 +161,7 @@ exports.getAvailableNursesForHandover = async (req, res) => {
     const nurseWorkloads = await Promise.all(
       availableNurses.map(async (nurse) => {
         const activeHandovers = await ShiftHandover.countDocuments({
+          hospitalId,
           incomingNurse: nurse._id,
           status: { $in: ['Submitted', 'Draft'] },
           handoverDate: { $gte: today }
@@ -183,10 +218,13 @@ exports.getAvailableNursesForHandover = async (req, res) => {
  */
 exports.getHandoverPatientData = async (req, res) => {
   try {
-    // Get all active admissions
-    const admissions = await IPDAdmission.find({
-      status: { $in: ['Admitted', 'Under Treatment'] }
-    })
+    const hospitalId = hospitalFor(req);
+    const { accessiblePatientIds } = require('../services/patientAccessPolicy.service');
+    const allowedPatientIds = await accessiblePatientIds(req.user, hospitalId, 'TREATMENT');
+    const admissionFilter = { hospitalId, status: { $in: ['Admitted', 'Under Treatment'] } };
+    if (Array.isArray(allowedPatientIds)) admissionFilter.patientId = { $in: allowedPatientIds };
+    // Get only tenant-scoped patients the current nurse/security context may access.
+    const admissions = await IPDAdmission.find(admissionFilter)
       .populate('patientId', 'first_name last_name gender dob patientId allergies')
       .populate('primaryDoctorId', 'firstName lastName')
       .populate('bedId', 'bedNumber bedType')
@@ -196,7 +234,7 @@ exports.getHandoverPatientData = async (req, res) => {
     const patientData = await Promise.all(
       admissions.map(async (adm) => {
         // Get latest vitals
-        const latestVitals = await IPDVitals.findOne({ admissionId: adm._id })
+        const latestVitals = await IPDVitals.findOne({ admissionId: adm._id, hospitalId })
           .sort({ recordedAt: -1 });
 
         // Get recent nursing notes (last 24h)
@@ -290,18 +328,34 @@ exports.createHandover = async (req, res) => {
       status
     } = req.body;
 
+    const hospitalId = hospitalFor(req);
+    const outgoingNurse = await scopedStaff(req, outgoingNurseId);
+    if (!outgoingNurse) return res.status(404).json({ error: 'Outgoing nurse not found in this hospital' });
+    if (!mayActForOtherNurse(req)) {
+      const actor = await currentStaff(req);
+      if (!actor || String(actor._id) !== String(outgoingNurseId)) return res.status(403).json({ error: 'Nurses may only create their own handover' });
+    }
     const currentShift = getCurrentShift();
     const nextShift = getNextShift(currentShift);
 
-    // Validate incoming nurse exists (no strict shift check — allows manual override)
+    // Validate incoming nurse exists in the same hospital (manual override is allowed for authorized actors).
     if (incomingNurseId) {
-      const incomingNurse = await Staff.findById(incomingNurseId);
+      const incomingNurse = await scopedStaff(req, incomingNurseId);
       if (!incomingNurse) {
         return res.status(404).json({ error: 'Selected incoming nurse not found' });
       }
     }
 
+    const requestedAdmissions = (patients || []).map((row) => row?.admissionId).filter(Boolean);
+    if (requestedAdmissions.length) {
+      const scopedAdmissions = await IPDAdmission.find({ _id: { $in: requestedAdmissions }, hospitalId }).select('_id patientId').lean();
+      if (scopedAdmissions.length !== new Set(requestedAdmissions.map(String)).size) {
+        return res.status(403).json({ error: 'Handover contains an admission outside this hospital or no longer available' });
+      }
+    }
+
     const handover = new ShiftHandover({
+      hospitalId,
       handoverDate: new Date(),
       outgoingShift: currentShift,
       incomingShift: nextShift,
@@ -323,6 +377,7 @@ exports.createHandover = async (req, res) => {
         today.setHours(0, 0, 0, 0);
 
         const candidates = await Staff.find({
+          hospitalId,
           role: { $regex: /nurse/i },
           shift: nextShiftDoc._id,
           _id: { $ne: outgoingNurseId }
@@ -335,6 +390,7 @@ exports.createHandover = async (req, res) => {
 
           for (const nurse of candidates) {
             const count = await ShiftHandover.countDocuments({
+              hospitalId,
               incomingNurse: nurse._id,
               status: { $in: ['Submitted', 'Draft'] },
               handoverDate: { $gte: today }
@@ -363,7 +419,7 @@ exports.createHandover = async (req, res) => {
       for (const p of (patients || [])) {
         // Resolve patientId from the admission
         const IPDAdmission = require('../models/IPDAdmission');
-        const admission = await IPDAdmission.findById(p.admissionId);
+        const admission = await IPDAdmission.findOne({ _id: p.admissionId, hospitalId });
         
         const nursingNote = new NursingNote({
           admissionId: p.admissionId,
@@ -398,8 +454,16 @@ exports.getHandoverHistory = async (req, res) => {
   try {
     const { nurseId } = req.params;
     const { limit = 10 } = req.query;
+    const hospitalId = hospitalFor(req);
+    const target = await scopedStaff(req, nurseId);
+    if (!target) return res.status(404).json({ error: 'Nurse not found in this hospital' });
+    if (!mayActForOtherNurse(req)) {
+      const actor = await currentStaff(req);
+      if (!actor || String(actor._id) !== String(nurseId)) return res.status(403).json({ error: 'Nurses may only view their own handovers' });
+    }
 
     const handovers = await ShiftHandover.find({
+      hospitalId,
       $or: [{ outgoingNurse: nurseId }, { incomingNurse: nurseId }]
     })
       .populate('outgoingNurse', 'first_name last_name')
@@ -421,9 +485,18 @@ exports.acknowledgeHandover = async (req, res) => {
   try {
     const { id } = req.params;
     const { nurseId } = req.body;
+    const hospitalId = hospitalFor(req);
+    const target = await scopedStaff(req, nurseId);
+    if (!target) return res.status(404).json({ error: 'Nurse not found in this hospital' });
+    if (!mayActForOtherNurse(req)) {
+      const actor = await currentStaff(req);
+      if (!actor || String(actor._id) !== String(nurseId)) return res.status(403).json({ error: 'Nurses may only acknowledge their own handover' });
+    }
 
-    const handover = await ShiftHandover.findById(id);
+    const handover = await ShiftHandover.findOne({ _id: id, hospitalId });
     if (!handover) return res.status(404).json({ error: 'Handover not found' });
+
+    if (String(handover.incomingNurse || '') !== String(nurseId) && !mayActForOtherNurse(req)) return res.status(403).json({ error: 'Only the assigned incoming nurse may acknowledge this handover' });
 
     if (handover.status === 'Acknowledged') {
       return res.status(400).json({ error: 'Handover already acknowledged' });
@@ -447,8 +520,13 @@ exports.acknowledgeHandover = async (req, res) => {
 exports.getPendingHandovers = async (req, res) => {
   try {
     const { nurseId } = req.params;
+    const hospitalId = hospitalFor(req);
+    const target = await scopedStaff(req, nurseId);
+    if (!target) return res.status(404).json({ error: 'Nurse not found in this hospital' });
+    if (!mayActForOtherNurse(req)) { const actor = await currentStaff(req); if (!actor || String(actor._id) !== String(nurseId)) return res.status(403).json({ error: 'Nurses may only view their own handovers' }); }
 
     const handovers = await ShiftHandover.find({
+      hospitalId,
       incomingNurse: nurseId,
       status: 'Submitted'
     })
@@ -469,12 +547,17 @@ exports.getPendingHandovers = async (req, res) => {
 exports.getCurrentHandovers = async (req, res) => {
   try {
     const { nurseId } = req.params;
+    const hospitalId = hospitalFor(req);
+    const target = await scopedStaff(req, nurseId);
+    if (!target) return res.status(404).json({ error: 'Nurse not found in this hospital' });
+    if (!mayActForOtherNurse(req)) { const actor = await currentStaff(req); if (!actor || String(actor._id) !== String(nurseId)) return res.status(403).json({ error: 'Nurses may only view their own handovers' }); }
 
     // Only get handovers from the last 24 hours to avoid clutter
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
 
     const handovers = await ShiftHandover.find({
+      hospitalId,
       incomingNurse: nurseId,
       status: 'Acknowledged',
       handoverDate: { $gte: yesterday }

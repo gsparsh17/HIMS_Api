@@ -158,6 +158,7 @@ function assertConsentUsable(consent) {
   if (!consent) {
     const error = new Error('Consent was not found');
     error.statusCode = 404;
+    error.code = 'ABDM_CONSENT_NOT_FOUND';
     throw error;
   }
   if (
@@ -176,24 +177,61 @@ function assertConsentUsable(consent) {
   if (consent.status !== 'GRANTED') {
     const error = new Error(`Consent is ${consent.status}`);
     error.statusCode = 409;
+    error.code = consent.status === 'REVOKED' ? 'ABDM_CONSENT_REVOKED' : 'ABDM_CONSENT_NOT_GRANTED';
     throw error;
   }
-  if (consent.validFrom && new Date(consent.validFrom).getTime() > Date.now()) {
+
+  const now = Date.now();
+  if (consent.validFrom && new Date(consent.validFrom).getTime() > now) {
     const error = new Error('Consent is not yet valid');
     error.statusCode = 409;
     error.code = 'ABDM_CONSENT_NOT_YET_VALID';
     throw error;
   }
   if (abdmConfig.requireConsentValidation && !consent.expiresAt) {
-    const error = new Error('Consent expiry is missing');
+    const error = new Error('Consent expiry/dataEraseAt is missing');
     error.statusCode = 409;
     error.code = 'ABDM_CONSENT_EXPIRY_REQUIRED';
     throw error;
   }
-  if (consent.expiresAt && new Date(consent.expiresAt).getTime() <= Date.now()) {
-    const error = new Error('Consent has expired');
+  if (consent.expiresAt && new Date(consent.expiresAt).getTime() <= now) {
+    const error = new Error('Consent has expired or its dataEraseAt deadline has passed');
     error.statusCode = 410;
     error.code = 'ABDM_CONSENT_EXPIRED';
+    throw error;
+  }
+
+  const purposeCode = String(
+    consent.purpose?.code || consent.permission?.purpose?.code || ''
+  ).toUpperCase();
+  const validPurposeCodes = new Set(['CAREMGT', 'BTG', 'PUBHLTH', 'HPAYMT', 'DSRCH', 'PATRQT']);
+  if (!purposeCode || !validPurposeCodes.has(purposeCode)) {
+    const error = new Error('Consent purpose is missing or unsupported');
+    error.statusCode = 409;
+    error.code = 'ABDM_CONSENT_PURPOSE_INVALID';
+    throw error;
+  }
+
+  const accessMode = String(consent.permission?.accessMode || '').toUpperCase();
+  if (!['VIEW', 'STORE', 'QUERY', 'STREAM'].includes(accessMode)) {
+    const error = new Error('Consent accessMode is missing or unsupported');
+    error.statusCode = 409;
+    error.code = 'ABDM_CONSENT_ACCESS_MODE_INVALID';
+    throw error;
+  }
+
+  const from = consent.dateRange?.from ? new Date(consent.dateRange.from).getTime() : NaN;
+  const to = consent.dateRange?.to ? new Date(consent.dateRange.to).getTime() : NaN;
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) {
+    const error = new Error('Consent dateRange is missing or invalid');
+    error.statusCode = 409;
+    error.code = 'ABDM_CONSENT_DATE_RANGE_INVALID';
+    throw error;
+  }
+  if (!Array.isArray(consent.hiTypes) || !consent.hiTypes.length) {
+    const error = new Error('Consent contains no health-information types');
+    error.statusCode = 409;
+    error.code = 'ABDM_CONSENT_HITYPE_REQUIRED';
     throw error;
   }
 }

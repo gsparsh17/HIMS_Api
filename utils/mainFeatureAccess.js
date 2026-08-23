@@ -243,8 +243,8 @@ const ROLE_ACTION_PRESET = Object.freeze({
   pathology_staff: { laboratory: ['billing_create'] },
   radiology_staff: { radiology: ['billing_create'] },
   ot_staff: { ipd: ['transfer_complete'], operation_theatre: ['billing_create'] },
-  hr: { hr_staff: ['payroll_publish', 'biometric_manage', 'user_access_manage'] },
-  hr_manager: { hr_staff: ['payroll_publish', 'biometric_manage', 'user_access_manage'] },
+  hr: { hr_staff: ['payroll_publish', 'biometric_manage'] },
+  hr_manager: { hr_staff: ['payroll_publish', 'biometric_manage'] },
   accountant: {
     billing_finance: [
       'claim_submit',

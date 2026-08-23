@@ -2,11 +2,12 @@
 const express = require('express');
 const router = express.Router();
 const episodeController = require('../controllers/episode.controller');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 
 // ========== SPECIFIC ROUTES FIRST ==========
 router.get('/suggest', episodeController.suggestEpisode);
-router.get('/patient/:patientId', episodeController.getEpisodesByPatient);
-router.get('/patient/:patientId/diagnosis/:diagnosis', episodeController.getActiveEpisodeByDiagnosis);
+router.get('/patient/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), episodeController.getEpisodesByPatient);
+router.get('/patient/:patientId/diagnosis/:diagnosis', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), episodeController.getActiveEpisodeByDiagnosis);
 
 // ========== PARAMETERIZED ROUTES ==========
 router.get('/:episodeId/timeline', episodeController.getEpisodeTimeline);

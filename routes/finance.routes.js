@@ -2,6 +2,7 @@ const express = require('express');
 const { protect, authorize, requireModuleAccess, requireActionPermission, requireAnyModuleAccess } = require('../middlewares/auth');
 const finance = require('../controllers/finance.controller');
 const reconciliation = require('../controllers/reconciliation.controller');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 
 const router = express.Router();
 router.use(protect);
@@ -25,13 +26,13 @@ router.put('/feature-flags', requireActionPermission('billing_finalize'), reconc
 router.get('/mis/overview', finance.getMISOverview);
 router.get('/mis/reports/:reportKey', finance.getMISReport);
 router.get('/mis/reports/:reportKey/export', finance.exportMISReport);
-router.get('/patients/:patientId/workspace', finance.getPatientWorkspace);
-router.post('/patients/:patientId/charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.addOPDCharge);
-router.post('/patients/:patientId/invoices', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_finalize'), finance.issueOPDInvoice);
-router.post('/patients/:patientId/payments/preview', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.previewOPDPayment);
-router.post('/patients/:patientId/payments', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordOPDPayment);
-router.post('/patients/:patientId/advances', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordOPDAdvance);
-router.post('/patients/:patientId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.refundOPDAdvance);
+router.get('/patients/:patientId/workspace', requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), finance.getPatientWorkspace);
+router.post('/patients/:patientId/charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), finance.addOPDCharge);
+router.post('/patients/:patientId/invoices', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_finalize'), requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), finance.issueOPDInvoice);
+router.post('/patients/:patientId/payments/preview', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), finance.previewOPDPayment);
+router.post('/patients/:patientId/payments', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), finance.recordOPDPayment);
+router.post('/patients/:patientId/advances', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), finance.recordOPDAdvance);
+router.post('/patients/:patientId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), finance.refundOPDAdvance);
 
 router.get('/ipd/admissions', finance.listBillingAdmissions);
 router.get('/ipd/:admissionId/running-bill', finance.getRunningBill);

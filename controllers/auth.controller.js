@@ -152,7 +152,7 @@ exports.demoLogin = async (req, res) => {
 
     const hospital = await Hospital.findOne({});
 
-    const newToken = generateToken(targetUser._id, targetUser.role);
+    const newToken = generateToken(targetUser);
 
     let response = {
       _id: targetUser._id,
@@ -326,7 +326,7 @@ exports.registerUser = async (req, res) => {
       }
     }
 
-    const token = generateToken(user._id, user.role);
+    const token = generateToken(user);
     setAuthCookie(res, token);
     res.status(201).json({
       _id: user._id,
@@ -353,13 +353,14 @@ function loginBase(user, hospital, tokenClaims = {}) {
     name: user.name,
     email: user.email,
     role: user.role,
-    token: generateToken(user._id, user.role, tokenClaims),
+    token: generateToken(user, tokenClaims),
     hospital_id: user.hospital_id || hospital?._id,
     hospitalId: user.hospital_id || hospital?._id,
     hospitalID: user.hospital_id || hospital?._id,
     hospitalTimezone: hospital?.timezone || process.env.HOSPITAL_TIMEZONE || process.env.HOSPITAL_TIME_ZONE || 'Asia/Kolkata',
     enforceModulePermissions: Boolean(user.enforceModulePermissions),
     sidebarAccess: Array.isArray(user.sidebarAccess) ? user.sidebarAccess : [],
+    privilegedActions: Array.isArray(user.privilegedActions) ? user.privilegedActions : [],
     // Main role-oriented feature list used by navigation and guarded API routes.
     modulePermissions: effectiveMainFeaturePermissions(user)
   };
@@ -414,9 +415,10 @@ async function completeSuccessfulLogin(user, hospital, req, res, securityOverrid
   user.lastLoginAt = new Date();
   user.lastLoginIp = req.ip;
   await user.save({ validateBeforeSave: false });
-  const tokenClaims = securityOverrides.mfaSetupRequired
-    ? { mfaSetupRequired: true }
-    : {};
+  const tokenClaims = {
+    ...(securityOverrides.mfaSetupRequired ? { mfaSetupRequired: true } : {}),
+    ...(securityOverrides.mfaVerifiedAt ? { mfaVerifiedAt: securityOverrides.mfaVerifiedAt } : {})
+  };
   const response = await enrichLoginResponse(user, hospital, tokenClaims);
   const licenseSnapshot = user.hospital_id ? await activeSnapshot(user.hospital_id, { refreshIfDue: true }) : null;
   if (licenseSnapshot) {
@@ -458,6 +460,7 @@ exports.getCurrentUser = async (req, res) => {
       hospitalID: req.user.hospital_id,
       enforceModulePermissions: Boolean(req.user.enforceModulePermissions),
       sidebarAccess: Array.isArray(req.user.sidebarAccess) ? req.user.sidebarAccess : [],
+      privilegedActions: Array.isArray(req.user.privilegedActions) ? req.user.privilegedActions : [],
       modulePermissions: effectiveMainFeaturePermissions(req.user),
       license,
       entitlements: license?.entitlements || {},
@@ -573,7 +576,7 @@ exports.completeMfaLogin = async (req, res) => {
         return res.status(licenseError.statusCode || 403).json({ error: licenseError.message, message: licenseError.message, code: licenseError.code || 'LICENSE_INACTIVE', expiresAt: licenseError.expiresAt });
       }
     }
-    return completeSuccessfulLogin(user, hospital, req, res);
+    return completeSuccessfulLogin(user, hospital, req, res, { mfaVerifiedAt: Date.now() });
   } catch (error) {
     return res.status(401).json({ error: 'Invalid or expired MFA challenge', code: 'INVALID_MFA_CHALLENGE' });
   }

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middlewares/auth');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 const {
   // Purchase Order functions
   createPurchaseOrder,
@@ -81,7 +82,7 @@ router.patch('/sale/:id/payment', updateSalePayment);
 router.post('/sale/:id/void', voidSale);
 
 // Get sales by patient (for patient ledger)
-router.get('/sales/patient/:patientId', getSalesByPatient);
+router.get('/sales/patient/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), getSalesByPatient);
 
 // Get sales by admission (for IPD pharmacy file)
 router.get('/sales/admission/:admissionId', getSalesByAdmission);

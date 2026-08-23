@@ -1,4 +1,5 @@
 const express = require('express');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 const router = express.Router();
 const { protect, requirePharmacyFinancialAccess } = require('../middlewares/auth');
 const {
@@ -17,7 +18,7 @@ const pharmacyFinanceView = requirePharmacyFinancialAccess('view');
 const pharmacyFinanceManage = requirePharmacyFinancialAccess('manage');
 
 // Get all pharmacy bills for a patient
-router.get('/patient/:patientId', pharmacyFinanceView, getPatientPharmacyBills);
+router.get('/patient/:patientId', pharmacyFinanceView, requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), getPatientPharmacyBills);
 
 // Get pharmacy bill by ID with full details
 router.get('/:billId', pharmacyFinanceView, getPharmacyBillById);

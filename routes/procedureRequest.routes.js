@@ -5,6 +5,7 @@ const path = require('path');
 const { tempDir } = require('../config/upload.config');
 const controller = require('../controllers/procedureRequest.controller');
 const { protect, authorize } = require('../middlewares/auth');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
@@ -46,7 +47,7 @@ router.patch('/requests/:id/billed', controller.markAsBilled);
 // ============== ADMISSION-BASED QUERIES ==============
 router.get('/admission/:admissionId/requests', controller.getRequestsByAdmission);
 router.get('/admission/:admissionId/pending', controller.getPendingIPDRequests);
-router.get('/patient/:patientId/requests', controller.getRequestsByPatient);
+router.get('/patient/:patientId/requests', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.getRequestsByPatient);
 router.get('/dashboard/stats', controller.getDashboardStats);
 
 module.exports = router;

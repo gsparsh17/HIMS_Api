@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const patientController = require('../controllers/patientTenant.controller');
 const { protect, authorize } = require('../middlewares/auth');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 const multer = require('multer');
 const path = require('path');
 const { tempDir } = require('../config/upload.config');
@@ -46,13 +47,13 @@ router.get('/phone/:phone', canReadPatient, patientController.getPatientByPhone)
 
 router.post('/', canManagePatient, patientController.createPatient);
 router.get('/', canReadPatient, patientController.getAllPatients);
-router.get('/:id/coverage-preference', canReadPatient, patientController.getCoveragePreference);
-router.get('/:id/longitudinal-record', canReadPatient, patientController.getLongitudinalRecord);
-router.post('/:id/share', canManagePatient, patientController.sharePatientRecord);
-router.get('/:id/pharmacy-account', canManagePharmacyPatient, patientController.getPatientPharmacyAccount);
-router.patch('/:id/pharmacy-balance', canManagePharmacyPatient, patientController.updatePatientPharmacyBalance);
-router.get('/:id', canReadPatient, patientController.getPatientById);
-router.put('/:id', canManagePatient, patientController.updatePatient);
-router.delete('/:id', authorize('admin'), patientController.deletePatient);
+router.get('/:id/coverage-preference', canReadPatient, requirePatientAccess({ purpose: 'PAYMENT', scope: 'demographic_read' }), patientController.getCoveragePreference);
+router.get('/:id/longitudinal-record', authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse'), requirePatientAccess({ purpose: 'TREATMENT', scope: 'clinical_read' }), patientController.getLongitudinalRecord);
+router.post('/:id/share', canManagePatient, requirePatientAccess({ purpose: 'TREATMENT', scope: 'clinical_read' }), patientController.sharePatientRecord);
+router.get('/:id/pharmacy-account', canManagePharmacyPatient, requirePatientAccess({ purpose: 'PAYMENT', scope: 'demographic_read' }), patientController.getPatientPharmacyAccount);
+router.patch('/:id/pharmacy-balance', canManagePharmacyPatient, requirePatientAccess({ purpose: 'PAYMENT', scope: 'demographic_write' }), patientController.updatePatientPharmacyBalance);
+router.get('/:id', canReadPatient, requirePatientAccess({ purpose: 'AUTO', scope: 'clinical_read' }), patientController.getPatientById);
+router.put('/:id', canManagePatient, requirePatientAccess({ purpose: 'AUTO', scope: 'demographic_write' }), patientController.updatePatient);
+router.delete('/:id', authorize('admin'), requirePatientAccess({ purpose: 'TREATMENT', scope: 'demographic_write' }), patientController.deletePatient);
 
 module.exports = router;

@@ -33,6 +33,12 @@ const {
   recordConsentStatusEvent
 } = require('../services/abdmConsentValidation.service');
 const { assessPatientIdentity } = require('../services/abdmIdentityMatch.service');
+const AbdmLinkAuthorizationEvidence = require('../models/AbdmLinkAuthorizationEvidence');
+const {
+  createUserEvidence,
+  assertEvidenceContextsUnchanged
+} = require('../services/abdmLinkEvidence.service');
+const { cloneAndRedact } = require('../utils/sensitiveData');
 
 function digits(value) {
   const text = String(value || '');
@@ -493,17 +499,43 @@ exports.linkInit = async (req, res) => {
     const otp = createOtp();
     const { salt, hash } = hashOtp(otp);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const evidence = await createUserEvidence({
+      hospitalId,
+      patientId: patient._id,
+      contexts: related,
+      transactionId: body.transactionId,
+      requestId,
+      authentication: {
+        authenticationType: 'MEDIATE',
+        communicationMedium: 'MOBILE',
+        communicationHint: 'OTP',
+        communicationExpiry: expiresAt
+      }
+    });
     await AbdmLinkAuthentication.create({
       hospitalId,
       linkRefNumber,
       transactionId: body.transactionId,
+      evidenceId: evidence.evidenceId,
       patientId: patient._id,
       patientReference: context.patientReference,
       careContextReferences: related.map((item) => item.referenceNumber),
       otpHash: hash,
       otpSalt: salt,
       expiresAt,
-      metadata: { requestId, referenceCandidates: candidates }
+      authorizationEvidence: {
+        authenticationType: 'MEDIATE',
+        communicationMedium: 'MOBILE',
+        communicationHint: 'OTP',
+        communicationExpiry: expiresAt,
+        selectedContextsHash: evidence.selectedContextsHash,
+        requestId
+      },
+      metadata: {
+        requestId,
+        referenceCandidates: candidates,
+        evidenceId: evidence.evidenceId
+      }
     });
 
     try {
@@ -519,9 +551,20 @@ exports.linkInit = async (req, res) => {
         { hospitalId, linkRefNumber },
         {
           status: 'FAILED',
-          metadata: { requestId, smsError: error.message }
+          metadata: {
+            requestId,
+            smsError: error.message,
+            evidenceId: evidence.evidenceId
+          }
         }
       );
+      evidence.status = 'FAILED';
+      evidence.failure = {
+        code: 'LINK_OTP_DELIVERY_FAILED',
+        message: error.message,
+        at: new Date()
+      };
+      await evidence.save();
       return res.json(
         errorOutbound(
           'RESPOND_LINK_INIT',
@@ -535,7 +578,7 @@ exports.linkInit = async (req, res) => {
 
     return res.json({
       success: true,
-      summary: { linkRefNumber, expiresAt },
+      summary: { linkRefNumber, expiresAt, evidenceId: evidence.evidenceId },
       outbound: [
         {
           action: 'RESPOND_LINK_INIT',
@@ -597,6 +640,22 @@ exports.linkConfirm = async (req, res) => {
       );
     }
 
+    const evidence = auth.evidenceId
+      ? await AbdmLinkAuthorizationEvidence.findOne({
+          hospitalId,
+          evidenceId: auth.evidenceId
+        })
+      : null;
+    const selectedContexts = await AbdmCareContext.find({
+      hospitalId,
+      patientId: auth.patientId,
+      referenceNumber: { $in: auth.careContextReferences || [] },
+      active: { $ne: false }
+    });
+    if (evidence) {
+      await assertEvidenceContextsUnchanged(evidence, selectedContexts);
+    }
+
     auth.attempts += 1;
     if (!verifyOtp(token, auth.otpSalt, auth.otpHash)) {
       if (auth.attempts >= auth.maxAttempts) auth.status = 'LOCKED';
@@ -634,41 +693,73 @@ exports.linkConfirm = async (req, res) => {
       metadata: { userInitiated: true, confirmedLocallyAt: new Date() }
     });
 
+    let masterResult;
     try {
-      await masterRequest('/internal/abdm/m2/action', {
+      if (evidence) {
+        evidence.status = 'LINK_REQUESTED';
+        evidence.transactionId = body.transactionId || evidence.transactionId;
+        await evidence.save();
+      }
+      masterResult = await masterRequest('/internal/abdm/m2/action', {
         method: 'POST',
         body: {
           action: 'RESPOND_LINK_CONFIRM',
           body: {
             transactionId: body.transactionId,
             patient: patientGroups,
-            matchedBy: requestedPatient.id ? ['ABHA_ADDRESS'] : ['MR'],
+            matchedBy: ['PATIENT_MEDIATED_OTP'],
             response: { requestId }
           }
         }
       });
     } catch (error) {
       await AbdmCareContext.updateMany(contextFilter, {
-        linkStatus: 'ABDM_LINK_FAILED',
-        metadata: { userInitiated: true, error: error.message }
+        $set: {
+          linkStatus: 'ABDM_LINK_FAILED',
+          'metadata.userInitiated': true,
+          'metadata.error': error.message,
+          'metadata.linkEvidenceId': evidence?.evidenceId || auth.evidenceId
+        }
       });
+      if (evidence) {
+        evidence.status = 'FAILED';
+        evidence.failure = {
+          code: error.code || 'USER_LINK_CONFIRM_FAILED',
+          message: error.message,
+          at: new Date()
+        };
+        await evidence.save();
+      }
       throw error;
     }
 
     auth.status = 'VERIFIED';
     auth.verifiedAt = new Date();
     await auth.save();
+    const confirmedAt = new Date();
     await AbdmCareContext.updateMany(contextFilter, {
-      linkStatus: 'ABDM_LINKED',
-      linkedAt: new Date()
+      $set: {
+        linkStatus: 'ABDM_LINKED',
+        linkedAt: confirmedAt,
+        'metadata.userInitiated': true,
+        'metadata.linkEvidenceId': evidence?.evidenceId || auth.evidenceId,
+        'metadata.linkConfirmRequestId': masterResult?.requestId || requestId
+      }
     });
+    if (evidence) {
+      evidence.status = 'CONFIRMED';
+      evidence.careContextLinkRequestId = masterResult?.requestId || requestId;
+      evidence.confirmedAt = confirmedAt;
+      await evidence.save();
+    }
 
     return res.json({
       success: true,
       summary: {
         confirmed: true,
         patientId: auth.patientId,
-        careContextGroups: patientGroups.length
+        careContextGroups: patientGroups.length,
+        evidenceId: evidence?.evidenceId || auth.evidenceId
       },
       outbound: []
     });
@@ -705,6 +796,9 @@ exports.linkToken = async (req, res) => {
     }
 
     if (body.error) {
+      const evidenceIds = Array.from(
+        new Set(pending.map((item) => item.metadata?.linkEvidenceId).filter(Boolean))
+      );
       await AbdmCareContext.updateMany(
         {
           hospitalId,
@@ -712,10 +806,27 @@ exports.linkToken = async (req, res) => {
           linkStatus: 'ABDM_LINK_PENDING'
         },
         {
-          linkStatus: 'ABDM_LINK_FAILED',
-          metadata: { callbackError: body.error }
+          $set: {
+            linkStatus: 'ABDM_LINK_FAILED',
+            'metadata.callbackError': cloneAndRedact(body.error)
+          }
         }
       );
+      if (evidenceIds.length) {
+        await AbdmLinkAuthorizationEvidence.updateMany(
+          { hospitalId, evidenceId: { $in: evidenceIds } },
+          {
+            $set: {
+              status: 'FAILED',
+              failure: {
+                code: body.error?.code || 'LINK_TOKEN_CALLBACK_FAILED',
+                message: body.error?.message || 'ABDM link-token callback failed',
+                at: new Date()
+              }
+            }
+          }
+        );
+      }
       return res.json({
         success: true,
         summary: { failed: true, error: body.error },
@@ -736,6 +847,25 @@ exports.linkToken = async (req, res) => {
       hospitalId
     });
     if (!patient) throw new Error('Patient for pending care contexts was not found');
+
+    const evidenceIds = Array.from(
+      new Set(pending.map((item) => item.metadata?.linkEvidenceId).filter(Boolean))
+    );
+    const evidence = evidenceIds.length === 1
+      ? await AbdmLinkAuthorizationEvidence.findOne({
+          hospitalId,
+          evidenceId: evidenceIds[0]
+        })
+      : await AbdmLinkAuthorizationEvidence.findOne({
+          hospitalId,
+          linkTokenRequestId: callbackRequestId
+        });
+    if (evidence) {
+      await assertEvidenceContextsUnchanged(evidence, pending);
+      evidence.linkTokenCallbackRequestId = callbackRequestId;
+      evidence.status = 'TOKEN_RECEIVED';
+      await evidence.save();
+    }
 
     const groups = new Map();
     for (const item of pending) {
@@ -775,17 +905,25 @@ exports.linkToken = async (req, res) => {
           $set: {
             linkRequestId: careContextLinkRequestId,
             'metadata.linkTokenCallbackRequestId': callbackRequestId,
-            'metadata.careContextLinkRequestId': careContextLinkRequestId
+            'metadata.careContextLinkRequestId': careContextLinkRequestId,
+            'metadata.linkEvidenceId': evidence?.evidenceId || pending[0].metadata?.linkEvidenceId
           }
         }
       );
+    }
+
+    if (evidence) {
+      evidence.careContextLinkRequestId = careContextLinkRequestId;
+      evidence.status = 'LINK_REQUESTED';
+      await evidence.save();
     }
 
     return res.json({
       success: true,
       summary: {
         pending: pending.length,
-        careContextLinkRequestId
+        careContextLinkRequestId,
+        evidenceId: evidence?.evidenceId || null
       },
       outbound: [
         {
@@ -812,32 +950,83 @@ exports.linkToken = async (req, res) => {
 };
 
 exports.linkCareContext = async (req, res) => {
-  const hospitalId = await configuredHospitalId();
-  const body = req.body?.body || {};
-  const callbackRequestId = body.response?.requestId || requestIdFromEnvelope(req);
-  const failed = Boolean(body.error);
-  const update = {
-    $set: {
-      linkStatus: failed ? 'ABDM_LINK_FAILED' : 'ABDM_LINKED',
-      'metadata.callback': body,
-      'metadata.linkCareContextCallbackAt': new Date()
-    }
-  };
-  if (failed) {
-    update.$unset = { linkedAt: '' };
-  } else {
-    update.$set.linkedAt = new Date();
-  }
-
-  await AbdmCareContext.updateMany(
-    {
+  try {
+    const hospitalId = await configuredHospitalId();
+    const body = req.body?.body || {};
+    const callbackRequestId = body.response?.requestId || requestIdFromEnvelope(req);
+    const failed = Boolean(body.error);
+    const contexts = await AbdmCareContext.find({
       hospitalId,
       linkRequestId: callbackRequestId,
       linkStatus: 'ABDM_LINK_PENDING'
-    },
-    update
-  );
-  return res.json({ success: true, summary: { failed }, outbound: [] });
+    });
+    const evidenceIds = Array.from(
+      new Set(contexts.map((item) => item.metadata?.linkEvidenceId).filter(Boolean))
+    );
+    const evidence = evidenceIds.length === 1
+      ? await AbdmLinkAuthorizationEvidence.findOne({
+          hospitalId,
+          evidenceId: evidenceIds[0]
+        })
+      : await AbdmLinkAuthorizationEvidence.findOne({
+          hospitalId,
+          careContextLinkRequestId: callbackRequestId
+        });
+
+    if (evidence && contexts.length) {
+      await assertEvidenceContextsUnchanged(evidence, contexts);
+    }
+
+    const callbackAt = new Date();
+    const update = {
+      $set: {
+        linkStatus: failed ? 'ABDM_LINK_FAILED' : 'ABDM_LINKED',
+        'metadata.callbackSummary': cloneAndRedact({
+          requestId: callbackRequestId,
+          error: body.error || null,
+          acknowledgement: body.acknowledgement || body.status || null
+        }),
+        'metadata.linkCareContextCallbackAt': callbackAt
+      }
+    };
+    if (failed) {
+      update.$unset = { linkedAt: '' };
+    } else {
+      update.$set.linkedAt = callbackAt;
+    }
+
+    if (contexts.length) {
+      await AbdmCareContext.updateMany(
+        { hospitalId, _id: { $in: contexts.map((item) => item._id) } },
+        update
+      );
+    }
+
+    if (evidence) {
+      evidence.status = failed ? 'FAILED' : 'CONFIRMED';
+      evidence.confirmedAt = failed ? undefined : callbackAt;
+      evidence.failure = failed
+        ? {
+            code: body.error?.code || 'CARE_CONTEXT_LINK_CALLBACK_FAILED',
+            message: body.error?.message || 'ABDM care-context link callback reported failure',
+            at: callbackAt
+          }
+        : undefined;
+      await evidence.save();
+    }
+
+    return res.json({
+      success: true,
+      summary: {
+        failed,
+        updated: contexts.length,
+        evidenceId: evidence?.evidenceId || null
+      },
+      outbound: []
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message, code: error.code });
+  }
 };
 
 exports.careContextUpdate = async (req, res) => {
@@ -845,20 +1034,32 @@ exports.careContextUpdate = async (req, res) => {
   const body = req.body?.body || {};
   const references = Array.from(collectReferenceCandidates(body));
   if (references.length) {
-    await AbdmCareContext.updateMany(
-      {
-        hospitalId,
-        $or: [
-          { referenceNumber: { $in: references } },
-          { patientReference: { $in: references } }
-        ]
-      },
-      {
-        linkStatus: body.error ? 'ABDM_LINK_FAILED' : 'ABDM_LINKED',
-        linkedAt: body.error ? undefined : new Date(),
-        metadata: { callback: body }
+    const callbackAt = new Date();
+    const matched = await AbdmCareContext.find({
+      hospitalId,
+      $or: [
+        { referenceNumber: { $in: references } },
+        { patientReference: { $in: references } }
+      ]
+    }).select('_id linkStatus');
+
+    // A care-context update callback is not proof that a previously unlinked
+    // context became linked. Only the dedicated link confirmation callback may
+    // move ABDM_LINK_PENDING -> ABDM_LINKED.
+    for (const item of matched) {
+      const set = {
+        'metadata.lastCareContextUpdateCallbackAt': callbackAt,
+        'metadata.lastCareContextUpdateCallback': cloneAndRedact({
+          requestId: body.response?.requestId,
+          error: body.error || null
+        })
+      };
+      if (body.error && item.linkStatus === 'ABDM_LINK_PENDING') {
+        set.linkStatus = 'ABDM_LINK_FAILED';
       }
-    );
+      // eslint-disable-next-line no-await-in-loop
+      await AbdmCareContext.updateOne({ _id: item._id, hospitalId }, { $set: set });
+    }
   }
   return res.json({
     success: true,

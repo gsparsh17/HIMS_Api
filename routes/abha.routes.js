@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/abha.controller');
-const { protect, authorize } = require('../middlewares/auth');
+const { protect, authorize, requirePrivilegedAction } = require('../middlewares/auth');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 
 const canManageAbha = authorize(
   'admin',
@@ -48,16 +49,17 @@ router.post('/address/create', controller.createAddress);
 router.post('/email/verification-link', controller.requestEmailVerification);
 
 router.get('/patients/search', controller.searchPatientsByAbha);
-router.get('/patients/:patientId', controller.getPatientAbha);
-router.get('/patients/:patientId/qr-code', controller.getQrCode);
-router.get('/patients/:patientId/card', controller.getAbhaCard);
-router.get('/patients/:patientId/profile', controller.getProfile);
-router.post('/patients/:patientId/logout', controller.logoutProfile);
+router.get('/patients/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_read' }), controller.getPatientAbha);
+router.get('/patients/:patientId/qr-code', requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_read' }), controller.getQrCode);
+router.get('/patients/:patientId/card', requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_read' }), controller.getAbhaCard);
+router.get('/patients/:patientId/profile', requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_read' }), controller.getProfile);
+router.post('/patients/:patientId/logout', requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_write' }), controller.logoutProfile);
+router.post('/patients/:patientId/association/retire', requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_write' }), requirePrivilegedAction('abha_association_retire'), controller.retireLocalAssociation);
 
-router.post('/records/link', controller.linkRecord);
-router.post('/records/link-patient-records/:patientId', controller.linkAllPatientRecords);
-router.post('/ehr/generate', controller.generateEhr);
-router.get('/ehr/patient/:patientId', controller.getPatientEhrBundles);
+router.post('/records/link', requirePatientAccess({ bodyPath: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), controller.linkRecord);
+router.post('/records/link-patient-records/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), controller.linkAllPatientRecords);
+router.post('/ehr/generate', requirePatientAccess({ bodyPath: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.generateEhr);
+router.get('/ehr/patient/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.getPatientEhrBundles);
 router.get('/ehr/bundle/:bundleId', controller.getEhrBundle);
 
 module.exports = router;

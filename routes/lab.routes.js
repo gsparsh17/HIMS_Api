@@ -1,4 +1,6 @@
 const express = require('express');
+const LabRequest = require('../models/LabRequest');
+const { requirePatientAccess, requireResourcePatientAccess } = require('../middlewares/patientAccess');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
@@ -52,29 +54,29 @@ router.get('/templates/:templateId', ...view, controller.getReportTemplate);
 
 // Unified worklist and specimen lifecycle
 router.get('/worklist', ...view, workflow.labWorklist);
-router.post('/requests/:id/collect', ...collect, workflow.collectSpecimen);
-router.post('/requests/:id/accession', ...manage, workflow.accessionSpecimen);
-router.patch('/requests/:id/status', ...manage, workflow.updateLabStatus);
-router.post('/requests/:id/results', ...manage, workflow.enterLabResults);
-router.post('/requests/:id/verify', ...manage, workflow.verifyLab);
-router.post('/requests/:id/critical-ack', ...view, workflow.criticalAck);
-router.post('/requests/:id/release', ...manage, workflow.releaseLab);
-router.post('/requests/:id/amend', ...manage, governance.amendLabReport);
-router.post('/requests/:id/repeat', ...manage, governance.repeatLabTest);
+router.post('/requests/:id/collect', ...collect, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.collectSpecimen);
+router.post('/requests/:id/accession', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.accessionSpecimen);
+router.patch('/requests/:id/status', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.updateLabStatus);
+router.post('/requests/:id/results', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.enterLabResults);
+router.post('/requests/:id/verify', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.verifyLab);
+router.post('/requests/:id/critical-ack', ...view, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.criticalAck);
+router.post('/requests/:id/release', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.releaseLab);
+router.post('/requests/:id/amend', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), governance.amendLabReport);
+router.post('/requests/:id/repeat', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), governance.repeatLabTest);
 router.get('/dashboard/stats', ...view, workflow.labStats);
 router.get('/reports/released', ...view, controller.getReleasedReports);
 
 // Backward-compatible protected endpoints
 router.post('/requests', ...order, controller.createLabRequest);
 router.get('/requests', ...view, controller.getLabRequests);
-router.get('/requests/:id', ...view, controller.getLabRequestById);
-router.post('/requests/:id/manual-report', ...manage, controller.saveManualReport);
-router.post('/requests/:id/upload', ...manage, upload.single('report'), controller.uploadReport);
-router.get('/requests/:id/report.pdf', ...view, controller.downloadGeneratedReport);
-router.get('/requests/:id/download', ...view, controller.downloadReport);
-router.patch('/requests/:id/billed', ...manage, controller.markAsBilled);
+router.get('/requests/:id', ...view, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.getLabRequestById);
+router.post('/requests/:id/manual-report', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), controller.saveManualReport);
+router.post('/requests/:id/upload', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), upload.single('report'), controller.uploadReport);
+router.get('/requests/:id/report.pdf', ...view, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.downloadGeneratedReport);
+router.get('/requests/:id/download', ...view, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.downloadReport);
+router.patch('/requests/:id/billed', ...manage, requireResourcePatientAccess(LabRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), controller.markAsBilled);
 router.get('/admission/:admissionId/requests', ...view, controller.getRequestsByAdmission);
 router.get('/admission/:admissionId/pending', ...view, controller.getPendingIPDRequests);
-router.get('/patient/:patientId/requests', ...view, controller.getRequestsByPatient);
+router.get('/patient/:patientId/requests', ...view, requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.getRequestsByPatient);
 
 module.exports = router;

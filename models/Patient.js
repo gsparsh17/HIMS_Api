@@ -127,6 +127,7 @@ const patientSchema = new mongoose.Schema({
         'UNLINKED', 'OTP_SENT', 'VERIFICATION_PENDING', 'VERIFIED',
         'IDENTITY_MISMATCH',
         'ACTIVE', 'DEACTIVATED', 'DELETED',
+        'NOT_ASSOCIATED', 'VERIFIED_ACTIVE', 'LOCAL_ASSOCIATION_RETIRED', 'ABHA_DEACTIVATED', 'ABHA_DELETED',
         'not_linked', 'otp_sent', 'pending_verification', 'manually_captured'
       ],
       default: 'UNLINKED',
@@ -145,6 +146,14 @@ const patientSchema = new mongoose.Schema({
     },
     linkedAt: Date,
     verifiedAt: Date,
+    associationRetiredAt: Date,
+    associationRetiredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    associationRetirementReason: { type: String, trim: true },
+    externalAccountStatus: {
+      type: String,
+      enum: ['UNKNOWN', 'ACTIVE', 'DEACTIVATED', 'DELETED'],
+      default: 'UNKNOWN'
+    },
     verificationMethod: String,
     patientReference: { type: String, index: true, sparse: true },
     lastLinkedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

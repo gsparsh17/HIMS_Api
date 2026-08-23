@@ -559,7 +559,7 @@ exports.hrLogin = async (req, res) => {
       email: user.email,
       role: user.role,
       dashboard: 'hr',
-      token: generateToken(user._id, user.role),
+      token: generateToken(user),
       employeeId: profile?._id,
       employeeCode: profile?.employee_code
     });
@@ -826,6 +826,25 @@ exports.setEmployeeLogin = async (req, res) => {
 
     await assertLoginPermissionsWithinEntitlements(employee.hospital_id || req.user?.hospital_id, modulePermissions);
 
+    // user_access_manage is maker-checker controlled. This ordinary staff-login
+    // endpoint may neither grant nor revoke it. Preserve an existing approved
+    // grant; remove any newly requested grant and direct admins to Security Access.
+    const existingUserAccessManage = Boolean(user?.modulePermissions?.some((row) => (row.actions || []).includes('user_access_manage')));
+    let requestedUserAccessManage = false;
+    modulePermissions.forEach((row) => {
+      if ((row.actions || []).includes('user_access_manage')) requestedUserAccessManage = true;
+      row.actions = (row.actions || []).filter((action) => action !== 'user_access_manage');
+    });
+    if (existingUserAccessManage) {
+      let row = modulePermissions.find((item) => item.moduleKey === 'hr_staff');
+      if (!row) {
+        row = { moduleKey: 'hr_staff', access: 'manage', actions: [] };
+        modulePermissions.push(row);
+      }
+      row.actions = Array.from(new Set([...(row.actions || []), 'user_access_manage']));
+    }
+    const sensitiveGrantPending = requestedUserAccessManage && !existingUserAccessManage;
+
     if (user) {
       user.name = employee.full_name;
       user.email = employee.email;
@@ -835,6 +854,8 @@ exports.setEmployeeLogin = async (req, res) => {
         : true;
       user.modulePermissions = modulePermissions;
       user.dashboard_access = dashboardAccessFromFeatures(modulePermissions);
+      user.securityVersion = Number(user.securityVersion || 0) + 1;
+      user.sessionRevokedAt = new Date();
       if (req.body.password) user.password = req.body.password;
       await user.save();
     } else {
@@ -864,7 +885,10 @@ exports.setEmployeeLogin = async (req, res) => {
     await employee.save();
 
     res.json({
-      message: 'Employee login and main feature access updated',
+      message: sensitiveGrantPending
+        ? 'Employee login updated. user_access_manage was not granted because it requires maker-checker approval.'
+        : 'Employee login and main feature access updated',
+      sensitiveGrantPending,
       employee,
       user: {
         _id: user._id,

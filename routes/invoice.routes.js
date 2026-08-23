@@ -1,10 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const invoiceController = require('../controllers/invoice.controller');
+const Invoice = require('../models/Invoice');
+const { requireResourcePatientAccess } = require('../middlewares/patientAccess');
 const { protect, requireModuleAccess, requireActionPermission, requireAnyActionPermission } = require('../middlewares/auth');
 
 const viewBilling = requireModuleAccess('billing_finance', 'view');
 const manageBilling = requireModuleAccess('billing_finance', 'manage');
+const invoicePatientView = requireResourcePatientAccess(Invoice, { patientField: 'patient_id', hospitalField: 'hospital_id', purpose: 'PAYMENT', scope: 'financial_read' });
+const invoicePatientWrite = requireResourcePatientAccess(Invoice, { patientField: 'patient_id', hospitalField: 'hospital_id', purpose: 'PAYMENT', scope: 'financial_write' });
 
 router.use(protect);
 
@@ -38,8 +42,8 @@ router.get('/stats/pharmacy-daily', viewBilling, invoiceController.getPharmacyDa
 router.get('/export', viewBilling, invoiceController.exportInvoices);
 router.get('/type/:type', viewBilling, invoiceController.getInvoicesByType);
 
-router.get('/:id/download', viewBilling, invoiceController.downloadInvoicePDF);
-router.get('/:id', viewBilling, invoiceController.getInvoiceById);
-router.put('/:id/payment', manageBilling, requireAnyActionPermission(['billing_edit', 'settlement']), invoiceController.updateInvoicePayment);
+router.get('/:id/download', viewBilling, invoicePatientView, invoiceController.downloadInvoicePDF);
+router.get('/:id', viewBilling, invoicePatientView, invoiceController.getInvoiceById);
+router.put('/:id/payment', manageBilling, requireAnyActionPermission(['billing_edit', 'settlement']), invoicePatientWrite, invoiceController.updateInvoicePayment);
 
 module.exports = router;

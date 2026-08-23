@@ -22,6 +22,8 @@ const {
 } = require('../utils/hospitalScope');
 const { assertAbdmExchangeEligible } = require('../services/abdmExchangeEligibility.service');
 const { withPatientAccessToken } = require('../services/abdmCredential.service');
+const AbdmLinkAuthorizationEvidence = require('../models/AbdmLinkAuthorizationEvidence');
+const { createHipEvidence } = require('../services/abdmLinkEvidence.service');
 
 function abdmGender(value) {
   const gender = String(value || '').toLowerCase();
@@ -373,11 +375,32 @@ exports.initiateHipLinking = async (req, res) => {
     }
 
     const body = abdmLinkingIdentity(patient);
-
-    const result = await masterRequest('/internal/abdm/m2/action', {
-      method: 'POST',
-      body: { action: 'GENERATE_LINK_TOKEN', body }
+    const evidence = await createHipEvidence({
+      hospitalId: patient.hospitalId,
+      patientId: patient._id,
+      userId: req.user?._id,
+      contexts
     });
+
+    let result;
+    try {
+      result = await masterRequest('/internal/abdm/m2/action', {
+        method: 'POST',
+        body: { action: 'GENERATE_LINK_TOKEN', body }
+      });
+      evidence.linkTokenRequestId = result.requestId;
+      evidence.status = 'TOKEN_REQUESTED';
+      await evidence.save();
+    } catch (error) {
+      evidence.status = 'FAILED';
+      evidence.failure = {
+        code: error.code || 'LINK_TOKEN_REQUEST_FAILED',
+        message: error.message,
+        at: new Date()
+      };
+      await evidence.save();
+      throw error;
+    }
 
     await AbdmCareContext.updateMany(
       {
@@ -390,7 +413,8 @@ exports.initiateHipLinking = async (req, res) => {
           linkRequestId: result.requestId,
           'metadata.initiatedBy': req.user?._id,
           'metadata.initiatedAt': new Date(),
-          'metadata.masterRequestId': result.requestId
+          'metadata.masterRequestId': result.requestId,
+          'metadata.linkEvidenceId': evidence.evidenceId
         }
       }
     );
@@ -398,6 +422,7 @@ exports.initiateHipLinking = async (req, res) => {
     return res.status(202).json({
       success: true,
       requestId: result.requestId,
+      evidenceId: evidence.evidenceId,
       pendingCareContexts: contexts.length,
       message:
         'ABDM link-token generation was accepted. Final linking continues asynchronously through the ABDM callback.'
@@ -515,10 +540,49 @@ exports.retryPendingHipLinking = async (req, res) => {
     // No link-token callback has been consumed and the pending request is stale.
     // Reissue only the selected existing context; do not rebuild care contexts.
     const body = abdmLinkingIdentity(patient);
-    const result = await masterRequest('/internal/abdm/m2/action', {
-      method: 'POST',
-      body: { action: 'GENERATE_LINK_TOKEN', body }
+    const retryEvidence = await createHipEvidence({
+      hospitalId,
+      patientId: patient._id,
+      userId: req.user?._id,
+      contexts: [context]
     });
+    let result;
+    try {
+      result = await masterRequest('/internal/abdm/m2/action', {
+        method: 'POST',
+        body: { action: 'GENERATE_LINK_TOKEN', body }
+      });
+      retryEvidence.linkTokenRequestId = result.requestId;
+      retryEvidence.status = 'TOKEN_REQUESTED';
+      await retryEvidence.save();
+    } catch (error) {
+      retryEvidence.status = 'FAILED';
+      retryEvidence.failure = {
+        code: error.code || 'LINK_TOKEN_RETRY_FAILED',
+        message: error.message,
+        at: new Date()
+      };
+      await retryEvidence.save();
+      throw error;
+    }
+
+    const priorEvidenceId = context.metadata?.linkEvidenceId;
+    if (priorEvidenceId) {
+      await AbdmLinkAuthorizationEvidence.updateOne(
+        { hospitalId, evidenceId: priorEvidenceId, status: { $nin: ['CONFIRMED', 'FAILED'] } },
+        {
+          $set: {
+            status: 'FAILED',
+            failure: {
+              code: 'STALE_REQUEST_SUPERSEDED',
+              message: 'Stale link-token request was superseded by an explicit recovery attempt',
+              at: new Date(),
+              replacementEvidenceId: retryEvidence.evidenceId
+            }
+          }
+        }
+      );
+    }
 
     await AbdmCareContext.updateOne(
       { _id: context._id, hospitalId, linkStatus: 'ABDM_LINK_PENDING' },
@@ -530,7 +594,8 @@ exports.retryPendingHipLinking = async (req, res) => {
           'metadata.initiatedAt': new Date(),
           'metadata.masterRequestId': result.requestId,
           'metadata.pendingRecoveryMode': 'REISSUE_LINK_TOKEN',
-          'metadata.pendingRecoveryRequestedAt': new Date()
+          'metadata.pendingRecoveryRequestedAt': new Date(),
+          'metadata.linkEvidenceId': retryEvidence.evidenceId
         },
         $unset: {
           'metadata.linkTokenCallbackRequestId': '',
@@ -544,6 +609,7 @@ exports.retryPendingHipLinking = async (req, res) => {
       success: true,
       mode: 'REISSUE_LINK_TOKEN',
       requestId: result.requestId,
+      evidenceId: retryEvidence.evidenceId,
       pendingCareContexts: 1,
       message:
         'The stale pending link was retried with a new ABDM link-token request.'

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/abdmHiu.controller');
 const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 
 router.use(protect, requireModuleAccess('abdm', 'view'));
 router.use((req, res, next) => req.method === 'GET' ? next() : requireModuleAccess('abdm', 'manage')(req, res, next));
@@ -20,7 +21,7 @@ router.post(
   controller.requestHealthInformation
 );
 router.get('/requests', clinicalReader, controller.listRequests);
-router.get('/patients/:patientId/records', clinicalReader, controller.listImportedRecords);
+router.get('/patients/:patientId/records', clinicalReader, requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.listImportedRecords);
 router.get('/records/:recordId', clinicalReader, controller.getImportedRecord);
 router.get('/subscriptions/health-lockers', clinicalReader, controller.listHealthLockers);
 router.post('/subscriptions', clinician, controller.createSubscription);

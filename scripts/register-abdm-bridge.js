@@ -22,7 +22,7 @@ async function run() {
 
     console.log('\n1. Verifying V3 gateway authentication...');
     const token = await getGatewayToken();
-    console.log(`✅ Gateway token received: ${token.slice(0, 10)}...`);
+    console.log('✅ Gateway token received (value intentionally not logged).');
 
     console.log(`\n2. Updating V3 bridge URL to ${bridgeUrl} ...`);
     const bridgeResponse = await updateBridgeUrl(bridgeUrl);

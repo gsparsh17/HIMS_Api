@@ -3,6 +3,7 @@ const { addSoftDeleteFields } = require('../utils/softDelete');
 const bcrypt = require('bcryptjs');
 const { MAIN_FEATURE_KEYS, normalizeFeaturePermissions } = require('../utils/mainFeatureAccess');
 const { passwordPolicyErrors } = require('../services/nabhSecurity.service');
+const { PRIVILEGED_ACTIONS } = require('../utils/privilegedActions');
 
 // Add to the featurePermissionSchema
 const featurePermissionSchema = new mongoose.Schema({
@@ -35,6 +36,11 @@ const userSchema = new mongoose.Schema({
   // Optional navigation allow-list. Empty means use the normal role sidebar. Entries may
   // be exact paths or prefixes ending in * (for example /dashboard/hr*).
   sidebarAccess: { type: [String], default: [] },
+  // Sensitive governance capabilities are intentionally separate from module permissions.
+  privilegedActions: [{ type: String, enum: PRIVILEGED_ACTIONS }],
+  // Incrementing this value invalidates already-issued staff JWTs without waiting for token expiry.
+  securityVersion: { type: Number, default: 1, min: 0, select: true },
+  sessionRevokedAt: Date,
   // Deliberately high-level. There are no per-button or per-action access rows in this release.
   modulePermissions: { type: [featurePermissionSchema], default: [] },
   resetPasswordToken: String,
@@ -53,6 +59,17 @@ const userSchema = new mongoose.Schema({
   lockedUntil: Date,
   lastLoginAt: Date,
   lastLoginIp: String,
+  trustedDevices: {
+    type: [{
+      deviceIdHash: { type: String, required: true },
+      label: { type: String, trim: true, maxlength: 120 },
+      addedAt: { type: Date, default: Date.now },
+      lastSeenAt: Date,
+      revokedAt: Date
+    }],
+    default: [],
+    select: false
+  },
   mfa: {
     enabled: { type: Boolean, default: false },
     secret: { type: String, select: false },
@@ -111,9 +128,11 @@ userSchema.pre('save', async function enforceAndHashPassword(next) {
 
     if (!this.isNew) {
       const stored = await this.constructor.findById(this._id)
-        .select('+passwordHistory')
+        .select('+passwordHistory securityVersion')
         .lean();
       if (stored?.password) {
+        this.securityVersion = Number(stored.securityVersion || 0) + 1;
+        this.sessionRevokedAt = new Date();
         const recentHashes = [
           stored.password,
           ...(Array.isArray(stored.passwordHistory)
@@ -144,6 +163,67 @@ userSchema.pre('save', async function enforceAndHashPassword(next) {
     return next(error);
   }
 });
+
+
+const SECURITY_SENSITIVE_PATHS = [
+  'role', 'is_active', 'hospital_id', 'modulePermissions', 'enforceModulePermissions',
+  'sidebarAccess', 'privilegedActions', 'mfa.enabled', 'mfa.secret', 'mfa.pendingSecret'
+];
+
+function updateTouchesSensitiveSecurity(update = {}) {
+  const candidates = [update, update.$set || {}, update.$unset || {}];
+  return candidates.some((obj) => SECURITY_SENSITIVE_PATHS.some((path) =>
+    Object.prototype.hasOwnProperty.call(obj, path) ||
+    Object.keys(obj).some((key) => key.startsWith(`${path}.`))
+  ));
+}
+
+function hasUserAccessManage(rows = []) {
+  return rows.some((row) => Array.isArray(row.actions) && row.actions.includes('user_access_manage'));
+}
+
+userSchema.pre('save', async function invalidateSessionsForSecurityChange(next) {
+  try {
+    if (this.isNew) return next();
+    const securityChanged = SECURITY_SENSITIVE_PATHS.some((path) => this.isModified(path));
+    if (!securityChanged) return next();
+
+    if ((this.isModified('privilegedActions') || this.isModified('modulePermissions')) && !this.$locals?.allowPrivilegedPermissionChange) {
+      const existing = await this.constructor.findById(this._id).select('privilegedActions modulePermissions').lean();
+      const oldPriv = JSON.stringify((existing?.privilegedActions || []).slice().sort());
+      const newPriv = JSON.stringify((this.privilegedActions || []).slice().sort());
+      const oldUA = hasUserAccessManage(existing?.modulePermissions || []);
+      const newUA = hasUserAccessManage(this.modulePermissions || []);
+      if (oldPriv !== newPriv || oldUA !== newUA) {
+        const error = new Error('Privileged permission changes require an approved maker-checker request');
+        error.statusCode = 403;
+        error.code = 'PRIVILEGED_CHANGE_REQUIRES_APPROVAL';
+        return next(error);
+      }
+    }
+
+    // Password middleware already increments securityVersion itself.
+    if (!this.isModified('password') && !this.isModified('securityVersion')) {
+      const stored = await this.constructor.findById(this._id).select('securityVersion').lean();
+      this.securityVersion = Number(stored?.securityVersion || this.securityVersion || 0) + 1;
+    }
+    this.sessionRevokedAt = new Date();
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+});
+
+for (const hook of ['findOneAndUpdate', 'updateOne', 'updateMany']) {
+  userSchema.pre(hook, function invalidateQuerySessions(next) {
+    const update = this.getUpdate() || {};
+    if (!updateTouchesSensitiveSecurity(update)) return next();
+    update.$inc = { ...(update.$inc || {}), securityVersion: 1 };
+    update.$set = { ...(update.$set || {}), sessionRevokedAt: new Date() };
+    this.setUpdate(update);
+    next();
+  });
+}
 
 userSchema.methods.matchPassword = async function matchPassword(enteredPassword) {
   if (typeof enteredPassword !== 'string' || !enteredPassword || !this.password) return false;

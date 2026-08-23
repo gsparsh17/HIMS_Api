@@ -50,6 +50,28 @@ function pageOptions(query = {}) {
   };
 }
 
+function allowedPatientIds(query = {}) {
+  if (!Array.isArray(query.__allowedPatientIds)) return null;
+  return query.__allowedPatientIds
+    .map((value) => String(value || ''))
+    .filter((value) => mongoose.isValidObjectId(value));
+}
+
+function patientFilterFor(query = {}, requestedPatientId = null) {
+  const allowed = allowedPatientIds(query);
+  if (allowed === null) {
+    return requestedPatientId && mongoose.isValidObjectId(requestedPatientId)
+      ? requestedPatientId
+      : undefined;
+  }
+  if (requestedPatientId && mongoose.isValidObjectId(requestedPatientId)) {
+    return allowed.includes(String(requestedPatientId))
+      ? requestedPatientId
+      : { $in: [] };
+  }
+  return { $in: allowed };
+}
+
 function patientName(patient) {
   return [patient?.salutation, patient?.first_name, patient?.middle_name, patient?.last_name]
     .filter(Boolean)
@@ -123,6 +145,9 @@ async function listIpdRecords(hospitalId, query = {}) {
     ...dateRange(query, 'admissionDate'),
   };
 
+  const patientScope = patientFilterFor(query);
+  if (patientScope !== undefined) filter.patientId = patientScope;
+
   if (query.status) {
     filter.status = query.status;
   }
@@ -163,6 +188,9 @@ async function listOpdRecords(hospitalId, query = {}) {
     ...dateRange(query, 'appointment_date'),
   };
 
+  const allowed = allowedPatientIds(query);
+  if (allowed !== null) filter.patient_id = { $in: allowed };
+
   if (query.status) {
     filter.status = query.status;
   }
@@ -178,6 +206,7 @@ async function listOpdRecords(hospitalId, query = {}) {
   if (query.q) {
     const patients = await Patient.find({
       hospitalId,
+      ...(allowed !== null ? { _id: { $in: allowed } } : {}),
       $or: [
         { first_name: new RegExp(escapeRegex(query.q), 'i') },
         { last_name: new RegExp(escapeRegex(query.q), 'i') },
@@ -219,6 +248,8 @@ async function listDischarges(hospitalId, query = {}) {
       { status: { $in: ['Discharged', 'LAMA', 'DAMA', 'Expired'] } },
     ],
   };
+  const patientScope = patientFilterFor(query);
+  if (patientScope !== undefined) filter.patientId = patientScope;
 
   if (query.from || query.to) {
     filter.dischargeDate = {};
@@ -353,6 +384,8 @@ async function listIncompleteRecords(req, hospitalId, query = {}) {
     },
     ...dateRange(query, 'admissionDate'),
   };
+  const patientScope = patientFilterFor(query);
+  if (patientScope !== undefined) base.patientId = patientScope;
 
   const { page, limit, skip } = pageOptions(query);
 
@@ -412,9 +445,8 @@ async function listDocuments(hospitalId, query = {}) {
     ...dateRange(query, 'documentDate'),
   };
 
-  if (query.patientId && mongoose.isValidObjectId(query.patientId)) {
-    filter.patientId = query.patientId;
-  }
+  const patientScope = patientFilterFor(query, query.patientId);
+  if (patientScope !== undefined) filter.patientId = patientScope;
 
   if (query.admissionId && mongoose.isValidObjectId(query.admissionId)) {
     filter.admissionId = query.admissionId;
@@ -453,9 +485,8 @@ async function listFileTracking(hospitalId, query = {}) {
     filter.status = query.status;
   }
 
-  if (query.patientId && mongoose.isValidObjectId(query.patientId)) {
-    filter.patientId = query.patientId;
-  }
+  const patientScope = patientFilterFor(query, query.patientId);
+  if (patientScope !== undefined) filter.patientId = patientScope;
 
   if (query.overdue === 'true') {
     filter.status = 'issued';
@@ -484,6 +515,14 @@ async function listBirthDeath(hospitalId, query = {}) {
   if (query.recordType) {
     filter.recordType = query.recordType;
   }
+  const allowed = allowedPatientIds(query);
+  if (allowed !== null) {
+    filter.$or = [
+      { patientId: { $in: allowed } },
+      { motherPatientId: { $in: allowed } },
+      { babyPatientId: { $in: allowed } },
+    ];
+  }
 
   return paged(MRDBirthDeathRecord, filter, query, [
     'patientId',
@@ -510,6 +549,8 @@ async function listMlc(hospitalId, query = {}) {
   if (query.status) {
     filter.status = query.status;
   }
+  const patientScope = patientFilterFor(query, query.patientId);
+  if (patientScope !== undefined) filter.patientId = patientScope;
 
   return paged(MRDMedicoLegalRecord, filter, query, [
     'patientId',
@@ -535,6 +576,8 @@ async function listCertificates(hospitalId, query = {}) {
   if (query.certificateType) {
     filter.certificateType = query.certificateType;
   }
+  const patientScope = patientFilterFor(query, query.patientId);
+  if (patientScope !== undefined) filter.patientId = patientScope;
 
   return paged(MRDMedicalCertificate, filter, query, [
     'patientId',
@@ -876,8 +919,10 @@ async function report(hospitalId, key, query = {}) {
     ? new Date(`${query.to}T23:59:59`)
     : new Date();
 
+  const reportPatientScope = patientFilterFor(query);
   const ipd = await IPDAdmission.find({
     hospitalId,
+    ...(reportPatientScope !== undefined ? { patientId: reportPatientScope } : {}),
     $or: [
       { admissionDate: { $lte: to }, dischargeDate: { $gte: from } },
       { admissionDate: { $lte: to }, dischargeDate: null },
@@ -1107,10 +1152,18 @@ async function report(hospitalId, key, query = {}) {
 
   // Birth Reports
   if (key === 'birth-reports') {
+    const allowed = allowedPatientIds(query);
     const rows = await MRDBirthDeathRecord.find({
       hospitalId,
       recordType: 'birth',
       eventDateTime: { $gte: from, $lte: to },
+      ...(allowed !== null ? {
+        $or: [
+          { patientId: { $in: allowed } },
+          { motherPatientId: { $in: allowed } },
+          { babyPatientId: { $in: allowed } },
+        ],
+      } : {}),
     })
       .populate('motherPatientId babyPatientId attendingDoctorId departmentId')
       .sort({ eventDateTime: -1 })
@@ -1128,6 +1181,7 @@ async function report(hospitalId, key, query = {}) {
     const explicit = await MRDMedicoLegalRecord.find({
       hospitalId,
       registeredAt: { $gte: from, $lte: to },
+      ...(reportPatientScope !== undefined ? { patientId: reportPatientScope } : {}),
     })
       .populate('patientId admissionId emergencyEncounterId')
       .sort({ registeredAt: -1 })
@@ -1137,6 +1191,7 @@ async function report(hospitalId, key, query = {}) {
       hospitalId,
       'medicoLegal.isMlc': true,
       arrivalAt: { $gte: from, $lte: to },
+      ...(reportPatientScope !== undefined ? { patientId: reportPatientScope } : {}),
     })
       .populate('patientId')
       .lean();
@@ -1185,6 +1240,7 @@ async function report(hospitalId, key, query = {}) {
     const rows = await MRDFileTracking.find({
       hospitalId,
       ...dateRange(query, 'updatedAt'),
+      ...(reportPatientScope !== undefined ? { patientId: reportPatientScope } : {}),
     })
       .populate('patientId currentHolderDepartmentId')
       .sort({ updatedAt: -1 })

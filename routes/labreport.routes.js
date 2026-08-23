@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/labreport.controller');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 const multer = require('multer');
 const path = require('path');
 const { tempDir } = require('../config/upload.config');
@@ -26,7 +27,7 @@ const upload = multer({
 
 router.use(protect, requireModuleAccess('laboratory', 'view'));
 
-router.get('/patient/:patientId', controller.getReportsByPatient);
+router.get('/patient/:patientId', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.getReportsByPatient);
 router.get('/prescription/:prescriptionId', controller.getReportsByPrescription);
 
 router.post(

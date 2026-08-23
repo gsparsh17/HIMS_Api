@@ -133,7 +133,7 @@ exports.storeLogin = async (req, res) => {
       email: user.email,
       role: user.role,
       dashboard: 'store',
-      token: generateToken(user._id, user.role)
+      token: generateToken(user)
     });
   } catch (error) {
     console.error('Store login error:', error);

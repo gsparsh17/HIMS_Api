@@ -6,7 +6,7 @@ const schema = new mongoose.Schema({
   reportKey: { type: String, required: true },
   filters: { type: mongoose.Schema.Types.Mixed, default: {} },
   format: { type: String, enum: ['csv', 'xlsx', 'pdf'], required: true },
-  status: { type: String, enum: ['Queued', 'Processing', 'Completed', 'Failed', 'Expired'], default: 'Queued', index: true },
+  status: { type: String, enum: ['Queued', 'Processing', 'Completed', 'Failed', 'Expired', 'AUTHORIZATION_REVOKED'], default: 'Queued', index: true },
   filename: String,
   mimeType: String,
   output: Buffer,
@@ -15,7 +15,8 @@ const schema = new mongoose.Schema({
   error: String,
   requestedAt: { type: Date, default: Date.now },
   completedAt: Date,
-  expiresAt: { type: Date, index: true }
+  expiresAt: { type: Date, index: true },
+  authorizationSnapshot: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
 schema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 module.exports = mongoose.model('MISExportJob', schema);

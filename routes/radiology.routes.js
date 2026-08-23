@@ -1,4 +1,6 @@
 const express = require('express');
+const RadiologyRequest = require('../models/RadiologyRequest');
+const { requirePatientAccess, requireResourcePatientAccess } = require('../middlewares/patientAccess');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
@@ -63,35 +65,35 @@ router.get('/templates/:templateId', ...view, reportController.getTemplate);
 
 // Radiology workflow
 router.get('/worklist', ...view, workflow.radiologyWorklist);
-router.post('/requests/:id/schedule', ...manage, workflow.scheduleRadiology);
-router.post('/requests/:id/start', ...manage, workflow.startRadiology);
-router.post('/requests/:id/results', ...manage, workflow.enterRadiologyResult);
-router.post('/requests/:id/verify', ...manage, workflow.verifyRadiology);
-router.post('/requests/:id/release', ...manage, workflow.releaseRadiology);
-router.post('/requests/:id/refer-out', ...manage, controller.referOut);
-router.post('/requests/:id/external-result', ...manage, controller.receiveExternalResult);
-router.post('/requests/:id/amend', ...manage, governance.amendRadiologyReport);
-router.post('/requests/:id/repeat', ...manage, governance.repeatRadiologyStudy);
-router.post('/requests/:id/contraindications', ...manage, governance.assessRadiologyContraindications);
-router.post('/requests/:id/contraindications/ack', ...manage, governance.acknowledgeRadiologyContraindications);
-router.post('/requests/:id/dicom-metadata', ...manage, governance.importDicomMetadata);
+router.post('/requests/:id/schedule', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.scheduleRadiology);
+router.post('/requests/:id/start', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.startRadiology);
+router.post('/requests/:id/results', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.enterRadiologyResult);
+router.post('/requests/:id/verify', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.verifyRadiology);
+router.post('/requests/:id/release', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), workflow.releaseRadiology);
+router.post('/requests/:id/refer-out', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), controller.referOut);
+router.post('/requests/:id/external-result', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), controller.receiveExternalResult);
+router.post('/requests/:id/amend', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), governance.amendRadiologyReport);
+router.post('/requests/:id/repeat', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), governance.repeatRadiologyStudy);
+router.post('/requests/:id/contraindications', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), governance.assessRadiologyContraindications);
+router.post('/requests/:id/contraindications/ack', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), governance.acknowledgeRadiologyContraindications);
+router.post('/requests/:id/dicom-metadata', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), governance.importDicomMetadata);
 router.get('/dashboard/stats', ...view, workflow.radiologyStats);
 
 // Request management
 router.post('/requests', ...order, controller.createRadiologyRequest);
 router.get('/requests', ...view, controller.getRadiologyRequests);
-router.get('/requests/:id', ...view, controller.getRadiologyRequestById);
-router.patch('/requests/:id/status', ...manage, controller.updateRequestStatus);
-router.post('/requests/:id/manual-report', ...manage, uploadImages.array('images', 6), reportController.saveManualReport);
-router.post('/requests/:id/upload', ...manage, uploadReport.single('report'), controller.uploadReport);
-router.get('/requests/:id/report.pdf', ...view, reportController.downloadGeneratedReport);
-router.get('/requests/:id/download', ...view, controller.downloadReport);
-router.patch('/requests/:id/billed', ...manage, controller.markAsBilled);
+router.get('/requests/:id', ...view, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.getRadiologyRequestById);
+router.patch('/requests/:id/status', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), controller.updateRequestStatus);
+router.post('/requests/:id/manual-report', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), uploadImages.array('images', 6), reportController.saveManualReport);
+router.post('/requests/:id/upload', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), uploadReport.single('report'), controller.uploadReport);
+router.get('/requests/:id/report.pdf', ...view, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), reportController.downloadGeneratedReport);
+router.get('/requests/:id/download', ...view, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.downloadReport);
+router.patch('/requests/:id/billed', ...manage, requireResourcePatientAccess(RadiologyRequest, { patientField: 'patientId', purpose: 'TREATMENT', scope: 'clinical_write' }), controller.markAsBilled);
 
 // Admission/patient scoped requests
 router.get('/admission/:admissionId/requests', ...view, controller.getRequestsByAdmission);
 router.get('/admission/:admissionId/pending', ...view, controller.getPendingIPDRequests);
-router.get('/patient/:patientId/requests', ...view, controller.getRequestsByPatient);
+router.get('/patient/:patientId/requests', ...view, requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), controller.getRequestsByPatient);
 
 // Radiology staff management
 router.get('/staff', ...view, radiologyStaffController.getAllStaff);

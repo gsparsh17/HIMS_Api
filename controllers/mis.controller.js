@@ -8,6 +8,7 @@ const MISMetricDefinition = require('../models/MISMetricDefinition');
 const MISSnapshot = require('../models/MISSnapshot');
 const MISExportJob = require('../models/MISExportJob');
 const MISSchedule = require('../models/MISSchedule');
+const { authorizeDelegatedJob, authorizationSnapshot } = require('../services/delegatedJobAuthorization.service');
 
 const { REPORT_CATALOG, buildOperationalReport } = require('../services/misOperationalReport.service');
 
@@ -797,6 +798,13 @@ async function renderExport(report, format) {
 
 async function processExportJob(job) {
   try {
+    await authorizeDelegatedJob({
+      userId: job.requestedBy,
+      hospitalId: job.hospitalId,
+      moduleKey: 'reports',
+      minimumAccess: 'view',
+      action: 'mis_export'
+    });
     job.status = 'Processing';
     await job.save();
 
@@ -814,7 +822,7 @@ async function processExportJob(job) {
 
     await job.save();
   } catch (error) {
-    job.status = 'Failed';
+    job.status = error.code === 'AUTHORIZATION_REVOKED' ? 'Authorization Revoked' : 'Failed';
     job.error = error.message;
     job.completedAt = new Date();
     await job.save();
@@ -946,7 +954,8 @@ exports.createExport = async (req, res, next) => {
       requestedBy: req.user._id,
       reportKey: req.body.reportKey,
       filters: req.body.filters || {},
-      format: req.body.format
+      format: req.body.format,
+      authorizationSnapshot: authorizationSnapshot(req.user, { moduleKey: 'reports', action: 'mis_export' })
     });
 
     await processExportJob(job);
@@ -1053,7 +1062,8 @@ exports.createSchedule = async (req, res, next) => {
     const payload = {
       ...req.body,
       hospitalId: requireHospitalId(req),
-      createdBy: req.user._id
+      createdBy: req.user._id,
+      authorizationSnapshot: authorizationSnapshot(req.user, { moduleKey: 'reports', action: 'mis_export' })
     };
 
     payload.nextRunAt = nextScheduleRun(payload);

@@ -1,5 +1,6 @@
 const Patient = require('../models/Patient');
 const AbdmIdentityTransaction = require('../models/AbdmIdentityTransaction');
+const AbdmCareContext = require('../models/AbdmCareContext');
 const Appointment = require('../models/Appointment');
 const IPDAdmission = require('../models/IPDAdmission');
 const Prescription = require('../models/Prescription');
@@ -36,6 +37,11 @@ const { abhaStatusFilter, patientSearchConditions } = require('../utils/searchNo
 const { assertPatientIdentityMatch } = require('../services/abdmIdentityMatch.service');
 const { assertAbdmExchangeEligible } = require('../services/abdmExchangeEligibility.service');
 const { encryptJson, decryptJson } = require('../services/abdmVault.service');
+const { assertPatientAccess, accessiblePatientIds, autoPurpose } = require('../services/patientAccessPolicy.service');
+const {
+  beginOperation, beforeExternal, externalAccepted, externalFailed,
+  localCommitted, completeOperation, requireReconciliation, assertSafeIdempotentReplay, sha256: operationSha256
+} = require('../services/abdmOperationLedger.service');
 
 function cleanDigits(value) {
   return String(value || '').replace(/\D/g, '');
@@ -230,6 +236,7 @@ async function latestActiveTransaction(patientId, flow) {
 }
 
 exports.requestAadhaarOtp = async (req, res) => {
+  let operation;
   try {
     const { patientId, aadhaarNumber } = req.body;
     if (!patientId || !isValidAadhaar(aadhaarNumber)) {
@@ -249,40 +256,71 @@ exports.requestAadhaarOtp = async (req, res) => {
       text: req.body.consentText
     });
     const cleanAadhaar = cleanDigits(aadhaarNumber);
-    const encryptedAadhaar = await encryptForAbdm(cleanAadhaar);
-    const data = await abdmPost('/v3/enrollment/request/otp', {
-      txnId: '',
-      scope: ['abha-enrol'],
-      loginHint: 'aadhaar',
-      loginId: encryptedAadhaar,
-      otpSystem: 'aadhaar'
-    });
-    const transaction = await createTransaction({
-      txnId: data.txnId,
-      flow: 'AADHAAR_ENROLMENT',
-      patient,
-      userId: req.user._id,
-      consent,
+    operation = await beginOperation({
       req,
-      metadata: { aadhaarLast4: cleanAadhaar.slice(-4) }
+      patient,
+      flow: 'M1_ABHA_CREATION',
+      action: 'AADHAAR_REQUEST_OTP',
+      requestSummary: { patientId: String(patient._id), aadhaarLast4: cleanAadhaar.slice(-4), consentCode: consent.code, consentVersion: consent.version },
+      consentEvidenceHash: operationSha256(`${consent.code}:${consent.version}:${consent.textHash}:${consent.acceptedAt?.toISOString?.() || ''}`)
     });
-    await Patient.updateOne(
-      { _id: patient._id },
-      {
-        $set: {
-          aadhaar_last4: cleanAadhaar.slice(-4),
-          'abha.status': 'OTP_SENT',
-          'abha.registrationMode': 'aadhaar_otp',
-          'abha.lastOtpTxnId': transaction.txnId,
-          'abha.lastOtpSentAt': new Date()
+    assertSafeIdempotentReplay(operation);
+    if (operation.$idempotent && operation.status === 'COMPLETED') {
+      return res.json({ success: true, idempotent: true, operationId: operation.operationId, txnId: operation.externalTxnId, message: 'ABDM OTP request was already completed' });
+    }
+
+    const encryptedAadhaar = await encryptForAbdm(cleanAadhaar);
+    await beforeExternal(operation);
+    let data;
+    try {
+      data = await abdmPost('/v3/enrollment/request/otp', {
+        txnId: '',
+        scope: ['abha-enrol'],
+        loginHint: 'aadhaar',
+        loginId: encryptedAadhaar,
+        otpSystem: 'aadhaar'
+      });
+      await externalAccepted(operation, data, { txnId: data.txnId });
+    } catch (error) {
+      await externalFailed(operation, error);
+      throw error;
+    }
+
+    try {
+      const transaction = await createTransaction({
+        txnId: data.txnId,
+        flow: 'AADHAAR_ENROLMENT',
+        patient,
+        userId: req.user._id,
+        consent,
+        req,
+        metadata: { aadhaarLast4: cleanAadhaar.slice(-4), operationId: operation.operationId }
+      });
+      await Patient.updateOne(
+        { _id: patient._id },
+        {
+          $set: {
+            aadhaar_last4: cleanAadhaar.slice(-4),
+            'abha.status': 'OTP_SENT',
+            'abha.registrationMode': 'aadhaar_otp',
+            'abha.lastOtpTxnId': transaction.txnId,
+            'abha.lastOtpSentAt': new Date()
+          }
         }
-      }
-    );
-    return res.json({ success: true, txnId: transaction.txnId, message: data.message });
+      );
+      await localCommitted(operation, { identityTransactionId: String(transaction._id), txnId: transaction.txnId });
+      await completeOperation(operation, { patientId: String(patient._id) });
+      return res.json({ success: true, operationId: operation.operationId, txnId: transaction.txnId, message: data.message });
+    } catch (error) {
+      await requireReconciliation(operation, 'ABDM OTP request succeeded externally but local transaction/patient state did not fully commit', error);
+      throw error;
+    }
   } catch (error) {
     return res.status(error.statusCode || 502).json({
       success: false,
       error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+      ...(operation?.operationId ? { operationId: operation.operationId, operationStatus: operation.status } : {}),
       details: error.details
     });
   }
@@ -290,6 +328,7 @@ exports.requestAadhaarOtp = async (req, res) => {
 
 exports.enrolByAadhaarOtp = async (req, res) => {
   let transaction;
+  let operation;
   try {
     const { patientId, txnId, otp, mobile } = req.body;
     if (!patientId || !txnId || !otp) {
@@ -308,42 +347,84 @@ exports.enrolByAadhaarOtp = async (req, res) => {
       userId: req.user._id,
       flows: ['AADHAAR_ENROLMENT']
     });
-    const encryptedOtp = await encryptForAbdm(otp);
-    const data = await abdmPost('/v3/enrollment/enrol/byAadhaar', {
-      authData: {
-        authMethods: ['otp'],
-        otp: {
-          txnId,
-          otpValue: encryptedOtp,
-          mobile: mobile ? cleanDigits(mobile) : ''
-        }
-      },
-      consent: {
-        code: transaction.consent?.code || 'abha-enrollment',
-        version: transaction.consent?.version || '1.4'
-      }
-    });
-    const saved = await saveVerifiedProfile({
+
+    operation = await beginOperation({
+      req,
       patient,
-      profile: extractProfile(data),
-      tokens: extractTokens(data),
-      method: 'ABDM_AADHAAR_OTP',
-      userId: req.user._id
+      flow: 'M1_ABHA_CREATION',
+      action: 'AADHAAR_ENROL_BY_OTP',
+      requestSummary: { patientId: String(patient._id), txnId, mobileLast4: mobile ? cleanDigits(mobile).slice(-4) : undefined },
+      consentEvidenceHash: operationSha256(`${transaction.consent?.code || 'abha-enrollment'}:${transaction.consent?.version || '1.4'}:${transaction.consent?.textHash || ''}`)
     });
-    await markCompleted(transaction, { isNew: data.isNew });
-    return res.json({
-      success: true,
-      message: data.message,
-      isNew: data.isNew,
-      patientId: saved._id,
-      abha: safeAbha(saved),
-      credential: await getPatientSessionStatus(saved._id, 'ABHA_PROFILE')
-    });
+    assertSafeIdempotentReplay(operation);
+    if (operation.$idempotent && operation.status === 'COMPLETED') {
+      const current = await Patient.findById(patient._id);
+      return res.json({
+        success: true,
+        idempotent: true,
+        operationId: operation.operationId,
+        patientId: current._id,
+        abha: safeAbha(current),
+        credential: await getPatientSessionStatus(current._id, 'ABHA_PROFILE')
+      });
+    }
+
+    const encryptedOtp = await encryptForAbdm(otp);
+    await beforeExternal(operation);
+    let data;
+    try {
+      data = await abdmPost('/v3/enrollment/enrol/byAadhaar', {
+        authData: {
+          authMethods: ['otp'],
+          otp: {
+            txnId,
+            otpValue: encryptedOtp,
+            mobile: mobile ? cleanDigits(mobile) : ''
+          }
+        },
+        consent: {
+          code: transaction.consent?.code || 'abha-enrollment',
+          version: transaction.consent?.version || '1.4'
+        }
+      });
+      await externalAccepted(operation, data, { txnId: data.txnId || txnId });
+    } catch (error) {
+      await externalFailed(operation, error);
+      throw error;
+    }
+
+    try {
+      const saved = await saveVerifiedProfile({
+        patient,
+        profile: extractProfile(data),
+        tokens: extractTokens(data),
+        method: 'ABDM_AADHAAR_OTP',
+        userId: req.user._id
+      });
+      await markCompleted(transaction, { isNew: data.isNew, operationId: operation.operationId });
+      await localCommitted(operation, { patientId: String(saved._id), identityTransactionId: String(transaction._id) });
+      await completeOperation(operation, { isNew: Boolean(data.isNew) });
+      return res.json({
+        success: true,
+        operationId: operation.operationId,
+        message: data.message,
+        isNew: data.isNew,
+        patientId: saved._id,
+        abha: safeAbha(saved),
+        credential: await getPatientSessionStatus(saved._id, 'ABHA_PROFILE')
+      });
+    } catch (error) {
+      await requireReconciliation(operation, 'ABHA enrollment succeeded externally but verified profile/local transaction did not fully commit', error);
+      throw error;
+    }
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => { });
+    const ambiguous = operation && ['EXTERNAL_ACCEPTED', 'LOCAL_COMMITTED', 'RECONCILIATION_REQUIRED', 'UNKNOWN'].includes(operation.status);
+    if (transaction && !ambiguous) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({
       success: false,
       error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+      ...(operation?.operationId ? { operationId: operation.operationId, operationStatus: operation.status } : {}),
       details: error.details
     });
   }
@@ -895,6 +976,55 @@ exports.logoutProfile = async (req, res) => {
   }
 };
 
+
+exports.retireLocalAssociation = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.params.patientId, req.user);
+    const reason = String(req.body?.reason || '').trim();
+    const confirmation = String(req.body?.confirmation || '').trim().toUpperCase();
+    if (reason.length < 20) {
+      return res.status(400).json({ success: false, code: 'RETIRE_REASON_REQUIRED', error: 'A detailed reason of at least 20 characters is required' });
+    }
+    if (confirmation !== 'RETIRE LOCAL ABHA ASSOCIATION') {
+      return res.status(400).json({ success: false, code: 'RETIRE_CONFIRMATION_REQUIRED', error: 'Type RETIRE LOCAL ABHA ASSOCIATION to confirm' });
+    }
+    if (!patient.abha?.number && !patient.abha?.address) {
+      return res.status(409).json({ success: false, code: 'ABHA_NOT_ASSOCIATED', error: 'No local ABHA association exists on this patient record' });
+    }
+
+    const linkedCareContexts = await AbdmCareContext.countDocuments({
+      hospitalId: patient.hospitalId,
+      patientId: patient._id,
+      linkStatus: 'ABDM_LINKED',
+      active: { $ne: false }
+    });
+
+    patient.abha.status = 'LOCAL_ASSOCIATION_RETIRED';
+    patient.abha.kycVerified = false;
+    patient.abha.associationRetiredAt = new Date();
+    patient.abha.associationRetiredBy = req.user._id;
+    patient.abha.associationRetirementReason = reason;
+    await patient.save();
+    await clearPatientSession(patient._id, 'ABHA_PROFILE').catch(() => {});
+
+    req.auditMetadata = {
+      ...(req.auditMetadata || {}),
+      patientId: String(patient._id),
+      action: 'LOCAL_ABHA_ASSOCIATION_RETIRED',
+      linkedCareContextsPreserved: linkedCareContexts
+    };
+
+    return res.json({
+      success: true,
+      status: 'LOCAL_ASSOCIATION_RETIRED',
+      linkedCareContextsPreserved: linkedCareContexts,
+      message: 'The local ABHA association is retired and future ABDM exchange is blocked for this patient until re-verification. Existing ABDM-linked care contexts and audit/consent history are preserved; ABDM does not support unlinking already linked care contexts.'
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, code: error.code, error: error.message });
+  }
+};
+
 async function ownedEnrollmentTransaction(req, patient) {
   const txnId = req.body.txnId || patient.abha?.lastOtpTxnId;
   if (!txnId) {
@@ -1037,6 +1167,8 @@ exports.searchPatientsByAbha = async (req, res) => {
     const hospitalId = assertUserHospital(req.user);
     const { query, status, limit = 20 } = req.query;
     const filter = { hospitalId };
+    const accessibleIds = await accessiblePatientIds(req.user, hospitalId, autoPurpose(req.user));
+    if (Array.isArray(accessibleIds)) filter._id = { $in: accessibleIds };
     const searchConditions = patientSearchConditions(query);
     if (searchConditions.length) filter.$or = searchConditions;
     if (status) filter['abha.status'] = abhaStatusFilter(status);
@@ -1428,16 +1560,39 @@ exports.verifyPasswordLogin = async (req, res) => {
 };
 
 exports.requestDocumentEnrollmentOtp = async (req, res) => {
+  let operation;
+  let accepted = false;
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
     if (!isValidMobile(req.body.mobile)) return res.status(400).json({ success: false, error: 'A valid mobile is required' });
     const consent = consentForIdentity(req, patient, 'abha-enrollment', '1.4');
-    const data = await abdmPost('/v3/enrollment/request/otp', {
-      scope: ['abha-enrol', 'mobile-verify', 'dl-flow'],
-      loginHint: 'mobile',
-      loginId: await encryptForAbdm(cleanDigits(req.body.mobile)),
-      otpSystem: 'abdm'
+    operation = await beginOperation({
+      req,
+      patient,
+      flow: 'M1_DOCUMENT_ENROLMENT',
+      action: 'DOCUMENT_REQUEST_OTP',
+      requestSummary: { mobileLast4: cleanDigits(req.body.mobile).slice(-4), documentType: 'DRIVING_LICENCE' },
+      consentEvidenceHash: operationSha256(JSON.stringify(consent || {}))
     });
+    if (operation.$idempotent && operation.status === 'COMPLETED') {
+      return res.json({ success: true, idempotent: true, operationId: operation.operationId, txnId: operation.externalTxnId, message: 'OTP request already completed' });
+    }
+    assertSafeIdempotentReplay(operation);
+    await beforeExternal(operation);
+    let data;
+    try {
+      data = await abdmPost('/v3/enrollment/request/otp', {
+        scope: ['abha-enrol', 'mobile-verify', 'dl-flow'],
+        loginHint: 'mobile',
+        loginId: await encryptForAbdm(cleanDigits(req.body.mobile)),
+        otpSystem: 'abdm'
+      });
+      await externalAccepted(operation, data, { txnId: data.txnId });
+      accepted = true;
+    } catch (error) {
+      await externalFailed(operation, error);
+      throw error;
+    }
     const transaction = await createTransaction({
       txnId: data.txnId,
       flow: 'DOCUMENT_ENROLMENT',
@@ -1445,35 +1600,71 @@ exports.requestDocumentEnrollmentOtp = async (req, res) => {
       userId: req.user._id,
       consent,
       req,
-      metadata: { documentType: 'DRIVING_LICENCE' }
+      metadata: { documentType: 'DRIVING_LICENCE', operationId: operation.operationId }
     });
-    return res.json({ success: true, txnId: transaction.txnId, message: data.message });
+    await localCommitted(operation, { identityTransactionId: transaction._id, transactionId: transaction.txnId });
+    await completeOperation(operation, { transactionId: transaction.txnId });
+    return res.json({ success: true, operationId: operation.operationId, txnId: transaction.txnId, message: data.message });
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+    if (accepted && operation && !['COMPLETED', 'LOCAL_COMMITTED'].includes(operation.status)) {
+      await requireReconciliation(operation, 'ABDM document-enrolment OTP succeeded but local transaction commit did not complete', error);
+    }
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, operationId: operation?.operationId, error: error.message, details: error.details });
   }
 };
 
 exports.verifyDocumentEnrollmentOtp = async (req, res) => {
   let transaction;
+  let operation;
+  let accepted = false;
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
     transaction = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['DOCUMENT_ENROLMENT'] });
-    const data = await abdmPost('/v3/enrollment/auth/byAbdm', {
-      scope: ['abha-enrol', 'mobile-verify', 'dl-flow'],
-      authData: { authMethods: ['otp'], otp: { timeStamp: new Date().toISOString(), txnId: transaction.txnId, otpValue: await encryptForAbdm(req.body.otp) } }
+    operation = await beginOperation({
+      req,
+      patient,
+      flow: 'M1_DOCUMENT_ENROLMENT',
+      action: 'DOCUMENT_VERIFY_OTP',
+      requestSummary: { transactionId: transaction.txnId, documentType: 'DRIVING_LICENCE' },
+      consentEvidenceHash: operationSha256(JSON.stringify(transaction.consent || {}))
     });
+    if (operation.$idempotent && operation.status === 'COMPLETED') {
+      return res.json({ success: true, idempotent: true, operationId: operation.operationId, txnId: operation.externalTxnId || transaction.metadata?.verifiedTxnId || transaction.txnId, message: 'OTP verification was already completed' });
+    }
+    assertSafeIdempotentReplay(operation);
+    await beforeExternal(operation);
+    let data;
+    try {
+      data = await abdmPost('/v3/enrollment/auth/byAbdm', {
+        scope: ['abha-enrol', 'mobile-verify', 'dl-flow'],
+        authData: { authMethods: ['otp'], otp: { timeStamp: new Date().toISOString(), txnId: transaction.txnId, otpValue: await encryptForAbdm(req.body.otp) } }
+      });
+      await externalAccepted(operation, data, { txnId: data.txnId || transaction.txnId });
+      accepted = true;
+    } catch (error) {
+      await externalFailed(operation, error);
+      throw error;
+    }
     transaction.status = 'OTP_VERIFIED';
-    transaction.metadata = { ...(transaction.metadata || {}), verifiedTxnId: data.txnId || transaction.txnId };
+    transaction.metadata = { ...(transaction.metadata || {}), verifiedTxnId: data.txnId || transaction.txnId, verifyOperationId: operation.operationId };
     await transaction.save();
-    return res.json({ success: true, txnId: data.txnId || transaction.txnId, message: data.message });
+    await localCommitted(operation, { identityTransactionId: String(transaction._id), verifiedTxnId: data.txnId || transaction.txnId });
+    await completeOperation(operation, { transactionStatus: transaction.status });
+    return res.json({ success: true, operationId: operation.operationId, txnId: data.txnId || transaction.txnId, message: data.message });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => { });
-    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+    if (accepted && operation && !['COMPLETED', 'LOCAL_COMMITTED'].includes(operation.status)) {
+      await requireReconciliation(operation, 'ABDM document OTP verification succeeded but local transaction state did not fully commit', error);
+    } else if (transaction && !operation) {
+      await recordAttempt(transaction, error).catch(() => { });
+    }
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, operationId: operation?.operationId, operationStatus: operation?.status, error: error.message, details: error.details });
   }
 };
 
 exports.enrolByDocument = async (req, res) => {
   let transaction;
+  let operation;
+  let accepted = false;
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
     transaction = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['DOCUMENT_ENROLMENT'] });
@@ -1482,22 +1673,52 @@ exports.enrolByDocument = async (req, res) => {
     const required = ['documentId', 'firstName', 'lastName', 'dob', 'gender', 'frontSidePhoto', 'backSidePhoto', 'address', 'state', 'district', 'pinCode'];
     const missing = required.filter((field) => !document[field]);
     if (missing.length) return res.status(400).json({ success: false, error: `Missing document fields: ${missing.join(', ')}` });
-    const data = await abdmPost('/v3/enrollment/enrol/byDocument', {
-      txnId: transaction.metadata?.verifiedTxnId || transaction.txnId,
-      documentType: 'DRIVING_LICENCE',
-      ...document,
-      consent: { code: transaction.consent?.code || 'abha-enrollment', version: transaction.consent?.version || '1.4' }
+
+    operation = await beginOperation({
+      req,
+      patient,
+      flow: 'M1_DOCUMENT_ENROLMENT',
+      action: 'DOCUMENT_ENROL',
+      requestSummary: { transactionId: transaction.txnId, documentType: 'DRIVING_LICENCE', consentVersion: transaction.consent?.version || '1.4' },
+      consentEvidenceHash: operationSha256(JSON.stringify(transaction.consent || {}))
     });
+    if (operation.$idempotent && operation.status === 'COMPLETED') {
+      return res.json({ success: true, idempotent: true, operationId: operation.operationId, abha: safeAbha(patient) });
+    }
+    assertSafeIdempotentReplay(operation);
+    await beforeExternal(operation);
+    let data;
+    try {
+      data = await abdmPost('/v3/enrollment/enrol/byDocument', {
+        txnId: transaction.metadata?.verifiedTxnId || transaction.txnId,
+        documentType: 'DRIVING_LICENCE',
+        ...document,
+        consent: { code: transaction.consent?.code || 'abha-enrollment', version: transaction.consent?.version || '1.4' }
+      });
+      await externalAccepted(operation, data, { txnId: data.txnId || transaction.txnId });
+      accepted = true;
+    } catch (error) {
+      await externalFailed(operation, error);
+      throw error;
+    }
     const saved = await saveVerifiedProfile({ patient, profile: extractProfile(data), tokens: extractTokens(data), method: 'ABDM_DRIVING_LICENCE', userId: req.user._id });
     await markCompleted(transaction);
-    return res.json({ success: true, message: data.message, abha: safeAbha(saved) });
+    await localCommitted(operation, { patientId: saved._id, identityTransactionId: transaction._id });
+    await completeOperation(operation, { abhaStatus: saved.abha?.status });
+    return res.json({ success: true, operationId: operation.operationId, message: data.message, abha: safeAbha(saved) });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => { });
-    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+    if (accepted && operation) {
+      await requireReconciliation(operation, 'ABDM document enrolment returned success but local verified-profile commit did not complete', error);
+    } else if (transaction) {
+      await recordAttempt(transaction, error).catch(() => {});
+    }
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, operationId: operation?.operationId, error: error.message, details: error.details });
   }
 };
 
 exports.initBiometricEnrollment = async (req, res) => {
+  let operation;
+  let accepted = false;
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
     const method = loginMode(req.body.method || 'face');
@@ -1505,7 +1726,28 @@ exports.initBiometricEnrollment = async (req, res) => {
     const consent = consentForIdentity(req, patient, 'abha-enrollment', '1.4');
     const initScope = ['abha-enrol', method === 'face' ? 'face-auth' : method === 'fingerprint' ? 'bio-verify' : 'iris-verify'];
     const captureScope = ['abha-enrol', method === 'face' ? 'face-verify' : method === 'fingerprint' ? 'bio-verify' : 'iris-verify'];
-    const data = await abdmPost('/v3/enrollment/enrol/auth/init', { scope: initScope });
+    operation = await beginOperation({
+      req,
+      patient,
+      flow: 'M1_BIOMETRIC_ENROLMENT',
+      action: 'BIOMETRIC_INIT',
+      requestSummary: { method, initScope },
+      consentEvidenceHash: operationSha256(JSON.stringify(consent || {}))
+    });
+    if (operation.$idempotent && operation.status === 'COMPLETED') {
+      return res.json({ success: true, idempotent: true, operationId: operation.operationId, txnId: operation.externalTxnId });
+    }
+    assertSafeIdempotentReplay(operation);
+    await beforeExternal(operation);
+    let data;
+    try {
+      data = await abdmPost('/v3/enrollment/enrol/auth/init', { scope: initScope });
+      await externalAccepted(operation, data, { txnId: data.txnId });
+      accepted = true;
+    } catch (error) {
+      await externalFailed(operation, error);
+      throw error;
+    }
     const transaction = await createTransaction({
       txnId: data.txnId,
       flow: 'BIOMETRIC_ENROLMENT',
@@ -1513,10 +1755,13 @@ exports.initBiometricEnrollment = async (req, res) => {
       userId: req.user._id,
       consent,
       req,
-      metadata: { method, initScope, captureScope }
+      metadata: { method, initScope, captureScope, operationId: operation.operationId }
     });
+    await localCommitted(operation, { identityTransactionId: transaction._id, transactionId: transaction.txnId });
+    await completeOperation(operation, { transactionId: transaction.txnId });
     return res.json({
       success: true,
+      operationId: operation.operationId,
       txnId: transaction.txnId,
       qrUrl: method === 'face'
         ? `${String(process.env.ABDM_PHR_FACE_AUTH_URL || 'https://phrsbx.abdm.gov.in/face-auth').replace(/\/$/, '')}?txnId=${encodeURIComponent(transaction.txnId)}`
@@ -1524,7 +1769,10 @@ exports.initBiometricEnrollment = async (req, res) => {
       data
     });
   } catch (error) {
-    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+    if (accepted && operation && !['COMPLETED', 'LOCAL_COMMITTED'].includes(operation.status)) {
+      await requireReconciliation(operation, 'ABDM biometric init succeeded but local transaction commit did not complete', error);
+    }
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, operationId: operation?.operationId, error: error.message, details: error.details });
   }
 };
 
@@ -1544,6 +1792,8 @@ exports.captureBiometricPid = async (req, res) => {
 
 exports.enrolByBiometric = async (req, res) => {
   let transaction;
+  let operation;
+  let accepted = false;
   try {
     const patient = await ensurePatient(req.body.patientId, req.user);
     const method = loginMode(req.body.method);
@@ -1552,12 +1802,7 @@ exports.enrolByBiometric = async (req, res) => {
     transaction = req.body.txnId
       ? await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['BIOMETRIC_ENROLMENT'] })
       : null;
-    const consent = transaction?.consent || consentForIdentity(
-      req,
-      patient,
-      'abha-enrollment',
-      '1.4'
-    );
+    const consent = transaction?.consent || consentForIdentity(req, patient, 'abha-enrollment', '1.4');
     const encryptedAadhaar = await encryptForAbdm(cleanDigits(req.body.aadhaarNumber));
     let authData;
     if (method === 'face') {
@@ -1576,19 +1821,44 @@ exports.enrolByBiometric = async (req, res) => {
         ? { authMethods: ['bio'], bio: { aadhaar: encryptedAadhaar, fingerPrintAuthPid: pid, mobile: cleanDigits(req.body.mobile) } }
         : { authMethods: ['iris'], iris: { aadhaar: encryptedAadhaar, Pid: pid, mobile: cleanDigits(req.body.mobile) } };
     }
-    const data = await abdmPost('/v3/enrollment/enrol/byAadhaar', {
-      authData,
-      consent: {
-        code: consent.code || 'abha-enrollment',
-        version: consent.version || '1.4'
-      }
+
+    operation = await beginOperation({
+      req,
+      patient,
+      flow: 'M1_BIOMETRIC_ENROLMENT',
+      action: `BIOMETRIC_ENROL_${method.toUpperCase()}`,
+      requestSummary: { transactionId: transaction?.txnId, method, aadhaarLast4: cleanDigits(req.body.aadhaarNumber).slice(-4) },
+      consentEvidenceHash: operationSha256(JSON.stringify(consent || {}))
     });
+    if (operation.$idempotent && operation.status === 'COMPLETED') {
+      return res.json({ success: true, idempotent: true, operationId: operation.operationId, abha: safeAbha(patient) });
+    }
+    assertSafeIdempotentReplay(operation);
+    await beforeExternal(operation);
+    let data;
+    try {
+      data = await abdmPost('/v3/enrollment/enrol/byAadhaar', {
+        authData,
+        consent: { code: consent.code || 'abha-enrollment', version: consent.version || '1.4' }
+      });
+      await externalAccepted(operation, data, { txnId: data.txnId || transaction?.txnId });
+      accepted = true;
+    } catch (error) {
+      await externalFailed(operation, error);
+      throw error;
+    }
     const saved = await saveVerifiedProfile({ patient, profile: extractProfile(data), tokens: extractTokens(data), method: `ABDM_${method.toUpperCase()}_ENROLMENT`, userId: req.user._id });
     if (transaction) await markCompleted(transaction);
-    return res.json({ success: true, message: data.message, abha: safeAbha(saved) });
+    await localCommitted(operation, { patientId: saved._id, identityTransactionId: transaction?._id });
+    await completeOperation(operation, { abhaStatus: saved.abha?.status });
+    return res.json({ success: true, operationId: operation.operationId, message: data.message, abha: safeAbha(saved) });
   } catch (error) {
-    if (transaction) await recordAttempt(transaction, error).catch(() => { });
-    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+    if (accepted && operation) {
+      await requireReconciliation(operation, 'ABDM biometric enrolment returned success but local verified-profile commit did not complete', error);
+    } else if (transaction) {
+      await recordAttempt(transaction, error).catch(() => {});
+    }
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, operationId: operation?.operationId, error: error.message, details: error.details });
   }
 };
 
@@ -1863,7 +2133,8 @@ exports.getEhrBundle = async (req, res) => {
         error: 'EHR bundle not found'
       });
     }
-    await ensurePatient(bundle.patientId, req.user);
+    const patient = await ensurePatient(bundle.patientId, req.user);
+    await assertPatientAccess({ user: req.user, patientId: patient._id, hospitalId: patient.hospitalId, purpose: 'TREATMENT', scope: 'clinical_read' });
     return res.json({ success: true, ehrBundle: bundle });
   } catch (error) {
     return res.status(error.statusCode || 500).json({

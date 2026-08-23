@@ -2,6 +2,7 @@
 
 const express = require('express');
 const c = require('../controllers/clinicalOrderSet.controller');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 
 const router = express.Router();
 
@@ -16,6 +17,6 @@ router.put('/:id', c.update);
 router.post('/:id/apply', c.apply);
 
 // Patient orders
-router.get('/patient/:patientId/orders', c.patientOrders);
+router.get('/patient/:patientId/orders', requirePatientAccess({ patientParam: 'patientId', purpose: 'TREATMENT', scope: 'clinical_read' }), c.patientOrders);
 
 module.exports = router;

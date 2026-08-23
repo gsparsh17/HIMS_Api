@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const Hospital = require('../models/Hospital');
 const SupportTicketOutbox = require('../models/SupportTicketOutbox');
 const { platformRequest } = require('../services/platformClient.service');
+const { sanitizeFreeText } = require('../utils/sensitiveData');
 
 const clean = (value, max = 5000) => String(value || '').trim().slice(0, max);
 
@@ -32,10 +33,20 @@ async function sendOutbox(row) {
 
 exports.submitSupportTicket = async (req, res) => {
   try {
-    const subject = clean(req.body.subject, 180);
+    const subjectDlp = sanitizeFreeText(clean(req.body.subject, 180), { mode: 'support', max: 180 });
+    const messageDlp = sanitizeFreeText(clean(req.body.message, 8000), { mode: 'support', max: 8000 });
+    if (subjectDlp.rejected || messageDlp.rejected) {
+      return res.status(400).json({
+        success: false,
+        code: 'SUPPORT_SENSITIVE_SECRET_REJECTED',
+        error: 'Do not include OTPs, passwords, access tokens or API secrets in support tickets.',
+        findings: Array.from(new Set([...(subjectDlp.rejectFindings || []), ...(messageDlp.rejectFindings || [])]))
+      });
+    }
+    const subject = subjectDlp.value;
     const category = clean(req.body.category, 80) || 'General';
     const priority = normalizePriority(req.body.priority);
-    const message = clean(req.body.message, 8000);
+    const message = messageDlp.value;
     const contactPhone = clean(req.body.contactPhone, 30);
     if (!subject || !message) return res.status(400).json({ error: 'Subject and query details are required' });
 
@@ -50,6 +61,7 @@ exports.submitSupportTicket = async (req, res) => {
       priority,
       subject,
       message,
+      dlpFindings: Array.from(new Set([...(subjectDlp.findings || []), ...(messageDlp.findings || [])])),
       submittedBy: {
         userId: String(req.user?._id || ''),
         name: req.user?.name || 'Hospital Admin',

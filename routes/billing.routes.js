@@ -9,6 +9,7 @@ const {
   requireAnyActionPermission
 } = require('../middlewares/auth');
 const { blockLegacyIpdDirectBilling } = require('../middlewares/legacyFinanceGuard');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 
 const viewBilling = requireModuleAccess('billing_finance', 'view');
 const manageBilling = requireModuleAccess('billing_finance', 'manage');
@@ -17,7 +18,7 @@ router.use(protect);
 
 // Patient-first dashboard routes must be declared before /:id.
 router.get('/patients/summary', viewBilling, billingController.getPatientBillingSummaries);
-router.get('/patients/:patientId/details', viewBilling, billingController.getPatientBillingDetails);
+router.get('/patients/:patientId/details', viewBilling, requirePatientAccess({ patientParam: 'patientId', purpose: 'PAYMENT', scope: 'demographic_read' }), billingController.getPatientBillingDetails);
 
 // Direct financial document creation is restricted to finance managers. Clinical
 // modules should create operational requests/charges through their own services.

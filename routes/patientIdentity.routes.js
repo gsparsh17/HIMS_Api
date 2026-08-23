@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const controller = require('../controllers/patientIdentity.controller');
+const { requirePatientAccess } = require('../middlewares/patientAccess');
 const { protect, authorize } = require('../middlewares/auth');
 const { tempDir } = require('../config/upload.config');
 
@@ -26,12 +27,12 @@ const capturers = authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 
 
 router.use(protect);
 router.post('/digilocker/verify', capturers, controller.verifyDigiLocker);
-router.get('/patients/:patientId/assets', readers, controller.listPatientAssets);
-router.post('/patients/:patientId/assets/upload', capturers, upload.single('asset'), controller.uploadAsset);
-router.post('/patients/:patientId/assets/capture', capturers, controller.captureAsset);
-router.post('/patients/:patientId/scanned-documents/capture', capturers, controller.captureScannedDocument);
-router.get('/patients/:patientId/scanned-documents', capturers, controller.listScannedDocuments);
-router.put('/patients/:patientId/assets/:assetId/default', capturers, controller.setDefault);
+router.get('/patients/:patientId/assets', readers, requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_read' }), controller.listPatientAssets);
+router.post('/patients/:patientId/assets/upload', capturers, requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_write' }), upload.single('asset'), controller.uploadAsset);
+router.post('/patients/:patientId/assets/capture', capturers, requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_write' }), controller.captureAsset);
+router.post('/patients/:patientId/scanned-documents/capture', capturers, requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_write' }), controller.captureScannedDocument);
+router.get('/patients/:patientId/scanned-documents', capturers, requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_read' }), controller.listScannedDocuments);
+router.put('/patients/:patientId/assets/:assetId/default', capturers, requirePatientAccess({ patientParam: 'patientId', purpose: 'AUTO', scope: 'demographic_write' }), controller.setDefault);
 router.delete('/assets/:assetId', capturers, controller.revokeAsset);
 router.get('/assets/:assetId/content', readers, controller.streamAsset);
 

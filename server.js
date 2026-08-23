@@ -59,6 +59,8 @@ const startServer = async () => {
     if (abdmConfig.isHospital && (abdmConfig.featureM2 || abdmConfig.featureM3)) {
       const { startAbdmHospitalJobWorker } = require('./jobs/abdmHospitalJobWorker');
       startAbdmHospitalJobWorker();
+      const { startAbdmOperationReconciliationJob } = require('./jobs/abdmOperationReconciliationJob');
+      startAbdmOperationReconciliationJob();
     }
 
     if (abdmConfig.isHospital) {

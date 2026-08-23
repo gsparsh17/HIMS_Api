@@ -4,8 +4,16 @@ function exchangeEligibility(patient) {
     patient?.abha?.identityReconciliation?.status || 'NOT_CHECKED'
   ).toUpperCase();
   const hasIdentity = Boolean(patient?.abha?.number || patient?.abha?.address);
+  const blockedLifecycle = new Set(['LOCAL_ASSOCIATION_RETIRED', 'DEACTIVATED', 'DELETED', 'ABHA_DEACTIVATED', 'ABHA_DELETED']);
+  if (blockedLifecycle.has(status)) {
+    return {
+      eligible: false,
+      code: 'ABHA_IDENTITY_INACTIVE',
+      reason: 'The local ABHA association is retired, deactivated, or deleted and cannot be used for new exchange'
+    };
+  }
 
-  if (status !== 'VERIFIED' || !patient?.abha?.kycVerified || !hasIdentity) {
+  if (!['VERIFIED', 'VERIFIED_ACTIVE', 'ACTIVE'].includes(status) || !patient?.abha?.kycVerified || !hasIdentity) {
     return {
       eligible: false,
       code: 'ABHA_NOT_VERIFIED',

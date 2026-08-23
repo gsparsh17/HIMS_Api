@@ -19,6 +19,7 @@ const { requireHospitalId } = require('../services/tenantScope.service');
 const { transitionDocument, transitionError } = require('../services/workflowTransition.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const patientFileManifest = require('../services/patientFileManifest.service');
+const { assertPatientAccess, accessiblePatientIds } = require('../services/patientAccessPolicy.service');
 
 const ACTIVE_SCHEDULE_STATUSES = ['Scheduled', 'In Progress'];
 
@@ -149,6 +150,8 @@ exports.createCase = async (req, res, next) => {
     if (['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'].includes(admission.status)) return res.status(400).json({ error: `Cannot create OT case: IPD admission status is ${admission.status}` });
     const patientId = req.body.patientId || admission.patientId;
     if (String(patientId) !== String(admission.patientId)) return res.status(400).json({ error: 'Patient does not match admission' });
+    const accessDecision = await assertPatientAccess({ user: req.user, patientId, hospitalId, purpose: 'TREATMENT', scope: 'clinical_write' });
+    req.patientAccessDecision = accessDecision;
 
     const idempotencyKey = String(req.body.idempotencyKey || req.get('Idempotency-Key') || '').trim();
     if (idempotencyKey) {
@@ -235,6 +238,14 @@ exports.listCases = async (req, res, next) => {
     const filter = { hospitalId };
     for (const field of ['status', 'paymentStatus', 'admissionId', 'patientId', 'doctorId', 'urgency', 'otRoomId']) {
       if (req.query[field]) filter[field] = req.query[field];
+    }
+    const allowedPatientIds = await accessiblePatientIds(req.user, hospitalId, 'TREATMENT');
+    if (Array.isArray(allowedPatientIds)) {
+      if (filter.patientId && !allowedPatientIds.includes(String(filter.patientId))) {
+        filter.patientId = { $in: [] };
+      } else if (!filter.patientId) {
+        filter.patientId = { $in: allowedPatientIds };
+      }
     }
     if (req.query.startDate || req.query.endDate) {
       filter.requestedDate = semanticDateRange(req.query.startDate, req.query.endDate);

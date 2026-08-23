@@ -1,39 +1,8 @@
 const crypto = require('crypto');
 const AuditLog = require('../models/AuditLog');
 const { userHospitalId } = require('../utils/hospitalScope');
-
-const SENSITIVE_KEY_PATTERN = /(password|passcode|token|secret|authorization|cookie|otp|pin|api[_-]?key|refresh|access|aadhaar|aadhar|abha|mobile|phone|loginId|x-token)/i;
+const { cloneAndRedact, redactSensitiveText } = require('../utils/sensitiveData');
 const MAX_SERIALIZED_LENGTH = 8000;
-
-function cloneAndRedact(value, depth = 0) {
-  if (value === null || value === undefined) return value;
-  if (depth > 6) return '[MaxDepth]';
-
-  if (Buffer.isBuffer(value)) return `[Buffer:${value.length}]`;
-  if (value instanceof Date) return value.toISOString();
-
-  if (Array.isArray(value)) {
-    return value.slice(0, 100).map((item) => cloneAndRedact(item, depth + 1));
-  }
-
-  if (typeof value === 'object') {
-    const output = {};
-    Object.entries(value).slice(0, 100).forEach(([key, item]) => {
-      if (SENSITIVE_KEY_PATTERN.test(key)) {
-        output[key] = '[REDACTED]';
-      } else {
-        output[key] = cloneAndRedact(item, depth + 1);
-      }
-    });
-    return output;
-  }
-
-  if (typeof value === 'string' && value.length > 1000) {
-    return `${value.slice(0, 1000)}...[truncated]`;
-  }
-
-  return value;
-}
 
 function limitSize(value) {
   try {
@@ -116,7 +85,7 @@ function auditLogger(options = {}) {
           body: limitSize(cloneAndRedact(req.body || {})),
           headers,
           ip: getIp(req),
-          userAgent: req.headers['user-agent'],
+          userAgent: redactSensitiveText(req.headers['user-agent'] || ''),
         },
         response: {
           statusCode: res.statusCode,
@@ -124,8 +93,8 @@ function auditLogger(options = {}) {
           responseTimeMs: Date.now() - start,
         },
         resource: req.auditResource,
-        error: req.auditError,
-        metadata: req.auditMetadata,
+        error: cloneAndRedact(req.auditError),
+        metadata: cloneAndRedact(req.auditMetadata),
       };
 
       AuditLog.create(auditPayload).catch((error) => {

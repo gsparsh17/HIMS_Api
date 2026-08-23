@@ -16,6 +16,9 @@ const schema = new mongoose.Schema({
   lastStatus: String,
   lastExportJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'MISExportJob' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  authorizationSnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  authorizationRevokedAt: Date,
+  authorizationError: String
 }, { timestamps: true });
 module.exports = mongoose.model('MISSchedule', schema);

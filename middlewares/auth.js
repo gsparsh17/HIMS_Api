@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const User = require("../models/User");
 const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 const {
@@ -8,6 +9,7 @@ const {
   effectiveMainFeaturePermissions,
   hasFeatureAccess,
 } = require("../utils/mainFeatureAccess");
+const { hasPrivilegedAction } = require('../utils/privilegedActions');
 
 const ADMIN_ROLES = new Set(["admin", "mediqliq_super_admin"]);
 
@@ -76,7 +78,7 @@ async function authenticateRequest(req, { optional = false } = {}) {
   }
 
   const decoded = jwt.verify(token, process.env.JWT_SECRET);
-  const user = await User.findById(decoded.id).select("-password");
+  const user = await User.findById(decoded.id).select("-password +trustedDevices");
   if (!user) {
     const error = new Error("User not found");
     error.statusCode = 401;
@@ -87,11 +89,41 @@ async function authenticateRequest(req, { optional = false } = {}) {
     error.statusCode = 403;
     throw error;
   }
+  const tokenSecurityVersion = Number(decoded.securityVersion || 0);
+  const currentSecurityVersion = Number(user.securityVersion || 0);
+  if (tokenSecurityVersion !== currentSecurityVersion) {
+    const error = new Error('Session is no longer valid because account security permissions changed. Please sign in again.');
+    error.statusCode = 401;
+    error.code = 'SESSION_REVOKED';
+    throw error;
+  }
   user.$authClaims = decoded;
   return user;
 }
 
+function requestDeviceContext(req, user) {
+  const raw = String(req.headers?.['x-mediqliq-device-id'] || '').trim();
+  if (!raw) return { present: false, trusted: false };
+  const deviceIdHash = crypto.createHash('sha256').update(raw).digest('hex');
+  const devices = Array.isArray(user?.trustedDevices) ? user.trustedDevices : [];
+  const match = devices.find((device) => device?.deviceIdHash === deviceIdHash && !device?.revokedAt);
+  return {
+    present: true,
+    trusted: Boolean(match),
+    deviceIdHash,
+    hashPrefix: deviceIdHash.slice(0, 12),
+    label: match?.label || undefined,
+  };
+}
+
 function attachEffectivePermissions(req, user) {
+  const deviceContext = requestDeviceContext(req, user);
+  user.$locals = user.$locals || {};
+  user.$locals.requestDeviceContext = deviceContext;
+  // trusted device hashes are server-side policy material and are never returned
+  // as part of a normal authenticated user/session payload.
+  if (user._doc) delete user._doc.trustedDevices;
+  req.deviceContext = deviceContext;
   req.user = user;
   req.auth = user.$authClaims || {};
   user.$authClaims = undefined;
@@ -125,7 +157,7 @@ exports.verifyToken = async (req, res, next) => {
         : error.name === "JsonWebTokenError"
         ? "Invalid token"
         : error.message || "Token is not valid";
-    return res.status(error.statusCode || 401).json({ success: false, error: message });
+    return res.status(error.statusCode || 401).json({ success: false, error: message, ...(error.code ? { code: error.code } : {}) });
   }
 };
 
@@ -386,6 +418,49 @@ exports.requireAnyActionPermission = (actions = []) => {
       error: `One of these actions is required: ${expected.join(', ')}`
     });
   };
+};
+
+
+/**
+ * Privileged governance actions deliberately do NOT inherit the legacy
+ * unrestricted-admin bypass. A hospital admin must be explicitly granted the
+ * capability through the maker-checker security workflow.
+ */
+exports.requirePrivilegedAction = (action) => (req, res, next) => {
+  if (!req.user) return res.status(401).json({ success: false, error: 'User not authenticated' });
+  if (isPermissionCheckDisabled()) return next();
+  if (!hasPrivilegedAction(req.user, action)) {
+    return res.status(403).json({
+      success: false,
+      code: 'PRIVILEGED_ACTION_REQUIRED',
+      error: `Privileged action "${action}" is required`
+    });
+  }
+
+  // Step-up authentication for high-risk governance operations. Production
+  // defaults to enabled; staging may explicitly disable it during bootstrap.
+  const privilegedMfaDefault = String(process.env.NODE_ENV || '').toLowerCase() === 'production' ? 'true' : 'false';
+  const requireRecentMfa = String(process.env.PRIVILEGED_ACTION_REQUIRE_MFA || privilegedMfaDefault).toLowerCase() === 'true';
+  if (requireRecentMfa) {
+    if (!req.user?.mfa?.enabled) {
+      return res.status(403).json({
+        success: false,
+        code: 'PRIVILEGED_MFA_REQUIRED',
+        error: 'MFA must be enabled before privileged security actions can be used.'
+      });
+    }
+    const verifiedAt = Number(req.auth?.mfaVerifiedAt || 0);
+    const maxAgeMs = Number(process.env.PRIVILEGED_ACTION_MFA_MAX_AGE_MINUTES || 30) * 60 * 1000;
+    if (!verifiedAt || Date.now() - verifiedAt > maxAgeMs) {
+      return res.status(403).json({
+        success: false,
+        code: 'PRIVILEGED_RECENT_MFA_REQUIRED',
+        error: 'Recent MFA verification is required for privileged security actions. Sign in with MFA again.'
+      });
+    }
+  }
+
+  return next();
 };
 
 /**

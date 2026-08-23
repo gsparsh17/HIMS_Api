@@ -136,9 +136,24 @@ function ensurePermissionManagerActions(permissions, role) {
     permissions.push(row);
   }
   row.access = 'manage';
-  row.actions = Array.from(new Set([...(row.actions || []), 'user_access_manage']));
+  // user_access_manage is intentionally NOT auto-granted. It is a dual-control
+  // capability and must be granted through /api/security-access/privileged-access.
   row.updatedAt = new Date();
   return permissions;
+}
+
+function hasAction(permissions, action) {
+  return (permissions || []).some((row) => Array.isArray(row.actions) && row.actions.includes(action));
+}
+
+function assertNoDirectSensitiveGrant(existingPermissions, nextPermissions) {
+  const action = 'user_access_manage';
+  if (hasAction(existingPermissions, action) !== hasAction(nextPermissions, action)) {
+    const error = new Error(`${action} changes require maker-checker approval through the privileged access workflow`);
+    error.statusCode = 409;
+    error.code = 'DUAL_APPROVAL_REQUIRED';
+    throw error;
+  }
 }
 
 exports.getUsers = async (req, res) => {
@@ -210,6 +225,12 @@ exports.createUser = async (req, res) => {
     }
 
     const permissions = ensurePermissionManagerActions(normalizePermissions(modulePermissions, req.user._id), role);
+    if (hasAction(permissions, 'user_access_manage')) {
+      const error = new Error('user_access_manage cannot be granted during user creation; create the user first, then use the maker-checker privileged access workflow');
+      error.statusCode = 409;
+      error.code = 'DUAL_APPROVAL_REQUIRED';
+      throw error;
+    }
     await assertPermissionsWithinHospitalEntitlements(hospital_id || req.user.hospital_id, permissions);
 
     const user = await User.create({
@@ -243,7 +264,7 @@ exports.createUser = async (req, res) => {
       });
     }
 
-    const status = error?.name === 'ValidationError' ? 400 : 500;
+    const status = error.statusCode || (error?.name === 'ValidationError' ? 400 : 500);
 
     return res.status(status).json({
       success: false,
@@ -267,6 +288,14 @@ exports.updateUserPermissions = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'User not found'
+      });
+    }
+
+    if (String(user._id) === String(req.user._id)) {
+      return res.status(403).json({
+        success: false,
+        code: 'SELF_PRIVILEGE_CHANGE_DENIED',
+        message: 'You cannot change your own role, activation state, or delegated permissions. Use the privileged access workflow for sensitive capabilities.'
       });
     }
 
@@ -295,6 +324,7 @@ exports.updateUserPermissions = async (req, res) => {
     }
 
     const permissions = ensurePermissionManagerActions(normalizePermissions(modulePermissions, req.user._id), role || user.role);
+    assertNoDirectSensitiveGrant(user.modulePermissions || [], permissions);
     await assertPermissionsWithinHospitalEntitlements(user.hospital_id, permissions);
 
     if (role) {
@@ -309,6 +339,8 @@ exports.updateUserPermissions = async (req, res) => {
     // This endpoint represents an explicit administrator choice. Persist `none`
     // exactly as selected so future role presets cannot silently reopen access.
     user.enforceModulePermissions = true;
+    user.securityVersion = Number(user.securityVersion || 0) + 1;
+    user.sessionRevokedAt = new Date();
     await user.save();
 
     return res.json({
@@ -326,7 +358,8 @@ exports.updateUserPermissions = async (req, res) => {
   } catch (error) {
     return res.status(400).json({
       success: false,
-      message: error.message
+      message: error.message,
+      code: error.code
     });
   }
 };

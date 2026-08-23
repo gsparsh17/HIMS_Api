@@ -176,7 +176,7 @@ exports.bootstrapSuperAdmin = async (req, res) => {
         role: user.role,
         is_active: user.is_active,
       },
-      token: generateToken(user._id, user.role),
+      token: generateToken(user),
     });
   } catch (error) {
     req.auditError = { message: error.message };
@@ -211,7 +211,7 @@ exports.loginSuperAdmin = async (req, res) => {
         role: user.role,
         is_active: user.is_active,
       },
-      token: generateToken(user._id, user.role),
+      token: generateToken(user),
     });
   } catch (error) {
     req.auditError = { message: error.message };

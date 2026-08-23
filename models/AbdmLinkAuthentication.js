@@ -10,6 +10,7 @@ const abdmLinkAuthenticationSchema = new mongoose.Schema(
     },
     linkRefNumber: { type: String, required: true, index: true },
     transactionId: { type: String, index: true },
+    evidenceId: { type: String, index: true },
     patientId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Patient',
@@ -30,6 +31,14 @@ const abdmLinkAuthenticationSchema = new mongoose.Schema(
       index: true
     },
     verifiedAt: Date,
+    authorizationEvidence: {
+      authenticationType: String,
+      communicationMedium: String,
+      communicationHint: String,
+      communicationExpiry: Date,
+      selectedContextsHash: String,
+      requestId: String
+    },
     metadata: mongoose.Schema.Types.Mixed
   },
   { timestamps: true }

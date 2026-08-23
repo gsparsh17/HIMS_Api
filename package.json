@@ -36,7 +36,12 @@
     "data:recover:references:apply": "node scripts/recover-reference-profiles-2026-08-19.js --apply",
     "audit:hard-deletes": "node scripts/audit-hard-deletes-2026-08-19.js",
     "hims:migrate:opd-ipd-billing": "node scripts/migrate-opd-ipd-billing-integrity-2026-08-20.js",
-    "migrate:full-access-hospital": "node scripts/migrate-existing-hospital-full-access.js"
+    "migrate:full-access-hospital": "node scripts/migrate-existing-hospital-full-access.js",
+    "security:migrate": "node scripts/migrate-security-hardening-v1.js",
+    "security:migrate:apply": "node scripts/migrate-security-hardening-v1.js --apply",
+    "security:audit": "node scripts/migrate-security-hardening-v1.js",
+    "security:bootstrap": "node scripts/bootstrap-security-governance.js",
+    "security:bootstrap:apply": "node scripts/bootstrap-security-governance.js --apply"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",
