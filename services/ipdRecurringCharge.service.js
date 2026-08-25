@@ -11,6 +11,7 @@ const { replaceCoverageUtilization } = require('./coverageUtilization.service');
 const { resolveFinancialPolicy } = require('./financialPolicy.service');
 const { DAILY_TARIFF_CODES, resolveHospitalTariffRate, wardEntitlementFrom } = require('./hospitalTariff.service');
 const { userHospitalId, normalizeObjectId } = require('../utils/hospitalScope');
+const { loadIPDWorkflowPolicy } = require('./ipdWorkflowPolicy.service');
 
 // ============================================
 // Constants
@@ -372,7 +373,10 @@ async function ensureAdmissionDailyCharges(
     .sort({ startedAt: 1 })
     .lean();
 
-  const fallback = await dailyFallbacks(hospitalId);
+  const [fallback, workflowPolicy] = await Promise.all([
+    dailyFallbacks(hospitalId),
+    loadIPDWorkflowPolicy(hospitalId)
+  ]);
 
   const result = {
     admissionId: admission._id,
@@ -434,6 +438,15 @@ async function ensureAdmissionDailyCharges(
     };
 
     for (const kind of ['bed', 'nursing', 'rmo']) {
+      const enabled = kind === 'bed'
+        ? workflowPolicy.recurringCharges.bed
+        : kind === 'nursing'
+          ? workflowPolicy.recurringCharges.nursing
+          : workflowPolicy.recurringCharges.rmoDutyDoctor;
+      if (!enabled) {
+        result.skipped.push({ key, kind, reason: 'Disabled by IPD billing/discharge policy' });
+        continue;
+      }
       if (!Number.isFinite(rates[kind]) || rates[kind] <= 0) {
         result.skipped.push({
           key,

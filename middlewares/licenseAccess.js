@@ -75,6 +75,9 @@ const ROUTE_ENTITLEMENTS = [
   ['/mis', 'advanced_mis'],
   ['/mrd', 'reports'],
   ['/audit-logs', 'reports'],
+  // Financial/discharge policy is a core hospital setting even when the NABH
+  // product entitlement is not enabled. Keep the rest of /nabh gated normally.
+  ['/nabh/settings', 'masters_settings'],
   ['/nabh', 'nabh'],
   ['/operational-settings', 'masters_settings'],
   ['/admin/backups', 'masters_settings'],

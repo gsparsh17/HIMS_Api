@@ -57,6 +57,7 @@ const ALLOWED_ACTIONS = new Set([
   'ipd_discharge_write',
   'ipd_discharge_support',
   'ipd_discharge_override',
+  'ipd_final_discharge',
   'pharmacy_finance_access'
 ]);
 

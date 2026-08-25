@@ -1222,6 +1222,13 @@ exports.updateAdmissionStatus = async (req, res) => {
       return res.status(404).json({ error: 'Admission not found' });
     }
 
+    if (status === 'Discharged') {
+      return res.status(409).json({
+        error: 'Direct status transition to Discharged is disabled. Use the canonical Final Discharge action after all configured clearances are complete.',
+        code: 'FINAL_DISCHARGE_ENDPOINT_REQUIRED'
+      });
+    }
+
     const transitions = {
       'Admitted': ['Under Treatment', 'Discharge Initiated'],
       'Under Treatment': ['Discharge Initiated', 'Discharge Summary Pending'],
@@ -1229,7 +1236,7 @@ exports.updateAdmissionStatus = async (req, res) => {
       'Discharge Summary Pending': ['Billing Pending', 'Under Treatment'],
       'Billing Pending': ['Payment Pending', 'Discharge Summary Pending'],
       'Payment Pending': ['Ready for Discharge', 'Billing Pending'],
-      'Ready for Discharge': ['Discharged', 'Payment Pending'],
+      'Ready for Discharge': ['Payment Pending'],
       'Discharged': []
     };
 

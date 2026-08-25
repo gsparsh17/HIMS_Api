@@ -10,7 +10,7 @@ const FinancialTransaction = require('../models/FinancialTransaction');
 const Sale = require('../models/Sale');
 const { money, nextFinancialNumber } = require('../utils/financeNumbers');
 const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
-const { resolveFinancialPolicy } = require('./financialPolicy.service');
+const { resolveFinancialPolicy, loadFinancialPolicy } = require('./financialPolicy.service');
 const { activatePackageEpisode, recordPackageUtilization, reversePackageUtilization } = require('./packageAdjudication.service');
 const { activeCoverage } = require('./coverage.service');
 const { replaceCoverageUtilization, reverseCoverageUtilization } = require('./coverageUtilization.service');
@@ -20,6 +20,8 @@ const Hospital = require('../models/Hospital');
 const { userHospitalId } = require('../utils/hospitalScope');
 const { syncChargesInvoiced } = require('./sourceBillingSync.service');
 const { ensureAdmissionDailyCharges } = require('./ipdRecurringCharge.service');
+const { loadIPDWorkflowPolicy, stageBefore } = require('./ipdWorkflowPolicy.service');
+const { _hasActionPermission } = require('../middlewares/auth');
 
 const ACTIVE_CHARGE_FILTER = {
   $or: [
@@ -64,6 +66,37 @@ function assertAmount(value, label = 'Amount') {
 }
 
 
+
+
+async function assertSettlementDiscountPolicy({ hospitalId, user, baseAmount, discountAmount, reason }) {
+  const amount = money(discountAmount || 0);
+  if (amount <= 0) return;
+  const policy = await loadFinancialPolicy(hospitalId);
+  const discount = policy.discount || {};
+  const override = _hasActionPermission(user, 'discount_override');
+  if (discount.enabled === false) {
+    const error = new Error('Discounts are disabled by hospital financial policy'); error.statusCode = 409; throw error;
+  }
+  if (!_hasActionPermission(user, 'billing_apply_discount') && !override) {
+    const error = new Error('Final settlement discount requires billing_apply_discount permission'); error.statusCode = 403; throw error;
+  }
+  const role = String(user?.role || '').toLowerCase();
+  const hospitalMax = Math.max(0, Math.min(100, Number(discount.maxPercentage ?? 0)));
+  const roleMax = ['accountant', 'finance', 'finance_staff', 'insurance_desk'].includes(role)
+    ? Math.max(0, Math.min(hospitalMax, Number(discount.financeMaxPercentage ?? hospitalMax)))
+    : Math.max(0, Math.min(hospitalMax, Number(discount.registrarMaxPercentage ?? hospitalMax)));
+  const percent = Number(baseAmount || 0) > 0 ? money(amount / Number(baseAmount) * 100) : 100;
+  if (!override && percent > roleMax + 0.0001) {
+    const error = new Error(`Final settlement discount exceeds the permitted ${roleMax}% ceiling`); error.statusCode = 409; error.code = 'DISCOUNT_ABOVE_ALLOWED_RANGE'; throw error;
+  }
+  const maxFixed = Number(discount.maxFixedAmount || 0);
+  if (!override && maxFixed > 0 && amount > maxFixed + 0.01) {
+    const error = new Error(`Final settlement discount exceeds the configured ₹${money(maxFixed)} fixed ceiling`); error.statusCode = 409; error.code = 'DISCOUNT_ABOVE_ALLOWED_RANGE'; throw error;
+  }
+  if (!String(reason || '').trim()) {
+    const error = new Error('Final settlement discount reason is required'); error.statusCode = 400; throw error;
+  }
+}
 
 function escapeRegex(value = '') {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -274,11 +307,12 @@ function hospitalIdFor(admission, user) {
   return admission?.hospitalId || user?.hospital_id || undefined;
 }
 
+const PHARMACY_CONTROLLED_INVOICE_TYPES = ['Pharmacy', 'Medicine Return', 'Pharmacy Advance Credit'];
+
 function invoiceFilterForAdmission(admissionId) {
-  // An admission may have legacy procedure/lab/radiology/pharmacy invoices as
-  // well as new IPD Interim/Final invoices. Use admission_id as the source of
-  // truth, then exclude non-revenue and reversed documents. Restricting this
-  // to only IPD Interim/Final hides genuine legacy dues during clearance.
+  // All issued patient-facing documents linked to the admission. This is used
+  // for display/audit only; IPD settlement uses ipdCollectibleInvoiceFilterForAdmission
+  // so Pharmacy documents can never be collected twice by Billing.
   return {
     admission_id: admissionId,
     is_deleted: { $ne: true },
@@ -286,6 +320,25 @@ function invoiceFilterForAdmission(admissionId) {
     invoice_type: { $nin: ['Purchase', 'Credit Note'] },
     document_stage: { $ne: 'VOID' }
   };
+}
+
+function ipdCollectibleInvoiceFilterForAdmission(admissionId) {
+  return {
+    admission_id: admissionId,
+    is_deleted: { $ne: true },
+    status: { $nin: ['Cancelled', 'Refunded'] },
+    invoice_type: { $nin: ['Purchase', 'Credit Note', ...PHARMACY_CONTROLLED_INVOICE_TYPES] },
+    is_pharmacy_sale: { $ne: true },
+    document_stage: { $ne: 'VOID' }
+  };
+}
+
+function isPharmacyControlledInvoice(invoice) {
+  if (!invoice) return false;
+  return Boolean(
+    invoice.is_pharmacy_sale === true ||
+    PHARMACY_CONTROLLED_INVOICE_TYPES.includes(String(invoice.invoice_type || ''))
+  );
 }
 
 async function runFinancialTransaction(work) {
@@ -386,6 +439,11 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
 
   const invoices = await Invoice.find(invoiceFilter, null, sessionOptions(session))
     .sort({ issue_date: 1, created_at: 1 });
+  const pharmacyInvoices = invoices.filter(isPharmacyControlledInvoice);
+  const ipdInvoices = invoices.filter((invoice) => !isPharmacyControlledInvoice(invoice));
+  const ipdCharges = charges.filter((charge) => String(charge.sourceModule || '') !== 'Pharmacy');
+  const pharmacyMirrorCharges = charges.filter((charge) => String(charge.sourceModule || '') === 'Pharmacy');
+  const ipdUnbilledCharges = unbilledCharges.filter((charge) => String(charge.sourceModule || '') !== 'Pharmacy');
 
   const sponsorLedger = await SponsorLedgerEntry.find(
     { hospitalId, admissionId },
@@ -397,6 +455,7 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   const totalStandardAmount = money(
     charges.reduce((sum, charge) => sum + Number(charge.pricingSnapshot?.amounts?.hospitalStandard ?? charge.amount ?? 0), 0)
   );
+  const ipdChargeAmount = sumCharges(ipdCharges);
 
   const patientLiabilityTotal = money(
     charges.reduce((sum, charge) => sum + Number(charge.patientLiability ?? charge.pricingSnapshot?.amounts?.patientLiability ?? charge.netAmount ?? 0), 0)
@@ -405,34 +464,44 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   const sponsorLiabilityTotal = money(
     charges.reduce((sum, charge) => sum + Number(charge.sponsorLiability ?? charge.pricingSnapshot?.amounts?.sponsorLiability ?? 0), 0)
   );
+  const ipdPatientLiabilityTotal = money(
+    ipdCharges.reduce((sum, charge) => sum + Number(charge.patientLiability ?? charge.pricingSnapshot?.amounts?.patientLiability ?? charge.netAmount ?? 0), 0)
+  );
+  const ipdSponsorLiabilityTotal = money(
+    ipdCharges.reduce((sum, charge) => sum + Number(charge.sponsorLiability ?? charge.pricingSnapshot?.amounts?.sponsorLiability ?? 0), 0)
+  );
 
   const nonAdmissibleAmount = money(
     charges.reduce((sum, charge) => sum + Number(charge.nonAdmissibleAmount ?? charge.pricingSnapshot?.amounts?.nonAdmissible ?? 0), 0)
   );
 
-  const unbilledTotal = sumCharges(unbilledCharges);
+  const allUnbilledTotal = sumCharges(unbilledCharges);
+  const unbilledTotal = sumCharges(ipdUnbilledCharges);
   const unbilledPatientLiability = money(
-    unbilledCharges.reduce((sum, charge) => sum + Number(charge.patientLiability ?? charge.netAmount ?? 0), 0)
+    ipdUnbilledCharges.reduce((sum, charge) => sum + Number(charge.patientLiability ?? charge.netAmount ?? 0), 0)
   );
 
   const unbilledSponsorLiability = money(
-    unbilledCharges.reduce((sum, charge) => sum + Number(charge.sponsorLiability ?? 0), 0)
+    ipdUnbilledCharges.reduce((sum, charge) => sum + Number(charge.sponsorLiability ?? 0), 0)
   );
 
   const invoicedGross = money(
-    invoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0)
+    ipdInvoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0)
   );
 
   const creditNotes = money(
-    invoices.reduce((sum, invoice) => sum + Number(invoice.credit_note_total || 0), 0)
+    ipdInvoices.reduce((sum, invoice) => sum + Number(invoice.credit_note_total || 0), 0)
   );
 
   const invoicePaid = money(
-    invoices.reduce((sum, invoice) => sum + Number(invoice.amount_paid || 0), 0)
+    ipdInvoices.reduce((sum, invoice) => sum + Number(invoice.amount_paid || 0), 0)
   );
 
   const invoiceOutstanding = money(
-    invoices.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0)
+    ipdInvoices.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0)
+  );
+  const pharmacyInvoiceOutstanding = money(
+    pharmacyInvoices.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0)
   );
 
   const ledgerDebits = money(
@@ -450,11 +519,11 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   );
 
   const sponsorReceivable = money(
-    Math.max(0, Math.max(sponsorLiabilityTotal, ledgerDebits) - ledgerCredits)
+    Math.max(0, Math.max(ipdSponsorLiabilityTotal, ledgerDebits) - ledgerCredits)
   );
 
   const patientReceivable = money(
-    Math.max(0, patientLiabilityTotal - invoicePaid)
+    Math.max(0, ipdPatientLiabilityTotal - invoicePaid)
   );
 
   const overallDue = patientReceivable;
@@ -474,21 +543,31 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   return {
     admission,
     charges,
+    ipdCharges,
+    pharmacyMirrorCharges,
     unbilledCharges,
+    ipdUnbilledCharges,
     invoices,
+    ipdInvoices,
+    pharmacyInvoices,
     sponsorLedger,
     totalChargeAmount,
+    ipdChargeAmount,
     totalStandardAmount,
     patientLiabilityTotal,
+    ipdPatientLiabilityTotal,
     sponsorLiabilityTotal,
+    ipdSponsorLiabilityTotal,
     nonAdmissibleAmount,
     unbilledTotal,
+    allUnbilledTotal,
     unbilledPatientLiability,
     unbilledSponsorLiability,
     invoicedGross,
     creditNotes,
     invoicePaid,
     invoiceOutstanding,
+    pharmacyInvoiceOutstanding,
     patientReceivable,
     sponsorReceivable,
     sponsorPaid,
@@ -576,13 +655,14 @@ async function getRunningBill(admissionId, user) {
     .limit(100)
     .lean();
 
-  const unbilledChargesByDate = snapshot.unbilledCharges.reduce((result, charge) => {
+  const unbilledChargesByDate = snapshot.ipdUnbilledCharges.reduce((result, charge) => {
     const key = dateKey(charge.chargeDate);
     (result[key] ||= []).push(charge);
     return result;
   }, {});
 
-  const billedCharges = snapshot.charges.filter((charge) => charge.isBilled);
+  const billedCharges = snapshot.ipdCharges.filter((charge) => charge.isBilled);
+  const pharmacyMirrorCharges = snapshot.pharmacyMirrorCharges;
 
   return {
     success: true,
@@ -595,8 +675,10 @@ async function getRunningBill(admissionId, user) {
       financialClearanceStatus: admission.financialClearanceStatus,
       totalBillAmount: snapshot.totalChargeAmount,
       standardAmount: snapshot.totalStandardAmount,
-      patientLiability: snapshot.patientLiabilityTotal,
-      sponsorLiability: snapshot.sponsorLiabilityTotal,
+      patientLiability: snapshot.ipdPatientLiabilityTotal,
+      sponsorLiability: snapshot.ipdSponsorLiabilityTotal,
+      totalPatientLiabilityIncludingPharmacy: snapshot.patientLiabilityTotal,
+      totalSponsorLiabilityIncludingPharmacy: snapshot.sponsorLiabilityTotal,
       patientReceivable: snapshot.patientReceivable,
       sponsorReceivable: snapshot.sponsorReceivable,
       paidAmount: snapshot.invoicePaid,
@@ -618,28 +700,41 @@ async function getRunningBill(admissionId, user) {
       bedId: admission.bedId
     },
     patient: admission.patientId,
-    unbilledCharges: snapshot.unbilledCharges,
+    unbilledCharges: snapshot.ipdUnbilledCharges,
     unbilledChargesByDate,
-    unbilledSummary: groupChargeSummary(snapshot.unbilledCharges),
+    unbilledSummary: groupChargeSummary(snapshot.ipdUnbilledCharges),
     billedCharges,
+    pharmacyMirrorCharges,
+    pharmacyMirrorSummary: groupChargeSummary(pharmacyMirrorCharges),
     billedSummary: {
       total: sumCharges(billedCharges),
       count: billedCharges.length
     },
-    invoices: snapshot.invoices,
+    invoices: snapshot.ipdInvoices,
+    pharmacyInvoices: snapshot.pharmacyInvoices,
+    allInvoices: snapshot.invoices,
     receipts,
     advanceLedger,
     sponsorLedger: snapshot.sponsorLedger,
     financialSummary: {
-      totalChargeAmount: snapshot.totalChargeAmount,
+      // Billing workspace totals are IPD-controlled only. Pharmacy remains a
+      // separate collectible ledger and is exposed alongside for audit/display.
+      totalChargeAmount: snapshot.ipdChargeAmount,
+      totalEncounterChargeAmount: snapshot.totalChargeAmount,
+      pharmacyMirrorChargeAmount: sumCharges(snapshot.pharmacyMirrorCharges),
       standardAmount: snapshot.totalStandardAmount,
-      patientLiability: snapshot.patientLiabilityTotal,
-      sponsorLiability: snapshot.sponsorLiabilityTotal,
+      patientLiability: snapshot.ipdPatientLiabilityTotal,
+      sponsorLiability: snapshot.ipdSponsorLiabilityTotal,
+      totalPatientLiabilityIncludingPharmacy: snapshot.patientLiabilityTotal,
+      totalSponsorLiabilityIncludingPharmacy: snapshot.sponsorLiabilityTotal,
       nonAdmissibleAmount: snapshot.nonAdmissibleAmount,
       patientReceivable: snapshot.patientReceivable,
       sponsorReceivable: snapshot.sponsorReceivable,
       sponsorPaidAmount: snapshot.sponsorPaid,
       paidAmount: snapshot.invoicePaid,
+      invoiceOutstanding: snapshot.invoiceOutstanding,
+      unbilledTotal: snapshot.unbilledTotal,
+      pharmacyInvoiceOutstanding: snapshot.pharmacyInvoiceOutstanding,
       advanceAvailable: snapshot.advanceAvailable
     }
   };
@@ -970,11 +1065,13 @@ async function applyDiscount(admissionId, payload, user) {
     throw error;
   }
 
-  if (!payload.discountReason?.trim()) {
-    const error = new Error('Discount reason is required');
-    error.statusCode = 400;
-    throw error;
-  }
+  await assertSettlementDiscountPolicy({
+    hospitalId: admission.hospitalId,
+    user,
+    baseAmount: money(chargeable - existingDiscount),
+    discountAmount,
+    reason: payload.discountReason
+  });
 
   const discountCharge = await IPDCharge.create({
     hospitalId: hospitalIdFor(admission, user),
@@ -1073,7 +1170,7 @@ async function previewIPDInvoice(admissionId, payload = {}, user) {
   await ensureAdmissionDailyCharges(admissionId, payload.throughDate || operationNow(), user);
   const admission = await findAdmission(admissionId, null, user);
   const requested = Array.isArray(payload.chargeIds) ? [...new Set(payload.chargeIds.map(String))] : [];
-  const filter = { hospitalId: admission.hospitalId, admissionId, ...UNBILLED_CHARGE_FILTER };
+  const filter = { hospitalId: admission.hospitalId, admissionId, sourceModule: { $ne: 'Pharmacy' }, ...UNBILLED_CHARGE_FILTER };
   if (requested.length) filter._id = { $in: requested };
   const charges = await IPDCharge.find(filter).sort({ chargeDate: 1, createdAt: 1 }).lean();
   if (requested.length && charges.length !== requested.length) {
@@ -1101,18 +1198,33 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
     }
 
     const requestedChargeIds = Array.isArray(payload.chargeIds) ? payload.chargeIds.filter(Boolean) : [];
+    if (invoiceKind === 'IPD Final') {
+      const workflowPolicy = await loadIPDWorkflowPolicy(admission.hospitalId);
+      if (
+        workflowPolicy.requirePharmacyClearance &&
+        stageBefore(workflowPolicy, 'PHARMACY_CLEARANCE', 'IPD_FINAL_INVOICE') &&
+        !['cleared', 'exempted'].includes(String(admission.pharmacyClearanceStatus || 'pending'))
+      ) {
+        const error = new Error('Final IPD invoice is blocked until Pharmacy Final Clearance is completed or explicitly exempted by policy');
+        error.statusCode = 409;
+        error.code = 'PHARMACY_CLEARANCE_REQUIRED_BEFORE_FINAL_INVOICE';
+        throw error;
+      }
+      const existingFinal = await Invoice.findOne({ hospital_id: admission.hospitalId, admission_id: admission._id, $or: [{ invoice_type: 'IPD Final' }, { is_final_ipd_invoice: true }], document_stage: { $ne: 'VOID' } }, null, sessionOptions(session)).sort({ issue_date: -1, created_at: -1 });
+      if (existingFinal) return { invoice: existingFinal, bill: await Bill.findById(existingFinal.bill_id, null, sessionOptions(session)), alreadyExists: true };
+    }
     if (payload.invoiceKind === 'final' && requestedChargeIds.length) {
       const error = new Error('Final invoice cannot be limited to selected charges'); error.statusCode = 400; throw error;
     }
-    const chargeFilter = { hospitalId: admission.hospitalId, admissionId, ...UNBILLED_CHARGE_FILTER };
+    const chargeFilter = { hospitalId: admission.hospitalId, admissionId, sourceModule: { $ne: 'Pharmacy' }, ...UNBILLED_CHARGE_FILTER };
     if (requestedChargeIds.length) chargeFilter._id = { $in: requestedChargeIds };
     const charges = await IPDCharge.find(chargeFilter, null, sessionOptions(session)).sort({ chargeDate: 1, createdAt: 1 });
     if (requestedChargeIds.length && charges.length !== [...new Set(requestedChargeIds.map(String))].length) {
       const error = new Error('One or more selected charges are invalid, already invoiced, voided, or belong to another admission');
       error.statusCode = 409; error.code = 'INVALID_SELECTED_CHARGES'; throw error;
     }
-    if (!charges.length) {
-      const error = new Error('There are no unbilled active charges for this admission');
+    if (!charges.length && invoiceKind !== 'IPD Final') {
+      const error = new Error('There are no unbilled active non-pharmacy charges for this admission');
       error.statusCode = 409;
       throw error;
     }
@@ -1365,7 +1477,21 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
       if (existing.length) return { receiptNumber: existing[0].transactionNumber, transactions: existing, alreadyExists: true };
     }
 
-    let invoices = await Invoice.find({ ...invoiceFilterForAdmission(admissionId), hospital_id: admission.hospitalId }, null, sessionOptions(session))
+    if (payload.invoiceId) {
+      const requestedInvoice = await Invoice.findOne({
+        ...invoiceFilterForAdmission(admissionId),
+        hospital_id: admission.hospitalId,
+        _id: payload.invoiceId
+      }, null, sessionOptions(session));
+      if (requestedInvoice && isPharmacyControlledInvoice(requestedInvoice)) {
+        const error = new Error('Pharmacy invoices are controlled by the Pharmacy settlement/clearance workflow and cannot be collected by IPD Billing');
+        error.statusCode = 409;
+        error.code = 'PHARMACY_INVOICE_REQUIRES_PHARMACY_SETTLEMENT';
+        throw error;
+      }
+    }
+
+    let invoices = await Invoice.find({ ...ipdCollectibleInvoiceFilterForAdmission(admissionId), hospital_id: admission.hospitalId }, null, sessionOptions(session))
       .sort({ issue_date: 1, created_at: 1 });
     const selected = payload.invoiceId ? invoices.filter((invoice) => String(invoice._id) === String(payload.invoiceId)) : invoices;
     if (!selected.length) {
@@ -1375,6 +1501,13 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
     }
     const amountBeforeSettlement = money(selected.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0));
     const hospitalId = hospitalIdFor(admission, user);
+    await assertSettlementDiscountPolicy({
+      hospitalId,
+      user,
+      baseAmount: amountBeforeSettlement,
+      discountAmount: settlementDiscountAmount,
+      reason: payload.settlementDiscountReason || payload.adjustmentReason
+    });
     const receiptNumber = await nextFinancialNumber({ documentType: 'RECEIPT', hospitalId, session });
     const transactions = [];
 
@@ -1475,7 +1608,7 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
       transactions.push(discountTransaction);
     }
 
-    invoices = await Invoice.find({ ...invoiceFilterForAdmission(admissionId), hospital_id: admission.hospitalId }, null, sessionOptions(session))
+    invoices = await Invoice.find({ ...ipdCollectibleInvoiceFilterForAdmission(admissionId), hospital_id: admission.hospitalId }, null, sessionOptions(session))
       .sort({ issue_date: 1, created_at: 1 });
     const plan = allocationPlan(invoices, requestedAmount, payload);
     const advanceApplied = money(breakdown.filter((row) => row.method === 'IPDAdvance').reduce((sum, row) => sum + row.amount, 0));
@@ -2021,7 +2154,7 @@ async function getFinancialLedger(admissionId, user) {
   ]);
 
   const entries = [
-    ...snapshot.invoices.map((invoice) => ({
+    ...snapshot.ipdInvoices.map((invoice) => ({
       date: invoice.issue_date || invoice.created_at,
       kind: 'INVOICE',
       number: invoice.invoice_number,
@@ -2057,13 +2190,16 @@ async function getFinancialLedger(admissionId, user) {
     success: true,
     admission: snapshot.admission,
     totals: {
-      totalCharged: snapshot.totalChargeAmount,
+      totalCharged: snapshot.ipdChargeAmount,
+      totalEncounterCharged: snapshot.totalChargeAmount,
+      pharmacyMirrorCharged: sumCharges(snapshot.pharmacyMirrorCharges),
       invoiced: snapshot.invoicedGross,
       paid: snapshot.invoicePaid,
       due: snapshot.overallDue,
       advanceAvailable: snapshot.advanceAvailable
     },
-    invoices: snapshot.invoices,
+    invoices: snapshot.ipdInvoices,
+    pharmacyInvoices: snapshot.pharmacyInvoices,
     transactions,
     advanceLedger,
     entries
@@ -2074,64 +2210,138 @@ async function getFinancialClearance(admissionId, user) {
   await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
   const snapshot = await calculateAdmissionFinancials(admissionId, { user });
   const admission = snapshot.admission;
+  const workflowPolicy = await loadIPDWorkflowPolicy(admission.hospitalId);
 
-  const pendingPharmacySales = await Sale.find({
-    hospital_id: admission.hospitalId,
-    admission_id: admissionId,
-    balance_due: { $gt: 0 },
-    status: { $in: ['Pending', 'Partially Paid'] }
-  })
-    .select('sale_number balance_due total_amount payment_deferred include_in_discharge_clearance sale_date')
-    .lean();
+  const [pendingPharmacySales, hasPharmacyTransactions, pharmacyAdvanceRow, nonPharmacyUnbilled] = await Promise.all([
+    Sale.find({
+      hospitalId: admission.hospitalId,
+      admission_id: admissionId,
+      balance_due: { $gt: 0 },
+      status: { $in: ['Pending', 'Partially Paid', 'PartiallyReturned'] },
+      include_in_discharge_clearance: { $ne: false }
+    }).select('sale_number balance_due total_amount payment_deferred include_in_discharge_clearance sale_date').lean(),
+    Sale.exists({ hospitalId: admission.hospitalId, admission_id: admissionId, status: { $ne: 'Cancelled' } }),
+    PatientAdvanceLedger.findOne({ hospitalId: admission.hospitalId, admissionId, walletType: 'PHARMACY_IPD', status: 'POSTED' }).sort({ createdAt: -1 }).select('balanceAfter').lean(),
+    IPDCharge.find({ hospitalId: admission.hospitalId, admissionId, sourceModule: { $ne: 'Pharmacy' }, ...UNBILLED_CHARGE_FILTER }).select('netAmount').lean()
+  ]);
 
-  const pharmacyDue = money(
-    pendingPharmacySales.reduce((sum, sale) => sum + (Number(sale.balance_due) || 0), 0)
-  );
+  const pharmacyDue = money(pendingPharmacySales.reduce((sum, sale) => sum + (Number(sale.balance_due) || 0), 0));
+  const pharmacyAdvanceAvailable = money(pharmacyAdvanceRow?.balanceAfter || 0);
+  const explicitPharmacyClearance = ['cleared', 'exempted'].includes(admission.pharmacyClearanceStatus);
+  const noPharmacyActivity = !hasPharmacyTransactions && pharmacyAdvanceAvailable === 0;
+  const pharmacyAutoExemptEligible = workflowPolicy.autoExemptPharmacyWhenNoTransactions && noPharmacyActivity;
+  const pharmacyCleared = !workflowPolicy.requirePharmacyClearance || explicitPharmacyClearance || pharmacyAutoExemptEligible;
+  const finalInvoice = snapshot.ipdInvoices.find((invoice) => invoice.invoice_type === 'IPD Final' || invoice.is_final_ipd_invoice === true) || null;
+  const nonPharmacyUnbilledTotal = money(nonPharmacyUnbilled.reduce((sum, row) => sum + Number(row.netAmount || 0), 0));
 
-  const hasPharmacyTransactions = await Sale.exists({
-    hospital_id: admission.hospitalId,
-    admission_id: admissionId
-  });
+  const advanceAvailable = money(snapshot.advanceAvailable);
+  const disposition = admission.advanceClearanceDisposition || 'pending';
+  const advanceReconciled = !workflowPolicy.requireAdvanceReconciliation || advanceAvailable === 0 ||
+    workflowPolicy.unusedIpdAdvanceDisposition === 'ALLOW_RETAIN' ||
+    (workflowPolicy.unusedIpdAdvanceDisposition === 'REQUIRE_DECISION' && ['retain', 'carry_forward', 'refunded', 'none'].includes(disposition));
 
-  const pharmacyCleared = ['cleared', 'exempted'].includes(admission.pharmacyClearanceStatus) || pharmacyDue === 0;
-  const finalInvoice = snapshot.invoices.find((invoice) => invoice.invoice_type === 'IPD Final') || null;
-
+  const pharmacyMustPrecedeFinance = workflowPolicy.requirePharmacyClearance && stageBefore(workflowPolicy, 'PHARMACY_CLEARANCE', 'IPD_FINANCIAL_CLEARANCE');
   const checks = {
-    unbilledChargesResolved: snapshot.unbilledTotal === 0,
+    unbilledChargesResolved: nonPharmacyUnbilledTotal === 0,
     issuedInvoicesSettled: snapshot.invoiceOutstanding === 0,
     pharmacyClearance: pharmacyCleared && pharmacyDue === 0,
-    advanceReconciled: true,
-    finalInvoiceAvailable: Boolean(finalInvoice) || snapshot.unbilledTotal === 0,
+    advanceReconciled,
+    finalInvoiceAvailable: !workflowPolicy.requireFinalIPDInvoice || Boolean(finalInvoice),
     financialExceptionApproved: admission.financialClearanceStatus === 'exception_approved'
   };
 
-  const ready = (checks.unbilledChargesResolved && checks.issuedInvoicesSettled && checks.pharmacyClearance) ||
-    checks.financialExceptionApproved;
+  const prerequisitesReady = checks.unbilledChargesResolved &&
+    checks.issuedInvoicesSettled &&
+    checks.advanceReconciled &&
+    checks.finalInvoiceAvailable &&
+    (!pharmacyMustPrecedeFinance || checks.pharmacyClearance);
+  const ready = prerequisitesReady || checks.financialExceptionApproved;
+  const cleared = ['cleared', 'exception_approved'].includes(admission.financialClearanceStatus);
 
   return {
     success: true,
     ready,
+    cleared,
+    explicitClearanceStatus: admission.financialClearanceStatus,
     checks,
+    workflowPolicy,
+    pharmacyMustPrecedeFinance,
+    pharmacyAutoExemptEligible,
     summary: {
-      totalCharges: snapshot.totalChargeAmount,
-      unbilledCharges: snapshot.unbilledTotal,
+      totalCharges: snapshot.ipdChargeAmount,
+      totalEncounterCharges: snapshot.totalChargeAmount,
+      pharmacyMirrorCharges: sumCharges(snapshot.pharmacyMirrorCharges),
+      unbilledCharges: nonPharmacyUnbilledTotal,
+      allUnbilledIncludingPharmacy: snapshot.allUnbilledTotal,
       invoiceOutstanding: snapshot.invoiceOutstanding,
       dueAmount: snapshot.overallDue,
-      advanceAvailable: snapshot.advanceAvailable,
+      advanceAvailable,
+      advanceDisposition: disposition,
       pharmacyDue,
+      pharmacyAdvanceAvailable,
       finalInvoiceNumber: finalInvoice?.invoice_number || null
     },
     pendingPharmacySales,
-    invoices: snapshot.invoices
+    invoices: snapshot.ipdInvoices,
+    pharmacyInvoices: snapshot.pharmacyInvoices
   };
 }
-
 async function finaliseFinancialClearance(admissionId, payload = {}, user) {
+  let admissionForPolicy = await findAdmission(admissionId, null, user);
+  const workflowPolicy = await loadIPDWorkflowPolicy(admissionForPolicy.hospitalId);
+  if (workflowPolicy.autoExemptPharmacyWhenNoTransactions && admissionForPolicy.pharmacyClearanceStatus === 'pending') {
+    const [hasSale, pharmacyAdvance] = await Promise.all([
+      Sale.exists({ hospitalId: admissionForPolicy.hospitalId, admission_id: admissionId, status: { $ne: 'Cancelled' } }),
+      PatientAdvanceLedger.findOne({ hospitalId: admissionForPolicy.hospitalId, admissionId, walletType: 'PHARMACY_IPD', status: 'POSTED' }).sort({ createdAt: -1 }).select('balanceAfter').lean()
+    ]);
+    if (!hasSale && money(pharmacyAdvance?.balanceAfter || 0) === 0) {
+      admissionForPolicy.pharmacyClearanceStatus = 'exempted';
+      admissionForPolicy.pharmacyClearanceDate = operationNow();
+      admissionForPolicy.pharmacyFinalBalance = 0;
+      await admissionForPolicy.save();
+    }
+  }
+  const advanceDisposition = String(payload.unusedAdvanceDisposition || '').toLowerCase();
+  if (['retain', 'carry_forward'].includes(advanceDisposition)) {
+    admissionForPolicy.advanceClearanceDisposition = advanceDisposition;
+    admissionForPolicy.advanceClearanceDispositionAt = operationNow();
+    admissionForPolicy.advanceClearanceDispositionBy = user?._id;
+    admissionForPolicy.advanceClearanceDispositionNote = String(payload.advanceDispositionNote || payload.notes || '').trim();
+    await admissionForPolicy.save();
+  }
+  if (money(admissionForPolicy.advanceAmount || 0) === 0 && admissionForPolicy.advanceClearanceDisposition === 'pending') {
+    admissionForPolicy.advanceClearanceDisposition = 'none';
+    admissionForPolicy.advanceClearanceDispositionAt = operationNow();
+    admissionForPolicy.advanceClearanceDispositionBy = user?._id;
+    await admissionForPolicy.save();
+  }
   let clearance = await getFinancialClearance(admissionId, user);
   let issuedInvoice = null;
   let settlement = null;
 
-  if (clearance.summary.unbilledCharges > 0) {
+  if (
+    workflowPolicy.requireFinalIPDInvoice &&
+    !clearance.checks.finalInvoiceAvailable &&
+    workflowPolicy.requirePharmacyClearance &&
+    stageBefore(workflowPolicy, 'PHARMACY_CLEARANCE', 'IPD_FINAL_INVOICE') &&
+    !clearance.checks.pharmacyClearance
+  ) {
+    const error = new Error('Complete Pharmacy Final Clearance before issuing the Final IPD invoice');
+    error.statusCode = 409;
+    error.code = 'PHARMACY_CLEARANCE_REQUIRED_BEFORE_FINAL_INVOICE';
+    error.details = clearance;
+    throw error;
+  }
+
+  if (workflowPolicy.requireFinalIPDInvoice && !clearance.checks.finalInvoiceAvailable) {
+    const issued = await issueIPDInvoice(admissionId, {
+      invoiceKind: 'final',
+      notes: payload.notes || 'Final consolidated IPD invoice/statement',
+      idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:invoice` : undefined
+    }, user);
+    issuedInvoice = issued.invoice;
+    clearance = await getFinancialClearance(admissionId, user);
+  } else if (clearance.summary.unbilledCharges > 0) {
     const issued = await issueIPDInvoice(admissionId, {
       invoiceKind: 'final',
       notes: payload.notes,
@@ -2165,7 +2375,7 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
   const admission = await findAdmission(admissionId, null, user);
   const exceptionAllowed = Boolean(payload.allowException && user && ['admin', 'accountant', 'mediqliq_super_admin'].includes(user.role));
   if (!clearance.ready && !exceptionAllowed) {
-    const error = new Error('Financial clearance cannot be completed while IPD dues or pharmacy clearances remain');
+    const error = new Error('Financial clearance prerequisites are incomplete. Resolve the final invoice, IPD dues, advance disposition and any configured pharmacy prerequisite');
     error.statusCode = 409;
     error.details = clearance;
     throw error;

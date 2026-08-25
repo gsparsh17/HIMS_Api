@@ -1,5 +1,5 @@
 const express = require('express');
-const { protect, authorize, requireModuleAccess, requireActionPermission, requireAnyModuleAccess } = require('../middlewares/auth');
+const { protect, authorize, requireModuleAccess, requireActionPermission, requireAnyActionPermission, requireAnyModuleAccess } = require('../middlewares/auth');
 const finance = require('../controllers/finance.controller');
 const reconciliation = require('../controllers/reconciliation.controller');
 
@@ -38,14 +38,14 @@ router.get('/ipd/:admissionId/running-bill', finance.getRunningBill);
 router.get('/ipd/:admissionId/ledger', finance.getFinancialLedger);
 router.get('/ipd/:admissionId/clearance', finance.getFinancialClearance);
 
-router.post('/ipd/:admissionId/charges', requireModuleAccess('billing_finance', 'manage'), finance.addIPDCharge);
+router.post('/ipd/:admissionId/charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.addIPDCharge);
 router.patch('/ipd/:admissionId/charges/:chargeId/void', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('pricing_override'), finance.voidIPDCharge);
-router.post('/ipd/:admissionId/bed-charges', requireModuleAccess('billing_finance', 'manage'), finance.generateBedCharge);
-router.post('/ipd/:admissionId/discounts', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('pricing_override'), finance.applyIPDDiscount);
-router.post('/ipd/:admissionId/invoices', requireModuleAccess('billing_finance', 'manage'), finance.issueIPDInvoice);
-router.post('/ipd/:admissionId/payments', requireModuleAccess('billing_finance', 'manage'), finance.recordIPDPayment);
-router.post('/ipd/:admissionId/advances', requireModuleAccess('billing_finance', 'manage'), finance.recordIPDAdvance);
-router.post('/ipd/:admissionId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), finance.refundIPDAdvance);
+router.post('/ipd/:admissionId/bed-charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.generateBedCharge);
+router.post('/ipd/:admissionId/discounts', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['billing_apply_discount', 'discount_override']), finance.applyIPDDiscount);
+router.post('/ipd/:admissionId/invoices', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_finalize'), finance.issueIPDInvoice);
+router.post('/ipd/:admissionId/payments', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordIPDPayment);
+router.post('/ipd/:admissionId/advances', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordIPDAdvance);
+router.post('/ipd/:admissionId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['refund', 'settlement']), finance.refundIPDAdvance);
 router.post('/ipd/:admissionId/final-clearance', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('final_clearance'), finance.finaliseIPDClearance);
 router.post('/invoices/:invoiceId/credit-notes', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('pricing_override'), finance.createCreditNote);
 router.post('/invoices/:invoiceId/refunds', requireModuleAccess('billing_finance', 'manage'), finance.refundInvoice);

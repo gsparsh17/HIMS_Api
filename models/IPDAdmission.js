@@ -269,6 +269,14 @@ const ipdAdmissionSchema = new mongoose.Schema({
   advanceReceivedAmount: { type: Number, default: 0, min: 0 },
   advanceUtilizedAmount: { type: Number, default: 0, min: 0 },
   advanceRefundedAmount: { type: Number, default: 0, min: 0 },
+  advanceClearanceDisposition: {
+    type: String,
+    enum: ['pending', 'retain', 'carry_forward', 'refunded', 'none'],
+    default: 'pending'
+  },
+  advanceClearanceDispositionAt: Date,
+  advanceClearanceDispositionBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  advanceClearanceDispositionNote: { type: String, trim: true },
   invoicedAmount: { type: Number, default: 0, min: 0 },
   financialClearanceStatus: {
     type: String,
@@ -286,6 +294,8 @@ const ipdAdmissionSchema = new mongoose.Schema({
   financialClearedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   finalInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   finalSettlementReceiptNumber: { type: String, trim: true },
+  finalDischargedAt: Date,
+  finalDischargedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
   abdmRecordLink: {
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },

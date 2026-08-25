@@ -22,6 +22,8 @@ const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const IPDAdmission = require('../models/IPDAdmission');
 const MedicineBatch = require('../models/MedicineBatch');
 const InventoryLedger = require('../models/InventoryLedger');
+const HospitalPharmacySetting = require('../models/HospitalPharmacySetting');
+const { postReturnAdjustment, syncSaleDocuments, markSaleMirrorsExternallySettled, syncPatientPharmacyOutstanding } = require('./pharmacyIpdFinancialSync.service');
 const {
   createAdvanceLedgerEntry,
   getAdvanceBalance,
@@ -80,6 +82,21 @@ function assertHospitalScope(req, record) {
     error.status = 403;
     throw error;
   }
+}
+
+
+async function loadPharmacyPolicy({ hospitalId, pharmacyId, session }) {
+  const filter = { hospitalId };
+  const scoped = pharmacyId
+    ? await queryWithSession(HospitalPharmacySetting.findOne({ ...filter, pharmacyId }), session)
+    : null;
+  const row = scoped || await queryWithSession(HospitalPharmacySetting.findOne(filter).sort({ pharmacyId: 1 }), session);
+  return {
+    ipdAdvanceMode: row?.ipdAdvanceMode || 'HYBRID',
+    defaultIpdBillingMode: row?.defaultIpdBillingMode || 'DEDUCT_FROM_ADVANCE',
+    allowCashRefundOnReturn: row?.allowCashRefundOnReturn !== false,
+    requireReturnApproval: row?.requireReturnApproval === true
+  };
 }
 
 function lineQuantity(item) {
@@ -221,8 +238,13 @@ async function buildReturnPreview({ saleId, items, req, session }) {
   const admission = await assertOrdinaryReturnAllowed({ sale, req, session });
   const { rows, total } = buildAuthoritativeReturnRows(sale, items);
   const allocation = calculateReturnAllocation(sale, total);
+  const pharmacyPolicy = await loadPharmacyPolicy({
+    hospitalId: sale.hospitalId,
+    pharmacyId: sale.pharmacy_id,
+    session,
+  });
 
-  return { sale, admission, rows, returnValue: total, allocation };
+  return { sale, admission, rows, returnValue: total, allocation, pharmacyPolicy };
 }
 
 async function restockAcceptedRows({ rows, sale, returnRecord, createdBy, session }) {
@@ -364,6 +386,68 @@ async function postReturnLedger({ sale, returnRecord, allocation, refundMode, cr
   if (entries.length) await PharmacyLedgerEntry.create(entries, { session });
 }
 
+function assertRefundModeAllowed({ allocation, requestedRefundMode, pharmacyPolicy }) {
+  const refundMode = allocation.refundableResidual > MONEY_EPSILON
+    ? String(requestedRefundMode || '').trim()
+    : 'NoRefund';
+
+  if (allocation.refundableResidual > MONEY_EPSILON && !REFUND_METHODS.has(refundMode)) {
+    const error = new Error('Choose a valid refund method only for the paid/refundable residual.');
+    error.status = 400;
+    throw error;
+  }
+  if (allocation.refundableResidual > MONEY_EPSILON && CASH_REFUND_METHODS.has(refundMode) && !pharmacyPolicy.allowCashRefundOnReturn) {
+    const error = new Error('Cash/bank refund on medicine return is disabled by Pharmacy Settings. Restore the refundable residual to Pharmacy Advance or IPD Advance.');
+    error.status = 409;
+    throw error;
+  }
+  if (refundMode === 'PharmacyAdvance' && pharmacyPolicy.ipdAdvanceMode === 'SHARED_IPD_ADVANCE') {
+    const error = new Error('Separate Pharmacy Advance is disabled by Pharmacy Settings. Use the shared IPD Advance wallet.');
+    error.status = 409;
+    throw error;
+  }
+  if (refundMode === 'IPDAdvance' && pharmacyPolicy.ipdAdvanceMode === 'PHARMACY_SEPARATE_ADVANCE') {
+    const error = new Error('Shared IPD Advance is disabled for pharmacy by Pharmacy Settings. Use Pharmacy Advance.');
+    error.status = 409;
+    throw error;
+  }
+  return refundMode;
+}
+
+async function applyCompletedReturn({
+  sale,
+  admission,
+  rows,
+  returnValue,
+  allocation,
+  refundMode,
+  returnRecord,
+  createdBy,
+  transactionGroupId,
+  idempotencyKey,
+  session,
+}) {
+  await restockAcceptedRows({ rows, sale, returnRecord, createdBy, session });
+  setSaleAfterReturn({ sale, returnRecord, total: returnValue, allocation });
+  await sale.save({ session });
+  await postReturnLedger({ sale, returnRecord, allocation, refundMode, createdBy, transactionGroupId, idempotencyKey, session });
+  await postReturnAdjustment({ sale, returnRecord, returnValue, createdBy, session });
+  await syncSaleDocuments({ sale, returnRecord, session });
+  await syncPatientPharmacyOutstanding({ sale, session });
+
+  const walletAfter = sale.patient_id
+    ? await getAdvanceBalance({ patientId: sale.patient_id, admissionId: sale.admission_id, walletType: 'PHARMACY_IPD', session })
+    : 0;
+  returnRecord.patientOutstandingAfter = allocation.dueAfter;
+  returnRecord.pharmacyAdvanceAfter = walletAfter;
+  await returnRecord.save({ session });
+
+  if (admission && admission.pharmacyClearanceStatus === 'in_progress') {
+    admission.pharmacyFinalBalance = allocation.dueAfter;
+    await admission.save({ session });
+  }
+}
+
 async function completeAuthoritativeReturn({ payload, req }) {
   const idempotencyKey = String(req.headers?.['idempotency-key'] || payload.idempotencyKey || '').trim();
   if (!idempotencyKey) {
@@ -386,16 +470,13 @@ async function completeAuthoritativeReturn({ payload, req }) {
       }
 
       const preview = await buildReturnPreview({ saleId: requestedSaleId, items: payload.items, req, session });
-      const { sale, admission, rows, returnValue, allocation } = preview;
+      const { sale, admission, rows, returnValue, allocation, pharmacyPolicy } = preview;
 
-      const requestedRefundMode = String(payload.refundMode || payload.refund_mode || 'NoRefund');
-      const refundMode = allocation.refundableResidual > MONEY_EPSILON ? requestedRefundMode : 'NoRefund';
-
-      if (allocation.refundableResidual > MONEY_EPSILON && !REFUND_METHODS.has(refundMode)) {
-        const error = new Error('Choose a valid refund method only for the paid/refundable residual.');
-        error.status = 400;
-        throw error;
-      }
+      const refundMode = assertRefundModeAllowed({
+        allocation,
+        requestedRefundMode: payload.refundMode || payload.refund_mode || 'NoRefund',
+        pharmacyPolicy,
+      });
 
       const transactionGroupId = newBusinessGroup(payload.transactionGroupId || idempotencyKey);
       const [returnRecord] = await PharmacyReturn.create([{
@@ -415,7 +496,7 @@ async function completeAuthoritativeReturn({ payload, req }) {
         dueAfter: allocation.dueAfter,
         refundMode,
         refundReference: payload.refundReference || payload.refund_reference || '',
-        status: 'Completed',
+        status: pharmacyPolicy.requireReturnApproval ? 'PendingApproval' : 'Completed',
         notes: payload.notes || '',
         createdBy,
         transactionGroupId,
@@ -424,30 +505,138 @@ async function completeAuthoritativeReturn({ payload, req }) {
         presentationType: allocation.refundableResidual > MONEY_EPSILON ? 'RETURN_WITH_REFUND' : 'RETURN_APPLIED_TO_OUTSTANDING',
       }], { session });
 
-      await restockAcceptedRows({ rows, sale, returnRecord, createdBy, session });
-      setSaleAfterReturn({ sale, returnRecord, total: returnValue, allocation });
-      await sale.save({ session });
-      await postReturnLedger({ sale, returnRecord, allocation, refundMode, createdBy, transactionGroupId, idempotencyKey, session });
-
-      const walletAfter = sale.patient_id
-        ? await getAdvanceBalance({ patientId: sale.patient_id, admissionId: sale.admission_id, walletType: 'PHARMACY_IPD', session })
-        : 0;
-      returnRecord.patientOutstandingAfter = allocation.dueAfter;
-      returnRecord.pharmacyAdvanceAfter = walletAfter;
-      await returnRecord.save({ session });
-
-      if (admission && admission.pharmacyClearanceStatus === 'in_progress') {
-        admission.pharmacyFinalBalance = allocation.dueAfter;
-        await admission.save({ session });
+      if (!pharmacyPolicy.requireReturnApproval) {
+        await applyCompletedReturn({
+          sale,
+          admission,
+          rows,
+          returnValue,
+          allocation,
+          refundMode,
+          returnRecord,
+          createdBy,
+          transactionGroupId,
+          idempotencyKey,
+          session,
+        });
       }
 
-      result = { idempotent: false, returnRecord, allocation, transactionGroupId };
+      result = {
+        idempotent: false,
+        pendingApproval: pharmacyPolicy.requireReturnApproval,
+        returnRecord,
+        allocation,
+        transactionGroupId,
+      };
     });
 
     return result;
   } finally {
     session.endSession();
   }
+}
+
+async function approvePendingReturn({ returnId, payload = {}, req }) {
+  const createdBy = getRequestUserId(req);
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      const returnRecord = await PharmacyReturn.findById(asObjectId(returnId, 'returnId')).session(session);
+      if (!returnRecord) {
+        const error = new Error('Medicine return request was not found.');
+        error.status = 404;
+        throw error;
+      }
+      assertHospitalScope(req, returnRecord);
+
+      if (returnRecord.status === 'Completed') {
+        result = { idempotent: true, returnRecord };
+        return;
+      }
+      if (returnRecord.status === 'Rejected') {
+        const error = new Error('Rejected medicine return requests cannot be approved.');
+        error.status = 409;
+        throw error;
+      }
+
+      const requestedRows = (returnRecord.items || []).map((row) => ({
+        saleItemId: row.saleItemId,
+        medicineId: row.medicineId,
+        batchId: row.batchId,
+        returnedQtyBaseUnits: row.returnedQtyBaseUnits,
+        condition: row.condition,
+        restock: row.restock,
+      }));
+      const preview = await buildReturnPreview({
+        saleId: returnRecord.originalSaleId,
+        items: requestedRows,
+        req,
+        session,
+      });
+      const { sale, admission, rows, returnValue, allocation, pharmacyPolicy } = preview;
+      const refundMode = assertRefundModeAllowed({
+        allocation,
+        requestedRefundMode: payload.refundMode || returnRecord.refundMode || 'NoRefund',
+        pharmacyPolicy,
+      });
+
+      returnRecord.items = rows;
+      returnRecord.totalRefundAmount = returnValue;
+      returnRecord.dueBefore = allocation.dueBefore;
+      returnRecord.outstandingReduction = allocation.outstandingReduction;
+      returnRecord.refundableResidual = allocation.refundableResidual;
+      returnRecord.dueAfter = allocation.dueAfter;
+      returnRecord.refundMode = refundMode;
+      returnRecord.refundReference = payload.refundReference || returnRecord.refundReference || '';
+      returnRecord.status = 'Completed';
+      returnRecord.approvedBy = createdBy;
+      returnRecord.approvedAt = operationNow();
+
+      const transactionGroupId = returnRecord.transactionGroupId || newBusinessGroup(returnRecord.idempotencyKey);
+      const idempotencyKey = returnRecord.idempotencyKey || `approved-return:${returnRecord._id}`;
+      await applyCompletedReturn({
+        sale,
+        admission,
+        rows,
+        returnValue,
+        allocation,
+        refundMode,
+        returnRecord,
+        createdBy,
+        transactionGroupId,
+        idempotencyKey,
+        session,
+      });
+
+      result = { idempotent: false, returnRecord, allocation, transactionGroupId };
+    });
+    return result;
+  } finally {
+    session.endSession();
+  }
+}
+
+async function rejectPendingReturn({ returnId, reason, req }) {
+  const returnRecord = await PharmacyReturn.findById(asObjectId(returnId, 'returnId'));
+  if (!returnRecord) {
+    const error = new Error('Medicine return request was not found.');
+    error.status = 404;
+    throw error;
+  }
+  assertHospitalScope(req, returnRecord);
+  if (returnRecord.status === 'Completed') {
+    const error = new Error('A completed medicine return cannot be rejected.');
+    error.status = 409;
+    throw error;
+  }
+  if (returnRecord.status === 'Rejected') return { idempotent: true, returnRecord };
+  returnRecord.status = 'Rejected';
+  returnRecord.rejectedBy = getRequestUserId(req);
+  returnRecord.rejectedAt = operationNow();
+  returnRecord.rejectionReason = String(reason || '').trim() || 'Rejected by pharmacy approver';
+  await returnRecord.save();
+  return { idempotent: false, returnRecord };
 }
 
 /**
@@ -487,11 +676,20 @@ function normalizeClearanceRequest(snapshot, payload = {}) {
     pharmacyAdvanceAvailable: snapshot.pharmacyAdvance,
     ipdAdvanceAvailable: snapshot.ipdAdvance,
     pharmacyAdvanceApplied: payload.pharmacyAdvanceApplied === undefined
-      ? Math.min(snapshot.pharmacyAdvance, snapshot.outstanding)
+      ? Number(snapshot.suggestedSettlement?.pharmacyAdvanceApplied || 0)
       : payload.pharmacyAdvanceApplied,
-    ipdAdvanceApplied: payload.ipdAdvanceApplied || 0,
+    ipdAdvanceApplied: payload.ipdAdvanceApplied === undefined
+      ? Number(snapshot.suggestedSettlement?.ipdAdvanceApplied || 0)
+      : payload.ipdAdvanceApplied,
     paymentTotal,
   });
+
+  if (snapshot.pharmacyPolicy?.ipdAdvanceMode === 'SHARED_IPD_ADVANCE' && amounts.pharmacyAdvanceApplied > MONEY_EPSILON) {
+    const error = new Error('Pharmacy Advance application is disabled by Pharmacy Settings.'); error.status = 409; throw error;
+  }
+  if (snapshot.pharmacyPolicy?.ipdAdvanceMode === 'PHARMACY_SEPARATE_ADVANCE' && amounts.ipdAdvanceApplied > MONEY_EPSILON) {
+    const error = new Error('Shared IPD Advance application is disabled for pharmacy by Pharmacy Settings.'); error.status = 409; throw error;
+  }
 
   const unusedAdvanceDisposition = amounts.unusedPharmacyAdvance > MONEY_EPSILON
     ? String(payload.unusedPharmacyAdvanceDisposition || 'refund').toLowerCase()
@@ -509,6 +707,11 @@ function normalizeClearanceRequest(snapshot, payload = {}) {
       ? amounts.unusedPharmacyAdvance
       : money(payload.refundAmount ?? payload.refund?.amount);
     const reference = String(payload.refundReference || payload.refund?.reference || '').trim();
+    if (snapshot.pharmacyPolicy?.allowCashRefundOnReturn === false) {
+      const error = new Error('Cash/bank refund of unused Pharmacy Advance is disabled by Pharmacy Settings. Choose retain.');
+      error.status = 409;
+      throw error;
+    }
     if (!CASH_REFUND_METHODS.has(method)) {
       const error = new Error('Choose Cash, UPI, Card, Bank or Net Banking for the unused Pharmacy Advance refund.');
       error.status = 400;
@@ -598,7 +801,7 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
       status: { $ne: 'Cancelled' },
       include_in_discharge_clearance: { $ne: false },
     })
-      .select('sale_number sale_date total_amount net_amount_after_returns amount_paid refunded_amount balance_due return_amount payment_deferred payments updatedAt discharge_settlement_id status transactionGroupId pharmacy_id'),
+      .select('hospitalId sale_number sale_date total_amount net_amount_after_returns amount_paid refunded_amount balance_due return_amount payment_deferred payments updatedAt discharge_settlement_id status transactionGroupId pharmacy_id invoice_id bill_id invoice_number patient_id admission_id'),
     session
   );
 
@@ -613,11 +816,22 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
     getAdvanceBalance({ patientId: admission.patientId, admissionId: admission._id, walletType: 'IPD_SHARED', session }),
   ]);
 
+  const pharmacyPolicy = await loadPharmacyPolicy({ hospitalId: admission.hospitalId, pharmacyId: sales[0]?.pharmacy_id, session });
+
   const outstanding = money(sales.reduce((sum, sale) => sum + Number(sale.balance_due || 0), 0));
   const returnValue = money(sales.reduce((sum, sale) => sum + Number(sale.return_amount || 0), 0));
   const paidRetained = money(sales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0));
-  const defaultPharmacyAdvanceApplied = money(Math.min(outstanding, Number(pharmacyAdvance || 0)));
-  const defaultCashToCollect = money(outstanding - defaultPharmacyAdvanceApplied);
+  const canUsePharmacyAdvance = pharmacyPolicy.ipdAdvanceMode !== 'SHARED_IPD_ADVANCE';
+  const canUseIpdAdvance = pharmacyPolicy.ipdAdvanceMode !== 'PHARMACY_SEPARATE_ADVANCE';
+  const autoUseAdvance = pharmacyPolicy.defaultIpdBillingMode !== 'COLLECT_AT_COUNTER';
+  const defaultPharmacyAdvanceApplied = autoUseAdvance && canUsePharmacyAdvance
+    ? money(Math.min(outstanding, Number(pharmacyAdvance || 0)))
+    : 0;
+  const afterPharmacyWallet = money(outstanding - defaultPharmacyAdvanceApplied);
+  const defaultIpdAdvanceApplied = autoUseAdvance && canUseIpdAdvance
+    ? money(Math.min(afterPharmacyWallet, Number(ipdAdvance || 0)))
+    : 0;
+  const defaultCashToCollect = money(afterPharmacyWallet - defaultIpdAdvanceApplied);
   const projectedUnusedPharmacyAdvance = money(Number(pharmacyAdvance || 0) - defaultPharmacyAdvanceApplied);
 
   const sourceVersionPayload = {
@@ -643,9 +857,11 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
     ipdAdvance: money(ipdAdvance),
     suggestedSettlement: {
       pharmacyAdvanceApplied: defaultPharmacyAdvanceApplied,
+      ipdAdvanceApplied: defaultIpdAdvanceApplied,
       cashToCollect: defaultCashToCollect,
       unusedPharmacyAdvanceAfterApplication: projectedUnusedPharmacyAdvance,
     },
+    pharmacyPolicy,
     sourceVersion,
     generatedAt: new Date(),
   };
@@ -863,6 +1079,8 @@ async function completeFinalClearance({ admissionId, payload, req }) {
         { $set: { discharge_settlement_id: settlement._id, discharged_settled_at: operationNow() } },
         { session }
       );
+      await markSaleMirrorsExternallySettled({ sales: snapshot.sales, settlementId: settlement._id, session });
+      if (snapshot.sales[0]) await syncPatientPharmacyOutstanding({ sale: snapshot.sales[0], session });
 
       const finalPharmacyAdvance = await getAdvanceBalance({
         patientId: snapshot.admission.patientId,
@@ -935,6 +1153,8 @@ module.exports = {
   calculateReturnAllocation,
   buildReturnPreview,
   completeAuthoritativeReturn,
+  approvePendingReturn,
+  rejectPendingReturn,
   getClearanceSnapshot,
   normalizeClearanceRequest,
   buildSaleAllocationPlan,
