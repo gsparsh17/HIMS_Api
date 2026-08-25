@@ -1223,10 +1223,12 @@ exports.createReturn = asyncHandler(async (req, res) => {
 });
 
 exports.getReturns = asyncHandler(async (req, res) => {
-  const { admissionId, patientId, startDate, endDate, limit = 50 } = req.query;
-  const query = {};
+  const { admissionId, patientId, originalSaleId, startDate, endDate, limit = 50 } = req.query;
+  const hospitalId = getHospitalId(req);
+  const query = hospitalId ? { hospitalId } : {};
   if (admissionId) query.admissionId = admissionId;
   if (patientId) query.patientId = patientId;
+  if (originalSaleId) query.originalSaleId = originalSaleId;
   if (startDate || endDate) {
     const range = semanticDateRange(startDate, endDate);
     query.$or = [

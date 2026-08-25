@@ -2039,7 +2039,8 @@ exports.downloadInvoicePDF = async (req, res) => {
     const { id } = req.params;
 
     const invoice = await Invoice.findOne(invoiceScope(req, { _id: id }))
-      .populate('patient_id', 'first_name last_name phone address')
+      .populate('patient_id', 'first_name last_name phone address patientId uhid')
+      .populate('hospital_id', 'hospitalName name address city state pinCode contact phone email gst gst_number gstNumber licenseNumber license_number')
       .populate('appointment_id', 'appointment_date type')
       .populate('prescription_id', 'prescription_number diagnosis')
       .populate('procedure_items.performed_by', 'firstName lastName')
@@ -2060,7 +2061,7 @@ exports.downloadInvoicePDF = async (req, res) => {
 
     doc.pipe(res);
 
-    addHeader(doc);
+    addHeader(doc, invoice);
     addInvoiceDetails(doc, invoice);
     addCustomerDetails(doc, invoice);
 
@@ -2087,14 +2088,25 @@ exports.downloadInvoicePDF = async (req, res) => {
 };
 
 // PDF Helper Functions
-function addHeader(doc) {
-  doc.fontSize(20).font('Helvetica-Bold').text('MEDICAL CENTER', { align: 'center' });
-  doc.fontSize(12).font('Helvetica').text('Tax Invoice/Bill of Supply', { align: 'center' });
+function addHeader(doc, invoice) {
+  const snapshot = invoice?.hospital_snapshot || {};
+  const hospital = invoice?.hospital_id && typeof invoice.hospital_id === 'object' ? invoice.hospital_id : {};
+  const hospitalName = snapshot.hospitalName || snapshot.name || hospital.hospitalName || hospital.name || 'Hospital';
+  const address = [snapshot.address || hospital.address, snapshot.city || hospital.city, snapshot.state || hospital.state, snapshot.pinCode || hospital.pinCode].filter(Boolean).join(', ');
+  const contact = [snapshot.phone || snapshot.contact || hospital.phone || hospital.contact, snapshot.email || hospital.email].filter(Boolean).join(' | ');
+  const registrations = [
+    snapshot.gstNumber || snapshot.gst || snapshot.gstin || hospital.gstNumber || hospital.gst_number || hospital.gst ? `GSTIN: ${snapshot.gstNumber || snapshot.gst || snapshot.gstin || hospital.gstNumber || hospital.gst_number || hospital.gst}` : null,
+    snapshot.licenseNumber || snapshot.license_number || hospital.licenseNumber || hospital.license_number ? `License No: ${snapshot.licenseNumber || snapshot.license_number || hospital.licenseNumber || hospital.license_number}` : null
+  ].filter(Boolean).join(' | ');
+
+  doc.fontSize(20).font('Helvetica-Bold').text(hospitalName, { align: 'center' });
+  doc.fontSize(12).font('Helvetica').text('Tax Invoice / Bill of Supply', { align: 'center' });
+  doc.moveDown(0.4);
+  if (address) doc.fontSize(9).text(address, { align: 'center' });
+  if (contact) doc.fontSize(9).text(contact, { align: 'center' });
+  if (registrations) doc.fontSize(9).text(registrations, { align: 'center' });
   doc.moveDown(0.5);
-  doc.fontSize(10).text('123 Medical Street, Healthcare City', { align: 'center' });
-  doc.text('Phone: +91-9876543210 | Email: info@medicalcenter.com', { align: 'center' });
-  doc.text('GSTIN: 27AAAAA0000A1Z5 | License No: MH/2023/12345', { align: 'center' });
-  doc.moveTo(50, 130).lineTo(550, 130).stroke();
+  doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
   doc.moveDown(1);
 }
 
@@ -2360,67 +2372,59 @@ function addServiceItemsTable(doc, invoice) {
 }
 
 function addFooter(doc, invoice) {
-  const footerY = 650;
-  const summaryX = 400;
-  doc.fontSize(10).font('Helvetica');
+  const n = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+  const lineDiscount = n(invoice.line_discount_total);
+  const billDiscount = n(invoice.bill_discount_total);
+  const legacyDiscount = n(invoice.discount);
+  const baseDiscount = lineDiscount || billDiscount ? lineDiscount + billDiscount : legacyDiscount;
+  const settlementDiscount = n(invoice.settlement_discount_amount);
+  const creditNotes = n(invoice.credit_note_total);
+  const rounding = n(invoice.rounding_adjustment);
+  const subtotal = n(invoice.subtotal ?? invoice.gross_amount);
+  const tax = n(invoice.tax ?? invoice.tax_amount);
+  const total = n(invoice.total ?? invoice.total_amount ?? (subtotal - baseDiscount + tax + rounding));
+  const paid = n(invoice.amount_paid ?? invoice.paid_amount);
+  const due = n(invoice.balance_due ?? Math.max(0, total - paid - settlementDiscount - creditNotes));
+  const advanceApplied = n(invoice.advance_applied);
+  const payer = invoice.payer_allocation || {};
 
-  doc.text('Subtotal:', summaryX, footerY, { align: 'right' });
-  doc.text(`₹${invoice.subtotal.toFixed(2)}`, 550, footerY, { align: 'right' });
+  if (doc.y > 610) doc.addPage();
+  const left = 305;
+  const valueX = 455;
+  let y = Math.max(doc.y + 16, 520);
+  const row = (label, amount, options = {}) => {
+    doc.fontSize(options.bold ? 10.5 : 9.5).font(options.bold ? 'Helvetica-Bold' : 'Helvetica');
+    doc.text(label, left, y, { width: 140, align: 'right' });
+    doc.text(`${options.negative ? '- ' : ''}₹${Math.abs(n(amount)).toFixed(2)}`, valueX, y, { width: 90, align: 'right' });
+    y += 15;
+  };
 
-  if (invoice.tax > 0) {
-    doc.text('Tax:', summaryX, footerY + 15, { align: 'right' });
-    doc.text(`₹${invoice.tax.toFixed(2)}`, 550, footerY + 15, { align: 'right' });
+  row('Gross / Subtotal:', subtotal);
+  if (baseDiscount > 0) row('Bill / Line Discount:', baseDiscount, { negative: true });
+  if (tax !== 0) row('Tax / GST:', tax);
+  if (rounding !== 0) row('Rounding Adjustment:', rounding);
+  row('Net Invoice Amount:', total, { bold: true });
+  if (settlementDiscount > 0) row('Final Settlement Discount:', settlementDiscount, { negative: true });
+  if (creditNotes > 0) row('Credit Notes / Adjustments:', creditNotes, { negative: true });
+  if (advanceApplied > 0) row('Advance Applied:', advanceApplied);
+  row('Amount Paid / Settled:', paid);
+  row('Balance Due:', due, { bold: true });
+
+  if (n(payer.standard_amount) || n(payer.contracted_amount) || n(payer.sponsor_liability)) {
+    y += 5;
+    row('Hospital Standard:', payer.standard_amount);
+    row('Contracted Amount:', payer.contracted_amount);
+    row('Sponsor Part:', payer.sponsor_liability);
+    row('Patient Part:', payer.patient_liability);
+    if (n(payer.non_admissible_amount) > 0) row('Non-admissible:', payer.non_admissible_amount);
+    if (n(payer.contractual_adjustment) > 0) row('Contract Adjustment:', payer.contractual_adjustment);
+    if (n(payer.hospital_concession) > 0) row('Hospital Concession:', payer.hospital_concession);
+    if (n(payer.package_absorbed) > 0) row('Package Absorbed:', payer.package_absorbed);
   }
 
-  if (invoice.discount > 0) {
-    doc.text('Discount:', summaryX, footerY + 30, { align: 'right' });
-    doc.text(`-₹${invoice.discount.toFixed(2)}`, 550, footerY + 30, { align: 'right' });
-  }
-
-  doc.fontSize(11).font('Helvetica-Bold');
-  doc.text('Total:', summaryX, footerY + 45, { align: 'right' });
-  doc.text(`₹${invoice.total.toFixed(2)}`, 550, footerY + 45, { align: 'right' });
-
-  doc.fontSize(10).font('Helvetica');
-  doc.text(`Amount Paid: ₹${invoice.amount_paid.toFixed(2)}`, summaryX, footerY + 65, { align: 'right' });
-  doc.text(`Balance Due: ₹${invoice.balance_due.toFixed(2)}`, summaryX, footerY + 80, { align: 'right' });
-
-  const statusColors = { 'Paid': '#10B981', 'Partial': '#3B82F6', 'Pending': '#EF4444', 'Overdue': '#DC2626' };
+  const statusColors = { Paid: '#10B981', Partial: '#3B82F6', Pending: '#EF4444', Overdue: '#DC2626' };
   doc.fillColor(statusColors[invoice.status] || '#6B7280');
-  doc.text(`Status: ${invoice.status}`, 50, footerY + 80);
+  doc.fontSize(9).font('Helvetica-Bold').text(`Status: ${invoice.status || 'Issued'}`, 50, Math.min(y + 5, 760));
   doc.fillColor('#000000');
-
-  doc.fontSize(8).text('Thank you for choosing our services!', 50, 750, { align: 'center' });
-  doc.text('This is a computer generated invoice and does not require a physical signature.', 50, 765, { align: 'center' });
-  doc.text('For any queries, please contact our billing department.', 50, 780, { align: 'center' });
-
-  if (invoice.has_procedures) {
-    doc.moveDown(2);
-    doc.fontSize(9).text(`Procedures Status: ${invoice.procedures_status}`, 50, 800);
-    if (invoice.procedure_items && invoice.procedure_items.length > 0) {
-      const pendingCount = invoice.procedure_items.filter(p => p.status === 'Pending').length;
-      const completedCount = invoice.procedure_items.filter(p => p.status === 'Completed').length;
-      doc.text(`Pending: ${pendingCount} | Completed: ${completedCount} | Total: ${invoice.procedure_items.length}`, 50, 815);
-    }
-  }
-
-  if (invoice.has_lab_tests) {
-    doc.moveDown(2);
-    doc.fontSize(9).text(`Lab Tests Status: ${invoice.lab_tests_status}`, 50, 835);
-    if (invoice.lab_test_items && invoice.lab_test_items.length > 0) {
-      const pendingCount = invoice.lab_test_items.filter(t => t.status === 'Pending').length;
-      const completedCount = invoice.lab_test_items.filter(t => t.status === 'Completed').length;
-      doc.text(`Pending: ${pendingCount} | Completed: ${completedCount} | Total: ${invoice.lab_test_items.length}`, 50, 850);
-    }
-  }
-
-  if (invoice.has_radiology) {
-    doc.moveDown(2);
-    doc.fontSize(9).text(`Radiology Status: ${invoice.radiology_status}`, 50, 870);
-    if (invoice.radiology_items && invoice.radiology_items.length > 0) {
-      const pendingCount = invoice.radiology_items.filter(r => r.status === 'Pending' || r.status === 'Approved' || r.status === 'Scheduled').length;
-      const reportedCount = invoice.radiology_items.filter(r => r.status === 'Reported' || r.status === 'Completed').length;
-      doc.text(`Pending: ${pendingCount} | Reported: ${reportedCount} | Total: ${invoice.radiology_items.length}`, 50, 885);
-    }
-  }
+  doc.fontSize(8).font('Helvetica').text('This is a computer-generated financial document. Please retain it with payment / settlement receipts for the complete transaction trail.', 50, Math.min(y + 30, 790), { width: 495, align: 'center' });
 }

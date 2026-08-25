@@ -161,7 +161,34 @@ const nabhSettingSchema = new mongoose.Schema({
     },
     requireMedicationCompletion: { type: Boolean, default: true },
     requireSummaryFinalized: { type: Boolean, default: true },
-    requireFinancialClearance: { type: Boolean, default: true }
+    requireStaffCompletedSummary: { type: Boolean, default: true },
+    requirePharmacyClearance: { type: Boolean, default: true },
+    autoExemptPharmacyWhenNoTransactions: { type: Boolean, default: true },
+    requireFinalIPDInvoice: { type: Boolean, default: true },
+    requireAdvanceReconciliation: { type: Boolean, default: true },
+    requireFinancialClearance: { type: Boolean, default: true },
+    unusedIpdAdvanceDisposition: {
+      type: String,
+      enum: ['REQUIRE_DECISION', 'REQUIRE_REFUND', 'ALLOW_RETAIN'],
+      default: 'REQUIRE_DECISION'
+    },
+    clearanceOrder: {
+      type: [String],
+      enum: ['PHARMACY_CLEARANCE', 'IPD_FINAL_INVOICE', 'IPD_FINANCIAL_CLEARANCE', 'FINAL_DISCHARGE'],
+      default: ['PHARMACY_CLEARANCE', 'IPD_FINAL_INVOICE', 'IPD_FINANCIAL_CLEARANCE', 'FINAL_DISCHARGE']
+    },
+    doctorRoundCharging: {
+      mode: {
+        type: String,
+        enum: ['AUTO_PER_ROUND', 'ONCE_PER_DAY', 'MANUAL', 'DISABLED'],
+        default: 'AUTO_PER_ROUND'
+      }
+    },
+    recurringCharges: {
+      bed: { type: Boolean, default: true },
+      nursing: { type: Boolean, default: true },
+      rmoDutyDoctor: { type: Boolean, default: true }
+    }
   },
   notifications: {
     channels: {

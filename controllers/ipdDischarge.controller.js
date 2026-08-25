@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const mongoose = require('mongoose');
 // backend/controllers/ipdDischarge.controller.js
 const IPDAdmission = require('../models/IPDAdmission');
 const DischargeSummary = require('../models/DischargeSummary');
@@ -7,7 +8,6 @@ const IPDCharge = require('../models/IPDCharge');
 const Invoice = require('../models/Invoice');
 const Patient = require('../models/Patient');
 const Hospital = require('../models/Hospital');
-const NabhSetting = require('../models/NabhSetting');
 const LabReport = require('../models/LabReport');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDRound = require('../models/IPDRound');
@@ -19,6 +19,9 @@ const ProcedureRequest = require('../models/ProcedureRequest');
 const OTRequest = require('../models/OTRequest');
 const Prescription = require('../models/Prescription');
 const Sale = require('../models/Sale');
+const IPDAccommodationSegment = require('../models/IPDAccommodationSegment');
+const { appendDomainEvent } = require('../services/auditEvent.service');
+const { loadIPDWorkflowPolicy } = require('../services/ipdWorkflowPolicy.service');
 const financial = require('../services/ipdFinancial.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { buildAccommodationPrintData } = require('../services/ipdAccommodationPrint.service');
@@ -76,18 +79,7 @@ function classifyInvestigation(row, kind) {
 }
 
 async function loadDischargePolicy(hospitalId) {
-  const row = await NabhSetting.findOne({ hospitalId }).select('dischargePolicy').lean();
-  const policy = row?.dischargePolicy || {};
-  return {
-    pendingInvestigations: {
-      blockLab: policy.pendingInvestigations?.blockLab !== false,
-      blockRadiology: policy.pendingInvestigations?.blockRadiology !== false,
-      allowAuthorisedException: policy.pendingInvestigations?.allowAuthorisedException !== false
-    },
-    requireMedicationCompletion: policy.requireMedicationCompletion !== false,
-    requireSummaryFinalized: policy.requireSummaryFinalized !== false,
-    requireFinancialClearance: policy.requireFinancialClearance !== false
-  };
+  return loadIPDWorkflowPolicy(hospitalId);
 }
 
 async function buildDischargeReadiness(admission, hospitalId) {
@@ -120,14 +112,16 @@ async function buildDischargeReadiness(admission, hospitalId) {
 
   const checks = {
     doctorDischargeAdvice: ['Discharge Initiated', 'Discharge Summary Pending', 'Billing Pending', 'Payment Pending', 'Ready for Discharge', 'Discharged'].includes(admission.status),
-    dischargeSummaryFinalized: !policy.requireSummaryFinalized || ['Finalized', 'StaffCompleted'].includes(dischargeSummary?.status),
+    dischargeSummaryFinalized: !policy.requireSummaryFinalized || (policy.requireStaffCompletedSummary ? dischargeSummary?.status === 'StaffCompleted' : ['Finalized', 'StaffCompleted'].includes(dischargeSummary?.status)),
     labReportsCompleted: !policy.pendingInvestigations.blockLab || lab.pending.length === 0 || labException,
     radiologyReportsCompleted: !policy.pendingInvestigations.blockRadiology || radiology.pending.length === 0 || radiologyException,
     medicationsAdministered: !policy.requireMedicationCompletion || pendingMedications === 0 || medicationException,
     chargesBilled: financeClearance.checks.unbilledChargesResolved,
     paymentSettled: financeClearance.checks.issuedInvoicesSettled,
-    pharmacyClearance: financeClearance.checks.pharmacyClearance,
-    financialClearance: !policy.requireFinancialClearance || financeClearance.ready,
+    pharmacyClearance: !policy.requirePharmacyClearance || ['cleared', 'exempted'].includes(admission.pharmacyClearanceStatus),
+    finalInvoiceAvailable: !policy.requireFinalIPDInvoice || financeClearance.checks.finalInvoiceAvailable,
+    advanceReconciled: !policy.requireAdvanceReconciliation || financeClearance.checks.advanceReconciled,
+    financialClearance: !policy.requireFinancialClearance || financeClearance.cleared,
     bedReadyForRelease: true
   };
   return {
@@ -803,8 +797,17 @@ exports.completeDischarge = async (req, res) => {
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
     const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId });
-    if (!dischargeSummary || !['Finalized', 'StaffCompleted'].includes(dischargeSummary.status)) {
-      return res.status(400).json({ error: 'Discharge summary not finalized' });
+    if (!dischargeSummary) return res.status(400).json({ error: 'Discharge summary not found' });
+
+    // Final Discharge is idempotent for retry-safe UI/network behaviour.
+    if (admission.status === 'Discharged') {
+      return res.json({
+        success: true,
+        alreadyDischarged: true,
+        message: 'Patient is already finally discharged',
+        admission,
+        dischargeSummary
+      });
     }
 
     const readiness = await buildDischargeReadiness(admission, hospitalId);
@@ -823,43 +826,117 @@ exports.completeDischarge = async (req, res) => {
       ? normalizeDeathDetails(dischargeType, req.body, dischargeSummary.deathDetails || admission.deathDetails || {})
       : undefined;
 
-    admission.status = 'Discharged';
-    admission.dischargeDate = operationNow();
-    admission.dischargeReason = dischargeReason;
-    admission.dischargeType = dischargeType;
-    admission.isLAMA = dischargeType === 'LAMA';
-    if (deathDetails) admission.deathDetails = deathDetails;
-    await admission.save();
+    // The discharge state change and all occupancy/patient cleanup must commit
+    // together. This prevents a clinically discharged admission from remaining
+    // active on the patient/bed/accommodation side (or vice versa).
+    const session = await mongoose.startSession();
+    let finalAdmission;
+    let finalSummary;
+    try {
+      await session.withTransaction(async () => {
+        const txAdmission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).session(session);
+        if (!txAdmission) {
+          const error = new Error('Admission not found');
+          error.statusCode = 404;
+          throw error;
+        }
+        const txSummary = await DischargeSummary.findOne({ admissionId, hospitalId }).session(session);
+        if (!txSummary) {
+          const error = new Error('Discharge summary not found');
+          error.statusCode = 400;
+          throw error;
+        }
+        if (txAdmission.status === 'Discharged') {
+          finalAdmission = txAdmission;
+          finalSummary = txSummary;
+          return;
+        }
 
-    dischargeSummary.dischargeType = dischargeType;
-    dischargeSummary.dischargeDate = admission.dischargeDate;
-    if (deathDetails) dischargeSummary.deathDetails = deathDetails;
-    dischargeSummary.admissionSnapshot = {
-      ...(dischargeSummary.admissionSnapshot || {}),
-      dischargeType,
-      dischargeDate: admission.dischargeDate,
-      deathDetails: deathDetails || undefined
-    };
-    await dischargeSummary.save({ validateBeforeSave: false });
+        const dischargeDate = operationNow();
+        txAdmission.status = 'Discharged';
+        txAdmission.dischargeDate = dischargeDate;
+        txAdmission.dischargeReason = dischargeReason;
+        txAdmission.dischargeType = dischargeType;
+        txAdmission.isLAMA = dischargeType === 'LAMA';
+        txAdmission.finalDischargedAt = dischargeDate;
+        txAdmission.finalDischargedBy = req.user?._id;
+        txAdmission.updatedBy = req.user?._id;
+        if (deathDetails) txAdmission.deathDetails = deathDetails;
+        await txAdmission.save({ session });
 
-    if (admission.bedId) {
-      await Bed.findOneAndUpdate({ _id: admission.bedId, hospitalId }, { status: 'Cleaning', currentAdmissionId: null });
+        txSummary.dischargeType = dischargeType;
+        txSummary.dischargeDate = dischargeDate;
+        if (deathDetails) txSummary.deathDetails = deathDetails;
+        txSummary.admissionSnapshot = {
+          ...(txSummary.admissionSnapshot || {}),
+          dischargeType,
+          dischargeDate,
+          deathDetails: deathDetails || undefined
+        };
+        await txSummary.save({ session, validateBeforeSave: false });
+
+        await IPDAccommodationSegment.updateMany(
+          { hospitalId, admissionId: txAdmission._id, status: 'active' },
+          { $set: { status: 'closed', endedAt: dischargeDate } },
+          { session }
+        );
+
+        if (txAdmission.bedId) {
+          await Bed.findOneAndUpdate(
+            { _id: txAdmission.bedId, hospitalId, currentAdmissionId: txAdmission._id },
+            { $set: { status: 'Cleaning', currentAdmissionId: null, reservedTransferId: null } },
+            { session }
+          );
+        }
+
+        await Patient.updateOne(
+          { _id: txAdmission.patientId, hospitalId },
+          { $pull: { active_admissions: { admission_id: txAdmission._id } } },
+          { session }
+        );
+        const patientAfterDischarge = await Patient.findOne({ _id: txAdmission.patientId, hospitalId })
+          .select('active_admissions')
+          .session(session);
+        if (patientAfterDischarge) {
+          patientAfterDischarge.patient_type = (patientAfterDischarge.active_admissions || []).length ? 'ipd' : 'opd';
+          await patientAfterDischarge.save({ session, validateBeforeSave: false });
+        }
+
+        await appendDomainEvent({
+          req,
+          eventType: 'ipd.final_discharge.completed',
+          entityType: 'IPDAdmission',
+          entityId: txAdmission._id,
+          hospitalId,
+          patientId: txAdmission.patientId,
+          encounterId: txAdmission._id,
+          afterSummary: { status: 'Discharged', dischargeDate, dischargeType },
+          reasonCode: dischargeReason || dischargeType,
+          session
+        });
+
+        finalAdmission = txAdmission;
+        finalSummary = txSummary;
+      });
+    } finally {
+      await session.endSession();
     }
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Patient discharged successfully',
-      admission,
-      dischargeSummary,
+      admission: finalAdmission || admission,
+      dischargeSummary: finalSummary || dischargeSummary,
       financialClearance: readiness.financeClearance
     });
   } catch (err) {
     console.error('Error completing discharge:', err);
-    res.status(err.statusCode || 500).json({ error: err.message, code: err.code, details: err.details });
+    return res.status(err.statusCode || 500).json({ error: err.message, code: err.code, details: err.details });
   }
 };
 
-
+// Restored startup/API handler: this route remained registered in ipd.routes.js
+// but the handler was accidentally removed by the IPD billing/discharge patch.
 exports.getDischargeDocuments = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -936,7 +1013,8 @@ exports.getDischargeDocuments = async (req, res) => {
   }
 };
 
-
+// Restored startup/API handler: the schema and route still support medication
+// reconciliation, but this controller export was accidentally removed by the patch.
 exports.reconcileDischargeMedications = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);

@@ -47,13 +47,18 @@ const pharmacyReturnSchema = new mongoose.Schema({
   idempotencyKey: { type: String, sparse: true, index: true },
   presentationType: { type: String, trim: true },
   // No advance/refund is the safe default. The service sets a method only for a real paid residual.
-  refundMode: { type: String, enum: ['Cash', 'UPI', 'Card', 'IPDAdvance', 'PharmacyAdvance', 'NoRefund'], default: 'NoRefund' },
+  refundMode: { type: String, enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'IPDAdvance', 'PharmacyAdvance', 'NoRefund'], default: 'NoRefund' },
   refundReference: { type: String, trim: true },
   patientOutstandingAfter: { type: Number, default: 0 },
   pharmacyAdvanceAfter: { type: Number, default: 0 },
   status: { type: String, enum: ['Completed', 'PendingApproval', 'Rejected'], default: 'Completed' },
   notes: { type: String, trim: true },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  approvedAt: { type: Date },
+  rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  rejectedAt: { type: Date },
+  rejectionReason: { type: String, trim: true }
 }, { timestamps: true });
 
 pharmacyReturnSchema.pre('validate', async function(next) {

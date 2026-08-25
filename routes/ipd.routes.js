@@ -29,7 +29,13 @@ const nurses = [protect, authorize('admin', 'nurse', 'staff')];
 
 // Enforce authentication and hospital feature access across the complete IPD route tree.
 router.use(protect, requireModuleAccess('ipd', 'view'));
-router.use((req, res, next) => req.method === 'GET' ? next() : requireModuleAccess('ipd', 'manage')(req, res, next));
+router.use((req, res, next) => {
+  if (req.method === 'GET') return next();
+  // Final discharge is a dedicated administrative action. Billing users only need
+  // IPD view access plus ipd_final_discharge; they must not receive broad IPD manage.
+  if (req.method === 'POST' && /^\/discharge\/[^/]+\/complete\/?$/.test(req.path)) return next();
+  return requireModuleAccess('ipd', 'manage')(req, res, next);
+});
 
 // ============== CLINICAL DOCUMENTS ==============
 router.get(
@@ -322,6 +328,12 @@ router.post(
   '/rounds',
   requireActionPermission('ipd_round_write'),
   rounds.createRound
+);
+
+router.post(
+  '/rounds/:id/charge',
+  requireAnyActionPermission(['ipd_round_write', 'ipd_nursing_write', 'billing_create']),
+  rounds.postRoundCharge
 );
 
 router.get(
@@ -716,7 +728,7 @@ router.patch(
 
 router.post(
   '/discharge/:admissionId/complete',
-  requireActionPermission('ipd_discharge_write'),
+  requireActionPermission('ipd_final_discharge'),
   discharge.completeDischarge
 );
 

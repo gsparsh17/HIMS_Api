@@ -41,8 +41,10 @@ router.get('/patients/search', operations.searchPharmacyPatients);
 
 // ========== RETURNS ==========
 router.post('/returns/preview', financial.previewReturn);
-router.post('/returns/complete', financial.completeReturn);
-router.get('/returns', operations.getReturns);
+router.post('/returns/complete', pharmacyFinanceManage, financial.completeReturn);
+router.post('/returns/:returnId/approve', pharmacyFinanceManage, financial.approveReturn);
+router.post('/returns/:returnId/reject', pharmacyFinanceManage, financial.rejectReturn);
+router.get('/returns', pharmacyFinanceView, operations.getReturns);
 
 // ========== CLEARANCE ==========
 router.get(
@@ -52,6 +54,7 @@ router.get(
 
 router.post(
   '/clearance/:admissionId/complete',
+  pharmacyFinanceManage,
   financial.clearanceComplete
 );
 

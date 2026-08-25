@@ -185,6 +185,7 @@ const ROLE_PRESET = Object.freeze({
   },
   accountant: {
     dashboard: 'manage',
+    ipd: 'view',
     billing_finance: 'manage',
     reports: 'manage'
   },
@@ -221,7 +222,7 @@ const ROLE_ACTION_PRESET = Object.freeze({
   nurse: { ipd: ['transfer_complete', 'ipd_nursing_write', 'ipd_medication_write', 'ipd_discharge_support'] },
   staff: { ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support', 'billing_create'] },
   registrar: {
-    ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support'],
+    ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support', 'ipd_final_discharge'],
     billing_finance: [
       'settlement',
       'billing_create',
@@ -230,7 +231,7 @@ const ROLE_ACTION_PRESET = Object.freeze({
     ]
   },
   receptionist: {
-    ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support'],
+    ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support', 'ipd_final_discharge'],
     billing_finance: [
       'settlement',
       'billing_create',
@@ -239,13 +240,14 @@ const ROLE_ACTION_PRESET = Object.freeze({
     ]
   },
   bed_manager: { ipd: ['transfer_reserve', 'transfer_approve'] },
-  doctor: { ipd: ['ipd_round_write', 'ipd_clinical_write', 'ipd_discharge_write', 'billing_create'] },
+  doctor: { ipd: ['ipd_round_write', 'ipd_clinical_write', 'ipd_discharge_write', 'ipd_final_discharge', 'billing_create'] },
   pathology_staff: { laboratory: ['billing_create'] },
   radiology_staff: { radiology: ['billing_create'] },
   ot_staff: { ipd: ['transfer_complete'], operation_theatre: ['billing_create'] },
   hr: { hr_staff: ['payroll_publish', 'biometric_manage', 'user_access_manage'] },
   hr_manager: { hr_staff: ['payroll_publish', 'biometric_manage', 'user_access_manage'] },
   accountant: {
+    ipd: ['ipd_final_discharge'],
     billing_finance: [
       'claim_submit',
       'claim_manage',

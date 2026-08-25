@@ -17,6 +17,8 @@ const {
 const {
   buildReturnPreview,
   completeAuthoritativeReturn,
+  approvePendingReturn,
+  rejectPendingReturn,
   getClearanceSnapshot,
   completeFinalClearance,
 } = require('../services/pharmacyReturnClearance.service');
@@ -555,9 +557,14 @@ exports.previewReturn = async (req, res) => {
         returnValue: preview.returnValue,
         ...preview.allocation,
         refundRequired: preview.allocation.refundableResidual > 0,
+        pharmacyPolicy: preview.pharmacyPolicy,
         refundMethods:
           preview.allocation.refundableResidual > 0
-            ? ['Cash', 'UPI', 'Card', 'IPDAdvance', 'PharmacyAdvance']
+            ? [
+                ...(preview.pharmacyPolicy?.allowCashRefundOnReturn === false ? [] : ['Cash', 'UPI', 'Card']),
+                ...(preview.pharmacyPolicy?.ipdAdvanceMode === 'PHARMACY_SEPARATE_ADVANCE' ? [] : ['IPDAdvance']),
+                ...(preview.pharmacyPolicy?.ipdAdvanceMode === 'SHARED_IPD_ADVANCE' ? [] : ['PharmacyAdvance']),
+              ]
             : ['NoRefund'],
         message:
           preview.allocation.refundableResidual > 0
@@ -584,6 +591,7 @@ exports.completeReturn = async (req, res) => {
     res.status(result.idempotent ? 200 : 201).json({
       success: true,
       idempotent: result.idempotent,
+      pendingApproval: result.pendingApproval === true || result.returnRecord?.status === 'PendingApproval',
       returnRecord: result.returnRecord,
       allocation: result.allocation || {
         dueBefore: result.returnRecord.dueBefore,
@@ -591,8 +599,9 @@ exports.completeReturn = async (req, res) => {
         refundableResidual: result.returnRecord.refundableResidual,
         dueAfter: result.returnRecord.dueAfter,
       },
-      message:
-        result.returnRecord.refundableResidual > 0
+      message: result.pendingApproval === true || result.returnRecord?.status === 'PendingApproval'
+        ? 'Medicine return request submitted for approval. Stock and financial ledgers will change only after approval.'
+        : result.returnRecord.refundableResidual > 0
           ? 'Return completed. Outstanding was reduced first; only the paid residual was refunded.'
           : 'Return completed. The return value was applied to the original unpaid due; no advance credit was created.',
     });
@@ -601,6 +610,35 @@ exports.completeReturn = async (req, res) => {
       success: false,
       message: error.message,
     });
+  }
+};
+
+exports.approveReturn = async (req, res) => {
+  try {
+    const result = await approvePendingReturn({ returnId: req.params.returnId, payload: req.body || {}, req });
+    res.json({
+      success: true,
+      idempotent: result.idempotent,
+      returnRecord: result.returnRecord,
+      allocation: result.allocation,
+      message: result.idempotent ? 'Medicine return was already completed.' : 'Medicine return approved and posted to stock and financial ledgers.',
+    });
+  } catch (error) {
+    res.status(error.status || 400).json({ success: false, message: error.message });
+  }
+};
+
+exports.rejectReturn = async (req, res) => {
+  try {
+    const result = await rejectPendingReturn({ returnId: req.params.returnId, reason: req.body?.reason, req });
+    res.json({
+      success: true,
+      idempotent: result.idempotent,
+      returnRecord: result.returnRecord,
+      message: result.idempotent ? 'Medicine return was already rejected.' : 'Medicine return request rejected.',
+    });
+  } catch (error) {
+    res.status(error.status || 400).json({ success: false, message: error.message });
   }
 };
 
