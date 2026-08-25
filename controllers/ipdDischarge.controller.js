@@ -934,3 +934,100 @@ exports.completeDischarge = async (req, res) => {
     return res.status(err.statusCode || 500).json({ error: err.message, code: err.code, details: err.details });
   }
 };
+
+// Restored startup/API handler: this route remained registered in ipd.routes.js
+// but the handler was accidentally removed by the IPD billing/discharge patch.
+exports.getDischargeDocuments = async (req, res) => {
+  try {
+    const { admissionId } = req.params;
+    const hospitalId = requireHospitalId(req);
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId })
+      .populate('patientId', 'first_name last_name patientId')
+      .populate('primaryDoctorId', 'firstName lastName');
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+
+    const [dischargeSummary, invoices] = await Promise.all([
+      DischargeSummary.findOne({ admissionId, hospitalId }).populate('preparedBy', 'firstName lastName').populate('reviewedBy', 'firstName lastName'),
+      Invoice.find({ hospital_id: hospitalId, admission_id: admissionId }).sort({ issue_date: 1, createdAt: 1 })
+    ]);
+
+    // Canonical final-document identity is explicit and independent of payment status.
+    // Never choose the first Paid invoice because that can be an interim document.
+    let finalBill = null;
+    if (admission.finalInvoiceId) {
+      finalBill = invoices.find((invoice) => String(invoice._id) === String(admission.finalInvoiceId)) || null;
+    }
+    if (!finalBill) finalBill = invoices.find((invoice) => invoice.is_final_ipd_invoice === true || invoice.invoice_type === 'IPD Final') || null;
+
+    const deferredSales = await Sale.find({
+      hospital_id: hospitalId,
+      admission_id: admissionId,
+      payment_deferred: true,
+      status: { $in: ['Pending', 'Partially Paid'] }
+    });
+    const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+    const financeClearance = await financial.getFinancialClearance(admissionId, req.user);
+    const isCleared = financeClearance.ready;
+
+    const accommodationPrint = await buildAccommodationPrintData({ hospitalId, admissionId, financial: false });
+    const dischargeType = canonicalDischargeType(dischargeSummary?.dischargeType || admission.dischargeType || admission.status);
+    const finalBillDto = finalBill ? {
+      ...finalBill.toObject(),
+      dischargeType,
+      discharge_type: dischargeType,
+      dischargeSnapshot: {
+        dischargeType,
+        dischargeDate: admission.dischargeDate || dischargeSummary?.dischargeDate,
+        deathDetails: dischargeType === 'Death' ? (dischargeSummary?.deathDetails || admission.deathDetails) : undefined
+      }
+    } : null;
+
+    res.json({
+      success: true,
+      admission,
+      dischargeSummary,
+      invoices,
+      clearanceStatus: {
+        isCleared,
+        deferredAmount: totalDeferredAmount,
+        deferredCount: deferredSales.length,
+        regularDue: financeClearance.summary?.dueAmount ?? admission.dueAmount,
+        financialClearanceStatus: admission.financialClearanceStatus
+      },
+      accommodationPrint,
+      documents: {
+        dischargeSummary: dischargeSummary || null,
+        finalBill: finalBillDto,
+        admissionSlip: {
+          admissionNumber: admission.admissionNumber,
+          admissionDate: admission.admissionDate,
+          patientName: `${admission.patientId?.first_name || ''} ${admission.patientId?.last_name || ''}`.trim(),
+          doctorName: `Dr. ${admission.primaryDoctorId?.firstName || ''} ${admission.primaryDoctorId?.lastName || ''}`.trim(),
+          dischargeType
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching discharge documents:', err);
+    res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
+  }
+};
+
+// Restored startup/API handler: the schema and route still support medication
+// reconciliation, but this controller export was accidentally removed by the patch.
+exports.reconcileDischargeMedications = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const admission = await IPDAdmission.findOne({ _id: req.params.admissionId, hospitalId });
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    let summary = await DischargeSummary.findOne({ admissionId: admission._id, hospitalId });
+    if (!summary) summary = new DischargeSummary({ admissionId: admission._id, patientId: admission.patientId, hospitalId, preparedBy: admission.primaryDoctorId, createdBy: req.user?._id });
+    summary.medicationReconciliation = {
+      performedAt: operationNow(), performedBy: req.user?._id,
+      admissionMedicines: Array.isArray(req.body.admissionMedicines) ? req.body.admissionMedicines : [],
+      discrepancies: Array.isArray(req.body.discrepancies) ? req.body.discrepancies : [], completed: true
+    };
+    summary.updatedBy = req.user?._id; await summary.save({ validateBeforeSave: false });
+    return res.json({ success: true, data: summary.medicationReconciliation, summaryId: summary._id });
+  } catch (error) { return res.status(error.statusCode || 400).json({ error: error.message }); }
+};
