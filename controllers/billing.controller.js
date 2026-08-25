@@ -546,6 +546,50 @@ async function createCanonicalAppointmentBilling(req, payload) {
       }, req.user);
     }
   }
+
+  const primaryBill = bills[0];
+  if (primaryBill && Number(primaryBill.discount || payload.discount || 0) > 0) {
+    const isApprovalPending = primaryBill.status === 'Discount Pending Approval' || String(payload.status || '').toLowerCase() === 'discount pending approval' || primaryBill.discount_approval?.status === 'PENDING';
+    if (isApprovalPending) {
+      primaryBill.status = 'Discount Pending Approval';
+      primaryBill.discount_approval = {
+        status: 'PENDING',
+        requested_by: req.user?._id,
+        requested_at: new Date(),
+        discount_amount: Number(primaryBill.discount || payload.discount || 0),
+        discount_percentage: Number(payload.discount_rate ?? payload.discountRate ?? 0),
+        reason: payload.discount_reason || payload.discountReason || 'Staff discount request'
+      };
+      await primaryBill.save();
+
+      try {
+        const ApprovalRequest = require('../models/ApprovalRequest');
+        await ApprovalRequest.create({
+          hospitalId,
+          requestType: 'DISCOUNT_APPROVAL',
+          patientId: payload.patient_id,
+          appointmentId: appointment._id,
+          billId: primaryBill._id,
+          details: {
+            billId: primaryBill._id,
+            billNumber: primaryBill.bill_number,
+            appointmentId: appointment._id,
+            totalBillAmount: Number(primaryBill.subtotal || primaryBill.gross_amount || primaryBill.total_amount || 0),
+            totalDueAmount: Number(primaryBill.balance_due != null ? primaryBill.balance_due : primaryBill.total_amount || 0),
+            discountAmount: Number(primaryBill.discount || payload.discount || 0),
+            requestedDiscountPercentage: Number(payload.discount_rate ?? payload.discountRate ?? (primaryBill.subtotal ? Math.round((Number(primaryBill.discount) / Number(primaryBill.subtotal)) * 100) : 0)),
+            reason: payload.discount_reason || payload.discountReason || 'Staff discount request',
+            encounterType: 'OPD'
+          },
+          requestedBy: req.user?._id,
+          status: 'Pending'
+        });
+      } catch (apprErr) {
+        console.warn('Could not create ApprovalRequest record for OPD discount:', apprErr.message);
+      }
+    }
+  }
+
   const refreshedInvoice = await Invoice.findOne({ _id: invoice._id, hospital_id: hospitalId });
   return {
     bill: bills[0] || null,
@@ -2808,6 +2852,38 @@ exports.reviewDiscountApproval = async (req, res, next) => {
     }
 
     await bill.save();
+
+    if (bill.invoice_id) {
+      try {
+        const Invoice = require('../models/Invoice');
+        const invoiceId = bill.invoice_id?._id || bill.invoice_id;
+        const inv = await Invoice.findOne({ _id: invoiceId, hospital_id: hospitalId });
+        if (inv) {
+          inv.discount = bill.discount || 0;
+          inv.total = bill.total_amount;
+          inv.balance_due = bill.balance_due;
+          inv.status = bill.status === 'Paid' ? 'Paid' : (bill.status === 'Partially Paid' ? 'Partial' : 'Pending');
+          await inv.save();
+        }
+      } catch (invErr) {
+        console.warn('Could not sync invoice on discount review:', invErr.message);
+      }
+    }
+
+    try {
+      const ApprovalRequest = require('../models/ApprovalRequest');
+      await ApprovalRequest.updateMany(
+        { hospitalId, $or: [{ billId: bill._id }, { 'details.billId': bill._id }], status: 'Pending' },
+        {
+          status: action === 'approve' ? 'Approved' : 'Rejected',
+          approvedBy: req.user?._id,
+          approvedAt: now,
+          ...(action === 'reject' ? { rejectionReason: String(rejectionReason || 'Discount rejected').trim() } : {})
+        }
+      );
+    } catch (apprErr) {
+      console.warn('Could not update ApprovalRequest from bill discount review:', apprErr.message);
+    }
 
     const populated = await Bill.findById(bill._id)
       .populate('patient_id')

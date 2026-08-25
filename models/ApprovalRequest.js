@@ -32,6 +32,14 @@ const approvalRequestSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'IPDAdmission'
   },
+  appointmentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Appointment'
+  },
+  billId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Bill'
+  },
   details: {
     type: mongoose.Schema.Types.Mixed,
     description: 'JSON object holding specific details like discountAmount, saleIds, etc.'

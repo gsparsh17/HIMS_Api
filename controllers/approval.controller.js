@@ -104,6 +104,8 @@ exports.getRequests = async (req, res) => {
       .populate('approvedBy', 'name email first_name last_name')
       .populate({ path: 'patientId', select: 'first_name last_name patientId uhid phone' })
       .populate({ path: 'admissionId', select: 'admissionNumber' })
+      .populate({ path: 'appointmentId', select: 'appointment_date type' })
+      .populate({ path: 'billId', select: 'bill_number total_amount discount status' })
       .sort({ createdAt: -1 });
 
     return res.status(200).json({ success: true, requests });
@@ -139,6 +141,71 @@ exports.updateRequestStatus = async (req, res) => {
     }
 
     await request.save();
+
+    // Synchronize decision onto the associated Bill if this is a discount approval
+    if (request.requestType === 'DISCOUNT_APPROVAL') {
+      try {
+        const Bill = require('../models/Bill');
+        const billId = request.billId || request.details?.billId;
+        if (billId) {
+          const bill = await Bill.findOne({ _id: billId, hospital_id: hospitalId });
+          if (bill) {
+            if (status === 'Approved') {
+              bill.discount_approval = {
+                ...(bill.discount_approval?.toObject?.() || bill.discount_approval || {}),
+                status: 'APPROVED',
+                approved_by: req.user._id,
+                approved_at: new Date(),
+                approval_notes: String(req.body.approvalNotes || '').trim()
+              };
+              const paid = Number(bill.paid_amount || 0);
+              const total = Number(bill.total_amount || 0);
+              if (paid >= total && total > 0) {
+                bill.status = 'Paid';
+              } else if (paid > 0) {
+                bill.status = 'Partially Paid';
+              } else {
+                bill.status = 'Pending';
+              }
+            } else if (status === 'Rejected') {
+              const rejectedDiscount = Number(bill.discount || 0);
+              bill.discount_approval = {
+                ...(bill.discount_approval?.toObject?.() || bill.discount_approval || {}),
+                status: 'REJECTED',
+                approved_by: req.user._id,
+                approved_at: new Date(),
+                rejection_reason: String(req.body.rejectionReason || 'Discount rejected').trim()
+              };
+              bill.discount = 0;
+              bill.total_amount = Number(bill.total_amount || 0) + rejectedDiscount;
+              bill.balance_due = Math.max(0, Number(bill.total_amount || 0) - Number(bill.paid_amount || 0));
+              bill.status = Number(bill.paid_amount || 0) >= bill.total_amount ? 'Paid' : (Number(bill.paid_amount || 0) > 0 ? 'Partially Paid' : 'Pending');
+            }
+            await bill.save();
+
+            if (bill.invoice_id) {
+              try {
+                const Invoice = require('../models/Invoice');
+                const invoiceId = bill.invoice_id?._id || bill.invoice_id;
+                const inv = await Invoice.findOne({ _id: invoiceId, hospital_id: hospitalId });
+                if (inv) {
+                  inv.discount = bill.discount || 0;
+                  inv.total = bill.total_amount;
+                  inv.balance_due = bill.balance_due;
+                  inv.status = bill.status === 'Paid' ? 'Paid' : (bill.status === 'Partially Paid' ? 'Partial' : 'Pending');
+                  await inv.save();
+                }
+              } catch (invErr) {
+                console.warn('Could not sync invoice on discount approval:', invErr.message);
+              }
+            }
+          }
+        }
+      } catch (syncErr) {
+        console.warn('Could not sync approval decision to bill:', syncErr.message);
+      }
+    }
+
     return res.status(200).json({ success: true, request });
   } catch (error) {
     console.error('Error updating approval request:', error.message);

@@ -171,29 +171,34 @@ function applyDiscountAndTax({ baseAmount, patientLiability, sponsorLiability, d
     if (hasExplicitDiscountSelection && !canDiscount && !canDiscountOverride) {
       throw error('You do not have permission to change the configured discount', 403, 'DISCOUNT_PERMISSION_REQUIRED');
     }
+    let requiresApproval = false;
     if (discountType === 'fixed') {
-      if (discountPolicy.allowFixed === false) throw error('Fixed discounts are not enabled by hospital policy', 409, 'DISCOUNT_MODE_NOT_ALLOWED');
+      if (discountPolicy.allowFixed === false && !canDiscountOverride) {
+        requiresApproval = true;
+      }
       const configuredMax = Math.max(0, Number(discountPolicy.maxFixedAmount || 0));
       const roleCeiling = roleDiscountCeiling(discountPolicy, user);
       const roleFixedMax = patientBefore > 0 ? round(patientBefore * roleCeiling / 100) : 0;
-      const effectiveFixedMax = Math.min(configuredMax, roleFixedMax);
+      const effectiveFixedMax = configuredMax > 0 ? Math.min(configuredMax, roleFixedMax) : roleFixedMax;
       if (hasExplicitDiscountSelection && desired > effectiveFixedMax + 0.01 && !canDiscountOverride) {
-        throw error(`Discount exceeds your configured maximum of ₹${round(effectiveFixedMax).toFixed(2)}`, 409, 'DISCOUNT_ABOVE_ALLOWED_RANGE', { maximumFixedAmount: round(effectiveFixedMax) });
+        requiresApproval = true;
       }
       discountAmount = Math.min(patientBefore, Math.max(0, round(desired)));
       discountRate = patientBefore ? round(discountAmount / patientBefore * 100) : 0;
     } else {
-      if (discountPolicy.allowPercentage === false) throw error('Percentage discounts are not enabled by hospital policy', 409, 'DISCOUNT_MODE_NOT_ALLOWED');
+      if (discountPolicy.allowPercentage === false && !canDiscountOverride) {
+        requiresApproval = true;
+      }
       const hospitalCeiling = Math.max(0, Math.min(100, Number(discountPolicy.maxPercentage ?? 0)));
       const userCeiling = roleDiscountCeiling(discountPolicy, user);
       const ceiling = hasExplicitDiscountSelection ? Math.min(hospitalCeiling, userCeiling) : hospitalCeiling;
       if (hasExplicitDiscountSelection && desired > ceiling + 0.0001 && !canDiscountOverride) {
-        throw error(`Discount exceeds your allowed maximum of ${ceiling}%`, 409, 'DISCOUNT_ABOVE_ALLOWED_RANGE', { maximumPercentage: ceiling });
+        requiresApproval = true;
       }
       discountRate = Math.max(0, Math.min(100, desired));
       discountAmount = round(patientBefore * discountRate / 100);
     }
-    if (hasExplicitDiscountSelection && desired > Number(discountPolicy.requireReasonAbove || 0) && !discountReason) {
+    if (hasExplicitDiscountSelection && desired > Number(discountPolicy.requireReasonAbove || 0) && !discountReason && !canDiscountOverride) {
       throw error('Discount reason is required by hospital policy', 400, 'DISCOUNT_REASON_REQUIRED');
     }
   } else if (hasExplicitDiscountSelection && defaultRaw > 0 && !canDiscount && !canDiscountOverride) {
@@ -273,6 +278,17 @@ function applyDiscountAndTax({ baseAmount, patientLiability, sponsorLiability, d
     sponsorLiability: sponsor,
     totalLiability,
     discountOverride: hasExplicitDiscountSelection && desired > 0 && canDiscountOverride,
+    requiresDiscountApproval: requiresApproval,
+    discountApproval: requiresApproval ? {
+      status: 'PENDING',
+      requested_by: user?._id,
+      requested_at: new Date(),
+      discount_amount: discountAmount,
+      discount_percentage: round(discountRate),
+      reason: discountReason || 'Staff concession request'
+    } : {
+      status: 'NOT_APPLIED'
+    },
     taxOverride
   };
 }
