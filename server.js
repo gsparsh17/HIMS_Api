@@ -67,6 +67,11 @@ const startServer = async () => {
     }
 
     if (abdmConfig.isHospital) {
+      const { startBackupScheduler } = require('./scripts/backupScheduler');
+      await startBackupScheduler();
+    }
+
+    if (abdmConfig.isHospital) {
       const { startNabhJobs } = require('./jobs/nabhJob');
       startNabhJobs();
     }
@@ -80,6 +85,7 @@ const startServer = async () => {
       console.log(`\n${signal} received. Closing HTTP server...`);
       if (abdmConfig.isHospital) {
         try { require('./jobs/platformSyncJob').stopPlatformSyncJob(); } catch (_) {}
+        try { require('./services/backup/changeTracker.service').stopChangeTracker(); } catch (_) {}
       }
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(1), 10000).unref();

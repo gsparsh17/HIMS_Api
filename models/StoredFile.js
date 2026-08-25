@@ -3,7 +3,11 @@ const mongoose = require('mongoose');
 const storedFileSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  storageDriver: { type: String, enum: ['local'], default: 'local' },
+  storageDriver: { type: String, enum: ['local', 'b2', 'cloudinary'], default: 'local' },
+  providerFileId: { type: String, trim: true },
+  providerPublicId: { type: String, trim: true },
+  providerUrl: { type: String, trim: true },
+  providerResourceType: { type: String, trim: true },
   storageKey: { type: String, required: true, unique: true, trim: true },
   originalName: { type: String, required: true, trim: true },
   mimeType: { type: String, required: true, trim: true },

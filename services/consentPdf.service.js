@@ -171,7 +171,8 @@ function buildContext(consent, admission, hospital) {
       name: hospitalSnapshot.hospitalName || hospital?.hospitalName || hospital?.name || 'HOSPITAL',
       address: [hospitalSnapshot.address || hospital?.address, hospitalSnapshot.city || hospital?.city, hospitalSnapshot.state || hospital?.state, hospitalSnapshot.pincode || hospital?.pincode].filter(Boolean).join(', '),
       phone: hospitalSnapshot.phone || hospital?.phone || hospital?.contact,
-      email: hospitalSnapshot.email || hospital?.email
+      email: hospitalSnapshot.email || hospital?.email,
+      logo: hospitalSnapshot.logo || hospital?.logo || null
     }
   };
 }
@@ -203,10 +204,15 @@ function isSelected(value, option) {
 function drawDocumentHeader(doc, template, context, pageNumber, totalPages, profile = LAYOUT_PROFILES.default) {
   const x = PAGE.margin; const width = PAGE.width - PAGE.margin * 2; const top = PAGE.margin;
   box(doc, x, top, width, mm(26));
-  text(doc, context.hospital.name, x + 6, top + 5, { width: width * 0.62, align: 'center' }, true, 12);
-  text(doc, context.hospital.address, x + 6, top + 21, { width: width * 0.62, align: 'center' }, false, profile.table);
+  const logoWidth = context.hospital.logoBuffer ? mm(18) : 0;
+  if (context.hospital.logoBuffer) {
+    try { doc.image(context.hospital.logoBuffer, x + mm(2), top + mm(3), { fit: [mm(14), mm(14)], align: 'center', valign: 'center' }); }
+    catch (_) { /* Keep text-only branding if a historical logo is invalid. */ }
+  }
+  text(doc, context.hospital.name, x + 6 + logoWidth, top + 5, { width: width * 0.62 - logoWidth, align: 'center' }, true, 12);
+  text(doc, context.hospital.address, x + 6 + logoWidth, top + 21, { width: width * 0.62 - logoWidth, align: 'center' }, false, profile.table);
   const contact = [context.hospital.phone, context.hospital.email].filter(Boolean).join(' | ');
-  if (contact) text(doc, contact, x + 6, top + 33, { width: width * 0.62, align: 'center' }, false, profile.table);
+  if (contact) text(doc, contact, x + 6 + logoWidth, top + 33, { width: width * 0.62 - logoWidth, align: 'center' }, false, profile.table);
   line(doc, x + width * 0.64, top, x + width * 0.64, top + mm(26));
   text(doc, template.name, x + width * 0.65, top + 8, { width: width * 0.34, align: 'center' }, true, 11.8);
   if (template.bilingualName) text(doc, template.bilingualName, x + width * 0.65, top + 25, { width: width * 0.34, align: 'center' }, true, 10);
@@ -525,7 +531,7 @@ async function fetchImageBuffer(urlOrData, options = {}) {
   if (storedFileMatch) {
     const filter = { _id: storedFileMatch[1], status: 'active' }; if (hospitalId) filter.hospitalId = hospitalId;
     const record = await StoredFile.findOne(filter).lean();
-    return record ? readLocalFile(fileStorage.absolutePath(record.storageKey)) : null;
+    return record ? fileStorage.readBuffer(record).catch(() => null) : null;
   }
   const printAssetMatch = trimmed.match(/^\/?api\/print-identities\/assets\/([a-fA-F0-9]{24})\/content(?:[/?#]|$)/);
   if (printAssetMatch) {
@@ -533,8 +539,7 @@ async function fetchImageBuffer(urlOrData, options = {}) {
     const asset = await PrintIdentityAsset.findOne(filter).lean();
     if (!asset) return null;
     if (/^https?:\/\//i.test(String(asset.cloudinaryUrl || ''))) return fetchImageBuffer(asset.cloudinaryUrl, options);
-    const localPath = path.isAbsolute(asset.storagePath || '') ? asset.storagePath : fileStorage.absolutePath(asset.storagePath || '');
-    return readLocalFile(localPath);
+    return fileStorage.readStoragePath(asset.storagePath, { hospitalId }).catch(() => null);
   }
   if (/^https?:\/\//i.test(trimmed)) {
     return new Promise((resolve) => {
@@ -545,7 +550,7 @@ async function fetchImageBuffer(urlOrData, options = {}) {
       }).on('error', () => resolve(null));
     });
   }
-  if (trimmed.startsWith('hospitals/')) return readLocalFile(fileStorage.absolutePath(trimmed));
+  if (trimmed.startsWith('hospitals/')) return fileStorage.readStoragePath(trimmed, { hospitalId }).catch(() => null);
   return fs.existsSync(trimmed) ? readLocalFile(trimmed) : null;
 }
 async function placementImageBuffers(documentSignature, imageOptions) {
@@ -575,6 +580,20 @@ function drawPlacementOverlays(doc, documentSignature, buffers, pageRange) {
   });
 }
 
+async function loadHospitalLogoBuffer(hospital) {
+  const logo = hospital?.logo;
+  if (!logo) return null;
+  try {
+    const stored = await fileStorage.findByUrl(logo);
+    if (stored) return await fileStorage.readBuffer(stored);
+    if (/^https?:\/\//i.test(String(logo))) {
+      const response = await fetch(logo);
+      if (response.ok) return Buffer.from(await response.arrayBuffer());
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function generateConsentPdf({ consent, template, admission, hospital, documentSignature = null, res }) {
   const doc = new PDFDocument({ size: 'A4', margin: 0, bufferPages: true, autoFirstPage: false, info: { Creator: 'MediQliq HIMS', Title: template.name } });
   setupFonts(doc);
@@ -585,6 +604,7 @@ async function generateConsentPdf({ consent, template, admission, hospital, docu
   doc.pipe(res);
 
   const context = buildContext(consent, admission, hospital);
+  context.hospital.logoBuffer = await loadHospitalLogoBuffer(hospital);
   const pages = Array.isArray(template.contentPages) && template.contentPages.length ? template.contentPages : [{ sections: template.printSections || [] }];
   const state = { y: 0, currentPage: 0, profile: layoutProfile(template) };
   pages.forEach((page, pageIndex) => {

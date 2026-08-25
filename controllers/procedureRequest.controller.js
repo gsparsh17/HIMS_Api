@@ -334,7 +334,7 @@ exports.uploadAttachment = async (req, res) => {
       return res.status(404).json({ error: 'Procedure request not found' });
     }
 
-    // Upload to Cloudinary
+    // Upload through the configured HIMS storage driver
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
     

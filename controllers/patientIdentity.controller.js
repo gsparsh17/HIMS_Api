@@ -22,16 +22,6 @@ const {
 const ALLOWED_TYPES = ['patient_signature', 'thumb_impression'];
 const ALLOWED_METHODS = ['drawn', 'typed_acknowledgement', 'uploaded', 'biometric'];
 
-function absoluteAssetPath(storagePath) {
-  if (!storagePath) {
-    return null;
-  }
-
-  return path.isAbsolute(storagePath)
-    ? storagePath
-    : fileStorage.absolutePath(storagePath);
-}
-
 function contentUrl(id) {
   return `/api/patient-identities/assets/${id}/content`;
 }
@@ -578,25 +568,24 @@ exports.streamAsset = async (req, res, next) => {
       });
     }
 
-    const filePath = absoluteAssetPath(asset.storagePath);
-
-    if (!filePath || !fs.existsSync(filePath)) {
-      return res.status(404).json({
-        error: 'Patient identity image not found'
-      });
+    let opened;
+    try {
+      opened = await fileStorage.openStoragePath(asset.storagePath, { hospitalId });
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.b2Code === 'not_found' || error?.statusCode === 404) {
+        return res.status(404).json({ error: 'Patient identity image not found' });
+      }
+      throw error;
     }
 
-    const stat = await fs.promises.stat(filePath);
-
-    res.setHeader('Content-Type', asset.mimeType || 'image/png');
-    res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Content-Type', opened.contentType || asset.mimeType || 'image/png');
+    if (opened.size || asset.sizeBytes) res.setHeader('Content-Length', String(opened.size || asset.sizeBytes));
     res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.setHeader('X-Content-Type-Options', 'nosniff');
 
-    const stream = fs.createReadStream(filePath);
-    stream.on('error', next);
-    stream.pipe(res);
+    opened.stream.on('error', next);
+    opened.stream.pipe(res);
   } catch (error) {
     next(error);
   }

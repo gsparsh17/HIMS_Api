@@ -16,7 +16,7 @@ const fetchFile = async (fileUrl, user) => {
       throw error;
     }
     return {
-      buffer: await fs.promises.readFile(fileStorage.absolutePath(stored.storageKey)),
+      buffer: await fileStorage.readBuffer(stored),
       contentType: stored.mimeType,
       fileName: stored.originalName
     };
@@ -156,7 +156,7 @@ exports.uploadReport = async (req, res) => {
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
 
-    // Upload to Cloudinary
+    // Upload through the configured HIMS storage driver (Backblaze B2 in production)
     const result = await fileStorage.upload(req.file, req, {
       folder: isPDF ? 'lab_reports_pdf' : 'lab_reports',
       resource_type: resourceType,
@@ -168,7 +168,7 @@ exports.uploadReport = async (req, res) => {
     // Clean up local file
     fs.unlinkSync(req.file.path);
 
-    // Use the URL as-is from Cloudinary
+    // Persist the secured HIMS file URL returned by the storage layer
     const fileUrl = result.secure_url;
 
     // Create lab report record

@@ -27,7 +27,7 @@ const { appendDomainEvent } = require('../services/auditEvent.service');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
 const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
 
-// Configure Cloudinary
+// File uploads use the configured HIMS storage driver.
 
 
 
@@ -848,7 +848,7 @@ exports.uploadReport = async (req, res) => {
       return res.status(400).json({ error: 'The uploaded file content does not match its PDF/image type' });
     }
 
-    // Upload to Cloudinary
+    // Upload through the configured HIMS storage driver
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
     

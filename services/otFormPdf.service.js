@@ -55,8 +55,14 @@ function header(doc, ctx, title, pageLabel = '') {
   const { width } = doc.page;
   const m = DOC_MARGIN; const top = 14; const h = 96;
   rect(doc, m, top, width - m * 2, h, { lineWidth: 1.1 });
-  rect(doc, m, top, 76, 48); text(doc, '✚', m + 22, top + 8, 32, { size: 24, bold: true, align: 'center' });
+  rect(doc, m, top, 76, 48);
   const hospital = ctx.hospital || {};
+  if (hospital._logoBuffer) {
+    try { doc.image(hospital._logoBuffer, m + 8, top + 6, { fit: [60, 36], align: 'center', valign: 'center' }); }
+    catch { text(doc, '✚', m + 22, top + 8, 32, { size: 24, bold: true, align: 'center' }); }
+  } else {
+    text(doc, '✚', m + 22, top + 8, 32, { size: 24, bold: true, align: 'center' });
+  }
   text(doc, hospital.hospitalName || hospital.name || 'HOSPITAL', m + 84, top + 8, width - 310, { size: 15, bold: true, align: 'center' });
   text(doc, [hospital.address, hospital.city, hospital.state, hospital.contact].filter(Boolean).join(' · '), m + 84, top + 29, width - 310, { size: 6.5, align: 'center', color: COLORS.muted });
   rect(doc, width - m - 210, top, 210, 48); text(doc, title, width - m - 204, top + 11, 198, { size: 12, bold: true, align: 'center' });
@@ -88,8 +94,8 @@ function signatureBlock(doc, x, y, w, label, signature) {
     // The fixed role block still carries signer metadata and remains the fallback
     // for legacy signatures that predate placement support.
     if (!Array.isArray(signature.placements) || signature.placements.length === 0) {
-      if (sigAsset?.storagePath && fs.existsSync(sigAsset.storagePath)) { try { doc.image(sigAsset.storagePath, x + 8, y + 17, { fit: [w * 0.52, 22], align: 'left', valign: 'center' }); } catch {} }
-      if (sealAsset?.storagePath && fs.existsSync(sealAsset.storagePath)) { try { doc.image(sealAsset.storagePath, x + w - 48, y + 13, { fit: [40, 34] }); } catch {} }
+      if (sigAsset?.imageBuffer) { try { doc.image(sigAsset.imageBuffer, x + 8, y + 17, { fit: [w * 0.52, 22], align: 'left', valign: 'center' }); } catch {} }
+      if (sealAsset?.imageBuffer) { try { doc.image(sealAsset.imageBuffer, x + w - 48, y + 13, { fit: [40, 34] }); } catch {} }
     }
     text(doc, `${signature.signerName || ''}${signature.signerDesignation ? ` · ${signature.signerDesignation}` : ''}`, x + 4, y + 45, w - 8, { size: 5.8, align: 'center' });
     text(doc, formatDate(signature.signedAt, true), x + 4, y + 55, w - 8, { size: 5, align: 'center', color: COLORS.muted });
@@ -120,8 +126,8 @@ function applySignaturePlacements(doc, signatures = [], startPageIndex = 0, rend
       const targetPage = startPageIndex + localPage - 1;
       if (targetPage < range.start || targetPage >= range.start + range.count) return;
       const asset = assetMap.get(String(placement.assetId)) || (signature.assetSnapshots || []).find((item) => item.assetType === placement.assetType);
-      const assetPath = resolveAssetPath(asset?.storagePath);
-      if (!assetPath) return;
+      const assetImage = asset?.imageBuffer || resolveAssetPath(asset?.storagePath);
+      if (!assetImage) return;
       doc.switchToPage(targetPage);
       const pageWidth = doc.page.width;
       const pageHeight = doc.page.height;
@@ -133,7 +139,7 @@ function applySignaturePlacements(doc, signatures = [], startPageIndex = 0, rend
         doc.save();
         const rotation = Number(placement.rotation || 0);
         if (rotation) doc.rotate(rotation, { origin: [x + width / 2, y + height / 2] });
-        doc.image(assetPath, x, y, { fit: [width, height], align: 'center', valign: 'center' });
+        doc.image(assetImage, x, y, { fit: [width, height], align: 'center', valign: 'center' });
         doc.restore();
       } catch {
         try { doc.restore(); } catch { /* no-op */ }
@@ -353,35 +359,83 @@ function renderGeneric(doc,ctx,template,data,signatures){
   footer(doc,template,signatures,1,1);
 }
 
+async function hydrateHospitalLogo(hospital) {
+  if (!hospital || !hospital.logo) return hospital || {};
+  try {
+    let logoBuffer = null;
+    const stored = await fileStorage.findByUrl(hospital.logo);
+    if (stored) logoBuffer = await fileStorage.readBuffer(stored);
+    else if (/^https?:\/\//i.test(String(hospital.logo))) {
+      const response = await fetch(hospital.logo);
+      if (response.ok) logoBuffer = Buffer.from(await response.arrayBuffer());
+    }
+    return logoBuffer ? { ...hospital, _logoBuffer: logoBuffer } : hospital;
+  } catch (_) {
+    return hospital;
+  }
+}
+
+async function hydrateSignatures(signatures = [], hospitalId) {
+  return Promise.all((signatures || []).map(async (signature) => {
+    const base = typeof signature?.toObject === 'function' ? signature.toObject() : { ...signature };
+    const snapshots = await Promise.all((base.assetSnapshots || []).map(async (asset) => {
+      const snapshot = typeof asset?.toObject === 'function' ? asset.toObject() : { ...asset };
+      if (!snapshot.storagePath) return snapshot;
+      try {
+        const imageBuffer = await fileStorage.readStoragePath(snapshot.storagePath, { hospitalId });
+        return { ...snapshot, imageBuffer };
+      } catch (_) {
+        return snapshot;
+      }
+    }));
+    return { ...base, assetSnapshots: snapshots };
+  }));
+}
+
 async function contextHospital(hospitalId){return Hospital.findById(hospitalId).lean();}
 async function renderOtFormPdf({ template, record, otCase, signatures = [], hospital }) {
-  const ctx={hospital:hospital||await contextHospital(otCase.hospitalId),patient:otCase.patientId||{},admission:otCase.admissionId||{},caseInfo:otCase}; const data=record?.formData||record||{};
+  const hydratedHospital = await hydrateHospitalLogo(hospital || await contextHospital(otCase.hospitalId));
+  const hydratedSignatures = await hydrateSignatures(signatures, otCase.hospitalId);
+  const ctx={hospital:hydratedHospital,patient:otCase.patientId||{},admission:otCase.admissionId||{},caseInfo:otCase}; const data=record?.formData||record||{};
   return collectPdf((doc)=>{
     const renderers={
       'pre-op-safety-checklist':renderPreOpSafety,'surgical-safety-checklist':renderSurgicalSafety,'pre-post-op-verification':renderPrePostVerification,
       'intra-post-anesthesia-record':renderAnesthesiaRecord,'operation-record':renderOperationRecord,'pac-record':renderPac,'post-anesthesia-instructions':renderPostAnaesthesia,
     };
     const startPageIndex = doc.bufferedPageRange().count;
-    (renderers[template.rendererId] || renderGeneric)(doc, ctx, template, data, signatures);
+    (renderers[template.rendererId] || renderGeneric)(doc, ctx, template, data, hydratedSignatures);
     const endPageCount = doc.bufferedPageRange().count;
-    applySignaturePlacements(doc, signatures, startPageIndex, endPageCount - startPageIndex);
+    applySignaturePlacements(doc, hydratedSignatures, startPageIndex, endPageCount - startPageIndex);
   });
 }
 async function renderOtPacketPdf({ forms, otCase, hospital }) {
+  const hydratedHospital = await hydrateHospitalLogo(hospital || await contextHospital(otCase.hospitalId));
   return collectPdf(async(doc)=>{
     for(let index=0;index<forms.length;index+=1){
       const {template,record,signatures=[]}=forms[index];
+      const hydratedSignatures = await hydrateSignatures(signatures, otCase.hospitalId);
       // Render every structured source into the same PDFKit document so the OT packet
       // is deterministic and does not depend on browser print output.
-      const ctx={hospital,patient:otCase.patientId||{},admission:otCase.admissionId||{},caseInfo:otCase};const data=record?.formData||record||{};
+      const ctx={hospital:hydratedHospital,patient:otCase.patientId||{},admission:otCase.admissionId||{},caseInfo:otCase};const data=record?.formData||record||{};
       const renderers={'pre-op-safety-checklist':renderPreOpSafety,'surgical-safety-checklist':renderSurgicalSafety,'pre-post-op-verification':renderPrePostVerification,'intra-post-anesthesia-record':renderAnesthesiaRecord,'operation-record':renderOperationRecord,'pac-record':renderPac,'post-anesthesia-instructions':renderPostAnaesthesia};
       const startPageIndex = doc.bufferedPageRange().count;
-      (renderers[template.rendererId] || renderGeneric)(doc, ctx, template, data, signatures);
+      (renderers[template.rendererId] || renderGeneric)(doc, ctx, template, data, hydratedSignatures);
       const endPageCount = doc.bufferedPageRange().count;
-      applySignaturePlacements(doc, signatures, startPageIndex, endPageCount - startPageIndex);
+      applySignaturePlacements(doc, hydratedSignatures, startPageIndex, endPageCount - startPageIndex);
     }
   });
 }
 function sha256(buffer){return crypto.createHash('sha256').update(buffer).digest('hex');}
-function writeRenderedPdf(buffer,{hospitalId,caseId,templateId,revision}){const dir=path.join(fileStorage.uploadRoot,'hospitals',String(hospitalId),'rendered-documents',String(caseId));fs.mkdirSync(dir,{recursive:true});const file=path.join(dir,`${templateId}-r${revision}-${Date.now()}.pdf`);fs.writeFileSync(file,buffer);return path.relative(fileStorage.uploadRoot,file).split(path.sep).join('/');}
+async function writeRenderedPdf(buffer,{hospitalId,caseId,templateId,revision,uploadedBy}){
+  const originalName = `${templateId}-r${revision}-${Date.now()}.pdf`;
+  const stored = await fileStorage.uploadBuffer(buffer, { user: { _id: uploadedBy, hospitalId } }, {
+    hospitalId,
+    folder: 'rendered-documents',
+    public_id: `${caseId}-${templateId}-r${revision}`,
+    originalName,
+    extension: '.pdf',
+    mimeType: 'application/pdf'
+  });
+  return stored.storage_key;
+}
 module.exports={renderOtFormPdf,renderOtPacketPdf,sha256,writeRenderedPdf};

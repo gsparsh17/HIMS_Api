@@ -185,7 +185,7 @@ exports.uploadExternalReport = async (req, res) => {
         const isPDF = req.file.mimetype === 'application/pdf';
         const resourceType = isPDF ? 'raw' : 'image';
 
-        // Upload to Cloudinary (no manual URL modification)
+        // Upload through the configured HIMS storage driver (no manual URL modification)
         const result = await fileStorage.upload(req.file, req, {
             folder: isPDF ? 'external_lab_reports_pdf' : 'external_lab_reports',
             resource_type: resourceType,
@@ -197,7 +197,7 @@ exports.uploadExternalReport = async (req, res) => {
         // Clean up local file
         fs.unlinkSync(req.file.path);
 
-        // Use the URL as-is from Cloudinary
+        // Use the secured HIMS file URL returned by the storage layer
         const fileUrl = result.secure_url;
 
         // Initialize external_lab_details if it doesn't exist

@@ -18,6 +18,20 @@ function assertRuntimeConfig() {
   if (production && !String(process.env.CORS_ORIGINS || process.env.FRONTEND_URL || '').trim()) {
     errors.push('CORS_ORIGINS or FRONTEND_URL is required in production');
   }
+  const mediaProvider = String(process.env.MEDIA_STORAGE_PROVIDER || process.env.FILE_STORAGE_DRIVER || 'local').toLowerCase();
+  if (!['local', 'b2', 'cloudinary'].includes(mediaProvider)) {
+    errors.push(`MEDIA_STORAGE_PROVIDER must be local, b2 or cloudinary (received ${mediaProvider})`);
+  }
+  if (mediaProvider === 'b2') {
+    for (const name of ['B2_KEY_ID', 'B2_APPLICATION_KEY', 'B2_BUCKET_NAME']) {
+      if (!String(process.env[name] || '').trim()) errors.push(`${name} is required when MEDIA_STORAGE_PROVIDER=b2`);
+    }
+  }
+  if (mediaProvider === 'cloudinary') {
+    for (const name of ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']) {
+      if (!String(process.env[name] || '').trim()) errors.push(`${name} is required when MEDIA_STORAGE_PROVIDER=cloudinary`);
+    }
+  }
   // if (production && boolEnv('DISABLE_PERMISSION_CHECKS')) {
   //   errors.push('DISABLE_PERMISSION_CHECKS must be false in production');
   // }

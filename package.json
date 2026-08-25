@@ -36,7 +36,12 @@
     "data:recover:references:apply": "node scripts/recover-reference-profiles-2026-08-19.js --apply",
     "audit:hard-deletes": "node scripts/audit-hard-deletes-2026-08-19.js",
     "hims:migrate:opd-ipd-billing": "node scripts/migrate-opd-ipd-billing-integrity-2026-08-20.js",
-    "migrate:full-access-hospital": "node scripts/migrate-existing-hospital-full-access.js"
+    "migrate:full-access-hospital": "node scripts/migrate-existing-hospital-full-access.js",
+    "storage:b2:check": "node scripts/check-b2-storage.js",
+    "storage:b2:migrate": "node scripts/migrate-local-files-to-b2.js",
+    "storage:b2:cleanup-local": "node scripts/cleanup-migrated-local-files.js",
+    "backup:incremental": "node scripts/backup.js --type=incremental",
+    "backup:full": "node scripts/backup.js --type=full"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",
@@ -66,7 +71,8 @@
     "rate-limit": "^0.1.1",
     "razorpay": "^2.9.6",
     "zod": "^4.3.6",
-    "unzipper": "^0.10.14"
+    "unzipper": "^0.10.14",
+    "bson": "^5.5.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"

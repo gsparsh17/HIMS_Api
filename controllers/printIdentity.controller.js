@@ -1,6 +1,5 @@
 const fs = require('fs');
 const crypto = require('crypto');
-const path = require('path');
 const fileStorage = require('../services/fileStorage.service');
 const UserPrintIdentity = require('../models/UserPrintIdentity');
 const PrintIdentityAsset = require('../models/PrintIdentityAsset');
@@ -8,11 +7,6 @@ const { requireHospitalId } = require('../services/tenantScope.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
 
 
-
-function resolveAssetPath(storagePath) {
-  if (!storagePath) return null;
-  return path.isAbsolute(storagePath) ? storagePath : fileStorage.absolutePath(storagePath);
-}
 
 function isExternalAssetUrl(value) {
   return /^https?:\/\//i.test(String(value || '').trim());
@@ -71,13 +65,12 @@ exports.getMyIdentity = async (req, res, next) => {
       status: { $ne: 'retired' }
     }).sort({ assetType: 1, version: -1 });
 
-    // Do not send legacy assets whose local file no longer exists and that
-    // do not have a Cloudinary copy. Those assets cause repeated 404 requests
-    // in every print dialog.
-    const assets = allAssets.filter((asset) =>
+    // Hide retired/broken legacy assets, while supporting both local and B2-backed files.
+    const availability = await Promise.all(allAssets.map(async (asset) => (
       isExternalAssetUrl(asset.cloudinaryUrl) ||
-      Boolean(asset.storagePath && fs.existsSync(resolveAssetPath(asset.storagePath)))
-    );
+      Boolean(asset.storagePath && await fileStorage.storagePathExists(asset.storagePath, { hospitalId: identity.hospitalId }))
+    )));
+    const assets = allAssets.filter((asset, index) => availability[index]);
 
     const usableIds = new Set(assets.map((asset) => String(asset._id)));
     const latestSig = assets.find((asset) =>
@@ -241,22 +234,25 @@ exports.streamAsset = async (req, res, next) => {
       return res.redirect(asset.cloudinaryUrl);
     }
 
-    const assetPath = resolveAssetPath(asset.storagePath);
-    if (!assetPath || !fs.existsSync(assetPath)) {
-      return res.status(404).json({ error: 'Asset file not found' });
+    let opened;
+    try {
+      opened = await fileStorage.openStoragePath(asset.storagePath, { hospitalId });
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.b2Code === 'not_found' || error?.statusCode === 404) {
+        return res.status(404).json({ error: 'Asset file not found' });
+      }
+      throw error;
     }
 
-    const stat = await fs.promises.stat(assetPath);
-    res.setHeader('Content-Type', asset.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Content-Type', opened.contentType || asset.mimeType || 'application/octet-stream');
+    if (opened.size || asset.sizeBytes) res.setHeader('Content-Length', String(opened.size || asset.sizeBytes));
     res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
 
-    const stream = fs.createReadStream(assetPath);
-    stream.on('error', next);
-    stream.pipe(res);
+    opened.stream.on('error', next);
+    opened.stream.pipe(res);
   } catch (error) { next(error); }
 };
 

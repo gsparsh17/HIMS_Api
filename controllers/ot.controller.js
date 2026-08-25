@@ -16,7 +16,7 @@ const { requireHospitalId } = require('../services/tenantScope.service');
 const { postSourceCharge, getSourceFinancialStatus } = require('../services/chargePosting.service');
 const ipdFinancial = require('../services/ipdFinancial.service');
 
-// Configure Cloudinary
+// File uploads use the configured HIMS storage driver.
 
 
 // Helper function to get billing controller dynamically

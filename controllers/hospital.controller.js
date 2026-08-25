@@ -48,9 +48,13 @@ const getHospitalById = async (req, res) => {
 };
 
 const updateHospitalDetails = async (req, res) => {
+  let newLogoUrl = null;
   try {
     const { hospitalId } = req.params;
     if (!canAccess(req, hospitalId)) return res.status(403).json({ message: 'No access to this hospital.' });
+
+    const existingHospital = await Hospital.findById(hospitalId).select('logo');
+    if (!existingHospital) return res.status(404).json({ message: 'Hospital not found' });
 
     const updateData = {};
     for (const [key, value] of Object.entries(req.body || {})) {
@@ -63,9 +67,12 @@ const updateHospitalDetails = async (req, res) => {
     if (req.file) {
       const result = await fileStorage.upload(req.file, req, {
         folder: 'hospital-logos',
+        // "public" means HIMS-auth/public-file route access, not a public B2 bucket.
+        // The B2 bucket itself remains private.
         visibility: 'public'
       });
-      updateData.logo = result.secure_url;
+      newLogoUrl = result.secure_url;
+      updateData.logo = newLogoUrl;
       fs.unlink(req.file.path, () => {});
     }
 
@@ -74,8 +81,19 @@ const updateHospitalDetails = async (req, res) => {
       runValidators: true
     });
     if (!hospital) return res.status(404).json({ message: 'Hospital not found' });
+
+    // Replacing a logo should not leave old B2/local objects consuming storage.
+    if (newLogoUrl && existingHospital.logo && existingHospital.logo !== newLogoUrl) {
+      await fileStorage.removeByUrl(existingHospital.logo).catch((error) => {
+        console.warn('Failed to remove superseded hospital logo:', error.message);
+      });
+    }
+
     return res.status(200).json({ message: 'Hospital details updated successfully.', hospital });
   } catch (error) {
+    // If the DB update failed after a new object was uploaded, clean up that orphan.
+    if (newLogoUrl) await fileStorage.removeByUrl(newLogoUrl).catch(() => {});
+    if (req.file?.path) fs.unlink(req.file.path, () => {});
     return res.status(500).json({ message: 'Server error while updating details.' });
   }
 };

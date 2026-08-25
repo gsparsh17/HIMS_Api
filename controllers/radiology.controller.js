@@ -36,7 +36,7 @@ const hasValidReportSignature = (file) => {
   }
 };
 
-// Configure Cloudinary
+// File uploads use the configured HIMS storage driver.
 
 
 // ============== IMAGING TEST MASTER CRUD ==============
@@ -427,7 +427,7 @@ exports.uploadReport = async (req, res) => {
       return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
     }
 
-    // Upload to Cloudinary
+    // Upload through the configured HIMS storage driver
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
     

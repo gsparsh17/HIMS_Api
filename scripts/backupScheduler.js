@@ -1,126 +1,108 @@
 const cron = require('node-cron');
-const mongoose = require('mongoose');
-const { performBackup, BACKUP_DIR } = require('./backup');
 const fs = require('fs');
 const path = require('path');
+const mongoose = require('mongoose');
+const { performBackup, cleanOldBackups, BACKUP_DIR } = require('./backup');
+const {
+  backupEnabled,
+  incrementalEnabled,
+  fullEnabled,
+  incrementalCron,
+  fullCron,
+  timezone
+} = require('../services/backup/config');
+const { startChangeTracker, getChangeTrackerStatus } = require('../services/backup/changeTracker.service');
+const BackupRun = require('../models/BackupRun');
 
-// Configuration
 const LOG_DIR = process.env.HIMS_BACKUP_LOG_DIR || path.join(BACKUP_DIR, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'backup_cron.log');
+fs.mkdirSync(LOG_DIR, { recursive: true });
 
-// Ensure log directory exists
-if (!fs.existsSync(LOG_DIR)) {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-}
+let incrementalJob = null;
+let fullJob = null;
 
-// Function to log messages
 function logMessage(message) {
-    const timestamp = new Date().toISOString();
-    const logEntry = `[${timestamp}] ${message}\n`;
-    fs.appendFileSync(LOG_FILE, logEntry);
-    console.log(logEntry);
+  const line = `[${new Date().toISOString()}] ${message}\n`;
+  fs.appendFileSync(LOG_FILE, line);
+  console.log(line.trim());
 }
 
-// Function to run backup
-async function runBackup() {
-    logMessage('==========================================');
-    logMessage('Starting scheduled backup...');
-    logMessage('==========================================');
-    
-    // Connect to MongoDB if not already connected
-    let needDisconnect = false;
+async function runBackup(type, reason = 'scheduled') {
+  let connectedHere = false;
+  try {
     if (mongoose.connection.readyState !== 1) {
-        try {
-            await mongoose.connect(process.env.MONGO_URI);
-            logMessage('✅ Connected to MongoDB');
-            needDisconnect = true;
-        } catch (error) {
-            logMessage(`❌ MongoDB connection failed: ${error.message}`);
-            return false;
-        }
+      await mongoose.connect(process.env.MONGO_URI);
+      connectedHere = true;
     }
-    
-    const result = await performBackup();
-    
-    if (needDisconnect) {
-        await mongoose.disconnect();
-        logMessage('👋 Disconnected from MongoDB');
-    }
-    
-    if (result.success) {
-        logMessage('✅ Weekly backup completed successfully');
-    } else {
-        logMessage(`❌ Weekly backup failed: ${result.error}`);
-    }
-    
-    return result.success;
+    logMessage(`Starting ${type} backup (${reason})`);
+    const result = await performBackup({ type, reason });
+    cleanOldBackups();
+    if (result.skipped) logMessage(`${type} backup skipped: no database changes since last checkpoint`);
+    else if (result.success) logMessage(`${type} backup completed: ${result.backupId} (${result.status})`);
+    else logMessage(`${type} backup failed: ${result.error || result.status}`);
+    return result;
+  } catch (error) {
+    logMessage(`${type} backup failed: ${error.message}`);
+    return { success: false, type, error: error.message };
+  } finally {
+    if (connectedHere) await mongoose.disconnect();
+  }
 }
 
-// Schedule weekly backup: Every Sunday at 2:00 AM IST
-const backupJob = cron.schedule('0 2 * * 0', async () => {
-    logMessage('🕒 Cron job triggered weekly backup');
-    await runBackup();
-}, {
-    scheduled: true,
-    timezone: "Asia/Kolkata"
-});
+async function startBackupScheduler() {
+  if (!backupEnabled()) {
+    logMessage('Backup scheduler disabled by BACKUP_ENABLED=false');
+    return null;
+  }
 
-// Function to start the backup scheduler
-function startBackupScheduler() {
-    logMessage('🚀 Backup Scheduler started');
-    logMessage(`📅 Schedule: Every Sunday at 2:00 AM IST`);
-    logMessage(`📁 Log file: ${LOG_FILE}`);
-    return backupJob;
+  if (incrementalEnabled()) await startChangeTracker();
+  const tz = timezone();
+
+  if (incrementalEnabled()) {
+    if (!cron.validate(incrementalCron())) throw new Error(`Invalid BACKUP_INCREMENTAL_CRON: ${incrementalCron()}`);
+    incrementalJob = cron.schedule(incrementalCron(), () => runBackup('incremental'), { timezone: tz });
+    logMessage(`Incremental backup schedule: ${incrementalCron()} (${tz})`);
+  }
+
+  if (fullEnabled()) {
+    if (!cron.validate(fullCron())) throw new Error(`Invalid BACKUP_FULL_CRON: ${fullCron()}`);
+    fullJob = cron.schedule(fullCron(), () => runBackup('full'), { timezone: tz });
+    logMessage(`Full backup schedule: ${fullCron()} (${tz})`);
+  }
+
+  return { incrementalJob, fullJob };
 }
 
-// Manual trigger function (can be called from API)
-async function triggerManualBackup() {
-    logMessage('🔧 Manual backup triggered via API');
-    return await runBackup();
+async function triggerManualBackup(type = 'incremental') {
+  return runBackup(type, 'manual');
 }
 
-// Get backup status
-function getBackupStatus() {
-    const status = {
-        isRunning: backupJob ? true : false,
-        schedule: '0 2 * * 0',
-        scheduleReadable: 'Every Sunday at 2:00 AM IST',
-        lastRun: null,
-        nextRun: null
-    };
-    
-    if (backupJob) {
-        const nextDates = backupJob.getNextDates(1);
-        if (nextDates && nextDates.length > 0) {
-            status.nextRun = nextDates[0].toISOString();
-        }
-    }
-    
-    // Get last run from log file
-    try {
-        if (fs.existsSync(LOG_FILE)) {
-            const logs = fs.readFileSync(LOG_FILE, 'utf8');
-            const lines = logs.trim().split('\n');
-            for (let i = lines.length - 1; i >= 0; i--) {
-                if (lines[i].includes('Weekly backup completed successfully') || 
-                    lines[i].includes('Weekly backup failed')) {
-                    const match = lines[i].match(/\[(.*?)\]/);
-                    if (match) {
-                        status.lastRun = match[1];
-                        break;
-                    }
-                }
-            }
-        }
-    } catch (error) {
-        console.error('Error reading log file:', error);
-    }
-    
-    return status;
+async function getBackupStatus() {
+  const lastRun = await BackupRun.findOne().sort({ createdAt: -1 }).lean().catch(() => null);
+  const lastFull = await BackupRun.findOne({ type: 'full', status: { $in: ['success', 'partial'] } }).sort({ completedAt: -1 }).lean().catch(() => null);
+  const lastIncremental = await BackupRun.findOne({ type: 'incremental', status: { $in: ['success', 'partial', 'skipped'] } }).sort({ completedAt: -1 }).lean().catch(() => null);
+  return {
+    enabled: backupEnabled(),
+    timezone: timezone(),
+    incremental: {
+      enabled: incrementalEnabled(),
+      cron: incrementalCron(),
+      tracker: getChangeTrackerStatus(),
+      lastRun: lastIncremental
+    },
+    full: {
+      enabled: fullEnabled(),
+      cron: fullCron(),
+      lastRun: lastFull
+    },
+    lastRun,
+    logFile: LOG_FILE
+  };
 }
 
 module.exports = {
-    startBackupScheduler,
-    triggerManualBackup,
-    getBackupStatus
+  startBackupScheduler,
+  triggerManualBackup,
+  getBackupStatus,
+  runBackup
 };

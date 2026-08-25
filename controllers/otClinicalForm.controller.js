@@ -11,19 +11,12 @@ const OTCaseInventoryUsage = require('../models/OTCaseInventoryUsage');
 const DocumentSignature = require('../models/DocumentSignature');
 const EncounterDocument = require('../models/EncounterDocument');
 const RenderedDocument = require('../models/RenderedDocument');
-const fs = require('fs');
-const path = require('path');
 const { requireHospitalId } = require('../services/tenantScope.service');
 
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { getTemplate, listTemplates } = require('../config/otSurgeryFormTemplates');
 const { renderOtFormPdf, renderOtPacketPdf, sha256, writeRenderedPdf } = require('../services/otFormPdf.service');
 const fileStorage = require('../services/fileStorage.service');
-
-function resolveRenderedPath(storagePath) {
-  if (!storagePath) return null;
-  return path.isAbsolute(storagePath) ? storagePath : fileStorage.absolutePath(storagePath);
-}
 
 const nativeModels = {
   OTReadinessChecklist,
@@ -345,7 +338,7 @@ exports.finalizeCaseFormPdf = async (req, res, next) => {
     const checksum = sha256(pdf);
     const revision = Number(record.version || 1);
     await RenderedDocument.updateMany({ hospitalId, sourceModel, sourceId: record._id, status: { $in: ['final', 'preview'] } }, { $set: { status: 'superseded' } });
-    const storagePath = writeRenderedPdf(pdf, { hospitalId, caseId: otCase._id, templateId: template.id, revision });
+    const storagePath = await writeRenderedPdf(pdf, { hospitalId, caseId: otCase._id, templateId: template.id, revision, uploadedBy: req.user._id });
     const rendered = await RenderedDocument.create({
       hospitalId, patientId: otCase.patientId?._id || otCase.patientId, admissionId: otCase.admissionId?._id || otCase.admissionId,
       relatedCaseId: otCase._id, documentType: template.id, title: template.title, sourceModel, sourceId: record._id,
@@ -380,13 +373,20 @@ exports.streamRenderedCaseForm = async (req, res, next) => {
     const hospitalId = requireHospitalId(req);
     await findCase(req, req.params.id);
     const rendered = await RenderedDocument.findOne({ _id: req.params.renderedId, hospitalId, relatedCaseId: req.params.id });
-    const renderedPath = rendered ? resolveRenderedPath(rendered.storagePath) : null;
-    if (!renderedPath || !fs.existsSync(renderedPath)) return res.status(404).json({ error: 'Rendered document not found' });
-    res.setHeader('Content-Type', 'application/pdf');
+    if (!rendered) return res.status(404).json({ error: 'Rendered document not found' });
+    let opened;
+    try { opened = await fileStorage.openStoragePath(rendered.storagePath, { hospitalId }); }
+    catch (error) {
+      if (error?.code === 'ENOENT' || error?.b2Code === 'not_found' || error?.statusCode === 404) return res.status(404).json({ error: 'Rendered document not found' });
+      throw error;
+    }
+    res.setHeader('Content-Type', opened.contentType || 'application/pdf');
+    if (opened.size || rendered.sizeBytes) res.setHeader('Content-Length', String(opened.size || rendered.sizeBytes));
     res.setHeader('Content-Disposition', `${req.query.download === 'true' ? 'attachment' : 'inline'}; filename="${rendered.templateId}-r${rendered.sourceRevision}.pdf"`);
     res.setHeader('ETag', rendered.sha256);
     res.setHeader('Cache-Control', 'private, max-age=300');
-    fs.createReadStream(renderedPath).pipe(res);
+    opened.stream.on('error', next);
+    opened.stream.pipe(res);
   } catch (error) { next(error); }
 };
 

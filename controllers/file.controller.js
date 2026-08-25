@@ -1,5 +1,3 @@
-const fs = require('fs');
-const path = require('path');
 const StoredFile = require('../models/StoredFile');
 const fileStorage = require('../services/fileStorage.service');
 
@@ -17,19 +15,25 @@ exports.streamFile = async (req, res, next) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    const filePath = fileStorage.absolutePath(record.storageKey);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File content is unavailable' });
+    let opened;
+    try {
+      opened = await fileStorage.openRead(record);
+    } catch (error) {
+      if (error?.statusCode === 404 || error?.b2Code === 'not_found' || error?.code === 'ENOENT') {
+        return res.status(404).json({ error: 'File content is unavailable' });
+      }
+      throw error;
+    }
 
-    res.setHeader('Content-Type', record.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Length', String(record.sizeBytes));
+    res.setHeader('Content-Type', opened.contentType || record.mimeType || 'application/octet-stream');
+    if (opened.size || record.sizeBytes) res.setHeader('Content-Length', String(opened.size || record.sizeBytes));
     res.setHeader('Content-Disposition', contentDisposition(record, req.query.download === '1'));
     res.setHeader('Cache-Control', record.visibility === 'public' ? 'public, max-age=3600' : 'private, no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
 
-    const stream = fs.createReadStream(filePath);
-    stream.on('error', next);
-    stream.pipe(res);
+    opened.stream.on('error', next);
+    opened.stream.pipe(res);
   } catch (error) {
     next(error);
   }
@@ -45,10 +49,7 @@ exports.deleteFile = async (req, res, next) => {
       return res.status(403).json({ error: 'You are not allowed to delete this file' });
     }
 
-    const filePath = fileStorage.absolutePath(record.storageKey);
-    await fs.promises.unlink(filePath).catch((error) => {
-      if (error.code !== 'ENOENT') throw error;
-    });
+    await fileStorage.deleteStoredFile(record);
     record.status = 'deleted';
     record.deletedAt = new Date();
     await record.save();
