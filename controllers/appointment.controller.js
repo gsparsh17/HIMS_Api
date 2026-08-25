@@ -10,6 +10,8 @@ const Doctor = require('../models/Doctor');
 const Department = require('../models/Department');
 const Episode = require('../models/Episode');
 const Hospital = require('../models/Hospital');
+const Bill = require('../models/Bill');
+const Referral = require('../models/Referral');
 const OfflineSyncLog = require('../models/OfflineSyncLog');
 const { calculatePartTimeSalary } = require('../controllers/salary.controller');
 const { requireHospitalId } = require('../services/tenantScope.service');
@@ -1736,6 +1738,9 @@ exports.getAllAppointments = async (req, res) => {
       .populate('doctor_id')
       .populate('department_id')
       .populate('hospital_id')
+      .populate('referral.referringDoctorId', 'firstName lastName specialization department doctorId')
+      .populate('referral.referredDoctorId', 'firstName lastName specialization department doctorId')
+      .populate('referral.departmentId', 'name')
       .sort({ appointment_date: -1 })
       .limit(limit);
 
@@ -1761,7 +1766,10 @@ exports.getAppointmentById = async (req, res) => {
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
-      .populate('hospital_id');
+      .populate('hospital_id')
+      .populate('referral.referringDoctorId', 'firstName lastName specialization department doctorId')
+      .populate('referral.referredDoctorId', 'firstName lastName specialization department doctorId')
+      .populate('referral.departmentId', 'name');
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
     const vitals = await Vital.findOne({ appointment_id: appointment._id });
@@ -2070,10 +2078,48 @@ exports.cancelAppointment = async (req, res) => {
     }
 
     const cancelledAt = operationNow();
+    const refundRequested = Boolean(req.body.refundRequested);
+    const refundAmount = Number(req.body.refundAmount || 0);
+    const refundMethod = req.body.refundMethod || 'Cash';
+    const refundReason = String(req.body.refundReason || reason).trim();
+    let refundReceiptNumber = null;
+
+    // If refund was requested and amount > 0, find and update linked bill
+    let linkedBill = await Bill.findOne({ appointment_id: appointment._id, hospital_id: hospitalId });
+    if (refundRequested && refundAmount > 0) {
+      refundReceiptNumber = `REF-${Date.now().toString(36).toUpperCase()}`;
+      if (linkedBill) {
+        linkedBill.refund_amount = (linkedBill.refund_amount || 0) + refundAmount;
+        linkedBill.refund_history = linkedBill.refund_history || [];
+        linkedBill.refund_history.push({
+          refund_number: refundReceiptNumber,
+          amount: refundAmount,
+          payment_method: refundMethod,
+          reason: refundReason,
+          refunded_by: req.user?._id,
+          refunded_at: cancelledAt
+        });
+        linkedBill.status = 'Cancelled';
+        await linkedBill.save();
+      }
+    } else if (linkedBill) {
+      linkedBill.status = 'Cancelled';
+      await linkedBill.save();
+    }
+
     appointment.status = 'Cancelled';
     appointment.cancellationReason = reason;
     appointment.cancelledAt = cancelledAt;
     appointment.cancelledBy = req.user?._id;
+    appointment.cancellationRefund = {
+      refundRequested,
+      refundAmount: refundRequested ? refundAmount : 0,
+      refundMethod: refundRequested ? refundMethod : undefined,
+      refundReason: refundRequested ? refundReason : undefined,
+      refundReceiptNumber: refundReceiptNumber || undefined,
+      refundedAt: refundRequested ? cancelledAt : undefined,
+      refundedBy: refundRequested ? req.user?._id : undefined
+    };
     appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
     appointment.lifecycleTimestamps.cancelledAt = cancelledAt;
     appointment.cancellationHistory.push({
@@ -2101,14 +2147,210 @@ exports.cancelAppointment = async (req, res) => {
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
-      .populate('cancelledBy', 'name email role');
+      .populate('cancelledBy', 'name email role')
+      .populate('cancellationRefund.refundedBy', 'name email role');
+
+    const cancellationReceipt = {
+      receiptNumber: `CAN-${appointment._id.toString().slice(-6).toUpperCase()}`,
+      cancellationDate: cancelledAt,
+      reason,
+      cancelledBy: populated.cancelledBy,
+      appointment: populated,
+      refund: appointment.cancellationRefund,
+      bill: linkedBill || null
+    };
 
     return res.json({
       success: true,
       message: 'Appointment cancelled successfully',
-      appointment: populated
+      appointment: populated,
+      cancellationReceipt
     });
   } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+// Get Cancellation Receipt for any cancelled appointment
+exports.getCancellationReceipt = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId })
+      .populate('patient_id')
+      .populate('doctor_id')
+      .populate('department_id')
+      .populate('cancelledBy', 'name email role')
+      .populate('cancellationRefund.refundedBy', 'name email role');
+
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
+    if (appointment.status !== 'Cancelled') {
+      return res.status(400).json({ error: 'Appointment is not cancelled' });
+    }
+
+    const linkedBill = await Bill.findOne({ appointment_id: appointment._id, hospital_id: hospitalId });
+    const hospital = await Hospital.findById(hospitalId);
+
+    const cancellationReceipt = {
+      receiptNumber: `CAN-${appointment._id.toString().slice(-6).toUpperCase()}`,
+      cancellationDate: appointment.cancelledAt || appointment.lifecycleTimestamps?.cancelledAt,
+      reason: appointment.cancellationReason,
+      cancelledBy: appointment.cancelledBy,
+      appointment,
+      refund: appointment.cancellationRefund || {},
+      bill: linkedBill || null,
+      hospital: hospital || null
+    };
+
+    return res.json({
+      success: true,
+      cancellationReceipt
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+// Refer patient to another doctor / department
+exports.referToDoctor = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const sourceAppointmentId = req.params.id;
+    const {
+      referredDoctorId,
+      departmentId,
+      reason,
+      clinicalSummary,
+      priority = 'Routine',
+      appointmentDate = hospitalTodayKey(),
+      type = 'number-based'
+    } = req.body;
+
+    if (!referredDoctorId) return res.status(400).json({ error: 'Target referred doctor is required' });
+    if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'Referral reason is required' });
+
+    const sourceAppointment = await Appointment.findOne({
+      _id: sourceAppointmentId,
+      hospital_id: hospitalId
+    }).populate('patient_id doctor_id department_id');
+
+    if (!sourceAppointment) return res.status(404).json({ error: 'Source appointment not found' });
+
+    const targetDoctor = await Doctor.findOne({ _id: referredDoctorId, hospitalId });
+    if (!targetDoctor) return res.status(404).json({ error: 'Target referred doctor not found' });
+
+    const targetDeptId = departmentId || targetDoctor.department;
+
+    // Create target appointment in queue
+    const token = await nextAppointmentToken(hospitalId, appointmentDate);
+    const lastQueue = await Appointment.countDocuments({
+      hospital_id: hospitalId,
+      doctor_id: referredDoctorId,
+      appointment_date: dateKeyToStorageDate(hospitalDateKey(appointmentDate))
+    });
+
+    const priorityMap = {
+      Routine: 'Normal',
+      Urgent: 'Urgent',
+      STAT: 'Urgent',
+      Low: 'Low',
+      Normal: 'Normal',
+      High: 'High'
+    };
+    const mappedApptPriority = priorityMap[priority] || 'Normal';
+
+    const targetAppointment = new Appointment({
+      hospital_id: hospitalId,
+      patient_id: sourceAppointment.patient_id._id,
+      doctor_id: referredDoctorId,
+      department_id: targetDeptId,
+      appointment_date: dateKeyToStorageDate(hospitalDateKey(appointmentDate)),
+      type,
+      appointment_type: 'consultation',
+      priority: mappedApptPriority,
+      status: 'Scheduled',
+      serial_number: lastQueue + 1,
+      token,
+      notes: `Referred by Dr. ${sourceAppointment.doctor_id?.firstName || ''} ${sourceAppointment.doctor_id?.lastName || ''}. Reason: ${reason}`,
+      referral: {
+        isReferred: true,
+        referringDoctorId: sourceAppointment.doctor_id?._id,
+        referredDoctorId: targetDoctor._id,
+        departmentId: targetDeptId,
+        reason: String(reason).trim(),
+        clinicalSummary: String(clinicalSummary || '').trim(),
+        priority,
+        referredAt: operationNow(),
+        referredBy: req.user?._id,
+        targetAppointmentId: null,
+        status: 'Pending'
+      }
+    });
+
+    await targetAppointment.save();
+
+    const referralNumber = `REF-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    // Update target appointment referral metadata
+    targetAppointment.referral = {
+      isReferred: true,
+      referralNumber,
+      referringDoctorId: sourceAppointment.doctor_id?._id,
+      referredDoctorId: targetDoctor._id,
+      departmentId: targetDeptId,
+      reason: String(reason).trim(),
+      clinicalSummary: String(clinicalSummary || '').trim(),
+      priority,
+      referredAt: operationNow(),
+      referredBy: req.user?._id,
+      targetAppointmentId: null,
+      status: 'Pending'
+    };
+    await targetAppointment.save();
+
+    // Update source appointment referral reference
+    sourceAppointment.referral = {
+      isReferred: true,
+      referralNumber,
+      referringDoctorId: sourceAppointment.doctor_id?._id,
+      referredDoctorId: targetDoctor._id,
+      departmentId: targetDeptId,
+      reason: String(reason).trim(),
+      clinicalSummary: String(clinicalSummary || '').trim(),
+      priority,
+      referredAt: operationNow(),
+      referredBy: req.user?._id,
+      targetAppointmentId: targetAppointment._id,
+      status: 'Pending'
+    };
+    await sourceAppointment.save();
+
+    // Create Referral document
+    const referralDoc = new Referral({
+      hospitalId,
+      referralNumber,
+      patientId: sourceAppointment.patient_id._id,
+      sourceAppointmentId: sourceAppointment._id,
+      targetAppointmentId: targetAppointment._id,
+      referringDoctorId: sourceAppointment.doctor_id?._id,
+      referredDoctorId: targetDoctor._id,
+      departmentId: targetDeptId,
+      reason: String(reason).trim(),
+      clinicalSummary: String(clinicalSummary || '').trim(),
+      priority,
+      referredAt: operationNow(),
+      referredBy: req.user?._id,
+      status: 'Pending'
+    });
+    await referralDoc.save();
+
+    return res.status(201).json({
+      success: true,
+      message: `Patient referred to Dr. ${targetDoctor.firstName || ''} ${targetDoctor.lastName || ''} successfully`,
+      referral: referralDoc,
+      targetAppointment
+    });
+  } catch (error) {
+    console.error('Error referring patient to doctor:', error);
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
@@ -2197,7 +2439,10 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
-      .populate('hospital_id');
+      .populate('hospital_id')
+      .populate('referral.referringDoctorId', 'firstName lastName specialization department doctorId')
+      .populate('referral.referredDoctorId', 'firstName lastName specialization department doctorId')
+      .populate('referral.departmentId', 'name');
 
     const appointmentsWithVitals = await Promise.all(appointments.map(async (appt) => {
       const vital = await Vital.findOne({ appointment_id: appt._id });
@@ -2209,7 +2454,7 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
 
     res.json(appointmentsWithVitals);
   } catch (err) {
-    res.status(err.statusCode || 500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
 
@@ -2224,7 +2469,10 @@ exports.getAppointmentsByDepartmentId = async (req, res) => {
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
-      .populate('hospital_id');
+      .populate('hospital_id')
+      .populate('referral.referringDoctorId', 'firstName lastName specialization department doctorId')
+      .populate('referral.referredDoctorId', 'firstName lastName specialization department doctorId')
+      .populate('referral.departmentId', 'name');
 
     if (appointments.length === 0) {
       return res.status(404).json({ error: 'No appointments found for this department' });

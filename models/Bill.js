@@ -264,7 +264,7 @@ const billSchema = new mongoose.Schema({
 
   payment_method: {
     type: String,
-    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Bank', 'Government Scheme', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Split', 'NoPayment', 'Adjustment'],
+    enum: ['Pending', 'Cash', 'Card', 'Insurance', 'UPI', 'Net Banking', 'Wallet', 'Bank', 'Government Scheme', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Split', 'NoPayment', 'Adjustment'],
     required: true,
     default: 'Pending'
   },
@@ -273,7 +273,7 @@ const billSchema = new mongoose.Schema({
   payments: [{
     method: {
       type: String,
-      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Bank', 'Insurance', 'Government Scheme', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment']
+      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Wallet', 'Bank', 'Insurance', 'Government Scheme', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment']
     },
     amount: Number,
     reference: String,
@@ -284,9 +284,41 @@ const billSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['Draft', 'Generated', 'Pending', 'Paid', 'Partially Paid', 'Refunded', 'Cancelled', 'Partially Returned', 'Fully Returned'],
+    enum: ['Draft', 'Generated', 'Pending', 'Paid', 'Partially Paid', 'Discount Pending Approval', 'Refunded', 'Partially Refunded', 'Cancelled', 'Partially Returned', 'Fully Returned'],
     default: 'Draft'
   },
+
+  discount_approval: {
+    status: {
+      type: String,
+      enum: ['NOT_APPLIED', 'PENDING', 'APPROVED', 'REJECTED'],
+      default: 'NOT_APPLIED'
+    },
+    requested_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    requested_at: { type: Date },
+    discount_amount: { type: Number, default: 0 },
+    discount_percentage: { type: Number, default: 0 },
+    reason: { type: String, trim: true },
+    approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    approved_at: { type: Date },
+    approval_notes: { type: String, trim: true },
+    rejection_reason: { type: String, trim: true }
+  },
+
+  refund_history: [{
+    refund_number: { type: String, trim: true },
+    amount: { type: Number, required: true },
+    payment_method: {
+      type: String,
+      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Wallet', 'Bank', 'Adjustment', 'Other'],
+      default: 'Cash'
+    },
+    reason: { type: String, trim: true },
+    refunded_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    refunded_at: { type: Date, default: operationNow },
+    transaction_id: { type: String, trim: true }
+  }],
+
   generated_at: {
     type: Date,
     default: operationNow

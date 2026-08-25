@@ -323,9 +323,23 @@ const hasActionPermission = (user, action) => {
     return true;
   }
 
-  // Check module permissions for actions
-  const permissions = user.modulePermissions || [];
+  // Check direct user.actions array
+  if (Array.isArray(user.actions) && user.actions.includes(action)) {
+    return true;
+  }
+
+  // Check effective module permissions (includes role defaults)
+  const permissions = effectiveMainFeaturePermissions(user) || [];
   for (const permission of permissions) {
+    if (permission.actions && Array.isArray(permission.actions) && 
+        permission.actions.includes(action)) {
+      return true;
+    }
+  }
+
+  // Check raw module permissions for actions
+  const rawPermissions = user.modulePermissions || [];
+  for (const permission of rawPermissions) {
     if (permission.actions && Array.isArray(permission.actions) && 
         permission.actions.includes(action)) {
       return true;
@@ -540,8 +554,17 @@ exports.getUserActions = (user) => {
   }
 
   const actions = new Set();
-  const permissions = user.modulePermissions || [];
+  if (Array.isArray(user.actions)) {
+    user.actions.forEach(action => actions.add(action));
+  }
+  const permissions = effectiveMainFeaturePermissions(user) || [];
   for (const permission of permissions) {
+    if (permission.actions && Array.isArray(permission.actions)) {
+      permission.actions.forEach(action => actions.add(action));
+    }
+  }
+  const rawPermissions = user.modulePermissions || [];
+  for (const permission of rawPermissions) {
     if (permission.actions && Array.isArray(permission.actions)) {
       permission.actions.forEach(action => actions.add(action));
     }

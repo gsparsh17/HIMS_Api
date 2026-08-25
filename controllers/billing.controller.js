@@ -451,6 +451,11 @@ async function createCanonicalAppointmentBilling(req, payload) {
       if (!description) throw Object.assign(new Error('Manual bill item description is required'), { statusCode: 400 });
     }
 
+    const resolvedDiscountType = payload.discountType || payload.discount_type || (payload.discountRate || payload.discount_rate ? 'percentage' : 'fixed');
+    const resolvedDiscountRate = Number(payload.discountRate ?? payload.discount_rate ?? (resolvedDiscountType === 'percentage' ? (payload.discountValue ?? payload.discount) : 0));
+    const resolvedDiscountAmount = Number(payload.discountAmount ?? payload.discount_amount ?? (resolvedDiscountType === 'fixed' ? (payload.discountValue ?? payload.discount) : 0));
+    const resolvedDiscountReason = payload.discountReason || payload.discount_reason;
+
     const result = await patientFinancial.addOPDCharge(payload.patient_id, {
       appointmentId: appointment._id,
       description,
@@ -461,14 +466,14 @@ async function createCanonicalAppointmentBilling(req, payload) {
       quantity: Math.max(1, Number(item.quantity || 1)),
       selectedMode,
       requestedDeposit: payload.requestedDeposit,
-      discountType: payload.discountType,
-      discountValue: payload.discountValue,
-      discountRate: payload.discountRate,
-      discountAmount: payload.discountAmount,
-      discountReason: payload.discountReason,
-      taxMode: payload.taxMode,
-      taxRate: payload.taxRate,
-      overrideReason: payload.billingModeOverrideReason,
+      discountType: resolvedDiscountType,
+      discountValue: payload.discountValue ?? payload.discount_value ?? payload.discount,
+      discountRate: resolvedDiscountRate,
+      discountAmount: resolvedDiscountAmount,
+      discountReason: resolvedDiscountReason,
+      taxMode: payload.taxMode || payload.tax_mode,
+      taxRate: payload.taxRate || payload.tax_rate,
+      overrideReason: payload.billingModeOverrideReason || payload.overrideReason,
       idempotencyKey: `${rootKey}:line:${lineNo}`,
       notes: payload.notes,
       createdFrom: 'AppointmentBillingCompatibility'
@@ -485,6 +490,11 @@ async function createCanonicalAppointmentBilling(req, payload) {
   }
 
   if (!created.length) {
+    const resolvedDiscountType = payload.discountType || payload.discount_type || (payload.discountRate || payload.discount_rate ? 'percentage' : 'fixed');
+    const resolvedDiscountRate = Number(payload.discountRate ?? payload.discount_rate ?? (resolvedDiscountType === 'percentage' ? (payload.discountValue ?? payload.discount) : 0));
+    const resolvedDiscountAmount = Number(payload.discountAmount ?? payload.discount_amount ?? (resolvedDiscountType === 'fixed' ? (payload.discountValue ?? payload.discount) : 0));
+    const resolvedDiscountReason = payload.discountReason || payload.discount_reason;
+
     const result = await patientFinancial.addOPDCharge(payload.patient_id, {
       appointmentId: appointment._id,
       description: 'OPD Consultation',
@@ -495,6 +505,13 @@ async function createCanonicalAppointmentBilling(req, payload) {
       quantity: 1,
       selectedMode,
       requestedDeposit: payload.requestedDeposit,
+      discountType: resolvedDiscountType,
+      discountValue: payload.discountValue ?? payload.discount_value ?? payload.discount,
+      discountRate: resolvedDiscountRate,
+      discountAmount: resolvedDiscountAmount,
+      discountReason: resolvedDiscountReason,
+      taxMode: payload.taxMode || payload.tax_mode,
+      taxRate: payload.taxRate || payload.tax_rate,
       idempotencyKey: `${rootKey}:line:0`,
       createdFrom: 'AppointmentBillingCompatibility'
     }, req.user);
@@ -509,13 +526,14 @@ async function createCanonicalAppointmentBilling(req, payload) {
   }, req.user);
   const invoice = invoiceResult.invoice;
   const requiredNow = money(created.reduce((sum, row) => sum + Number(row.financialPolicy?.requiredNow || 0), 0));
-  const explicitPayment = payload.paymentAmount ?? payload.amountPaid;
-  const shouldCollect = explicitPayment !== undefined || String(payload.status || '').toLowerCase() === 'paid';
+  const explicitPayment = payload.paymentAmount ?? payload.amountPaid ?? payload.paid_amount ?? payload.paidAmount;
+  const isPaidOrPartial = ['paid', 'partially paid', 'partial', 'discount pending approval'].includes(String(payload.status || '').toLowerCase());
+  const shouldCollect = explicitPayment !== undefined || isPaidOrPartial;
   let payment = null;
   if (shouldCollect && Number(invoice.balance_due || 0) > 0) {
     const amountToCollect = explicitPayment !== undefined
       ? money(Math.min(Number(explicitPayment || 0), Number(invoice.balance_due || 0)))
-      : money(Number(invoice.balance_due || 0));
+      : (String(payload.status || '').toLowerCase() === 'paid' ? money(Number(invoice.balance_due || 0)) : 0);
     if (amountToCollect > 0) {
       payment = await patientFinancial.recordOPDPayment(payload.patient_id, {
         invoiceId: invoice._id,
@@ -2060,7 +2078,7 @@ exports.getBillByAppointmentId = async (req, res) => {
       .populate('patient_id', 'first_name last_name patientId')
       .populate('appointment_id', 'appointment_date type doctor_id department_id')
       .populate('prescription_id', 'prescription_number diagnosis procedure_requests lab_test_requests radiology_test_requests')
-      .populate('invoice_id', 'invoice_number status total')
+      .populate('invoice_id', 'invoice_number status total amount_paid balance_due discount subtotal payment_method payment_history')
       .populate({
         path: 'appointment_id',
         populate: [
@@ -2073,7 +2091,24 @@ exports.getBillByAppointmentId = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Bill not found for this appointment' });
     }
 
-    res.json({ success: true, bill });
+    const billObj = bill.toObject();
+    if (bill.invoice_id) {
+      const inv = bill.invoice_id;
+      if (inv.amount_paid != null && inv.amount_paid > 0) {
+        billObj.paid_amount = inv.amount_paid;
+      }
+      if (inv.balance_due != null) {
+        billObj.balance_due = inv.balance_due;
+      }
+      if (inv.status) {
+        billObj.status = inv.status === 'Paid' ? 'Paid' : (inv.status === 'Partial' || inv.status === 'Partially Paid' ? 'Partially Paid' : inv.status);
+      }
+      if (inv.discount != null && inv.discount > 0 && !billObj.discount) {
+        billObj.discount = inv.discount;
+      }
+    }
+
+    res.json({ success: true, bill: billObj });
   } catch (err) {
     console.error('Error fetching bill by appointment:', err);
     res.status(500).json({ error: err.message });
@@ -2579,3 +2614,214 @@ exports.generateInvoiceFromBill = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Process OPD Payment Refund (Cash, Card, UPI, Net Banking, Wallet, etc.)
+ */
+exports.processOPDRefund = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const billId = req.params.id;
+    const { amount, payment_method = 'Cash', reason = 'Patient Request' } = req.body;
+
+    const refundAmount = Number(amount || 0);
+    if (!refundAmount || refundAmount <= 0) {
+      return res.status(400).json({ error: 'Valid refund amount greater than 0 is required' });
+    }
+
+    const bill = await Bill.findOne({ _id: billId, hospital_id: hospitalId, is_deleted: { $ne: true } })
+      .populate('patient_id')
+      .populate('appointment_id')
+      .populate('admission_id');
+
+    if (!bill) return res.status(404).json({ error: 'Bill not found' });
+
+    const totalCollected = Number(bill.paid_amount || bill.total_amount || 0);
+    const existingRefunded = Number(bill.refund_amount || 0);
+    const maxRefundable = Math.max(0, totalCollected - existingRefunded);
+
+    if (refundAmount > maxRefundable) {
+      return res.status(400).json({
+        error: `Refund amount (₹${refundAmount}) exceeds maximum refundable amount (₹${maxRefundable})`
+      });
+    }
+
+    const now = operationNow();
+    const refundNumber = `REF-${Date.now().toString(36).toUpperCase()}`;
+
+    bill.refund_history = bill.refund_history || [];
+    bill.refund_history.push({
+      refund_number: refundNumber,
+      amount: refundAmount,
+      payment_method,
+      reason: String(reason).trim(),
+      refunded_by: req.user?._id,
+      refunded_at: now,
+      transaction_id: req.body.transaction_id || undefined
+    });
+
+    bill.refund_amount = money(existingRefunded + refundAmount);
+    bill.paid_amount = money(Math.max(0, totalCollected - refundAmount));
+    bill.balance_due = money(Math.max(0, Number(bill.total_amount || 0) - Number(bill.paid_amount || 0)));
+
+    if (bill.paid_amount <= 0) {
+      bill.status = 'Refunded';
+    } else {
+      bill.status = 'Partially Refunded';
+    }
+
+    await bill.save();
+
+    const refundReceipt = {
+      refundNumber,
+      refundDate: now,
+      refundAmount,
+      paymentMethod: payment_method,
+      reason: String(reason).trim(),
+      refundedBy: req.user ? { _id: req.user._id, name: req.user.name, role: req.user.role } : null,
+      bill: {
+        _id: bill._id,
+        bill_number: bill.bill_number || String(bill._id),
+        total_amount: bill.total_amount,
+        paid_amount: bill.paid_amount,
+        refund_amount: bill.refund_amount,
+        status: bill.status
+      },
+      patient: bill.patient_id,
+      appointment: bill.appointment_id
+    };
+
+    return res.json({
+      success: true,
+      message: `Refund of ₹${refundAmount} processed successfully via ${payment_method}`,
+      refundReceipt,
+      bill
+    });
+  } catch (error) {
+    if (next) return next(error);
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+/**
+ * Get Refund Receipt Details
+ */
+exports.getRefundReceipt = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const { id: billId, refundId } = req.params;
+
+    const bill = await Bill.findOne({ _id: billId, hospital_id: hospitalId })
+      .populate('patient_id')
+      .populate('appointment_id')
+      .populate('refund_history.refunded_by', 'name email role');
+
+    if (!bill) return res.status(404).json({ error: 'Bill not found' });
+
+    const refund = (bill.refund_history || []).find(
+      (r) => String(r._id) === String(refundId) || r.refund_number === refundId
+    );
+
+    if (!refund) return res.status(404).json({ error: 'Refund record not found' });
+
+    return res.json({
+      success: true,
+      refundReceipt: {
+        refundNumber: refund.refund_number,
+        refundDate: refund.refunded_at,
+        refundAmount: refund.amount,
+        paymentMethod: refund.payment_method,
+        reason: refund.reason,
+        refundedBy: refund.refunded_by,
+        bill,
+        patient: bill.patient_id,
+        appointment: bill.appointment_id
+      }
+    });
+  } catch (error) {
+    if (next) return next(error);
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+/**
+ * Review Discount Approval (Approve or Reject)
+ */
+exports.reviewDiscountApproval = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const billId = req.params.id;
+    const { action, approvalNotes, rejectionReason } = req.body;
+
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ error: "Action must be 'approve' or 'reject'" });
+    }
+
+    const bill = await Bill.findOne({ _id: billId, hospital_id: hospitalId })
+      .populate('patient_id')
+      .populate('discount_approval.requested_by', 'name email role');
+
+    if (!bill) return res.status(404).json({ error: 'Bill not found' });
+
+    // Enforce self-approval prevention: user cannot approve their own discount unless unrestricted super admin
+    const isSelfApproval = String(bill.discount_approval?.requested_by?._id || bill.discount_approval?.requested_by) === String(req.user?._id);
+    const isUnrestrictedAdmin = req.user?.role === 'mediqliq_super_admin' || (req.user?.role === 'admin' && !req.user?.enforceModulePermissions);
+
+    if (isSelfApproval && !isUnrestrictedAdmin) {
+      return res.status(403).json({ error: 'Self-approval of discounts is not permitted. Another authorized user must approve.' });
+    }
+
+    const now = operationNow();
+
+    if (action === 'approve') {
+      bill.discount_approval = {
+        ...(bill.discount_approval?.toObject?.() || bill.discount_approval || {}),
+        status: 'APPROVED',
+        approved_by: req.user?._id,
+        approved_at: now,
+        approval_notes: String(approvalNotes || '').trim()
+      };
+      // Determine next status based on payment collected
+      const paid = Number(bill.paid_amount || 0);
+      const total = Number(bill.total_amount || 0);
+      if (paid >= total && total > 0) {
+        bill.status = 'Paid';
+      } else if (paid > 0) {
+        bill.status = 'Partially Paid';
+      } else {
+        bill.status = 'Pending';
+      }
+    } else {
+      // Reject: restore total without the discount
+      const rejectedDiscount = Number(bill.discount || 0);
+      bill.discount_approval = {
+        ...(bill.discount_approval?.toObject?.() || bill.discount_approval || {}),
+        status: 'REJECTED',
+        approved_by: req.user?._id,
+        approved_at: now,
+        rejection_reason: String(rejectionReason || 'Discount rejected').trim()
+      };
+      bill.discount = 0;
+      bill.total_amount = money(Number(bill.total_amount || 0) + rejectedDiscount);
+      bill.balance_due = money(Math.max(0, Number(bill.total_amount || 0) - Number(bill.paid_amount || 0)));
+      bill.status = Number(bill.paid_amount || 0) >= bill.total_amount ? 'Paid' : (Number(bill.paid_amount || 0) > 0 ? 'Partially Paid' : 'Pending');
+    }
+
+    await bill.save();
+
+    const populated = await Bill.findById(bill._id)
+      .populate('patient_id')
+      .populate('discount_approval.requested_by', 'name email role')
+      .populate('discount_approval.approved_by', 'name email role');
+
+    return res.json({
+      success: true,
+      message: `Discount request ${action === 'approve' ? 'approved' : 'rejected'} successfully`,
+      bill: populated
+    });
+  } catch (error) {
+    if (next) return next(error);
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+

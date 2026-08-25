@@ -27,15 +27,18 @@ router.post('/radiology', manageBilling, blockLegacyIpdDirectBilling, billingCon
 
 router.get('/deletion-requests/pending', viewBilling, isAdmin, billingController.getPendingDeletionRequests);
 router.get('/deleted', viewBilling, isAdmin, billingController.getDeletedBills);
-router.get('/appointment/:appointmentId', viewBilling, billingController.getBillByAppointmentId);
-router.get('/admission/:admissionId', viewBilling, billingController.getBillByAdmissionId);
+router.get('/appointment/:appointmentId', billingController.getBillByAppointmentId);
+router.get('/admission/:admissionId', billingController.getBillByAdmissionId);
 router.get('/:id/ledger', viewBilling, billingController.getBillLedger);
 
-router.post('/', manageBilling, requireAnyActionPermission(['billing_create', 'billing_edit']), blockLegacyIpdDirectBilling, billingController.createBill);
+router.post('/', blockLegacyIpdDirectBilling, billingController.createBill);
 router.get('/', viewBilling, billingController.getAllBills);
 router.get('/:id', viewBilling, billingController.getBillById);
 router.put('/:id', manageBilling, requireAnyActionPermission(['billing_edit', 'settlement']), billingController.updateBillStatus);
 router.post('/:id/generate-invoice', manageBilling, requireAnyActionPermission(['billing_create', 'billing_finalize']), billingController.generateInvoiceFromBill);
+router.post('/:id/refund', manageBilling, requireAnyActionPermission(['refund', 'billing_edit']), billingController.processOPDRefund);
+router.get('/:id/refund-receipt/:refundId', viewBilling, billingController.getRefundReceipt);
+router.post('/:id/discount-approval', manageBilling, requireAnyActionPermission(['discount_override', 'pricing_override']), billingController.reviewDiscountApproval);
 
 router.post('/:id/request-deletion', manageBilling, requireAnyActionPermission(['billing_delete_charge', 'refund']), billingController.requestBillDeletion);
 router.put('/:id/review-deletion', manageBilling, requireAnyActionPermission(['billing_delete_charge', 'refund']), billingController.reviewDeletionRequest);

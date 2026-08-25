@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const LabRequest = require('../models/LabRequest');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const ProcedureRequest = require('../models/ProcedureRequest');
+const OTRequest = require('../models/OTRequest');
 const { BILLING_STATES } = require('../utils/billingLifecycle');
 
 const MODEL_BY_MODULE = {
@@ -10,7 +11,9 @@ const MODEL_BY_MODULE = {
   RadiologyRequest,
   Radiology: RadiologyRequest,
   ProcedureRequest,
-  Procedure: ProcedureRequest
+  Procedure: ProcedureRequest,
+  OTRequest,
+  OT: OTRequest
 };
 
 function sessionOptions(session) { return session ? { session } : {}; }

@@ -26,7 +26,7 @@ const appointmentSchema = new mongoose.Schema({
   },
   priority: {
     type: String,
-    enum: ['Low', 'Normal', 'High', 'Urgent'],
+    enum: ['Low', 'Normal', 'High', 'Urgent', 'Routine', 'STAT'],
     default: 'Normal'
   },
   notes: { type: String },
@@ -43,6 +43,32 @@ const appointmentSchema = new mongoose.Schema({
   cancelledBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
+  },
+  cancellationRefund: {
+    refundRequested: { type: Boolean, default: false },
+    refundAmount: { type: Number, default: 0 },
+    refundMethod: {
+      type: String,
+      enum: ['Cash', 'Card', 'UPI', 'Net Banking', 'Wallet', 'Bank', 'Adjustment', 'Other']
+    },
+    refundReason: String,
+    refundReceiptNumber: String,
+    refundedAt: Date,
+    refundedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+  referral: {
+    isReferred: { type: Boolean, default: false },
+    referralNumber: { type: String, trim: true },
+    referringDoctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
+    referredDoctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
+    departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+    reason: { type: String, trim: true },
+    clinicalSummary: { type: String, trim: true },
+    priority: { type: String, enum: ['Routine', 'Urgent', 'STAT'], default: 'Routine' },
+    referredAt: Date,
+    referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    targetAppointmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' },
+    status: { type: String, enum: ['Pending', 'Completed', 'Cancelled'], default: 'Pending' }
   },
   cancellationHistory: [{
     reason: {

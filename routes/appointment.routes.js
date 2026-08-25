@@ -25,6 +25,8 @@ router.patch('/:id/check-in', appointmentController.checkInAppointment);
 router.patch('/:id/start-consultation', appointmentController.startConsultation);
 router.put('/:id/complete', appointmentController.completeAppointment);
 router.patch('/:id/cancel', appointmentController.cancelAppointment);
+router.get('/:id/cancellation-receipt', appointmentController.getCancellationReceipt);
+router.post('/:id/referral', appointmentController.referToDoctor);
 router.put('/:id/vitals', appointmentController.updateVitals);
 router.patch('/:id/status', appointmentController.updateAppointmentStatus);
 router.patch('/:id/homecare/delivery', appointmentController.updateHomecareDelivery);

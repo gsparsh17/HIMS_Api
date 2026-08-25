@@ -55,12 +55,12 @@ const ipdChargeSchema = new mongoose.Schema({
 
   sourceModule: {
     type: String,
-    enum: ['Admission', 'Lab', 'Pharmacy', 'Procedure', 'Manual', 'Bed', 'RecurringDaily', 'DoctorRound', 'OT', 'Radiology', 'Billing', 'Discharge'],
+    enum: ['Admission', 'Lab', 'LabRequest', 'Pharmacy', 'Procedure', 'ProcedureRequest', 'Manual', 'Bed', 'RecurringDaily', 'DoctorRound', 'OT', 'OTRequest', 'Radiology', 'RadiologyRequest', 'Billing', 'Discharge'],
     required: true
   },
   sourceId: { type: mongoose.Schema.Types.ObjectId },
   sourceReference: {
-    module: { type: String, enum: ['Lab', 'Procedure', 'Radiology', 'Pharmacy', 'Bed', 'DoctorVisit', 'Manual', 'OT', 'IPD', 'Billing', 'Discharge'] },
+    module: { type: String, enum: ['Lab', 'LabRequest', 'Procedure', 'ProcedureRequest', 'Radiology', 'RadiologyRequest', 'Pharmacy', 'Bed', 'DoctorVisit', 'Manual', 'OT', 'OTRequest', 'IPD', 'Billing', 'Discharge'] },
     documentId: { type: mongoose.Schema.Types.ObjectId },
     invoiceNumber: String,
     billNumber: String,
