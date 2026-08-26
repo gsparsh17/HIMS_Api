@@ -863,6 +863,36 @@ exports.setEmployeeLogin = async (req, res) => {
     employee.updated_by = getUserId(req);
     await employee.save();
 
+    try {
+      const radiologyStaffId = employee.radiology_staff_id || (employee.source_model === 'RadiologyStaff' ? employee.source_id : null);
+      if (radiologyStaffId) {
+        const RadiologyStaff = require('../models/RadiologyStaff');
+        await RadiologyStaff.updateOne({ _id: radiologyStaffId }, { $set: { userId: user._id } });
+      }
+      if (employee.doctor_id) {
+        const Doctor = require('../models/Doctor');
+        await Doctor.updateOne({ _id: employee.doctor_id }, { $set: { userId: user._id, user_id: user._id } });
+      }
+      if (employee.nurse_id) {
+        const Nurse = require('../models/Nurse');
+        await Nurse.updateOne({ _id: employee.nurse_id }, { $set: { userId: user._id, user_id: user._id } });
+      }
+      if (employee.staff_id) {
+        const Staff = require('../models/Staff');
+        await Staff.updateOne({ _id: employee.staff_id }, { $set: { userId: user._id, user_id: user._id } });
+      }
+      if (employee.ot_staff_id) {
+        const OTStaff = require('../models/OTStaff');
+        await OTStaff.updateOne({ _id: employee.ot_staff_id }, { $set: { userId: user._id } });
+      }
+      if (employee.pathology_staff_id) {
+        const PathologyStaff = require('../models/PathologyStaff');
+        await PathologyStaff.updateOne({ _id: employee.pathology_staff_id }, { $set: { user_id: user._id } });
+      }
+    } catch (sourceLinkError) {
+      console.warn('Failed linking user ID to source model:', sourceLinkError.message);
+    }
+
     res.json({
       message: 'Employee login and main feature access updated',
       employee,

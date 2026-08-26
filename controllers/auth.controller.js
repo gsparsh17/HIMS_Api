@@ -203,6 +203,12 @@ exports.demoLogin = async (req, res) => {
         const otStaff = await OTStaff.findOne({ userId: targetUser._id });
         response.otStaffId = otStaff?._id;
       }
+      else if (targetUser.role === "radiology_staff") {
+        const RadiologyStaff = require('../models/RadiologyStaff');
+        const radiologyStaff = await RadiologyStaff.findOne({ $or: [{ userId: targetUser._id }, { email: targetUser.email }] });
+        response.radiologyStaffId = radiologyStaff?._id;
+        response.radiologyStaffDesignation = radiologyStaff?.designation || 'Radiology Staff';
+      }
     } catch (roleError) {
       console.error('Error fetching role-specific data:', roleError);
     }
@@ -388,6 +394,11 @@ async function enrichLoginResponse(user, hospital, tokenClaims = {}) {
     const otStaff = await OTStaff.findOne({ userId: user._id });
     response.otStaffId = otStaff?._id || null;
     response.otStaffDesignation = otStaff?.designation || 'OT Staff';
+  } else if (user.role === 'radiology_staff') {
+    const RadiologyStaff = require('../models/RadiologyStaff');
+    const radiologyStaff = await RadiologyStaff.findOne({ $or: [{ userId: user._id }, { email: user.email }] });
+    response.radiologyStaffId = radiologyStaff?._id || null;
+    response.radiologyStaffDesignation = radiologyStaff?.designation || 'Radiology Staff';
   }
   return response;
 }
