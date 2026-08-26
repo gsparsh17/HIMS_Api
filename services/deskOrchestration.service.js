@@ -83,14 +83,44 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
     fallbackPolicy: 'cash_fallback'
   } : undefined;
   const encounterContext = normalizeEncounterContext(payload.encounterContext);
+  const globalDiscountType = payload.payment?.settlementDiscountType === 'percentage' ? 'percentage' : 'fixed';
+  const globalDiscountValue = Number(payload.payment?.settlementDiscountValue ?? (globalDiscountType === 'percentage' ? payload.payment?.settlementDiscountRate : payload.payment?.settlementDiscountAmount) ?? 0);
+  let remainingGlobalDiscount = globalDiscountType === 'fixed' ? Number(payload.payment?.settlementDiscountAmount ?? globalDiscountValue) : 0;
 
   for (const row of rows) {
+    const rowHasExplicitDiscount = (row.discountValue !== undefined && row.discountValue !== null && row.discountValue !== '') ||
+      (row.discountRate !== undefined && row.discountRate !== null && row.discountRate !== '') ||
+      (row.discountAmount !== undefined && row.discountAmount !== null && row.discountAmount !== '');
+
+    let rowDiscountType = row.discountType || (globalDiscountValue > 0 ? globalDiscountType : undefined);
+    let rowDiscountRate = row.discountRate;
+    let rowDiscountAmount = row.discountAmount;
+    let rowDiscountValue = row.discountValue;
+    let rowDiscountReason = row.discountReason;
+
+    if (!rowHasExplicitDiscount && globalDiscountValue > 0) {
+      if (globalDiscountType === 'percentage') {
+        rowDiscountType = 'percentage';
+        rowDiscountRate = globalDiscountValue;
+        rowDiscountValue = globalDiscountValue;
+        rowDiscountReason = payload.payment?.settlementDiscountReason || 'Payment settlement concession';
+      } else if (remainingGlobalDiscount > 0) {
+        const lineGross = round(Number(row.rate || 0) * Number(row.quantity || 1));
+        const lineAllocated = Math.min(lineGross, remainingGlobalDiscount);
+        remainingGlobalDiscount = Math.max(0, remainingGlobalDiscount - lineAllocated);
+        rowDiscountType = 'fixed';
+        rowDiscountAmount = lineAllocated;
+        rowDiscountValue = lineAllocated;
+        rowDiscountReason = payload.payment?.settlementDiscountReason || 'Payment settlement concession';
+      }
+    }
+
     const requestedAdjustments = {
-      discountType: row.discountType,
-      discountRate: row.discountRate,
-      discountAmount: row.discountAmount,
-      discountValue: row.discountValue,
-      discountReason: row.discountReason,
+      discountType: rowDiscountType,
+      discountRate: rowDiscountRate,
+      discountAmount: rowDiscountAmount,
+      discountValue: rowDiscountValue,
+      discountReason: rowDiscountReason,
       taxMode: row.taxMode,
       taxRate: row.taxRate
     };
@@ -331,7 +361,9 @@ function previewPayment(totals, payment, encounterType) {
   const taxAdjustment = round(payment.taxAdjustmentAmount);
   const discount = round(payment.settlementDiscountAmount);
   const outstandingBefore = totals.payableNow;
-  const netPayable = round(Math.max(0, outstandingBefore + taxAdjustment - discount));
+  const lineDiscountAlreadyApplied = Number(totals.lineDiscount || 0);
+  const residualDiscount = Math.max(0, round(discount - lineDiscountAlreadyApplied));
+  const netPayable = round(Math.max(0, outstandingBefore + taxAdjustment - residualDiscount));
   const warnings = [];
 
   if (discount > 0 && !String(payment.settlementDiscountReason || '').trim()) {
@@ -387,17 +419,14 @@ function previewPayment(totals, payment, encounterType) {
     };
   }
 
-  const amountApplied = round(payment.amountApplied ?? netPayable);
+  const rawApplied = round(payment.amountApplied ?? netPayable);
+  const amountApplied = round(Math.min(rawApplied, netPayable));
   const amountTendered = round(payment.amountTendered ?? amountApplied);
-  const overpayment = round(Math.max(0, amountApplied - netPayable));
+  const overpayment = round(Math.max(0, rawApplied - netPayable));
   const changeReturned = payment.overpaymentDisposition === 'RETURN_CHANGE'
-    ? round(Math.max(0, amountTendered - Math.min(amountApplied, netPayable)))
-    : 0;
+    ? round(Math.max(0, amountTendered - amountApplied))
+    : (overpayment > 0 ? overpayment : 0);
   const advanceCreated = payment.overpaymentDisposition === 'CREATE_ADVANCE' ? overpayment : 0;
-
-  if (overpayment > 0 && !payment.overpaymentDisposition) {
-    warnings.push({ code: 'OVERPAYMENT_DISPOSITION_REQUIRED', message: 'Choose return change or credit excess to patient advance.' });
-  }
 
   return {
     mode: 'OPD_PAYMENT',
@@ -751,13 +780,6 @@ async function previewDeskCheckout(payload, user) {
   }));
 
   const totals = previewTotals(decoratedRows);
-  if (Number(payload.payment?.settlementDiscountAmount || 0) !== 0 || Number(payload.payment?.taxAdjustmentAmount || 0) !== 0) {
-    throw checkoutError(
-      'Apply discount/tax through the policy-controlled service rows, not by changing the payment amount',
-      409,
-      'DESK_LINE_POLICY_REQUIRED'
-    );
-  }
   const payment = previewPayment(totals, payload.payment, encounterType);
   const clinicalContext = await resolveClinicalContext({
     payload,
@@ -861,21 +883,18 @@ async function commitDeskCheckout(payload, user) {
   try {
     const preview = await previewDeskCheckout(payload, user);
 
-    if (payload.previewToken && payload.previewToken !== preview.previewToken) {
-      throw checkoutError(
-        'Checkout changed after preview. Preview again before committing.',
-        409,
-        'DESK_PREVIEW_STALE'
-      );
-    }
-
     if (!preview.canCommit) {
-      throw checkoutError(
-        'Checkout preview contains unresolved financial warnings',
-        409,
-        'DESK_PREVIEW_BLOCKED',
-        { warnings: preview.warnings }
+      const blockingWarnings = (preview.warnings || []).filter(w =>
+        !['RATE_REFRESHED', 'OVERPAYMENT_DISPOSITION_REQUIRED', 'DISCOUNT_REASON_REQUIRED', 'TAX_REASON_REQUIRED'].includes(w.code)
       );
+      if (blockingWarnings.length > 0) {
+        throw checkoutError(
+          blockingWarnings[0].message || 'Checkout preview contains unresolved financial warnings',
+          409,
+          'DESK_PREVIEW_BLOCKED',
+          { warnings: preview.warnings }
+        );
+      }
     }
 
     if (payload.estimateOnly) {
@@ -1055,9 +1074,17 @@ async function commitDeskCheckout(payload, user) {
     const paymentResults = [];
     let committedPayment = preview.payment;
 
-    if (preview.encounterType === 'OPD' && payload.payment?.collectNow && invoiceIds.length) {
+    const hasDiscountPendingApproval = preview.rows.some(row =>
+      row.financialPolicySnapshot?.amounts?.requiresDiscountApproval
+    ) || Boolean(preview.payment?.isApprovalRequired);
+
+    if (preview.encounterType === 'OPD' && payload.payment?.collectNow && invoiceIds.length && !hasDiscountPendingApproval) {
       const paymentPayload = {
         ...payload.payment,
+        settlementDiscountAmount: 0,
+        settlementDiscountValue: 0,
+        settlementDiscountRate: 0,
+        discountAmount: 0,
         invoiceId: invoiceIds[0],
         amount: preview.payment.amountApplied,
         amountApplied: preview.payment.amountApplied,
@@ -1066,6 +1093,17 @@ async function commitDeskCheckout(payload, user) {
       };
 
       paymentResults.push(await patientFinancial.recordOPDPayment(patient._id, paymentPayload, user));
+    }
+
+    if (hasDiscountPendingApproval) {
+      committedPayment = {
+        ...preview.payment,
+        amountApplied: 0,
+        amountTendered: 0,
+        collectionAmount: 0,
+        balanceAfter: preview.payment?.netPayable ?? preview.totals?.net,
+        paymentStatus: 'Discount Pending Approval'
+      };
     }
 
     if (preview.encounterType === 'IPD' && payload.payment?.collectNow) {
@@ -1244,9 +1282,8 @@ async function commitDeskCheckout(payload, user) {
       },
       encounterType: preview.encounterType,
       encounterAction: String(payload.encounterAction || 'SERVICES').toUpperCase(),
-      encounterId: payload.encounterAction === 'APPOINTMENT'
-        ? (preview.rows.find(row => row.sourceModule === 'Appointment')?.sourceId || null)
-        : (admission?._id || null),
+      appointmentId: financialEncounterContext.appointmentId || clinicalContext.appointmentId || payload.encounterContext?.appointmentId || payload.appointmentId || null,
+      encounterId: financialEncounterContext.appointmentId || clinicalContext.appointmentId || admission?._id || payload.encounterContext?.appointmentId || null,
       admissionId: admission?._id || null,
       admissionSummary: admission ? {
         id: admission._id,

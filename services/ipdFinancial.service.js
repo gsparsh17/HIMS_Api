@@ -861,8 +861,8 @@ async function addManualCharge(payload, user) {
     discountRate: adjusted.discountRate,
     discountAmount: adjusted.discountAmount,
     discountReason: adjusted.discountReason,
-    discountApprovedBy: adjusted.discountAmount > 0 ? user?._id : undefined,
-    discountApprovedAt: adjusted.discountAmount > 0 ? operationNow() : undefined,
+    discountApprovedBy: (adjusted.discountAmount > 0 && !adjusted.requiresDiscountApproval) ? user?._id : undefined,
+    discountApprovedAt: (adjusted.discountAmount > 0 && !adjusted.requiresDiscountApproval) ? operationNow() : undefined,
     discount: adjusted.discountAmount,
     taxMode: adjusted.taxMode,
     taxName: adjusted.taxName,
@@ -891,6 +891,31 @@ async function addManualCharge(payload, user) {
     requiredNowAmount: policy.requiredNow,
     clearanceState: policy.clearanceState
   });
+
+  if (adjusted.requiresDiscountApproval) {
+    try {
+      const ApprovalRequest = require('../models/ApprovalRequest');
+      await ApprovalRequest.create({
+        hospitalId: admission.hospitalId,
+        requestType: 'DISCOUNT_APPROVAL',
+        patientId: admission.patientId,
+        admissionId: admission._id,
+        details: {
+          chargeId: charge._id,
+          description: charge.description,
+          totalBillAmount: contracted,
+          discountAmount: adjusted.discountAmount,
+          requestedDiscountPercentage: adjusted.discountRate,
+          reason: adjusted.discountReason || 'Staff discount request',
+          encounterType: 'IPD'
+        },
+        requestedBy: user?._id,
+        status: 'Pending'
+      });
+    } catch (apprErr) {
+      console.warn('Could not create ApprovalRequest for IPD charge:', apprErr.message);
+    }
+  }
 
   const coverage = coverageForPolicy;
   await replaceCoverageUtilization({

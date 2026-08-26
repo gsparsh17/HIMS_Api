@@ -156,13 +156,16 @@ function applyDiscountAndTax({ baseAmount, patientLiability, sponsorLiability, d
   const canDiscount = Boolean(discountPolicy?.enabled) && _hasActionPermission(user, 'billing_apply_discount');
   const requestedType = requested.discountType || discountPolicy.defaultType || 'percentage';
   const discountType = requestedType === 'fixed' ? 'fixed' : 'percentage';
-  const requestedRaw = requested.discountValue ?? (discountType === 'percentage' ? requested.discountRate : requested.discountAmount);
+  const requestedRaw = discountType === 'percentage'
+    ? (requested.discountRate !== undefined && requested.discountRate !== null && requested.discountRate !== '' ? requested.discountRate : requested.discountValue)
+    : (requested.discountAmount !== undefined && requested.discountAmount !== null && requested.discountAmount !== '' ? requested.discountAmount : requested.discountValue);
   const hasExplicitDiscountSelection = requestedRaw !== undefined && requestedRaw !== null && requestedRaw !== '';
   const defaultRaw = Number(discountPolicy.defaultValue || 0);
   const desired = hasExplicitDiscountSelection ? Number(requestedRaw || 0) : defaultRaw;
   const canDiscountOverride = _hasActionPermission(user, 'discount_override');
   let discountAmount = 0;
   let discountRate = 0;
+  let requiresApproval = false;
   const discountReason = clean(requested.discountReason);
 
   if (desired > 0) {
@@ -171,7 +174,6 @@ function applyDiscountAndTax({ baseAmount, patientLiability, sponsorLiability, d
     if (hasExplicitDiscountSelection && !canDiscount && !canDiscountOverride) {
       throw error('You do not have permission to change the configured discount', 403, 'DISCOUNT_PERMISSION_REQUIRED');
     }
-    let requiresApproval = false;
     if (discountType === 'fixed') {
       if (discountPolicy.allowFixed === false && !canDiscountOverride) {
         requiresApproval = true;

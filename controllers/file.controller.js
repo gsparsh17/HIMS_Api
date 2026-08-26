@@ -19,7 +19,7 @@ exports.streamFile = async (req, res, next) => {
     try {
       opened = await fileStorage.openRead(record);
     } catch (error) {
-      if (error?.statusCode === 404 || error?.b2Code === 'not_found' || error?.code === 'ENOENT') {
+      if (error?.statusCode === 404 || error?.b2Code === 'not_found' || error?.code === 'ENOENT' || String(error?.message || '').includes('not configured')) {
         return res.status(404).json({ error: 'File content is unavailable' });
       }
       throw error;

@@ -43,8 +43,11 @@ function calculateLineAmounts(payload = {}) {
   const discountType = payload.discountType === 'percentage' ? 'percentage' : 'fixed';
   const discountRate = amount(payload.discountRate);
   let discountAmount = amount(payload.discountAmount);
-  if (discountType === 'percentage') discountAmount = amount(gross * Math.max(0, discountRate) / 100);
-  if (discountAmount < 0 || discountAmount > gross) throw financialError('Discount cannot exceed gross amount');
+  if (discountType === 'percentage') {
+    discountAmount = amount(gross * Math.max(0, Math.min(100, discountRate)) / 100);
+  } else {
+    discountAmount = Math.max(0, Math.min(gross, discountAmount));
+  }
 
   const afterDiscount = amount(gross - discountAmount);
   const taxMode = ['inclusive', 'exempt'].includes(payload.taxMode) ? payload.taxMode : 'exclusive';
@@ -228,7 +231,15 @@ async function addOPDCharge(patientId, payload, user) {
       paid_amount: 0,
       balance_due: adjusted.patientLiability,
       payment_method: 'Pending',
-      status: quote.amounts.patientLiability <= 0 ? 'Paid' : 'Pending',
+      status: adjusted.requiresDiscountApproval ? 'Discount Pending Approval' : (quote.amounts.patientLiability <= 0 ? 'Paid' : 'Pending'),
+      discount_approval: adjusted.requiresDiscountApproval ? {
+        status: 'PENDING',
+        requested_by: user?._id,
+        requested_at: now,
+        discount_amount: adjusted.discountAmount,
+        discount_percentage: adjusted.discountRate,
+        reason: adjusted.discountReason || 'Staff discount request'
+      } : undefined,
       generated_at: now,
       created_by: user?._id,
       notes: payload.notes,
@@ -302,6 +313,34 @@ async function addOPDCharge(patientId, payload, user) {
       }]
     });
     await bill.save(sessionOptions(session));
+
+    if (adjusted.requiresDiscountApproval) {
+      try {
+        const ApprovalRequest = require('../models/ApprovalRequest');
+        await ApprovalRequest.create([{
+          hospitalId,
+          requestType: 'DISCOUNT_APPROVAL',
+          patientId: patient._id,
+          appointmentId: appointmentId || undefined,
+          billId: bill._id,
+          details: {
+            billId: bill._id,
+            billNumber: bill.bill_number,
+            appointmentId: appointmentId || undefined,
+            totalBillAmount: Number(bill.subtotal || bill.gross_amount || bill.total_amount || 0),
+            totalDueAmount: Number(bill.balance_due != null ? bill.balance_due : bill.total_amount || 0),
+            discountAmount: adjusted.discountAmount,
+            requestedDiscountPercentage: adjusted.discountRate,
+            reason: adjusted.discountReason || 'Staff discount request',
+            encounterType: 'OPD'
+          },
+          requestedBy: user?._id,
+          status: 'Pending'
+        }], sessionOptions(session));
+      } catch (apprErr) {
+        console.warn('Could not create ApprovalRequest in addOPDCharge:', apprErr.message);
+      }
+    }
 
     await replaceCoverageUtilization({
       coverage,
@@ -399,6 +438,10 @@ function billServiceItems(bill) {
       quantity,
       unit_price: amount(item.unit_price || (quantity ? gross / quantity : gross)),
       gross_amount: gross,
+      standard_amount: gross,
+      contracted_amount: gross,
+      sponsor_liability: 0,
+      patient_liability: net,
       discount_type: item.discount_type || 'fixed',
       discount_rate: Number(item.discount_rate || 0),
       discount_amount: discount,
@@ -489,7 +532,9 @@ async function issueOPDInvoice(patientId, payload, user) {
       settlement_discount_amount: settlementDiscount,
       credit_note_total: creditNotes,
       balance_due: amount(Math.max(0, total - paid - settlementDiscount - creditNotes)),
-      status: total - paid - settlementDiscount - creditNotes <= 0 ? 'Paid' : paid > 0 ? 'Partial' : 'Pending',
+      status: bills.some((bill) => bill.status === 'Discount Pending Approval')
+        ? 'Discount Pending Approval'
+        : (total - paid - settlementDiscount - creditNotes <= 0 ? 'Paid' : paid > 0 ? 'Partial' : 'Pending'),
       notes: payload.notes || `Consolidated OPD invoice for ${bills.length} bill(s)`,
       idempotency_key: payload.idempotencyKey,
       created_by: user?._id,

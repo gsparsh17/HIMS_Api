@@ -417,6 +417,11 @@ async function createCanonicalAppointmentBilling(req, payload) {
   });
   const selectedMode = payload.selectedMode || payload.selectedBillingMode || appointment.selectedBillingMode;
   const created = [];
+  const resolvedDiscountType = payload.discountType || payload.discount_type || (payload.discountRate || payload.discount_rate ? 'percentage' : 'fixed');
+  const resolvedDiscountRate = Number(payload.discountRate ?? payload.discount_rate ?? (resolvedDiscountType === 'percentage' ? (payload.discountValue ?? payload.discount) : 0));
+  let remainingFixedDiscount = resolvedDiscountType === 'fixed' ? Number(payload.discountAmount ?? payload.discount_amount ?? (payload.discountValue ?? payload.discount ?? 0)) : 0;
+  const resolvedDiscountReason = payload.discountReason || payload.discount_reason;
+
   const sourceItems = Array.isArray(payload.items) ? payload.items : [];
   let lineNo = 0;
   for (const item of sourceItems) {
@@ -451,10 +456,18 @@ async function createCanonicalAppointmentBilling(req, payload) {
       if (!description) throw Object.assign(new Error('Manual bill item description is required'), { statusCode: 400 });
     }
 
-    const resolvedDiscountType = payload.discountType || payload.discount_type || (payload.discountRate || payload.discount_rate ? 'percentage' : 'fixed');
-    const resolvedDiscountRate = Number(payload.discountRate ?? payload.discount_rate ?? (resolvedDiscountType === 'percentage' ? (payload.discountValue ?? payload.discount) : 0));
-    const resolvedDiscountAmount = Number(payload.discountAmount ?? payload.discount_amount ?? (resolvedDiscountType === 'fixed' ? (payload.discountValue ?? payload.discount) : 0));
-    const resolvedDiscountReason = payload.discountReason || payload.discount_reason;
+    const lineQty = Math.max(1, Number(item.quantity || 1));
+    const lineGross = rate * lineQty;
+    let lineDiscountRate = 0;
+    let lineDiscountAmount = 0;
+    if (resolvedDiscountType === 'percentage') {
+      lineDiscountRate = resolvedDiscountRate;
+      lineDiscountAmount = lineGross > 0 ? Math.round((lineGross * lineDiscountRate) / 100) : 0;
+    } else if (remainingFixedDiscount > 0) {
+      lineDiscountAmount = Math.min(lineGross, remainingFixedDiscount);
+      remainingFixedDiscount = Math.max(0, remainingFixedDiscount - lineDiscountAmount);
+      lineDiscountRate = lineGross > 0 ? Math.round((lineDiscountAmount / lineGross) * 100) : 0;
+    }
 
     const result = await patientFinancial.addOPDCharge(payload.patient_id, {
       appointmentId: appointment._id,
@@ -463,13 +476,13 @@ async function createCanonicalAppointmentBilling(req, payload) {
       serviceType,
       serviceCode,
       rate,
-      quantity: Math.max(1, Number(item.quantity || 1)),
+      quantity: lineQty,
       selectedMode,
       requestedDeposit: payload.requestedDeposit,
       discountType: resolvedDiscountType,
-      discountValue: payload.discountValue ?? payload.discount_value ?? payload.discount,
-      discountRate: resolvedDiscountRate,
-      discountAmount: resolvedDiscountAmount,
+      discountValue: resolvedDiscountType === 'percentage' ? lineDiscountRate : lineDiscountAmount,
+      discountRate: lineDiscountRate,
+      discountAmount: lineDiscountAmount,
       discountReason: resolvedDiscountReason,
       taxMode: payload.taxMode || payload.tax_mode,
       taxRate: payload.taxRate || payload.tax_rate,
@@ -490,10 +503,16 @@ async function createCanonicalAppointmentBilling(req, payload) {
   }
 
   if (!created.length) {
-    const resolvedDiscountType = payload.discountType || payload.discount_type || (payload.discountRate || payload.discount_rate ? 'percentage' : 'fixed');
-    const resolvedDiscountRate = Number(payload.discountRate ?? payload.discount_rate ?? (resolvedDiscountType === 'percentage' ? (payload.discountValue ?? payload.discount) : 0));
-    const resolvedDiscountAmount = Number(payload.discountAmount ?? payload.discount_amount ?? (resolvedDiscountType === 'fixed' ? (payload.discountValue ?? payload.discount) : 0));
-    const resolvedDiscountReason = payload.discountReason || payload.discount_reason;
+    const defaultRate = Number(tariff.amount || 0);
+    let lineDiscountRate = 0;
+    let lineDiscountAmount = 0;
+    if (resolvedDiscountType === 'percentage') {
+      lineDiscountRate = resolvedDiscountRate;
+      lineDiscountAmount = defaultRate > 0 ? Math.round((defaultRate * lineDiscountRate) / 100) : 0;
+    } else {
+      lineDiscountAmount = Math.min(defaultRate, remainingFixedDiscount);
+      lineDiscountRate = defaultRate > 0 ? Math.round((lineDiscountAmount / defaultRate) * 100) : 0;
+    }
 
     const result = await patientFinancial.addOPDCharge(payload.patient_id, {
       appointmentId: appointment._id,
@@ -501,14 +520,14 @@ async function createCanonicalAppointmentBilling(req, payload) {
       chargeType: 'Consultation',
       serviceType: 'consultation',
       serviceCode: appointment.appointment_type === 'follow-up' ? 'OPD-CONS-FOLLOWUP' : 'OPD-CONS-NEW',
-      rate: Number(tariff.amount || 0),
+      rate: defaultRate,
       quantity: 1,
       selectedMode,
       requestedDeposit: payload.requestedDeposit,
       discountType: resolvedDiscountType,
-      discountValue: payload.discountValue ?? payload.discount_value ?? payload.discount,
-      discountRate: resolvedDiscountRate,
-      discountAmount: resolvedDiscountAmount,
+      discountValue: resolvedDiscountType === 'percentage' ? lineDiscountRate : lineDiscountAmount,
+      discountRate: lineDiscountRate,
+      discountAmount: lineDiscountAmount,
       discountReason: resolvedDiscountReason,
       taxMode: payload.taxMode || payload.tax_mode,
       taxRate: payload.taxRate || payload.tax_rate,
@@ -2144,12 +2163,15 @@ exports.getBillByAppointmentId = async (req, res) => {
       if (inv.balance_due != null) {
         billObj.balance_due = inv.balance_due;
       }
-      if (inv.status) {
+      if (inv.status && bill.status !== 'Discount Pending Approval' && bill.discount_approval?.status !== 'PENDING') {
         billObj.status = inv.status === 'Paid' ? 'Paid' : (inv.status === 'Partial' || inv.status === 'Partially Paid' ? 'Partially Paid' : inv.status);
       }
       if (inv.discount != null && inv.discount > 0 && !billObj.discount) {
         billObj.discount = inv.discount;
       }
+    }
+    if (bill.status === 'Discount Pending Approval' || bill.discount_approval?.status === 'PENDING') {
+      billObj.status = 'Discount Pending Approval';
     }
 
     res.json({ success: true, bill: billObj });
@@ -2898,6 +2920,87 @@ exports.reviewDiscountApproval = async (req, res, next) => {
   } catch (error) {
     if (next) return next(error);
     return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+/**
+ * Get Bill / Billing Details by Appointment ID
+ */
+exports.getBillByAppointmentId = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const { appointmentId } = req.params;
+
+    const bill = await Bill.findOne({
+      hospital_id: hospitalId,
+      $or: [
+        { appointment_id: appointmentId },
+        { 'details.appointmentId': appointmentId },
+        { 'items.source_snapshot.appointmentId': appointmentId }
+      ],
+      is_deleted: { $ne: true }
+    })
+      .populate('patient_id')
+      .populate('doctor_id')
+      .populate('department_id')
+      .populate('invoice_id')
+      .populate('discount_approval.requested_by', 'name email role')
+      .populate('discount_approval.approved_by', 'name email role')
+      .sort({ createdAt: -1 });
+
+    if (!bill) {
+      const invoice = await Invoice.findOne({
+        hospital_id: hospitalId,
+        $or: [{ appointment_id: appointmentId }, { 'details.appointmentId': appointmentId }],
+        is_deleted: { $ne: true }
+      })
+        .populate('patient_id')
+        .populate('appointment_id')
+        .sort({ createdAt: -1 });
+
+      if (invoice) {
+        return res.json({ success: true, bill: invoice, invoice });
+      }
+      return res.status(404).json({ success: false, error: 'Bill not found for this appointment' });
+    }
+
+    return res.json({
+      success: true,
+      bill,
+      data: { bill }
+    });
+  } catch (error) {
+    if (next) return next(error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Get Bill by Admission ID
+ */
+exports.getBillByAdmissionId = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const { admissionId } = req.params;
+
+    const bill = await Bill.findOne({
+      hospital_id: hospitalId,
+      admission_id: admissionId,
+      is_deleted: { $ne: true }
+    })
+      .populate('patient_id')
+      .populate('discount_approval.requested_by', 'name email role')
+      .populate('discount_approval.approved_by', 'name email role')
+      .sort({ createdAt: -1 });
+
+    if (!bill) {
+      return res.status(404).json({ success: false, error: 'Bill not found for this admission' });
+    }
+
+    return res.json({ success: true, bill, data: { bill } });
+  } catch (error) {
+    if (next) return next(error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 
