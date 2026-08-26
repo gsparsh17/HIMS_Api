@@ -13,7 +13,7 @@ const roomSchema = new mongoose.Schema({
   },
   type: { 
     type: String, 
-    enum: ['General', 'ICU', 'Private', 'Emergency', 'Operation Theater'], 
+    enum: ['General', 'ICU', 'Private', 'Emergency', 'Operation Theater', 'Operation Theatre', 'OT', 'Deluxe', 'Semi-Private', 'Day Care', 'Isolation', 'Special'], 
     default: 'General' 
   },
   Department: { 
@@ -22,7 +22,7 @@ const roomSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Available', 'Occupied', 'Partially Occupied', 'Full', 'Maintenance', 'Closed'],
+    enum: ['Available', 'Occupied', 'Partially Occupied', 'Full', 'Maintenance', 'Closed', 'Cleaning', 'Reserved'],
     default: 'Available'
   },
   capacity: { type: Number, default: 1, min: 1 },
@@ -43,8 +43,22 @@ const roomSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Generate room code before save
+// Sanitize fields and generate room code before validation
 roomSchema.pre('validate', async function(next) {
+  if (this.wardId === '' || this.wardId === null || this.wardId === undefined) {
+    this.wardId = undefined;
+  }
+  if (this.Department === '' || this.Department === null || this.Department === undefined) {
+    this.Department = undefined;
+  }
+  if (this.assigned_patient_id === '' || this.assigned_patient_id === null || this.assigned_patient_id === undefined) {
+    this.assigned_patient_id = undefined;
+  }
+
+  if (this.type === 'Operation Theatre' || this.type === 'OT') {
+    this.type = 'Operation Theater';
+  }
+
   if (!this.room_number) {
     const Room = mongoose.model('Room');
     const count = await Room.countDocuments();

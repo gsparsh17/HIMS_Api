@@ -1223,16 +1223,85 @@ exports.exportOTReports = async (req, res) => {
 };
 
 // Get requests by admission
+exports.getRequestsByAdmission = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const requests = await OTRequest.find({
+      admissionId: req.params.admissionId,
+      hospitalId,
+      is_active: { $ne: false }
+    })
+      .populate('patientId', 'patientId first_name last_name age gender')
+      .populate('doctorId', 'firstName lastName')
+      .populate('ot_room_id', 'room_number type')
+      .sort({ createdAt: -1 });
 
+    res.json({ success: true, data: requests });
+  } catch (error) {
+    console.error('Error fetching requests by admission:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
 
 // Get requests by doctor
+exports.getRequestsByDoctor = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const requests = await OTRequest.find({
+      doctorId: req.params.doctorId,
+      hospitalId,
+      is_active: { $ne: false }
+    })
+      .populate('patientId', 'patientId first_name last_name age gender')
+      .populate('doctorId', 'firstName lastName')
+      .populate('ot_room_id', 'room_number type')
+      .sort({ createdAt: -1 });
 
+    res.json({ success: true, data: requests });
+  } catch (error) {
+    console.error('Error fetching requests by doctor:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
 
 // Get OT Rooms
+exports.getOTRooms = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const rooms = await Room.find({
+      hospitalId,
+      type: { $in: ['Operation Theater', 'Operation Theatre', 'OT'] },
+      is_active: { $ne: false }
+    })
+      .populate('Department', 'name')
+      .populate('wardId', 'name code')
+      .sort({ room_number: 1 });
 
+    res.json({ success: true, data: rooms });
+  } catch (error) {
+    console.error('Error fetching OT rooms:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
 
 // Get Available OT Rooms
+exports.getAvailableOTRooms = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const rooms = await Room.find({
+      hospitalId,
+      type: { $in: ['Operation Theater', 'Operation Theatre', 'OT'] },
+      status: 'Available',
+      is_active: { $ne: false }
+    })
+      .populate('Department', 'name')
+      .populate('wardId', 'name code')
+      .sort({ room_number: 1 });
 
-
-// Shared, audited and transactional post-operative transfer implementation.
+    res.json({ success: true, data: rooms });
+  } catch (error) {
+    console.error('Error fetching available OT rooms:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
 
