@@ -538,13 +538,84 @@ async function createCanonicalAppointmentBilling(req, payload) {
   }
 
   const bills = created.map((row) => row.bill).filter(Boolean);
+  const requiredNow = money(created.reduce((sum, row) => sum + Number(row.financialPolicy?.requiredNow || 0), 0));
+  const primaryBill = bills[0];
+  const explicitApprovalPending = String(payload.status || '').toLowerCase() === 'discount pending approval';
+  let discountApprovalPending = bills.some((bill) =>
+    bill.status === 'Discount Pending Approval' || bill.discount_approval?.status === 'PENDING'
+  );
+
+  // Compatibility callers may explicitly request admin approval. Canonical
+  // addOPDCharge already creates the request when policy requires approval;
+  // only create a record here when the caller explicitly asked for approval
+  // and no canonical pending request exists yet.
+  if (explicitApprovalPending && !discountApprovalPending && primaryBill && Number(primaryBill.discount || payload.discount || 0) > 0) {
+    primaryBill.status = 'Discount Pending Approval';
+    primaryBill.discount_approval = {
+      status: 'PENDING',
+      requested_by: req.user?._id,
+      requested_at: new Date(),
+      discount_amount: Number(primaryBill.discount || payload.discount || 0),
+      discount_percentage: Number(payload.discount_rate ?? payload.discountRate ?? 0),
+      reason: payload.discount_reason || payload.discountReason || 'Staff discount request'
+    };
+    await primaryBill.save();
+    discountApprovalPending = true;
+
+    try {
+      const ApprovalRequest = require('../models/ApprovalRequest');
+      const existingApproval = await ApprovalRequest.findOne({
+        hospitalId,
+        billId: primaryBill._id,
+        requestType: 'DISCOUNT_APPROVAL',
+        status: 'Pending'
+      });
+      if (!existingApproval) {
+        await ApprovalRequest.create({
+          hospitalId,
+          requestType: 'DISCOUNT_APPROVAL',
+          patientId: payload.patient_id,
+          appointmentId: appointment._id,
+          billId: primaryBill._id,
+          details: {
+            billId: primaryBill._id,
+            billNumber: primaryBill.bill_number,
+            appointmentId: appointment._id,
+            totalBillAmount: Number(primaryBill.subtotal || primaryBill.gross_amount || primaryBill.total_amount || 0),
+            totalDueAmount: Number(primaryBill.balance_due != null ? primaryBill.balance_due : primaryBill.total_amount || 0),
+            discountAmount: Number(primaryBill.discount || payload.discount || 0),
+            requestedDiscountPercentage: Number(payload.discount_rate ?? payload.discountRate ?? (primaryBill.subtotal ? Math.round((Number(primaryBill.discount) / Number(primaryBill.subtotal)) * 100) : 0)),
+            reason: payload.discount_reason || payload.discountReason || 'Staff discount request',
+            encounterType: 'OPD'
+          },
+          requestedBy: req.user?._id,
+          status: 'Pending'
+        });
+      }
+    } catch (apprErr) {
+      console.warn('Could not create ApprovalRequest record for OPD discount:', apprErr.message);
+    }
+  }
+
+  if (discountApprovalPending) {
+    return {
+      bill: primaryBill || null,
+      bills,
+      invoice: null,
+      payment: null,
+      financialPolicy: created.map((row) => row.financialPolicy),
+      requiredNow,
+      discountApprovalPending: true,
+      alreadyExists: false
+    };
+  }
+
   const invoiceResult = await patientFinancial.issueOPDInvoice(payload.patient_id, {
     billIds: bills.map((bill) => bill._id),
     idempotencyKey: `${rootKey}:invoice`,
     notes: payload.notes || `Appointment ${appointment._id} invoice`
   }, req.user);
   const invoice = invoiceResult.invoice;
-  const requiredNow = money(created.reduce((sum, row) => sum + Number(row.financialPolicy?.requiredNow || 0), 0));
   const explicitPayment = payload.paymentAmount ?? payload.amountPaid ?? payload.paid_amount ?? payload.paidAmount;
   const isPaidOrPartial = ['paid', 'partially paid', 'partial', 'discount pending approval'].includes(String(payload.status || '').toLowerCase());
   const shouldCollect = explicitPayment !== undefined || isPaidOrPartial;
@@ -566,48 +637,6 @@ async function createCanonicalAppointmentBilling(req, payload) {
     }
   }
 
-  const primaryBill = bills[0];
-  if (primaryBill && Number(primaryBill.discount || payload.discount || 0) > 0) {
-    const isApprovalPending = primaryBill.status === 'Discount Pending Approval' || String(payload.status || '').toLowerCase() === 'discount pending approval' || primaryBill.discount_approval?.status === 'PENDING';
-    if (isApprovalPending) {
-      primaryBill.status = 'Discount Pending Approval';
-      primaryBill.discount_approval = {
-        status: 'PENDING',
-        requested_by: req.user?._id,
-        requested_at: new Date(),
-        discount_amount: Number(primaryBill.discount || payload.discount || 0),
-        discount_percentage: Number(payload.discount_rate ?? payload.discountRate ?? 0),
-        reason: payload.discount_reason || payload.discountReason || 'Staff discount request'
-      };
-      await primaryBill.save();
-
-      try {
-        const ApprovalRequest = require('../models/ApprovalRequest');
-        await ApprovalRequest.create({
-          hospitalId,
-          requestType: 'DISCOUNT_APPROVAL',
-          patientId: payload.patient_id,
-          appointmentId: appointment._id,
-          billId: primaryBill._id,
-          details: {
-            billId: primaryBill._id,
-            billNumber: primaryBill.bill_number,
-            appointmentId: appointment._id,
-            totalBillAmount: Number(primaryBill.subtotal || primaryBill.gross_amount || primaryBill.total_amount || 0),
-            totalDueAmount: Number(primaryBill.balance_due != null ? primaryBill.balance_due : primaryBill.total_amount || 0),
-            discountAmount: Number(primaryBill.discount || payload.discount || 0),
-            requestedDiscountPercentage: Number(payload.discount_rate ?? payload.discountRate ?? (primaryBill.subtotal ? Math.round((Number(primaryBill.discount) / Number(primaryBill.subtotal)) * 100) : 0)),
-            reason: payload.discount_reason || payload.discountReason || 'Staff discount request',
-            encounterType: 'OPD'
-          },
-          requestedBy: req.user?._id,
-          status: 'Pending'
-        });
-      } catch (apprErr) {
-        console.warn('Could not create ApprovalRequest record for OPD discount:', apprErr.message);
-      }
-    }
-  }
 
   const refreshedInvoice = await Invoice.findOne({ _id: invoice._id, hospital_id: hospitalId });
   return {
@@ -2858,8 +2887,8 @@ exports.reviewDiscountApproval = async (req, res, next) => {
         bill.status = 'Pending';
       }
     } else {
-      // Reject: restore total without the discount
-      const rejectedDiscount = Number(bill.discount || 0);
+      // Reject: restore the pre-discount line/tax values, then let the Bill
+      // schema recompute the collectible balance from the restored document.
       bill.discount_approval = {
         ...(bill.discount_approval?.toObject?.() || bill.discount_approval || {}),
         status: 'REJECTED',
@@ -2867,8 +2896,7 @@ exports.reviewDiscountApproval = async (req, res, next) => {
         approved_at: now,
         rejection_reason: String(rejectionReason || 'Discount rejected').trim()
       };
-      bill.discount = 0;
-      bill.total_amount = money(Number(bill.total_amount || 0) + rejectedDiscount);
+      patientFinancial.rejectOPDBillDiscount(bill);
       bill.balance_due = money(Math.max(0, Number(bill.total_amount || 0) - Number(bill.paid_amount || 0)));
       bill.status = Number(bill.paid_amount || 0) >= bill.total_amount ? 'Paid' : (Number(bill.paid_amount || 0) > 0 ? 'Partially Paid' : 'Pending');
     }
@@ -2877,18 +2905,10 @@ exports.reviewDiscountApproval = async (req, res, next) => {
 
     if (bill.invoice_id) {
       try {
-        const Invoice = require('../models/Invoice');
         const invoiceId = bill.invoice_id?._id || bill.invoice_id;
-        const inv = await Invoice.findOne({ _id: invoiceId, hospital_id: hospitalId });
-        if (inv) {
-          inv.discount = bill.discount || 0;
-          inv.total = bill.total_amount;
-          inv.balance_due = bill.balance_due;
-          inv.status = bill.status === 'Paid' ? 'Paid' : (bill.status === 'Partially Paid' ? 'Partial' : 'Pending');
-          await inv.save();
-        }
+        await patientFinancial.syncOPDInvoiceFromBills(invoiceId, hospitalId);
       } catch (invErr) {
-        console.warn('Could not sync invoice on discount review:', invErr.message);
+        console.warn('Could not sync consolidated invoice on discount review:', invErr.message);
       }
     }
 

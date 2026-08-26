@@ -20,6 +20,19 @@ async function generateUniqueHospitalId(HospitalModel) {
   throw new Error('Unable to generate unique hospital ID after multiple attempts');
 }
 
+const roleTemplatePermissionSchema = new mongoose.Schema({
+  moduleKey: { type: String, required: true, trim: true },
+  access: { type: String, enum: ['none', 'view', 'manage'], default: 'none' },
+  actions: [{ type: String, trim: true }]
+}, { _id: false });
+
+const roleAccessTemplateSchema = new mongoose.Schema({
+  role: { type: String, required: true, trim: true, lowercase: true },
+  modulePermissions: { type: [roleTemplatePermissionSchema], default: [] },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  updatedAt: { type: Date, default: Date.now }
+}, { _id: false });
+
 const hospitalSchema = new mongoose.Schema(
   {
     hospitalID: { type: String, required: true, unique: true, trim: true, uppercase: true },
@@ -61,6 +74,12 @@ const hospitalSchema = new mongoose.Schema(
       bedTransferWorkflow: { type: Boolean, default: false },
       workforceSelfService: { type: Boolean, default: false },
       biometricAttendance: { type: Boolean, default: false }
+    },
+
+    // Hospital-wide role templates are defaults only. Employee-specific saved
+    // permissions live on User.modulePermissions and remain authoritative.
+    accessControl: {
+      roleTemplates: { type: [roleAccessTemplateSchema], default: [] }
     },
 
     deployment: {

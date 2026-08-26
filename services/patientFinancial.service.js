@@ -25,6 +25,9 @@ const sessionOptions = (session) => (session ? { session } : {});
 const id = (value) => String(value?._id || value || '');
 const amount = (value) => money(Number(value || 0));
 
+const isDiscountApprovalPendingBill = (bill) =>
+  bill?.status === 'Discount Pending Approval' || bill?.discount_approval?.status === 'PENDING';
+
 function financialError(message, statusCode = 400, code = 'FINANCIAL_VALIDATION_ERROR', details) {
   const error = new Error(message);
   error.statusCode = statusCode;
@@ -80,6 +83,88 @@ function calculateLineAmounts(payload = {}) {
   };
 }
 
+function rejectOPDBillDiscount(bill) {
+  if (!bill) return 0;
+  const oldTotal = amount(bill.total_amount || 0);
+  let restoredBaseDiscount = 0;
+  let taxableTotal = 0;
+  let taxTotal = 0;
+  let newTotal = 0;
+
+  for (const item of bill.items || []) {
+    const oldItemDiscount = amount(item.discount_amount || 0);
+    restoredBaseDiscount = amount(restoredBaseDiscount + oldItemDiscount);
+
+    const quantity = Number(item.quantity || 1);
+    const gross = amount(
+      Number(item.gross_amount || 0) ||
+      (Number(item.unit_price || 0) * (Number.isFinite(quantity) && quantity > 0 ? quantity : 1)) ||
+      (Number(item.taxable_amount || item.amount || 0) + oldItemDiscount)
+    );
+    const taxMode = ['inclusive', 'exempt'].includes(item.tax_mode) ? item.tax_mode : 'exclusive';
+    const taxRate = taxMode === 'exempt' ? 0 : Math.max(0, Number(item.tax_rate || 0));
+    let taxable = gross;
+    let tax = 0;
+    let net = gross;
+    if (taxMode === 'inclusive' && taxRate > 0) {
+      taxable = amount(gross / (1 + taxRate / 100));
+      tax = amount(gross - taxable);
+    } else if (taxMode === 'exclusive' && taxRate > 0) {
+      tax = amount(gross * taxRate / 100);
+      net = amount(gross + tax);
+    }
+
+    const oldNet = amount(item.net_amount || item.amount || 0);
+    const liabilityDelta = amount(Math.max(0, net - oldNet));
+    item.discount_amount = 0;
+    item.discount_rate = 0;
+    item.discount_reason = undefined;
+    item.taxable_amount = taxable;
+    item.tax_amount = tax;
+    item.net_amount = net;
+    item.amount = net;
+    if (item.patient_liability != null) {
+      item.patient_liability = amount(Number(item.patient_liability || 0) + liabilityDelta);
+    }
+    if (item.hospital_concession != null) {
+      item.hospital_concession = amount(Math.max(0, Number(item.hospital_concession || 0) - oldItemDiscount));
+    }
+
+    taxableTotal = amount(taxableTotal + taxable);
+    taxTotal = amount(taxTotal + tax);
+    newTotal = amount(newTotal + net);
+  }
+
+  // Legacy bills may not carry item-level discount metadata. Preserve the
+  // approved/requested amount as the fallback restoration value in that case.
+  const requestedDiscount = amount(
+    bill.discount_approval?.discount_amount ||
+    bill.line_discount_total ||
+    bill.discount ||
+    restoredBaseDiscount
+  );
+  if (!(bill.items || []).length) {
+    newTotal = amount(oldTotal + requestedDiscount);
+    taxableTotal = amount(Number(bill.taxable_amount || 0) + requestedDiscount);
+    taxTotal = amount(bill.tax_amount || 0);
+  }
+
+  const totalDelta = amount(Math.max(0, newTotal - oldTotal));
+  bill.line_discount_total = 0;
+  bill.bill_discount_total = 0;
+  bill.discount = 0;
+  bill.taxable_amount = taxableTotal;
+  bill.tax_amount = taxTotal;
+  bill.total_amount = newTotal;
+
+  if (bill.payer_allocation?.coverage_id) {
+    bill.payer_allocation.patient_liability = amount(Number(bill.payer_allocation.patient_liability || 0) + totalDelta);
+    bill.payer_allocation.hospital_concession = amount(Math.max(0, Number(bill.payer_allocation.hospital_concession || 0) - requestedDiscount));
+  }
+
+  return totalDelta;
+}
+
 async function runTransaction(work) {
   const session = await mongoose.startSession();
   try {
@@ -109,14 +194,20 @@ async function getOPDAdvanceBalance({ hospitalId, patientId, session }) {
   return amount(latest?.balanceAfter);
 }
 
-async function getPatientWorkspace(patientId, user) {
+async function getPatientWorkspace(patientId, user, options = {}) {
   const hospitalId = assertUserHospital(user);
-  return billingPatientService.getPatientBillingDetails({ hospitalId, patientId, admissionId: null });
+  return billingPatientService.getPatientBillingDetails({
+    hospitalId,
+    patientId,
+    admissionId: null,
+    appointmentId: options.appointmentId || null
+  });
 }
 
 async function addOPDCharge(patientId, payload, user) {
   return runTransaction(async (session) => {
     const { patient, hospitalId } = await findPatient(patientId, user, session);
+    const appointmentId = payload.appointmentId || null;
     if (payload.idempotencyKey) {
       const existing = await Bill.findOne({ hospital_id: hospitalId, idempotency_key: payload.idempotencyKey }, null, sessionOptions(session));
       if (existing) {
@@ -133,10 +224,32 @@ async function addOPDCharge(patientId, payload, user) {
         };
       }
     }
+    if (appointmentId && payload.sourceModule === 'Appointment' && payload.sourceLineKey) {
+      const existingSourceBill = await Bill.findOne({
+        hospital_id: hospitalId,
+        appointment_id: appointmentId,
+        is_deleted: { $ne: true },
+        'items.source_snapshot.sourceLineKey': String(payload.sourceLineKey)
+      }, null, sessionOptions(session));
+      if (existingSourceBill) {
+        const snapshot = existingSourceBill.items?.[0]?.source_snapshot || {};
+        return {
+          bill: existingSourceBill,
+          financialPolicy: {
+            selectedMode: snapshot.selectedMode,
+            requiredNow: Number(snapshot.requiredNow || 0),
+            clearanceState: snapshot.clearanceState,
+            policySnapshot: snapshot.financialPolicy || {}
+          },
+          alreadyExists: true,
+          duplicateSourcePrevented: true
+        };
+      }
+    }
+
     const cashLine = calculateLineAmounts(payload);
     if (!String(payload.description || '').trim()) throw financialError('Charge description is required');
 
-    const appointmentId = payload.appointmentId || null;
     const quote = await quotePricing({
       hospitalId,
       appointmentId,
@@ -301,6 +414,9 @@ async function addOPDCharge(patientId, payload, user) {
         package_absorbed: quote.amounts.packageAbsorbed,
         source_snapshot: {
           sourceModule: 'OPD',
+          originModule: payload.sourceModule || undefined,
+          sourceId: payload.sourceId || undefined,
+          sourceLineKey: payload.sourceLineKey || undefined,
           taxExemptionReason: payload.taxExemptionReason || '',
           createdFrom: payload.createdFrom || 'OPDRevenueWorkspace',
           pricingResultType: quote.resultType,
@@ -480,9 +596,35 @@ async function issueOPDInvoice(patientId, payload, user) {
         { document_stage: { $ne: 'VOID' } }
       ]
     };
-    if (Array.isArray(payload.billIds) && payload.billIds.length) filter._id = { $in: payload.billIds };
+    if (Array.isArray(payload.billIds) && payload.billIds.length) {
+      const pendingRequested = await Bill.findOne({
+        hospital_id: hospitalId,
+        patient_id: patient._id,
+        _id: { $in: payload.billIds },
+        $or: [
+          { status: 'Discount Pending Approval' },
+          { 'discount_approval.status': 'PENDING' }
+        ]
+      }, null, sessionOptions(session));
+      if (pendingRequested) {
+        throw financialError('A selected OPD bill is waiting for discount approval. Issue the invoice after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
+      }
+      filter._id = { $in: payload.billIds };
+    } else {
+      filter.status = { $ne: 'Discount Pending Approval' };
+      filter['discount_approval.status'] = { $ne: 'PENDING' };
+    }
     const bills = await Bill.find(filter, null, sessionOptions(session)).sort({ generated_at: 1, createdAt: 1 });
     if (!bills.length) throw financialError('There are no uninvoiced OPD bills for this patient', 409);
+
+    const encounterKeys = new Set(bills.map((bill) => id(bill.appointment_id) || 'CASH'));
+    if (encounterKeys.size > 1) {
+      throw financialError(
+        'One OPD invoice cannot combine bills from different appointments. Select a single appointment (or only cash/walk-in bills) and issue the invoice again.',
+        409,
+        'OPD_INVOICE_MIXED_ENCOUNTERS'
+      );
+    }
 
     const serviceItems = bills.flatMap(billServiceItems);
     const gross = amount(bills.reduce((sum, bill) => sum + Number(bill.gross_amount || bill.subtotal || 0), 0));
@@ -532,15 +674,18 @@ async function issueOPDInvoice(patientId, payload, user) {
       settlement_discount_amount: settlementDiscount,
       credit_note_total: creditNotes,
       balance_due: amount(Math.max(0, total - paid - settlementDiscount - creditNotes)),
-      status: bills.some((bill) => bill.status === 'Discount Pending Approval')
-        ? 'Discount Pending Approval'
-        : (total - paid - settlementDiscount - creditNotes <= 0 ? 'Paid' : paid > 0 ? 'Partial' : 'Pending'),
+      status: total - paid - settlementDiscount - creditNotes <= 0 ? 'Paid' : paid > 0 ? 'Partial' : 'Pending',
       notes: payload.notes || `Consolidated OPD invoice for ${bills.length} bill(s)`,
       idempotency_key: payload.idempotencyKey,
       created_by: user?._id,
       patient_snapshot: patient.toObject ? patient.toObject() : patient,
       hospital_snapshot: hospital || {},
-      print_snapshot: { billNumbers: bills.map((bill) => bill.bill_number), aggregateScope: 'OPD_PATIENT' }
+      print_snapshot: {
+        billNumbers: bills.map((bill) => bill.bill_number),
+        aggregateScope: [...encounterKeys][0] !== 'CASH' ? 'OPD_APPOINTMENT' : 'OPD_PATIENT',
+        appointmentId: [...encounterKeys][0] !== 'CASH' ? [...encounterKeys][0] : undefined,
+        discountApprovalPending: false
+      }
     });
     await invoice.save(sessionOptions(session));
     for (const bill of bills) {
@@ -557,6 +702,90 @@ async function issueOPDInvoice(patientId, payload, user) {
 async function linkedBillsForInvoice(invoice, session) {
   const ids = [...(invoice.bill_ids || []), invoice.bill_id].map(id).filter(Boolean);
   return ids.length ? Bill.find({ _id: { $in: ids } }, null, sessionOptions(session)).sort({ generated_at: 1 }) : [];
+}
+
+async function invoiceHasPendingDiscount({ hospitalId, patientId, invoiceId, session = null }) {
+  if (!invoiceId) return false;
+  const query = Bill.exists({
+    hospital_id: hospitalId,
+    patient_id: patientId,
+    is_deleted: { $ne: true },
+    $and: [
+      { $or: [{ status: 'Discount Pending Approval' }, { 'discount_approval.status': 'PENDING' }] },
+      { $or: [{ invoice_id: invoiceId }, { invoice_ids: invoiceId }] }
+    ]
+  });
+  if (session) query.session(session);
+  return Boolean(await query);
+}
+
+async function excludePendingDiscountInvoices(invoices, { hospitalId, patientId, session = null }) {
+  const ids = (invoices || []).map((invoice) => invoice?._id).filter(Boolean);
+  if (!ids.length) return invoices || [];
+  const query = Bill.find({
+    hospital_id: hospitalId,
+    patient_id: patientId,
+    is_deleted: { $ne: true },
+    $and: [
+      { $or: [{ status: 'Discount Pending Approval' }, { 'discount_approval.status': 'PENDING' }] },
+      { $or: [{ invoice_id: { $in: ids } }, { invoice_ids: { $in: ids } }] }
+    ]
+  }).select('invoice_id invoice_ids').lean();
+  if (session) query.session(session);
+  const pendingBills = await query;
+  const blocked = new Set();
+  pendingBills.forEach((bill) => [bill.invoice_id, ...(bill.invoice_ids || [])].map(id).filter(Boolean).forEach((invoiceId) => blocked.add(invoiceId)));
+  return (invoices || []).filter((invoice) => !blocked.has(id(invoice._id)));
+}
+
+async function syncOPDInvoiceFromBills(invoiceId, hospitalId, session = null) {
+  const invoice = await Invoice.findOne({ _id: invoiceId, hospital_id: hospitalId }, null, sessionOptions(session));
+  if (!invoice) return null;
+
+  const bills = await linkedBillsForInvoice(invoice, session);
+  if (!bills.length) return invoice;
+
+  const serviceItems = bills.flatMap(billServiceItems);
+  const gross = amount(bills.reduce((sum, bill) => sum + Number(bill.gross_amount || bill.subtotal || 0), 0));
+  const lineDiscount = amount(bills.reduce((sum, bill) => sum + Number(bill.line_discount_total || bill.discount || 0), 0));
+  const billDiscount = amount(bills.reduce((sum, bill) => sum + Number(bill.bill_discount_total || 0), 0));
+  const taxable = amount(bills.reduce((sum, bill) => sum + Number(bill.taxable_amount ?? Math.max(0, Number(bill.gross_amount || bill.subtotal || 0) - Number(bill.line_discount_total || bill.discount || 0) - Number(bill.bill_discount_total || 0))), 0));
+  const tax = amount(bills.reduce((sum, bill) => sum + Number(bill.tax_amount || 0), 0));
+  const rounding = amount(bills.reduce((sum, bill) => sum + Number(bill.rounding_adjustment || 0), 0));
+  const total = amount(bills.reduce((sum, bill) => sum + Number(bill.total_amount || 0), 0));
+  const paid = amount(bills.reduce((sum, bill) => sum + Number(bill.paid_amount || 0), 0));
+  const settlementDiscount = amount(bills.reduce((sum, bill) => sum + Number(bill.settlement_discount_amount || 0), 0));
+  const creditNotes = amount(bills.reduce((sum, bill) => sum + Number(bill.credit_note_amount || 0), 0));
+  const encounterKeys = new Set(bills.map((bill) => id(bill.appointment_id) || 'CASH'));
+  const onlyEncounterKey = encounterKeys.size === 1 ? [...encounterKeys][0] : null;
+
+  invoice.service_items = serviceItems;
+  invoice.gross_amount = gross;
+  invoice.subtotal = gross;
+  invoice.line_discount_total = lineDiscount;
+  invoice.bill_discount_total = billDiscount;
+  invoice.discount = amount(lineDiscount + billDiscount);
+  invoice.taxable_amount = taxable;
+  invoice.tax = tax;
+  invoice.rounding_adjustment = rounding;
+  invoice.total = total;
+  invoice.amount_paid = paid;
+  invoice.settlement_discount_amount = settlementDiscount;
+  invoice.credit_note_total = creditNotes;
+  invoice.balance_due = amount(Math.max(0, total - paid - settlementDiscount - creditNotes));
+  invoice.invoice_type = serviceItems.some((item) => item.service_type !== 'Consultation') ? 'Mixed' : 'Appointment';
+  invoice.appointment_id = onlyEncounterKey && onlyEncounterKey !== 'CASH' ? onlyEncounterKey : undefined;
+  const discountApprovalPending = bills.some(isDiscountApprovalPendingBill);
+  invoice.status = invoice.balance_due <= 0 ? 'Paid' : paid > 0 ? 'Partial' : 'Pending';
+  invoice.print_snapshot = {
+    ...(invoice.print_snapshot?.toObject?.() || invoice.print_snapshot || {}),
+    billNumbers: bills.map((bill) => bill.bill_number),
+    aggregateScope: encounterKeys.size === 1 && onlyEncounterKey !== 'CASH' ? 'OPD_APPOINTMENT' : 'OPD_PATIENT',
+    appointmentId: encounterKeys.size === 1 && onlyEncounterKey !== 'CASH' ? onlyEncounterKey : undefined,
+    discountApprovalPending
+  };
+  await invoice.save(sessionOptions(session));
+  return invoice;
 }
 
 async function applyToBill(bill, paymentAmount, discountAmount, taxAdjustment, payload, receiptNumber, user, session) {
@@ -586,20 +815,43 @@ async function previewOPDPayment(patientId, payload, user) {
 
   const invoiceFilter = {
     hospital_id: hospitalId, patient_id: patient._id, is_deleted: { $ne: true },
-    status: { $nin: ['Cancelled', 'Refunded'] }, document_stage: { $ne: 'VOID' }, balance_due: { $gt: 0 },
+    status: { $nin: ['Cancelled', 'Refunded', 'Discount Pending Approval'] }, document_stage: { $ne: 'VOID' }, balance_due: { $gt: 0 },
     $or: [{ admission_id: { $exists: false } }, { admission_id: null }]
   };
   const billFilter = {
-    hospital_id: hospitalId, patient_id: patient._id, is_deleted: { $ne: true }, balance_due: { $gt: 0 },
+    hospital_id: hospitalId, patient_id: patient._id, is_deleted: { $ne: true }, status: { $ne: 'Discount Pending Approval' }, balance_due: { $gt: 0 },
     $and: [
       { $or: [{ admission_id: { $exists: false } }, { admission_id: null }] },
       { $or: [{ invoice_id: { $exists: false } }, { invoice_id: null }] },
       { $or: [{ invoice_ids: { $exists: false } }, { invoice_ids: { $size: 0 } }] }
     ]
   };
-  if (payload.invoiceId) invoiceFilter._id = payload.invoiceId;
-  if (payload.billId) billFilter._id = payload.billId;
-  const invoices = payload.billId ? [] : await Invoice.find(invoiceFilter).sort({ issue_date: 1 });
+  if (payload.appointmentId) {
+    invoiceFilter.appointment_id = payload.appointmentId;
+    billFilter.appointment_id = payload.appointmentId;
+  }
+  if (payload.invoiceId) {
+    const requestedInvoice = await Invoice.findOne({ _id: payload.invoiceId, hospital_id: hospitalId, patient_id: patient._id }).lean();
+    if (payload.appointmentId && requestedInvoice && id(requestedInvoice.appointment_id) !== id(payload.appointmentId)) {
+      throw financialError('The selected invoice does not belong to this appointment.', 409, 'OPD_ENCOUNTER_MISMATCH');
+    }
+    if (requestedInvoice && await invoiceHasPendingDiscount({ hospitalId, patientId: patient._id, invoiceId: requestedInvoice._id })) {
+      throw financialError('This invoice contains a bill waiting for discount approval. Collect the final payment after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
+    }
+    invoiceFilter._id = payload.invoiceId;
+  }
+  if (payload.billId) {
+    const requestedBill = await Bill.findOne({ _id: payload.billId, hospital_id: hospitalId, patient_id: patient._id }).lean();
+    if (payload.appointmentId && requestedBill && id(requestedBill.appointment_id) !== id(payload.appointmentId)) {
+      throw financialError('The selected bill does not belong to this appointment.', 409, 'OPD_ENCOUNTER_MISMATCH');
+    }
+    if (requestedBill?.status === 'Discount Pending Approval' || requestedBill?.discount_approval?.status === 'PENDING') {
+      throw financialError('This bill is waiting for discount approval. Collect the final payment after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
+    }
+    billFilter._id = payload.billId;
+  }
+  let invoices = payload.billId ? [] : await Invoice.find(invoiceFilter).sort({ issue_date: 1 });
+  invoices = await excludePendingDiscountInvoices(invoices, { hospitalId, patientId: patient._id });
   const bills = payload.invoiceId ? [] : await Bill.find(billFilter).sort({ generated_at: 1 });
   if (!invoices.length && !bills.length) throw financialError('No outstanding OPD bill or invoice was found', 409, 'NO_OUTSTANDING_DOCUMENT');
 
@@ -691,7 +943,7 @@ async function recordOPDPayment(patientId, payload, user) {
       hospital_id: hospitalId,
       patient_id: patient._id,
       is_deleted: { $ne: true },
-      status: { $nin: ['Cancelled', 'Refunded'] },
+      status: { $nin: ['Cancelled', 'Refunded', 'Discount Pending Approval'] },
       document_stage: { $ne: 'VOID' },
       balance_due: { $gt: 0 },
       $or: [{ admission_id: { $exists: false } }, { admission_id: null }]
@@ -700,6 +952,7 @@ async function recordOPDPayment(patientId, payload, user) {
       hospital_id: hospitalId,
       patient_id: patient._id,
       is_deleted: { $ne: true },
+      status: { $ne: 'Discount Pending Approval' },
       balance_due: { $gt: 0 },
       $and: [
         { $or: [{ admission_id: { $exists: false } }, { admission_id: null }] },
@@ -707,9 +960,32 @@ async function recordOPDPayment(patientId, payload, user) {
         { $or: [{ invoice_ids: { $exists: false } }, { invoice_ids: { $size: 0 } }] }
       ]
     };
-    if (payload.invoiceId) invoiceFilter._id = payload.invoiceId;
-    if (payload.billId) billFilter._id = payload.billId;
+    if (payload.appointmentId) {
+      invoiceFilter.appointment_id = payload.appointmentId;
+      billFilter.appointment_id = payload.appointmentId;
+    }
+    if (payload.invoiceId) {
+      const requestedInvoice = await Invoice.findOne({ _id: payload.invoiceId, hospital_id: hospitalId, patient_id: patient._id }, null, sessionOptions(session));
+      if (payload.appointmentId && requestedInvoice && id(requestedInvoice.appointment_id) !== id(payload.appointmentId)) {
+        throw financialError('The selected invoice does not belong to this appointment.', 409, 'OPD_ENCOUNTER_MISMATCH');
+      }
+      if (requestedInvoice && await invoiceHasPendingDiscount({ hospitalId, patientId: patient._id, invoiceId: requestedInvoice._id, session })) {
+        throw financialError('This invoice contains a bill waiting for discount approval. Collect the final payment after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
+      }
+      invoiceFilter._id = payload.invoiceId;
+    }
+    if (payload.billId) {
+      const requestedBill = await Bill.findOne({ _id: payload.billId, hospital_id: hospitalId, patient_id: patient._id }, null, sessionOptions(session));
+      if (payload.appointmentId && requestedBill && id(requestedBill.appointment_id) !== id(payload.appointmentId)) {
+        throw financialError('The selected bill does not belong to this appointment.', 409, 'OPD_ENCOUNTER_MISMATCH');
+      }
+      if (requestedBill?.status === 'Discount Pending Approval' || requestedBill?.discount_approval?.status === 'PENDING') {
+        throw financialError('This bill is waiting for discount approval. Collect the final payment after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
+      }
+      billFilter._id = payload.billId;
+    }
     let invoices = payload.billId ? [] : await Invoice.find(invoiceFilter, null, sessionOptions(session)).sort({ issue_date: 1 });
+    invoices = await excludePendingDiscountInvoices(invoices, { hospitalId, patientId: patient._id, session });
     let bills = payload.invoiceId ? [] : await Bill.find(billFilter, null, sessionOptions(session)).sort({ generated_at: 1 });
     if (!invoices.length && !bills.length) throw financialError('No outstanding OPD bill or invoice was found', 409);
     if (taxAdjustment !== 0 && invoices.length + bills.length !== 1) throw financialError('Select one bill or invoice for a tax adjustment');
@@ -998,7 +1274,9 @@ async function refundOPDAdvance(patientId, payload, user) {
 
 module.exports = {
   calculateLineAmounts,
+  rejectOPDBillDiscount,
   getPatientWorkspace,
+  syncOPDInvoiceFromBills,
   addOPDCharge,
   issueOPDInvoice,
   previewOPDPayment,

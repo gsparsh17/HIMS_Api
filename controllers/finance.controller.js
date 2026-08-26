@@ -2,6 +2,7 @@ const ExcelJS = require('exceljs');
 const financial = require('../services/ipdFinancial.service');
 const mis = require('../services/misReporting.service');
 const patientFinancial = require('../services/patientFinancial.service');
+const billingPatient = require('../services/billingPatient.service');
 const financialProjection = require('../services/financialProjection.service');
 const pharmacyFinanceProjection = require('../services/pharmacyFinanceProjection.service');
 const financialPolicy = require('../services/financialPolicy.service');
@@ -251,7 +252,17 @@ exports.finaliseIPDClearance = async (req, res) => {
 
 exports.getPatientWorkspace = async (req, res) => {
   try {
-    const data = await patientFinancial.getPatientWorkspace(req.params.patientId, req.user);
+    const data = await patientFinancial.getPatientWorkspace(req.params.patientId, req.user, {
+      appointmentId: req.query.appointmentId || req.query.appointment_id || null
+    });
+    res.json({ success: true, data });
+  } catch (error) { sendError(res, error); }
+};
+
+exports.getPatientIPDHistory = async (req, res) => {
+  try {
+    const hospitalId = assertUserHospital(req.user);
+    const data = await billingPatient.getPatientIPDHistory({ hospitalId, patientId: req.params.patientId });
     res.json({ success: true, data });
   } catch (error) { sendError(res, error); }
 };

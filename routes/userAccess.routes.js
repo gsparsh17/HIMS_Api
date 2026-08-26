@@ -9,6 +9,18 @@ const requireAuth = [
   requireActionPermission('user_access_manage')
 ];
 
+const requireTemplateAdmin = [
+  protect,
+  authorize('admin', 'mediqliq_super_admin'),
+  requireActionPermission('user_access_manage')
+];
+
+// Hospital-wide role templates. HR may read templates for Staff Login, but only
+// hospital/platform admins may change the defaults in Settings.
+router.get('/access-control/templates', requireAuth, controller.getAccessControlTemplates);
+router.put('/access-control/templates/:role', requireTemplateAdmin, controller.updateAccessControlTemplate);
+router.delete('/access-control/templates/:role', requireTemplateAdmin, controller.resetAccessControlTemplate);
+
 // Get all users
 router.get('/users', requireAuth, controller.getUsers);
 

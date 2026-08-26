@@ -444,7 +444,9 @@ function normalizeFeaturePermissions(input, role, meta = {}, options = {}) {
       combined.set(moduleKey, access);
     }
 
-    const set = actions.get(moduleKey) || new Set(roleDefaultActions(role, moduleKey));
+    const set = actions.get(moduleKey) || new Set(
+      options.preserveExplicitNone ? [] : roleDefaultActions(role, moduleKey)
+    );
 
     for (const action of Array.isArray(row?.actions) ? row.actions : []) {
       set.add(action);
@@ -465,7 +467,9 @@ function normalizeFeaturePermissions(input, role, meta = {}, options = {}) {
       access: combined.has(key)
         ? combined.get(key)
         : (options.preserveExplicitNone ? 'none' : roleDefaultAccess(role, key)),
-      actions: Array.from(actions.get(key) || new Set(roleDefaultActions(role, key))),
+      actions: Array.from(
+        actions.get(key) || new Set(options.preserveExplicitNone ? [] : roleDefaultActions(role, key))
+      ),
       grantedBy: grant.grantedBy || meta.grantedBy,
       grantedAt: grant.grantedAt || meta.grantedAt || new Date(),
       updatedAt: new Date()

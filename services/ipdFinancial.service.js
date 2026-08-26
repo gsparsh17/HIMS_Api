@@ -655,6 +655,13 @@ async function getRunningBill(admissionId, user) {
     .limit(100)
     .lean();
 
+  const pendingDiscountApprovals = await ApprovalRequest.find({
+    hospitalId: admission.hospitalId,
+    admissionId,
+    requestType: 'DISCOUNT_APPROVAL',
+    status: 'Pending'
+  }).select('_id details requestedBy createdAt').lean();
+
   const unbilledChargesByDate = snapshot.ipdUnbilledCharges.reduce((result, charge) => {
     const key = dateKey(charge.chargeDate);
     (result[key] ||= []).push(charge);
@@ -715,6 +722,7 @@ async function getRunningBill(admissionId, user) {
     allInvoices: snapshot.invoices,
     receipts,
     advanceLedger,
+    pendingDiscountApprovals,
     sponsorLedger: snapshot.sponsorLedger,
     financialSummary: {
       // Billing workspace totals are IPD-controlled only. Pharmacy remains a
@@ -946,6 +954,181 @@ async function addManualCharge(payload, user) {
   }
   await calculateAdmissionFinancials(admission._id, { user });
 
+  return charge;
+}
+
+async function adjustExistingUnbilledCharge(chargeId, payload = {}, user) {
+  const charge = await IPDCharge.findById(chargeId);
+  if (!charge) {
+    const error = new Error('IPD charge not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  const admission = await findAdmission(charge.admissionId, null, user);
+  if (String(charge.hospitalId) !== String(admission.hospitalId)) {
+    const error = new Error('IPD charge does not belong to this hospital');
+    error.statusCode = 403;
+    throw error;
+  }
+  if (charge.isBilled || charge.status === 'INVOICED' || charge.invoiceId || charge.billId) {
+    const error = new Error('Billed IPD charges cannot be edited; use credit/refund controls instead');
+    error.statusCode = 409;
+    error.code = 'IPD_CHARGE_ALREADY_BILLED';
+    throw error;
+  }
+
+  // pricingSnapshot is the tariff/payer allocation before discretionary
+  // clerk discount/tax policy. Re-resolve from that authoritative base so a
+  // Desk retry never compounds an already-applied discount.
+  const snapshot = charge.pricingSnapshot || {};
+  const snapshotAmounts = snapshot.amounts || {};
+  const contractedAmount = money(
+    snapshotAmounts.contracted ?? charge.contractedAmount ?? charge.grossAmount ?? (Number(charge.rate || 0) * Number(charge.quantity || 1))
+  );
+  const basePatientLiability = money(snapshotAmounts.patientLiability ?? charge.patientLiability ?? contractedAmount);
+  const baseSponsorLiability = money(snapshotAmounts.sponsorLiability ?? charge.sponsorLiability ?? 0);
+  const coverage = await activeCoverage(admission.hospitalId, admission._id);
+  const policy = await resolveFinancialPolicy({
+    hospitalId: admission.hospitalId,
+    user,
+    encounterType: 'IPD',
+    serviceType: payload.serviceType || charge.chargeType,
+    serviceCategory: payload.serviceCategory,
+    serviceCode: payload.serviceCode || snapshot.serviceCode,
+    payerCategory: coverage?.payerCategory || (coverage ? 'SPONSORED' : 'SELF'),
+    departmentId: admission.departmentId,
+    selectedMode: payload.selectedMode || charge.selectedBillingMode || admission.financialPolicySnapshot?.selectedMode,
+    requestedDeposit: payload.requestedDeposit,
+    patientLiability: basePatientLiability,
+    sponsorLiability: baseSponsorLiability,
+    contractedAmount,
+    adjustments: {
+      discountType: payload.discountType,
+      discountRate: payload.discountRate,
+      discountAmount: payload.discountAmount ?? payload.discount,
+      discountValue: payload.discountValue,
+      discountReason: payload.discountReason,
+      taxMode: payload.taxMode,
+      taxRate: payload.taxRate,
+      taxReason: payload.taxReason
+    },
+    overrideReason: payload.overrideReason
+  });
+  const adjusted = policy.amounts;
+
+  charge.discountType = adjusted.discountType;
+  charge.discountRate = adjusted.discountRate;
+  charge.discountAmount = adjusted.discountAmount;
+  charge.discount = adjusted.discountAmount;
+  charge.discountReason = adjusted.discountReason || undefined;
+  charge.discountApprovedBy = adjusted.discountAmount > 0 && !adjusted.requiresDiscountApproval ? user?._id : undefined;
+  charge.discountApprovedAt = adjusted.discountAmount > 0 && !adjusted.requiresDiscountApproval ? operationNow() : undefined;
+  charge.taxMode = adjusted.taxMode;
+  charge.taxName = adjusted.taxName || undefined;
+  charge.taxCode = adjusted.taxCode || undefined;
+  charge.taxRate = adjusted.taxRate;
+  charge.taxAmount = adjusted.taxAmount;
+  charge.tax = adjusted.taxAmount;
+  charge.taxExemptionReason = adjusted.taxExemptionReason || undefined;
+  charge.patientLiability = adjusted.patientLiability;
+  charge.sponsorLiability = adjusted.sponsorLiability;
+  charge.hospitalConcessionAmount = money(Number(snapshotAmounts.hospitalConcession || 0) + Number(adjusted.discountAmount || 0));
+  // Persist the adjusted patient allocation in the canonical pricing snapshot.
+  // Sponsored charges are intentionally not overwritten from netAmount by the
+  // model hook, so updating only the top-level aliases would lose the Desk
+  // discount on save and make approval/collection totals inconsistent.
+  charge.pricingSnapshot = {
+    ...(snapshot?.toObject?.() || snapshot || {}),
+    amounts: {
+      ...(snapshotAmounts?.toObject?.() || snapshotAmounts || {}),
+      patientLiability: adjusted.patientLiability,
+      sponsorLiability: adjusted.sponsorLiability,
+      hospitalConcession: charge.hospitalConcessionAmount
+    }
+  };
+  charge.markModified('pricingSnapshot');
+  charge.financialPolicySnapshot = policy.policySnapshot;
+  charge.selectedBillingMode = policy.selectedMode;
+  charge.requiredNowAmount = policy.requiredNow;
+  charge.clearanceState = policy.clearanceState;
+  if (payload.notes) charge.notes = payload.notes;
+  await charge.save();
+
+  const ApprovalRequest = require('../models/ApprovalRequest');
+  const pendingApproval = await ApprovalRequest.findOne({
+    hospitalId: admission.hospitalId,
+    admissionId: admission._id,
+    requestType: 'DISCOUNT_APPROVAL',
+    status: 'Pending',
+    'details.chargeId': charge._id
+  });
+  if (adjusted.requiresDiscountApproval) {
+    const details = {
+      chargeId: charge._id,
+      description: charge.description,
+      totalBillAmount: contractedAmount,
+      discountAmount: adjusted.discountAmount,
+      requestedDiscountPercentage: adjusted.discountRate,
+      reason: adjusted.discountReason || 'Staff discount request',
+      encounterType: 'IPD'
+    };
+    if (pendingApproval) {
+      pendingApproval.details = details;
+      pendingApproval.requestedBy = user?._id || pendingApproval.requestedBy;
+      await pendingApproval.save();
+    } else {
+      await ApprovalRequest.create({
+        hospitalId: admission.hospitalId,
+        requestType: 'DISCOUNT_APPROVAL',
+        patientId: admission.patientId,
+        admissionId: admission._id,
+        details,
+        requestedBy: user?._id,
+        status: 'Pending'
+      });
+    }
+  } else if (pendingApproval) {
+    // A registrar may edit an unbilled charge back inside their permitted
+    // discount ceiling (or remove the discount entirely). The old request is
+    // then superseded and must not continue blocking invoice/payment actions.
+    await ApprovalRequest.deleteOne({ _id: pendingApproval._id, status: 'Pending' });
+  }
+
+  // Keep coverage utilisation aligned with the canonical charge. Discount is a
+  // patient concession; sponsor allocation remains the pricing-engine amount.
+  if (coverage) {
+    const quote = {
+      serviceCode: snapshot.serviceCode || payload.serviceCode,
+      rateCard: snapshot.rateCardId ? { id: snapshot.rateCardId, version: snapshot.rateCardVersion } : undefined,
+      rateCardItemId: snapshot.rateCardItemId,
+      inputs: snapshot.inputs || {},
+      amounts: {
+        ...snapshotAmounts,
+        contracted: contractedAmount,
+        patientLiability: adjusted.patientLiability,
+        sponsorLiability: adjusted.sponsorLiability,
+        hospitalConcession: charge.hospitalConcessionAmount
+      },
+      explanation: snapshot.explanation || [],
+      ruleTrace: snapshot.ruleTrace || [],
+      pricedAt: snapshot.pricedAt || operationNow()
+    };
+    await replaceCoverageUtilization({
+      coverage,
+      quote,
+      hospitalId: admission.hospitalId,
+      encounterType: 'IPD',
+      admissionId: admission._id,
+      patientId: admission.patientId,
+      sourceType: 'IPDCharge',
+      sourceId: charge._id,
+      internalServiceModel: snapshot.internalServiceModel,
+      internalServiceId: snapshot.internalServiceId,
+      userId: user?._id
+    });
+  }
+
+  await calculateAdmissionFinancials(admission._id, { user });
   return charge;
 }
 
@@ -1252,6 +1435,23 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
       const error = new Error('There are no unbilled active non-pharmacy charges for this admission');
       error.statusCode = 409;
       throw error;
+    }
+
+    if (charges.length) {
+      const pendingApprovals = await ApprovalRequest.find({
+        hospitalId: admission.hospitalId,
+        admissionId: admission._id,
+        requestType: 'DISCOUNT_APPROVAL',
+        status: 'Pending',
+        'details.chargeId': { $in: charges.map((row) => row._id) }
+      }, null, sessionOptions(session)).lean();
+      if (pendingApprovals.length) {
+        const error = new Error('One or more IPD charges are waiting for discount approval. Complete the approval decision before issuing an invoice for those charges.');
+        error.statusCode = 409;
+        error.code = 'DISCOUNT_APPROVAL_PENDING';
+        error.details = { chargeIds: pendingApprovals.map((row) => row.details?.chargeId).filter(Boolean) };
+        throw error;
+      }
     }
 
     const standardAmount = money(charges.reduce((sum, row) => sum + Number(row.pricingSnapshot?.amounts?.hospitalStandard ?? row.grossAmount ?? row.amount ?? 0), 0));
@@ -2428,6 +2628,7 @@ module.exports = {
   listBillingAdmissions,
   getRunningBill,
   addManualCharge,
+  adjustExistingUnbilledCharge,
   generateBedCharge,
   applyDiscount,
   voidCharge,

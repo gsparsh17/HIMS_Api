@@ -719,7 +719,7 @@ exports.getEmployees = async (req, res) => {
 exports.getEmployeeById = async (req, res) => {
   try {
     const employee = await HRStaffProfile.findById(req.params.id)
-      .populate('user_id', 'name email role is_active modulePermissions dashboard_access')
+      .populate('user_id', 'name email role is_active modulePermissions dashboard_access enforceModulePermissions')
       .populate('department', 'name')
       .populate('shift')
       .populate('staff_id')
@@ -730,7 +730,15 @@ exports.getEmployeeById = async (req, res) => {
       .populate('radiology_staff_id')
       .populate('ot_staff_id');
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
-    res.json(employee);
+    const payload = employee.toObject();
+    if (employee.user_id) {
+      payload.user_id = {
+        ...payload.user_id,
+        enforceModulePermissions: Boolean(employee.user_id.enforceModulePermissions),
+        modulePermissions: effectiveMainFeaturePermissions(employee.user_id)
+      };
+    }
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -814,14 +822,21 @@ exports.setEmployeeLogin = async (req, res) => {
       return res.status(400).json({ error: 'Unsupported employee login role' });
     }
 
-    const modulePermissions = Array.isArray(req.body.modulePermissions)
-      ? normalizeFeaturePermissions(req.body.modulePermissions, role, {
-          grantedBy: getUserId(req)
-        })
+    const hasExplicitPermissionSelection = Array.isArray(req.body.modulePermissions);
+    const modulePermissions = hasExplicitPermissionSelection
+      ? normalizeFeaturePermissions(
+          req.body.modulePermissions,
+          role,
+          { grantedBy: getUserId(req) },
+          { preserveExplicitNone: true }
+        )
       : user?.modulePermissions?.length
-        ? normalizeFeaturePermissions(user.modulePermissions, role, {
-            grantedBy: getUserId(req)
-          })
+        ? normalizeFeaturePermissions(
+            user.modulePermissions,
+            role,
+            { grantedBy: getUserId(req) },
+            { preserveExplicitNone: Boolean(user.enforceModulePermissions) }
+          )
         : defaultFeaturePermissions(role, { grantedBy: getUserId(req) });
 
     await assertLoginPermissionsWithinEntitlements(employee.hospital_id || req.user?.hospital_id, modulePermissions);
@@ -835,6 +850,7 @@ exports.setEmployeeLogin = async (req, res) => {
         : true;
       user.modulePermissions = modulePermissions;
       user.dashboard_access = dashboardAccessFromFeatures(modulePermissions);
+      if (hasExplicitPermissionSelection) user.enforceModulePermissions = true;
       if (req.body.password) user.password = req.body.password;
       await user.save();
     } else {
@@ -854,6 +870,7 @@ exports.setEmployeeLogin = async (req, res) => {
           : true,
         hospital_id: employee.hospital_id,
         modulePermissions,
+        enforceModulePermissions: hasExplicitPermissionSelection,
         dashboard_access: dashboardAccessFromFeatures(modulePermissions)
       });
     }
@@ -862,36 +879,6 @@ exports.setEmployeeLogin = async (req, res) => {
     employee.login_enabled = user.is_active;
     employee.updated_by = getUserId(req);
     await employee.save();
-
-    try {
-      const radiologyStaffId = employee.radiology_staff_id || (employee.source_model === 'RadiologyStaff' ? employee.source_id : null);
-      if (radiologyStaffId) {
-        const RadiologyStaff = require('../models/RadiologyStaff');
-        await RadiologyStaff.updateOne({ _id: radiologyStaffId }, { $set: { userId: user._id } });
-      }
-      if (employee.doctor_id) {
-        const Doctor = require('../models/Doctor');
-        await Doctor.updateOne({ _id: employee.doctor_id }, { $set: { userId: user._id, user_id: user._id } });
-      }
-      if (employee.nurse_id) {
-        const Nurse = require('../models/Nurse');
-        await Nurse.updateOne({ _id: employee.nurse_id }, { $set: { userId: user._id, user_id: user._id } });
-      }
-      if (employee.staff_id) {
-        const Staff = require('../models/Staff');
-        await Staff.updateOne({ _id: employee.staff_id }, { $set: { userId: user._id, user_id: user._id } });
-      }
-      if (employee.ot_staff_id) {
-        const OTStaff = require('../models/OTStaff');
-        await OTStaff.updateOne({ _id: employee.ot_staff_id }, { $set: { userId: user._id } });
-      }
-      if (employee.pathology_staff_id) {
-        const PathologyStaff = require('../models/PathologyStaff');
-        await PathologyStaff.updateOne({ _id: employee.pathology_staff_id }, { $set: { user_id: user._id } });
-      }
-    } catch (sourceLinkError) {
-      console.warn('Failed linking user ID to source model:', sourceLinkError.message);
-    }
 
     res.json({
       message: 'Employee login and main feature access updated',
@@ -902,6 +889,7 @@ exports.setEmployeeLogin = async (req, res) => {
         email: user.email,
         role: user.role,
         is_active: user.is_active,
+        enforceModulePermissions: Boolean(user.enforceModulePermissions),
         modulePermissions: effectiveMainFeaturePermissions(user),
         dashboard_access: user.dashboard_access
       }
