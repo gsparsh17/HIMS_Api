@@ -36,11 +36,11 @@ exports.searchPatients = async (req, res) => {
           { last_name: match },
           { phone: match },
           { normalizedPhone: match },
-          { 'abha.address': match }
+          { 'abha.address': match },
+          { 'abha.number': match }
         ]
       })
-      .select('uhid patientId first_name middle_name last_name phone normalizedPhone gender dob patient_type')
-      .limit(20)
+      .limit(30)
       .lean();
 
     const ids = patients.map(p => p._id);
