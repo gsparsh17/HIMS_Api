@@ -285,8 +285,28 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   }
 
   const [bills, rawInvoices, charges, rawTransactions, advanceLedger] = await Promise.all([
-    Bill.find(billFilter).sort({ generated_at: -1, createdAt: -1 }).lean(),
-    Invoice.find(invoiceFilter).sort({ issue_date: -1, created_at: -1 }).lean(),
+    Bill.find(billFilter)
+      .populate({
+        path: 'appointment_id',
+        select: 'appointmentId appointment_date start_time department_id doctor_id status',
+        populate: [
+          { path: 'doctor_id', select: 'firstName lastName first_name last_name name' },
+          { path: 'department_id', select: 'name' }
+        ]
+      })
+      .sort({ generated_at: -1, createdAt: -1 })
+      .lean(),
+    Invoice.find(invoiceFilter)
+      .populate({
+        path: 'appointment_id',
+        select: 'appointmentId appointment_date start_time department_id doctor_id status',
+        populate: [
+          { path: 'doctor_id', select: 'firstName lastName first_name last_name name' },
+          { path: 'department_id', select: 'name' }
+        ]
+      })
+      .sort({ issue_date: -1, created_at: -1 })
+      .lean(),
     admissionId ? IPDCharge.find(chargeFilter).sort({ chargeDate: 1, createdAt: 1 }).lean() : Promise.resolve([]),
     FinancialTransaction.find(transactionFilter)
       .populate('invoiceId', 'invoice_number bill_number invoice_type admission_id appointment_id status issue_date created_at createdAt')

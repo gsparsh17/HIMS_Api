@@ -6,6 +6,7 @@ const Patient = require('../models/Patient');
 const Hospital = require('../models/Hospital');
 const FinancialTransaction = require('../models/FinancialTransaction');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
+const ApprovalRequest = require('../models/ApprovalRequest');
 const billingPatientService = require('./billingPatient.service');
 const { money, nextFinancialNumber } = require('../utils/financeNumbers');
 const { assertUserHospital } = require('../utils/hospitalScope');

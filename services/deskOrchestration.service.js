@@ -15,6 +15,9 @@ const ProcedureRequest = require('../models/ProcedureRequest');
 const Procedure = require('../models/Procedure');
 const patientFinancial = require('./patientFinancial.service');
 const ipdFinancial = require('./ipdFinancial.service');
+const appointmentController = require('../controllers/appointment.controller');
+const ipdAdmissionController = require('../controllers/ipdAdmission.controller');
+const EmergencyEncounter = require('../models/EmergencyEncounter');
 const { getTemplate, matchTemplate } = require('./labReportTemplate.service');
 const { searchServiceCatalog } = require('./serviceCatalog.service');
 const { userHospitalId } = require('../utils/hospitalScope');
@@ -39,6 +42,84 @@ const allowedIntents = new Set([
 
 function checkoutError(message, statusCode = 400, code = 'DESK_CHECKOUT_INVALID', details = {}) {
   return Object.assign(new Error(message), { statusCode, code, details });
+}
+
+async function createAppointmentInternal(body, user, hospitalId) {
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    const fakeReq = {
+      body: { ...body, hospital_id: hospitalId },
+      user,
+      hospitalId,
+      headers: {
+        'idempotency-key': body.idempotencyKey
+      },
+      get: (header) => (String(header).toLowerCase() === 'idempotency-key' ? body.idempotencyKey : undefined)
+    };
+    const fakeRes = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(data) {
+        if (resolved) return;
+        resolved = true;
+        if (this.statusCode >= 400) {
+          const err = new Error(data.error || data.message || 'Appointment creation failed');
+          err.statusCode = this.statusCode;
+          err.code = data.code;
+          return reject(err);
+        }
+        return resolve(data?.data || data);
+      }
+    };
+    appointmentController.createAppointment(fakeReq, fakeRes).catch((err) => {
+      if (!resolved) {
+        resolved = true;
+        reject(err);
+      }
+    });
+  });
+}
+
+async function createAdmissionInternal(body, user, hospitalId) {
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    const fakeReq = {
+      body: { ...body, hospitalId },
+      user,
+      hospitalId,
+      headers: {
+        'idempotency-key': body.idempotencyKey
+      },
+      get: (header) => (String(header).toLowerCase() === 'idempotency-key' ? body.idempotencyKey : undefined)
+    };
+    const fakeRes = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(data) {
+        if (resolved) return;
+        resolved = true;
+        if (this.statusCode >= 400) {
+          const err = new Error(data.error || data.message || 'Admission creation failed');
+          err.statusCode = this.statusCode;
+          err.code = data.code;
+          return reject(err);
+        }
+        return resolve(data?.data || data);
+      }
+    };
+    ipdAdmissionController.createAdmission(fakeReq, fakeRes).catch((err) => {
+      if (!resolved) {
+        resolved = true;
+        reject(err);
+      }
+    });
+  });
 }
 
 function normalizeCart(cart, encounterType) {
@@ -86,6 +167,12 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
     fallbackPolicy: 'cash_fallback'
   } : undefined;
   const encounterContext = normalizeEncounterContext(payload.encounterContext);
+  if (!encounterContext.doctorId && (payload.encounterDraft?.doctor_id || payload.encounterDraft?.doctorId || payload.encounterDraft?.primaryDoctorId)) {
+    encounterContext.doctorId = idOf(payload.encounterDraft.doctor_id || payload.encounterDraft.doctorId || payload.encounterDraft.primaryDoctorId);
+  }
+  if (!encounterContext.departmentId && (payload.encounterDraft?.department_id || payload.encounterDraft?.departmentId)) {
+    encounterContext.departmentId = idOf(payload.encounterDraft.department_id || payload.encounterDraft.departmentId);
+  }
   // Appointment cart rows carry a stable sourceId even if an older Desk client
   // loses the workflow discriminator (`Appointment.type` is time/number-based).
   // Recover that canonical encounter for pricing and billing linkage.
@@ -330,7 +417,7 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
     });
     if (!match) throw checkoutError(`Service is inactive or unavailable: ${row.name || row.code}`);
 
-    const serviceTypeMap = { LAB: 'laboratory', RADIOLOGY: 'radiology', PROCEDURE: 'procedure', CONSULTATION: 'consultation', OT: 'ot', NURSING: 'other' };
+    const serviceTypeMap = { LAB: 'laboratory', RADIOLOGY: 'radiology', PROCEDURE: 'procedure', CONSULTATION: 'consultation', OT: 'ot', NURSING: 'other', REGISTRATION: 'registration', ADMISSION: 'admission' };
     let quote;
     if (row.serviceType === 'CONSULTATION' && encounterContext.doctorId) {
       const doctorTariff = await resolveDoctorTariff({
@@ -981,6 +1068,7 @@ async function previewDeskCheckout(payload, user) {
     quickPatient: payload.quickPatient || null,
     encounterType,
     encounterAction: payload.encounterAction || null,
+    encounterDraft: payload.encounterDraft || null,
     estimateOnly: Boolean(payload.estimateOnly),
     admissionId: payload.admissionId || null,
     encounterContext: normalizeEncounterContext(payload.encounterContext),
@@ -1093,9 +1181,144 @@ async function commitDeskCheckout(payload, user) {
       userId: user?._id
     });
 
-    let admission = null;
+    let createdAppointment = null;
+    const apptDraft = payload.encounterDraft || payload.appointmentDraft;
+    const isApptEncounter = (preview.encounterType === 'OPD' && (
+      String(payload.encounterAction || '').toUpperCase() === 'APPOINTMENT' ||
+      String(apptDraft?.type || apptDraft?._deskEncounterType || '').toUpperCase() === 'APPOINTMENT'
+    ) && apptDraft);
 
-    if (preview.encounterType === 'IPD') {
+    if (isApptEncounter) {
+      const appointmentBody = {
+        patient_id: patient._id,
+        department_id: apptDraft.department_id || apptDraft.departmentId,
+        doctor_id: apptDraft.doctor_id || apptDraft.doctorId,
+        appointment_date: apptDraft.appointment_date || apptDraft.appointmentDate,
+        type: apptDraft.scheduleType || (['time-based', 'number-based'].includes(apptDraft.type) ? apptDraft.type : 'time-based'),
+        duration: Number(apptDraft.duration || 10),
+        start_time: apptDraft.start_time || apptDraft.startTime,
+        appointment_type: apptDraft.appointment_type || (apptDraft.emergency?.enabled ? 'emergency' : 'consultation'),
+        priority: apptDraft.priority || (apptDraft.emergency?.enabled ? 'Urgent' : 'Normal'),
+        notes: apptDraft.notes || '',
+        coverage: apptDraft.coverage || payload.coverage,
+        idempotencyKey: `${idempotencyKey}:APPT`
+      };
+      createdAppointment = await createAppointmentInternal(appointmentBody, user, hospitalId);
+      payload.encounterContext = {
+        ...(payload.encounterContext || {}),
+        appointmentId: createdAppointment._id,
+        doctorId: createdAppointment.doctor_id || appointmentBody.doctor_id,
+        departmentId: createdAppointment.department_id || appointmentBody.department_id
+      };
+
+      if (apptDraft.emergency?.enabled) {
+        try {
+          const emergency = apptDraft.emergency;
+          const erRef = prefix => `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 900 + 100)}`;
+          await EmergencyEncounter.create({
+            hospitalId,
+            emergencyNumber: erRef('ER'),
+            patientId: patient._id,
+            appointmentId: createdAppointment._id,
+            source: 'front_desk',
+            arrivalAt: new Date(),
+            triage: {
+              category: emergency.triageCategory || 'yellow',
+              chiefComplaint: emergency.chiefComplaint,
+              triagedBy: user?._id,
+              triagedAt: new Date()
+            },
+            medicoLegal: emergency.isMlc ? {
+              isMlc: true,
+              caseNumber: emergency.caseNumber,
+              policeStation: emergency.policeStation,
+              notes: emergency.mlcNotes
+            } : { isMlc: false },
+            ambulanceHandoff: emergency.arrivedByAmbulance ? {
+              ambulanceNumber: emergency.ambulanceNumber,
+              agency: emergency.agency,
+              paramedicName: emergency.paramedicName,
+              preHospitalSummary: emergency.preHospitalSummary,
+              treatmentGiven: emergency.treatmentGiven,
+              receivedBy: user?._id,
+              handoffAt: new Date()
+            } : undefined
+          });
+        } catch (erErr) {
+          console.warn('Could not link emergency encounter:', erErr.message);
+        }
+      }
+    }
+
+    let createdAdmission = null;
+    let admission = null;
+    const admDraft = payload.encounterDraft || payload.admissionDraft;
+    const isAdmEncounter = (preview.encounterType === 'IPD' && (
+      String(payload.encounterAction || '').toUpperCase() === 'ADMISSION' ||
+      String(admDraft?.type || admDraft?._deskEncounterType || '').toUpperCase() === 'ADMISSION'
+    ) && admDraft);
+
+    if (isAdmEncounter) {
+      const admissionBody = {
+        patientId: patient._id,
+        departmentId: admDraft.departmentId || admDraft.department_id,
+        primaryDoctorId: admDraft.primaryDoctorId || admDraft.doctor_id || admDraft.doctorId,
+        wardId: admDraft.wardId || undefined,
+        bedId: admDraft.bedId || undefined,
+        admissionType: admDraft.admissionType || (admDraft.emergency?.enabled ? 'Emergency' : 'Planned'),
+        provisionalDiagnosis: admDraft.provisionalDiagnosis,
+        chiefComplaints: admDraft.chiefComplaints,
+        paymentType: admDraft.paymentType || 'Cash',
+        sponsorType: admDraft.sponsorType || payload.coverage?.payerCategory || 'self',
+        coverage: admDraft.coverage || payload.coverage,
+        attendant: admDraft.attendant,
+        advanceAmount: 0,
+        admissionNotes: admDraft.admissionNotes,
+        idempotencyKey: `${idempotencyKey}:ADM`
+      };
+      const admResult = await createAdmissionInternal(admissionBody, user, hospitalId);
+      createdAdmission = admResult.admission || admResult;
+      admission = createdAdmission;
+      payload.admissionId = createdAdmission._id;
+
+      if (admDraft.emergency?.enabled) {
+        try {
+          const emergency = admDraft.emergency;
+          const erRef = prefix => `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 900 + 100)}`;
+          await EmergencyEncounter.create({
+            hospitalId,
+            emergencyNumber: erRef('ER'),
+            patientId: patient._id,
+            admissionId: createdAdmission._id,
+            source: 'front_desk',
+            arrivalAt: new Date(),
+            triage: {
+              category: emergency.triageCategory || 'yellow',
+              chiefComplaint: emergency.chiefComplaint,
+              triagedBy: user?._id,
+              triagedAt: new Date()
+            },
+            medicoLegal: emergency.isMlc ? {
+              isMlc: true,
+              caseNumber: emergency.caseNumber,
+              policeStation: emergency.policeStation,
+              notes: emergency.mlcNotes
+            } : { isMlc: false },
+            ambulanceHandoff: emergency.arrivedByAmbulance ? {
+              ambulanceNumber: emergency.ambulanceNumber,
+              agency: emergency.agency,
+              paramedicName: emergency.paramedicName,
+              preHospitalSummary: emergency.preHospitalSummary,
+              treatmentGiven: emergency.treatmentGiven,
+              receivedBy: user?._id,
+              handoffAt: new Date()
+            } : undefined
+          });
+        } catch (erErr) {
+          console.warn('Could not link emergency encounter:', erErr.message);
+        }
+      }
+    } else if (preview.encounterType === 'IPD') {
       admission = await IPDAdmission.findOne({
         _id: payload.admissionId,
         hospitalId,
@@ -1109,14 +1332,16 @@ async function commitDeskCheckout(payload, user) {
 
     const financialEncounterContext = normalizeEncounterContext(payload.encounterContext);
     if (!financialEncounterContext.appointmentId && preview.encounterType === 'OPD') {
-      financialEncounterContext.appointmentId = appointmentIdFromSourceRows(preview.rows);
+      financialEncounterContext.appointmentId = createdAppointment?._id || appointmentIdFromSourceRows(preview.rows);
     }
     if (financialEncounterContext.appointmentId) {
-      const linkedAppointment = await Appointment.findOne({
-        _id: financialEncounterContext.appointmentId,
-        hospital_id: hospitalId,
-        patient_id: patient._id
-      }).select('_id doctor_id department_id');
+      const linkedAppointment = (createdAppointment && String(createdAppointment._id) === String(financialEncounterContext.appointmentId))
+        ? createdAppointment
+        : await Appointment.findOne({
+            _id: financialEncounterContext.appointmentId,
+            hospital_id: hospitalId,
+            patient_id: patient._id
+          }).select('_id doctor_id department_id');
       if (!linkedAppointment) {
         throw checkoutError('Selected OPD appointment does not match the Desk patient', 409, 'OPD_APPOINTMENT_MISMATCH');
       }
@@ -1148,6 +1373,13 @@ async function commitDeskCheckout(payload, user) {
           CONSULTATION: 'Consultation'
         };
 
+        const sourceId = (row.sourceModule === 'Appointment' && financialEncounterContext.appointmentId)
+          ? financialEncounterContext.appointmentId
+          : row.sourceId;
+        const sourceLineKey = (row.sourceModule === 'Appointment' && financialEncounterContext.appointmentId)
+          ? `appointment:${financialEncounterContext.appointmentId}:${String(row.code || 'consultation').toLowerCase()}`
+          : row.sourceLineKey;
+
         const result = await patientFinancial.addOPDCharge(patient._id, {
           description: row.name,
           chargeType: chargeTypeMap[row.serviceType] || 'Miscellaneous',
@@ -1171,8 +1403,8 @@ async function commitDeskCheckout(payload, user) {
           departmentId: financialEncounterContext.departmentId,
           appointmentId: financialEncounterContext.appointmentId || undefined,
           sourceModule: row.sourceModule,
-          sourceId: row.sourceId,
-          sourceLineKey: row.sourceLineKey,
+          sourceId,
+          sourceLineKey,
           createdFrom: 'DeskCheckout',
           idempotencyKey: rowKey,
           notes: `Desk checkout ${idempotencyKey}`
@@ -1192,10 +1424,15 @@ async function commitDeskCheckout(payload, user) {
           REGISTRATION: 'Miscellaneous'
         };
 
-        const sourceLineKey = String(row.sourceLineKey || '').trim();
+        const sourceId = (row.sourceModule === 'Admission' && admission?._id)
+          ? admission._id
+          : row.sourceId;
+        const sourceLineKey = (row.sourceModule === 'Admission' && admission?._id)
+          ? `admission:${admission._id}:${String(row.code || 'admission').toLowerCase()}`
+          : String(row.sourceLineKey || '').trim();
         const sourceClauses = sourceLineKey && row.sourceModule === 'Admission' ? [
           { admissionId: admission._id, status: { $nin: ['VOIDED', 'CANCELLED'] }, 'sourceReference.lineKey': sourceLineKey },
-          { admissionId: admission._id, status: { $nin: ['VOIDED', 'CANCELLED'] }, sourceModule: 'Admission', sourceId: row.sourceId, 'pricingSnapshot.serviceCode': row.code }
+          { admissionId: admission._id, status: { $nin: ['VOIDED', 'CANCELLED'] }, sourceModule: 'Admission', sourceId, 'pricingSnapshot.serviceCode': row.code }
         ] : [];
         const existing = await IPDCharge.findOne({
           hospitalId,
@@ -1260,7 +1497,7 @@ async function commitDeskCheckout(payload, user) {
             taxRate: row.requestedAdjustments?.taxRate,
             overrideReason: row.overrideReason,
             sourceModule: row.sourceModule || 'Manual',
-            sourceId: row.sourceId || undefined,
+            sourceId: sourceId || undefined,
             sourceReference: sourceLineKey ? { lineKey: sourceLineKey } : undefined,
             idempotencyKey: rowKey,
             allowStandardFallback: !row.internalServiceId && !row.masterId,
@@ -1569,9 +1806,19 @@ async function commitDeskCheckout(payload, user) {
       },
       encounterType: preview.encounterType,
       encounterAction: String(payload.encounterAction || 'SERVICES').toUpperCase(),
-      appointmentId: financialEncounterContext.appointmentId || clinicalContext.appointmentId || payload.encounterContext?.appointmentId || payload.appointmentId || null,
-      encounterId: financialEncounterContext.appointmentId || clinicalContext.appointmentId || admission?._id || payload.encounterContext?.appointmentId || null,
+      appointmentId: createdAppointment?._id || financialEncounterContext.appointmentId || clinicalContext.appointmentId || payload.encounterContext?.appointmentId || payload.appointmentId || null,
+      appointment: createdAppointment || null,
+      appointmentSummary: createdAppointment ? {
+        id: createdAppointment._id,
+        appointmentDate: createdAppointment.appointment_date,
+        token: createdAppointment.token,
+        serialNumber: createdAppointment.serial_number,
+        startTime: createdAppointment.start_time,
+        status: createdAppointment.status
+      } : null,
+      encounterId: createdAppointment?._id || financialEncounterContext.appointmentId || clinicalContext.appointmentId || admission?._id || payload.encounterContext?.appointmentId || null,
       admissionId: admission?._id || null,
+      admission: createdAdmission || admission || null,
       admissionSummary: admission ? {
         id: admission._id,
         admissionNumber: admission.admissionNumber,

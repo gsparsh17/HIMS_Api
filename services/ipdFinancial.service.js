@@ -7,6 +7,7 @@ const Invoice = require('../models/Invoice');
 const Bill = require('../models/Bill');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const FinancialTransaction = require('../models/FinancialTransaction');
+const ApprovalRequest = require('../models/ApprovalRequest');
 const Sale = require('../models/Sale');
 const { money, nextFinancialNumber } = require('../utils/financeNumbers');
 const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
