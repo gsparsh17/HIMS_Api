@@ -982,6 +982,12 @@ exports.depositAdvance = asyncHandler(async (req, res) => {
   if (!patientId || !admissionId) return res.status(400).json({ success: false, error: 'patientId and admissionId are required' });
   if (amount <= 0) return res.status(400).json({ success: false, error: 'Advance amount must be greater than zero' });
 
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId });
+  if (!admission) return res.status(404).json({ success: false, error: 'Admission not found' });
+  if (admission.status === 'Discharged' || admission.finalDischargedAt) {
+    return res.status(400).json({ success: false, error: 'Cannot add advance payment to a patient who has already been discharged' });
+  }
+
   const walletType = req.body.walletType || req.body.wallet_type || 'PHARMACY_IPD';
   const paymentMethod = req.body.paymentMethod || req.body.payment_method || 'Cash';
   const createdBy = getCreatedBy(req);

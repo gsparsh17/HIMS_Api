@@ -1754,6 +1754,12 @@ async function recordAdvance(admissionId, payload, user) {
   return runFinancialTransaction(async (session) => {
     const admission = await findAdmission(admissionId, session, user);
 
+    if (admission.status === 'Discharged' || admission.finalDischargedAt) {
+      const error = new Error('Cannot add advance payment to a patient who has already been discharged');
+      error.statusCode = 400;
+      throw error;
+    }
+
     if (payload.idempotencyKey) {
       const existing = await FinancialTransaction.findOne(
         { idempotencyKey: payload.idempotencyKey },
