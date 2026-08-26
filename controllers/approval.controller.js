@@ -1,5 +1,8 @@
 const ApprovalRequest = require('../models/ApprovalRequest');
 const IPDAdmission = require('../models/IPDAdmission');
+const IPDCharge = require('../models/IPDCharge');
+const patientFinancial = require('../services/patientFinancial.service');
+const ipdFinancial = require('../services/ipdFinancial.service');
 const { requestHospitalId } = require('../utils/hospitalScope');
 
 const APPROVAL_STATUSES = {
@@ -168,7 +171,6 @@ exports.updateRequestStatus = async (req, res) => {
                 bill.status = 'Pending';
               }
             } else if (status === 'Rejected') {
-              const rejectedDiscount = Number(bill.discount || 0);
               bill.discount_approval = {
                 ...(bill.discount_approval?.toObject?.() || bill.discount_approval || {}),
                 status: 'REJECTED',
@@ -176,8 +178,7 @@ exports.updateRequestStatus = async (req, res) => {
                 approved_at: new Date(),
                 rejection_reason: String(req.body.rejectionReason || 'Discount rejected').trim()
               };
-              bill.discount = 0;
-              bill.total_amount = Number(bill.total_amount || 0) + rejectedDiscount;
+              patientFinancial.rejectOPDBillDiscount(bill);
               bill.balance_due = Math.max(0, Number(bill.total_amount || 0) - Number(bill.paid_amount || 0));
               bill.status = Number(bill.paid_amount || 0) >= bill.total_amount ? 'Paid' : (Number(bill.paid_amount || 0) > 0 ? 'Partially Paid' : 'Pending');
             }
@@ -185,24 +186,73 @@ exports.updateRequestStatus = async (req, res) => {
 
             if (bill.invoice_id) {
               try {
-                const Invoice = require('../models/Invoice');
                 const invoiceId = bill.invoice_id?._id || bill.invoice_id;
-                const inv = await Invoice.findOne({ _id: invoiceId, hospital_id: hospitalId });
-                if (inv) {
-                  inv.discount = bill.discount || 0;
-                  inv.total = bill.total_amount;
-                  inv.balance_due = bill.balance_due;
-                  inv.status = bill.status === 'Paid' ? 'Paid' : (bill.status === 'Partially Paid' ? 'Partial' : 'Pending');
-                  await inv.save();
-                }
+                await patientFinancial.syncOPDInvoiceFromBills(invoiceId, hospitalId);
               } catch (invErr) {
-                console.warn('Could not sync invoice on discount approval:', invErr.message);
+                console.warn('Could not sync consolidated invoice on discount approval:', invErr.message);
               }
             }
           }
         }
       } catch (syncErr) {
         console.warn('Could not sync approval decision to bill:', syncErr.message);
+      }
+
+      // IPD charge discounts use the same ApprovalRequest collection but are
+      // attached to an IPDCharge instead of a Bill. Approval makes the already
+      // priced discount collectible/invoiceable; rejection restores the charge
+      // to its undiscounted amount before any invoice can be issued.
+      const chargeId = request.details?.chargeId;
+      if (chargeId) {
+        try {
+          const charge = await IPDCharge.findOne({ _id: chargeId, hospitalId });
+          if (charge && !charge.isBilled && charge.status === 'ACTIVE') {
+            if (status === 'Approved') {
+              charge.discountApprovedBy = req.user._id;
+              charge.discountApprovedAt = new Date();
+              charge.discountDetails = {
+                ...(charge.discountDetails?.toObject?.() || charge.discountDetails || {}),
+                approvedBy: req.user._id,
+                approvedAt: new Date()
+              };
+              charge.financialPolicySnapshot = {
+                ...(charge.financialPolicySnapshot || {}),
+                discountApproval: { status: 'APPROVED', approvedBy: req.user._id, approvedAt: new Date() }
+              };
+            } else {
+              const rejectedDiscount = Number(charge.discountAmount || charge.discount || 0);
+              const previousNet = Number(charge.netAmount || 0);
+              const gross = Number(charge.quantity || 0) * Number(charge.rate || 0);
+              const taxRate = Number(charge.taxRate || 0);
+              const taxMode = charge.taxMode || 'exclusive';
+              const restoredNet = taxMode === 'exclusive'
+                ? gross + (gross * taxRate / 100)
+                : gross;
+              const liabilityDelta = Number((restoredNet - previousNet).toFixed(2));
+
+              charge.discountAmount = 0;
+              charge.discount = 0;
+              charge.discountRate = 0;
+              charge.discountReason = undefined;
+              charge.discountApprovedBy = undefined;
+              charge.discountApprovedAt = undefined;
+              charge.discountDetails = { type: charge.discountType || 'fixed', rate: 0, amount: 0 };
+              if (charge.pricingSnapshot?.amounts) {
+                charge.pricingSnapshot.amounts.patientLiability = Number((Number(charge.pricingSnapshot.amounts.patientLiability || 0) + liabilityDelta).toFixed(2));
+                charge.pricingSnapshot.amounts.hospitalConcession = Math.max(0, Number((Number(charge.pricingSnapshot.amounts.hospitalConcession || 0) - rejectedDiscount).toFixed(2)));
+                charge.markModified('pricingSnapshot');
+              }
+              charge.financialPolicySnapshot = {
+                ...(charge.financialPolicySnapshot || {}),
+                discountApproval: { status: 'REJECTED', rejectedBy: req.user._id, rejectedAt: new Date(), reason: request.rejectionReason }
+              };
+            }
+            await charge.save();
+            await ipdFinancial.calculateAdmissionFinancials(charge.admissionId, { user: req.user });
+          }
+        } catch (chargeSyncErr) {
+          console.warn('Could not sync approval decision to IPD charge:', chargeSyncErr.message);
+        }
       }
     }
 

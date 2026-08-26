@@ -1,13 +1,37 @@
 'use strict';
 
 const User = require('../models/User');
-const { MAIN_FEATURE_KEYS, toMainFeatureKey } = require('../utils/mainFeatureAccess');
+const Hospital = require('../models/Hospital');
+const {
+  MAIN_FEATURE_KEYS,
+  toMainFeatureKey,
+  defaultFeaturePermissions
+} = require('../utils/mainFeatureAccess');
 const { normalizeRole } = require('../utils/insuranceWorkflowAuthority');
 const { getSnapshot } = require('../services/licenseSnapshot.service');
 const { isEntitled } = require('../utils/entitlements');
 
 const HR_PERMISSION_MANAGER_ROLES = new Set(['hr', 'hr_manager']);
 const ADMIN_ROLES = new Set(['admin', 'mediqliq_super_admin']);
+const ROLE_TEMPLATE_ROLES = Object.freeze([
+  'doctor',
+  'nurse',
+  'staff',
+  'registrar',
+  'receptionist',
+  'pharmacy',
+  'pathology_staff',
+  'radiology_staff',
+  'ot_staff',
+  'hr',
+  'hr_manager',
+  'store',
+  'store_manager',
+  'inventory_manager',
+  'accountant',
+  'insurance_desk'
+]);
+const ROLE_TEMPLATE_ROLE_SET = new Set(ROLE_TEMPLATE_ROLES);
 
 function hrCannotManageTarget(actor, target) {
   return HR_PERMISSION_MANAGER_ROLES.has(normalizeRole(actor)) && ADMIN_ROLES.has(normalizeRole(target));
@@ -141,6 +165,136 @@ function ensurePermissionManagerActions(permissions, role) {
   row.updatedAt = new Date();
   return permissions;
 }
+
+function normalizeTemplateRole(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function templateHospitalId(req) {
+  const requested = req.query?.hospitalId || req.body?.hospitalId || req.user?.hospital_id;
+  if (!requested) throw new Error('Hospital context is required for access-control templates');
+  if (
+    req.user?.role !== 'mediqliq_super_admin' &&
+    String(requested) !== String(req.user?.hospital_id)
+  ) {
+    const error = new Error('Cross-hospital access-control update denied');
+    error.statusCode = 403;
+    throw error;
+  }
+  return requested;
+}
+
+function publicRoleTemplate(role, storedTemplate = null) {
+  return {
+    role,
+    source: storedTemplate ? 'hospital' : 'system',
+    modulePermissions: storedTemplate?.modulePermissions?.length
+      ? storedTemplate.modulePermissions.map((permission) => ({
+          moduleKey: permission.moduleKey,
+          access: permission.access,
+          actions: Array.from(new Set(permission.actions || []))
+        }))
+      : defaultFeaturePermissions(role).map((permission) => ({
+          moduleKey: permission.moduleKey,
+          access: permission.access,
+          actions: Array.from(new Set(permission.actions || []))
+        })),
+    ...(storedTemplate?.updatedAt ? { updatedAt: storedTemplate.updatedAt } : {})
+  };
+}
+
+exports.getAccessControlTemplates = async (req, res) => {
+  try {
+    const hospitalId = templateHospitalId(req);
+    const hospital = await Hospital.findById(hospitalId).select('accessControl.roleTemplates');
+    if (!hospital) {
+      return res.status(404).json({ success: false, message: 'Hospital not found' });
+    }
+
+    const stored = new Map(
+      (hospital.accessControl?.roleTemplates || []).map((template) => [
+        normalizeTemplateRole(template.role),
+        template
+      ])
+    );
+
+    return res.json({
+      success: true,
+      templates: ROLE_TEMPLATE_ROLES.map((role) => publicRoleTemplate(role, stored.get(role) || null))
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+  }
+};
+
+exports.updateAccessControlTemplate = async (req, res) => {
+  try {
+    const hospitalId = templateHospitalId(req);
+    const role = normalizeTemplateRole(req.params.role);
+    if (!ROLE_TEMPLATE_ROLE_SET.has(role)) {
+      return res.status(400).json({ success: false, message: 'Unsupported role template' });
+    }
+
+    const permissions = normalizePermissions(req.body?.modulePermissions, req.user._id);
+    await assertPermissionsWithinHospitalEntitlements(hospitalId, permissions);
+
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({ success: false, message: 'Hospital not found' });
+    }
+
+    if (!hospital.accessControl) hospital.accessControl = { roleTemplates: [] };
+    if (!Array.isArray(hospital.accessControl.roleTemplates)) hospital.accessControl.roleTemplates = [];
+
+    const index = hospital.accessControl.roleTemplates.findIndex(
+      (template) => normalizeTemplateRole(template.role) === role
+    );
+    const row = {
+      role,
+      modulePermissions: permissions.map(({ moduleKey, access, actions }) => ({ moduleKey, access, actions })),
+      updatedBy: req.user._id,
+      updatedAt: new Date()
+    };
+
+    if (index >= 0) hospital.accessControl.roleTemplates[index] = row;
+    else hospital.accessControl.roleTemplates.push(row);
+    hospital.markModified('accessControl.roleTemplates');
+    await hospital.save();
+
+    return res.json({ success: true, template: publicRoleTemplate(role, row) });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+  }
+};
+
+exports.resetAccessControlTemplate = async (req, res) => {
+  try {
+    const hospitalId = templateHospitalId(req);
+    const role = normalizeTemplateRole(req.params.role);
+    if (!ROLE_TEMPLATE_ROLE_SET.has(role)) {
+      return res.status(400).json({ success: false, message: 'Unsupported role template' });
+    }
+
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return res.status(404).json({ success: false, message: 'Hospital not found' });
+    }
+
+    const rows = hospital.accessControl?.roleTemplates || [];
+    hospital.accessControl.roleTemplates = rows.filter(
+      (template) => normalizeTemplateRole(template.role) !== role
+    );
+    hospital.markModified('accessControl.roleTemplates');
+    await hospital.save();
+
+    return res.json({ success: true, template: publicRoleTemplate(role, null) });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+  }
+};
 
 exports.getUsers = async (req, res) => {
   try {

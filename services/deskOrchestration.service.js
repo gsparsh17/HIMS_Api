@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const IPDAdmission = require('../models/IPDAdmission');
+const IPDCharge = require('../models/IPDCharge');
 const DeskCheckout = require('../models/DeskCheckout');
 const LabRequest = require('../models/LabRequest');
 const LabTest = require('../models/LabTest');
@@ -124,6 +125,137 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
       taxMode: row.taxMode,
       taxRate: row.taxRate
     };
+    // Registration/admission creation already posts canonical IPD fee
+    // charges. Price the Desk row from that source charge (including payer
+    // allocation) so preview and commit operate on the same encounter amount.
+    const canonicalAdmissionRow = encounterType === 'IPD'
+      && row.serviceType === 'MANUAL'
+      && row.sourceModule === 'Admission'
+      && row.sourceId
+      && ['IPD-REG', 'IPD-ADM'].includes(String(row.code || '').toUpperCase());
+    if (canonicalAdmissionRow) {
+      const canonicalCharge = await IPDCharge.findOne({
+        hospitalId,
+        admissionId: row.sourceId,
+        sourceModule: 'Admission',
+        sourceId: row.sourceId,
+        'pricingSnapshot.serviceCode': String(row.code || '').toUpperCase(),
+        status: { $nin: ['VOIDED', 'CANCELLED'] }
+      }).sort({ createdAt: 1 });
+
+      if (canonicalCharge) {
+        const snap = canonicalCharge.pricingSnapshot || {};
+        const snapAmounts = snap.amounts || {};
+        const standardAmount = round(snapAmounts.hospitalStandard ?? canonicalCharge.standardAmount ?? canonicalCharge.grossAmount);
+        const contractedAmount = round(snapAmounts.contracted ?? canonicalCharge.contractedAmount ?? canonicalCharge.grossAmount);
+        const basePatientLiability = round(snapAmounts.patientLiability ?? canonicalCharge.patientLiability ?? contractedAmount);
+        const baseSponsorLiability = round(snapAmounts.sponsorLiability ?? canonicalCharge.sponsorLiability ?? 0);
+        const alreadyInvoiced = Boolean(canonicalCharge.isBilled || canonicalCharge.status === 'INVOICED' || canonicalCharge.invoiceId || canonicalCharge.billId);
+        const explicitAdjustment = [rowDiscountRate, rowDiscountAmount, rowDiscountValue, row.taxRate]
+          .some((value) => value !== undefined && value !== null && value !== '' && Number(value) !== 0)
+          || Boolean(row.taxMode && row.taxMode !== 'exempt');
+
+        if (alreadyInvoiced && explicitAdjustment) {
+          throw checkoutError(
+            `${row.name} is already invoiced. Apply any further concession from the IPD Finance workspace.`,
+            409,
+            'IPD_CANONICAL_CHARGE_ALREADY_INVOICED'
+          );
+        }
+
+        let resolved;
+        if (alreadyInvoiced) {
+          const priorPolicy = canonicalCharge.financialPolicySnapshot || {};
+          resolved = {
+            amounts: {
+              discountType: canonicalCharge.discountType,
+              discountRate: canonicalCharge.discountRate,
+              discountAmount: canonicalCharge.discountAmount,
+              discountReason: canonicalCharge.discountReason,
+              taxableAmount: canonicalCharge.taxableAmount,
+              taxMode: canonicalCharge.taxMode,
+              taxName: canonicalCharge.taxName,
+              taxCode: canonicalCharge.taxCode,
+              taxRate: canonicalCharge.taxRate,
+              taxAmount: canonicalCharge.taxAmount,
+              netAmount: canonicalCharge.netAmount,
+              patientLiability: canonicalCharge.patientLiability,
+              sponsorLiability: canonicalCharge.sponsorLiability,
+              requiresDiscountApproval: false
+            },
+            allowedModes: priorPolicy.allowedModes || [],
+            defaultMode: priorPolicy.defaultMode || canonicalCharge.selectedBillingMode,
+            selectedMode: canonicalCharge.selectedBillingMode || priorPolicy.selectedMode,
+            partial: priorPolicy.partial || {},
+            requiredNow: canonicalCharge.requiredNowAmount || 0,
+            clearanceState: canonicalCharge.clearanceState || priorPolicy.clearanceState,
+            policySnapshot: priorPolicy,
+            permissions: {},
+            billingIntent: row.billingIntent
+          };
+        } else {
+          resolved = await resolveFinancialPolicy({
+            hospitalId,
+            user,
+            encounterType: 'IPD',
+            serviceType: row.serviceType || canonicalCharge.chargeType,
+            serviceCategory: row.category,
+            serviceCode: row.code,
+            payerCategory: canonicalCharge.financialPolicySnapshot?.context?.payerCategory
+              || (baseSponsorLiability > 0 ? 'SPONSORED' : 'SELF'),
+            departmentId: encounterContext.departmentId,
+            selectedMode: row.selectedMode || canonicalCharge.selectedBillingMode,
+            requestedDeposit: row.requestedDeposit,
+            patientLiability: basePatientLiability,
+            sponsorLiability: baseSponsorLiability,
+            contractedAmount,
+            adjustments: requestedAdjustments,
+            overrideReason: row.overrideReason
+          });
+        }
+
+        out.push({
+          ...row,
+          canonicalChargeId: canonicalCharge._id,
+          alreadyInvoiced,
+          rate: row.quantity ? round(contractedAmount / row.quantity) : contractedAmount,
+          standardRate: row.quantity ? round(standardAmount / row.quantity) : standardAmount,
+          gross: standardAmount,
+          standardAmount,
+          contractedAmount,
+          eligibleAmount: round(snapAmounts.eligible || 0),
+          discountType: resolved.amounts.discountType,
+          discountRate: resolved.amounts.discountRate,
+          discountAmount: resolved.amounts.discountAmount,
+          discountReason: resolved.amounts.discountReason,
+          taxableAmount: resolved.amounts.taxableAmount,
+          taxMode: resolved.amounts.taxMode,
+          taxName: resolved.amounts.taxName,
+          taxCode: resolved.amounts.taxCode,
+          taxRate: resolved.amounts.taxRate,
+          taxAmount: resolved.amounts.taxAmount,
+          netAmount: resolved.amounts.netAmount,
+          patientLiability: resolved.amounts.patientLiability,
+          sponsorLiability: resolved.amounts.sponsorLiability,
+          requiredNow: resolved.requiredNow,
+          outstanding: resolved.amounts.patientLiability,
+          allowedModes: resolved.allowedModes,
+          defaultMode: resolved.defaultMode,
+          selectedMode: resolved.selectedMode,
+          partialPolicy: resolved.partial,
+          clearanceState: resolved.clearanceState,
+          financialPolicySnapshot: resolved.policySnapshot,
+          requiresDiscountApproval: Boolean(resolved.amounts.requiresDiscountApproval),
+          policyPermissions: resolved.permissions,
+          billingIntent: row.billingIntent,
+          pricingResultType: snap.resultType,
+          pricingDifference: round((row.quantity ? contractedAmount / row.quantity : contractedAmount) - Number(row.rate || 0)),
+          requestedAdjustments
+        });
+        continue;
+      }
+    }
+
     if (!row.masterId || row.serviceType === 'MANUAL') {
       if (row.serviceType === 'MANUAL') {
         if (!String(row.name || '').trim()) throw checkoutError('Manual service description is required');
@@ -169,6 +301,7 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
         partialPolicy: policy.partial,
         clearanceState: policy.clearanceState,
         financialPolicySnapshot: policy.policySnapshot,
+        requiresDiscountApproval: Boolean(policy.amounts.requiresDiscountApproval),
         policyPermissions: policy.permissions,
         billingIntent: policy.billingIntent,
         requestedAdjustments
@@ -275,6 +408,7 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
       partialPolicy: policy.partial,
       clearanceState: noLiabilityIntent ? 'CLEARED' : policy.clearanceState,
       financialPolicySnapshot: policy.policySnapshot,
+      requiresDiscountApproval: Boolean(policy.amounts.requiresDiscountApproval),
       policyPermissions: policy.permissions,
       billingIntent: effectiveIntent,
       pricingResultType: quote.resultType,
@@ -943,6 +1077,7 @@ async function commitDeskCheckout(payload, user) {
     const invoiceIds = [];
     const billNowChargeIds = [];
     const rowFinancialRefs = preview.rows.map(() => ({ billIds: [], chargeIds: [], invoiceIds: [] }));
+    const existingIPDInvoiceIds = [];
     let issuedIPDInvoice = null;
 
     for (let index = 0; index < preview.rows.length; index += 1) {
@@ -984,6 +1119,10 @@ async function commitDeskCheckout(payload, user) {
           overrideReason: row.overrideReason,
           departmentId: financialEncounterContext.departmentId,
           appointmentId: financialEncounterContext.appointmentId || undefined,
+          sourceModule: row.sourceModule,
+          sourceId: row.sourceId,
+          sourceLineKey: row.sourceLineKey,
+          createdFrom: 'DeskCheckout',
           idempotencyKey: rowKey,
           notes: `Desk checkout ${idempotencyKey}`
         }, user);
@@ -1002,46 +1141,106 @@ async function commitDeskCheckout(payload, user) {
           REGISTRATION: 'Miscellaneous'
         };
 
-        const existing = await require('../models/IPDCharge').findOne({
+        const sourceLineKey = String(row.sourceLineKey || '').trim();
+        const sourceClauses = sourceLineKey && row.sourceModule === 'Admission' ? [
+          { admissionId: admission._id, status: { $nin: ['VOIDED', 'CANCELLED'] }, 'sourceReference.lineKey': sourceLineKey },
+          { admissionId: admission._id, status: { $nin: ['VOIDED', 'CANCELLED'] }, sourceModule: 'Admission', sourceId: row.sourceId, 'pricingSnapshot.serviceCode': row.code }
+        ] : [];
+        const existing = await IPDCharge.findOne({
           hospitalId,
-          idempotencyKey: rowKey
+          $or: [{ idempotencyKey: rowKey }, ...sourceClauses]
         });
 
-        const charge = existing || await ipdFinancial.addManualCharge({
-          admissionId: admission._id,
-          chargeType: typeMap[row.serviceType] || 'Miscellaneous',
-          serviceType: String(row.serviceType || '').toLowerCase(),
-          internalServiceId: row.masterId,
-          externalCode: row.code,
-          description: row.name,
-          quantity: row.quantity,
-          rate: row.rate,
-          selectedMode: row.selectedMode,
-          requestedDeposit: row.requestedDeposit,
-          discountType: row.requestedAdjustments?.discountType,
-          discountRate: row.requestedAdjustments?.discountRate,
-          discountAmount: row.requestedAdjustments?.discountAmount,
-          discountValue: row.requestedAdjustments?.discountValue,
-          discountReason: row.requestedAdjustments?.discountReason,
-          taxMode: row.requestedAdjustments?.taxMode,
-          taxRate: row.requestedAdjustments?.taxRate,
-          overrideReason: row.overrideReason,
-          idempotencyKey: rowKey,
-          allowStandardFallback: !row.internalServiceId && !row.masterId,
-          notes: `Desk checkout ${idempotencyKey}`
-        }, user);
+        let charge;
+        if (existing) {
+          const requested = row.requestedAdjustments || {};
+          const hasExplicitFinancialAdjustment = [
+            requested.discountRate, requested.discountAmount, requested.discountValue, requested.taxRate
+          ].some((value) => value !== undefined && value !== null && value !== '' && Number(value) !== 0)
+            || Boolean(requested.taxMode && requested.taxMode !== 'exempt');
+
+          if ((existing.isBilled || existing.status === 'INVOICED' || existing.invoiceId || existing.billId) && hasExplicitFinancialAdjustment) {
+            throw checkoutError(
+              `${row.name} is already invoiced. Apply any further concession through IPD Finance credit/discount controls instead of changing the source charge.`,
+              409,
+              'IPD_CANONICAL_CHARGE_ALREADY_INVOICED'
+            );
+          }
+
+          // Admission creation already posts canonical Registration/Admission
+          // charges. Reuse that same source row. If it is still unbilled, apply
+          // the Desk-selected discount/tax policy to the canonical row rather
+          // than creating a second charge or silently losing the adjustment.
+          charge = (!existing.isBilled && existing.status !== 'INVOICED' && !existing.invoiceId && !existing.billId)
+            ? await ipdFinancial.adjustExistingUnbilledCharge(existing._id, {
+              serviceType: String(row.serviceType || '').toLowerCase(),
+              serviceCode: row.code,
+              selectedMode: row.selectedMode,
+              requestedDeposit: row.requestedDeposit,
+              discountType: requested.discountType,
+              discountRate: requested.discountRate,
+              discountAmount: requested.discountAmount,
+              discountValue: requested.discountValue,
+              discountReason: requested.discountReason,
+              taxMode: requested.taxMode,
+              taxRate: requested.taxRate,
+              overrideReason: row.overrideReason,
+              notes: `Desk checkout ${idempotencyKey}`
+            }, user)
+            : existing;
+        } else {
+          charge = await ipdFinancial.addManualCharge({
+            admissionId: admission._id,
+            chargeType: typeMap[row.serviceType] || 'Miscellaneous',
+            serviceType: String(row.serviceType || '').toLowerCase(),
+            internalServiceId: row.masterId,
+            externalCode: row.code,
+            description: row.name,
+            quantity: row.quantity,
+            rate: row.rate,
+            selectedMode: row.selectedMode,
+            requestedDeposit: row.requestedDeposit,
+            discountType: row.requestedAdjustments?.discountType,
+            discountRate: row.requestedAdjustments?.discountRate,
+            discountAmount: row.requestedAdjustments?.discountAmount,
+            discountValue: row.requestedAdjustments?.discountValue,
+            discountReason: row.requestedAdjustments?.discountReason,
+            taxMode: row.requestedAdjustments?.taxMode,
+            taxRate: row.requestedAdjustments?.taxRate,
+            overrideReason: row.overrideReason,
+            sourceModule: row.sourceModule || 'Manual',
+            sourceId: row.sourceId || undefined,
+            sourceReference: sourceLineKey ? { lineKey: sourceLineKey } : undefined,
+            idempotencyKey: rowKey,
+            allowStandardFallback: !row.internalServiceId && !row.masterId,
+            notes: `Desk checkout ${idempotencyKey}`
+          }, user);
+        }
 
         const chargeDoc = charge.charge || charge;
         chargeIds.push(chargeDoc._id);
         rowFinancialRefs[index].chargeIds.push(chargeDoc._id);
 
-        if (row.billingIntent === 'BILL_NOW') {
+        if (chargeDoc.invoiceId) {
+          existingIPDInvoiceIds.push(chargeDoc.invoiceId);
+          rowFinancialRefs[index].invoiceIds.push(chargeDoc.invoiceId);
+        }
+        if (chargeDoc.billId) {
+          billIds.push(chargeDoc.billId);
+          rowFinancialRefs[index].billIds.push(chargeDoc.billId);
+        }
+
+        if (row.billingIntent === 'BILL_NOW' && !chargeDoc.isBilled && chargeDoc.status !== 'INVOICED') {
           billNowChargeIds.push(chargeDoc._id);
         }
       }
     }
 
-    if (preview.encounterType === 'OPD' && billIds.length && payload.issueInvoice !== false) {
+    const hasDiscountPendingApproval = preview.rows.some(row =>
+      row.requiresDiscountApproval
+    ) || Boolean(preview.payment?.isApprovalRequired);
+
+    if (preview.encounterType === 'OPD' && billIds.length && payload.issueInvoice !== false && !hasDiscountPendingApproval) {
       const issued = await patientFinancial.issueOPDInvoice(patient._id, {
         billIds,
         idempotencyKey: `${idempotencyKey}:INVOICE`
@@ -1053,7 +1252,7 @@ async function commitDeskCheckout(payload, user) {
       });
     }
 
-    if (preview.encounterType === 'IPD' && billNowChargeIds.length) {
+    if (preview.encounterType === 'IPD' && billNowChargeIds.length && !hasDiscountPendingApproval) {
       const issued = await ipdFinancial.issueIPDInvoice(admission._id, {
         invoiceKind: 'interim',
         billingMode: 'IMMEDIATE_SELECTED',
@@ -1071,12 +1270,21 @@ async function commitDeskCheckout(payload, user) {
       });
     }
 
+    if (preview.encounterType === 'IPD' && !issuedIPDInvoice && existingIPDInvoiceIds.length) {
+      const Invoice = require('../models/Invoice');
+      issuedIPDInvoice = await Invoice.findOne({
+        _id: { $in: existingIPDInvoiceIds },
+        hospital_id: hospitalId,
+        admission_id: admission._id,
+        document_stage: { $ne: 'VOID' }
+      }).sort({ issue_date: -1, created_at: -1 });
+      if (issuedIPDInvoice?._id && !invoiceIds.some((value) => String(value) === String(issuedIPDInvoice._id))) {
+        invoiceIds.push(issuedIPDInvoice._id);
+      }
+    }
+
     const paymentResults = [];
     let committedPayment = preview.payment;
-
-    const hasDiscountPendingApproval = preview.rows.some(row =>
-      row.financialPolicySnapshot?.amounts?.requiresDiscountApproval
-    ) || Boolean(preview.payment?.isApprovalRequired);
 
     if (preview.encounterType === 'OPD' && payload.payment?.collectNow && invoiceIds.length && !hasDiscountPendingApproval) {
       const paymentPayload = {
@@ -1106,7 +1314,7 @@ async function commitDeskCheckout(payload, user) {
       };
     }
 
-    if (preview.encounterType === 'IPD' && payload.payment?.collectNow) {
+    if (preview.encounterType === 'IPD' && payload.payment?.collectNow && !hasDiscountPendingApproval) {
       const paymentMethod = payload.payment.paymentMethod || 'Cash';
       const reference = payload.payment.reference || '';
       const collectionAmount = round(preview.payment?.collectionAmount || 0);

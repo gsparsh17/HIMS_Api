@@ -218,7 +218,7 @@ async function listPatientBillingSummaries({ hospitalId, type = 'all', search = 
   };
 }
 
-async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) {
+async function getPatientBillingDetails({ hospitalId, patientId, admissionId, appointmentId = null }) {
   const [patient, hospital] = await Promise.all([
     Patient.findOne({ _id: patientId, hospitalId }).lean(),
     Hospital.findById(hospitalId).select('hospitalName name address city state pinCode contact phone email logo').lean()
@@ -251,6 +251,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) 
   } else {
     billFilter.$or = [{ admission_id: { $exists: false } }, { admission_id: null }];
     invoiceFilter.$or = [{ admission_id: { $exists: false } }, { admission_id: null }];
+    if (appointmentId) billFilter.appointment_id = appointmentId;
     // OPD details intentionally exclude IPD charges.
     chargeFilter.$or = [{ admissionId: { $exists: false } }, { admissionId: null }];
   }
@@ -266,7 +267,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) 
     advanceFilter.walletType = 'OPD_SHARED';
   }
 
-  const [bills, invoices, charges, transactions, advanceLedger] = await Promise.all([
+  const [bills, rawInvoices, charges, rawTransactions, advanceLedger] = await Promise.all([
     Bill.find(billFilter).sort({ generated_at: -1, createdAt: -1 }).lean(),
     Invoice.find(invoiceFilter).sort({ issue_date: -1, created_at: -1 }).lean(),
     admissionId ? IPDCharge.find(chargeFilter).sort({ chargeDate: 1, createdAt: 1 }).lean() : Promise.resolve([]),
@@ -277,6 +278,72 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) 
       .sort({ createdAt: 1 }).lean(),
     PatientAdvanceLedger.find(advanceFilter).sort({ createdAt: 1 }).lean()
   ]);
+
+  const scopedBillIds = new Set(bills.map((bill) => idString(bill._id)).filter(Boolean));
+  let invoices = rawInvoices;
+  if (!admissionId && appointmentId) {
+    invoices = rawInvoices
+      .filter((invoice) => {
+        if (idString(invoice.appointment_id) === idString(appointmentId)) return true;
+        const linkedIds = [invoice.bill_id, ...(invoice.bill_ids || [])].map(idString).filter(Boolean);
+        return linkedIds.some((billId) => scopedBillIds.has(billId));
+      })
+      .map((invoice) => {
+        const linkedIds = [invoice.bill_id, ...(invoice.bill_ids || [])].map(idString).filter(Boolean);
+        const matchingBills = bills.filter((bill) => linkedIds.includes(idString(bill._id)));
+        const mixedEncounterInvoice = linkedIds.length > matchingBills.length;
+        if (!mixedEncounterInvoice || !matchingBills.length) return invoice;
+        const scopeTotal = matchingBills.reduce((sum, bill) => sum + asNumber(bill.total_amount), 0);
+        const scopePaid = matchingBills.reduce((sum, bill) => sum + asNumber(bill.paid_amount), 0);
+        const scopeSettlementDiscount = matchingBills.reduce((sum, bill) => sum + asNumber(bill.settlement_discount_amount), 0);
+        const scopeCreditNotes = matchingBills.reduce((sum, bill) => sum + asNumber(bill.credit_note_amount), 0);
+        return {
+          ...invoice,
+          _mixedEncounterInvoice: true,
+          _documentTotal: asNumber(invoice.total),
+          _documentPaid: asNumber(invoice.amount_paid),
+          _documentBalanceDue: invoiceOutstanding(invoice),
+          total: scopeTotal,
+          amount_paid: scopePaid,
+          settlement_discount_amount: scopeSettlementDiscount,
+          credit_note_total: scopeCreditNotes,
+          balance_due: Math.max(0, scopeTotal - scopePaid - scopeSettlementDiscount - scopeCreditNotes)
+        };
+      });
+  }
+
+  const pendingDiscountInvoiceIds = new Set();
+  bills
+    .filter((bill) => bill.status === 'Discount Pending Approval' || bill.discount_approval?.status === 'PENDING')
+    .forEach((bill) => {
+      [bill.invoice_id, ...(bill.invoice_ids || [])]
+        .map(idString)
+        .filter(Boolean)
+        .forEach((invoiceId) => pendingDiscountInvoiceIds.add(invoiceId));
+    });
+  invoices = invoices.map((invoice) => ({
+    ...invoice,
+    _discountApprovalPending: pendingDiscountInvoiceIds.has(idString(invoice._id)) || Boolean(invoice.print_snapshot?.discountApprovalPending)
+  }));
+
+  const scopedInvoiceIds = new Set(invoices.map((invoice) => idString(invoice._id)).filter(Boolean));
+  let transactions = rawTransactions;
+  if (!admissionId && appointmentId) {
+    transactions = rawTransactions.filter((transaction) => {
+      const transactionBillId = idString(transaction.billId);
+      const transactionInvoiceId = idString(transaction.invoiceId);
+      if (transactionBillId && scopedBillIds.has(transactionBillId)) return true;
+      if (transactionInvoiceId && scopedInvoiceIds.has(transactionInvoiceId)) {
+        const invoice = invoices.find((row) => idString(row._id) === transactionInvoiceId);
+        return !invoice?._mixedEncounterInvoice;
+      }
+      return (transaction.documentAllocations || []).some((allocation) => {
+        const documentId = idString(allocation.documentId);
+        return (allocation.documentType === 'Bill' && scopedBillIds.has(documentId))
+          || (allocation.documentType === 'Invoice' && scopedInvoiceIds.has(documentId));
+      });
+    });
+  }
 
   // OPD does not use IPDCharge rows. Convert bill line items into the same
   // charge-shaped structure so the patient detail screen can group every OPD
@@ -347,16 +414,22 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) 
 
   const calculatedOutstanding = admissionId
     ? activeInvoices.reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) + unbilledTotal
-    : opdOutstanding;
+    : appointmentId
+      ? bills.reduce((sum, bill) => sum + billOutstanding(bill), 0)
+      : opdOutstanding;
   const outstanding = admissionId && admission?.dueAmount !== undefined
     ? asNumber(admission.dueAmount)
     : calculatedOutstanding;
   const totalBill = admissionId
     ? (admission?.totalBillAmount !== undefined ? asNumber(admission.totalBillAmount) : (chargeTotal || invoiceTotal + unbilledTotal))
-    : asNumber(billTotal + orphanInvoiceTotal);
+    : appointmentId
+      ? billTotal
+      : asNumber(billTotal + orphanInvoiceTotal);
   const paidAmount = admissionId
     ? (admission?.paidAmount !== undefined ? asNumber(admission.paidAmount) : activeInvoices.reduce((sum, invoice) => sum + asNumber(invoice.amount_paid), 0))
-    : opdPaid;
+    : appointmentId
+      ? bills.reduce((sum, bill) => sum + asNumber(bill.paid_amount), 0)
+      : opdPaid;
 
   const billEntries = bills
     .filter((bill) => !['VOID', 'Cancelled'].includes(bill.document_stage || bill.status))
@@ -503,6 +576,12 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) 
   ledgerTotals.paid = ledgerTotals.paymentsReceived;
 
   return {
+    scope: {
+      encounterType: admissionId ? 'IPD' : 'OPD',
+      admissionId: admissionId || null,
+      appointmentId: !admissionId ? (appointmentId || null) : null,
+      mode: admissionId ? 'ADMISSION' : (appointmentId ? 'APPOINTMENT' : 'OVERALL')
+    },
     patient,
     hospital,
     admission,
@@ -529,9 +608,153 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId }) 
   };
 }
 
+
+async function getPatientIPDHistory({ hospitalId, patientId }) {
+  const [patient, hospital, admissions] = await Promise.all([
+    Patient.findOne({ _id: patientId, hospitalId }).lean(),
+    Hospital.findById(hospitalId).select('hospitalName name address city state pinCode contact phone email logo').lean(),
+    IPDAdmission.find({ hospitalId, patientId })
+      .populate('primaryDoctorId', 'firstName lastName first_name last_name name')
+      .populate('departmentId', 'name')
+      .populate('wardId', 'name wardName')
+      .populate('bedId', 'bedNumber bed_number name')
+      .sort({ admissionDate: -1, createdAt: -1 })
+      .lean()
+  ]);
+
+  if (!patient) {
+    const error = new Error('Patient not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const admissionIds = admissions.map((row) => row._id);
+  if (!admissionIds.length) {
+    return {
+      scope: { encounterType: 'IPD', mode: 'OVERALL', patientId },
+      patient,
+      hospital,
+      admissions: [],
+      bills: [],
+      invoices: [],
+      charges: [],
+      transactions: [],
+      advanceLedger: [],
+      summary: {
+        admissionCount: 0,
+        totalChargeAmount: 0,
+        paidAmount: 0,
+        outstandingAmount: 0,
+        unbilledTotal: 0,
+        discountAmount: 0,
+        refundAmount: 0,
+        advanceAvailable: 0,
+        invoiceCount: 0,
+        chargeCount: 0
+      }
+    };
+  }
+
+  const [bills, invoices, charges, transactions, advanceLedger] = await Promise.all([
+    Bill.find({ hospital_id: hospitalId, patient_id: patientId, admission_id: { $in: admissionIds }, is_deleted: { $ne: true } })
+      .sort({ generated_at: -1, createdAt: -1 }).lean(),
+    Invoice.find({ hospital_id: hospitalId, patient_id: patientId, admission_id: { $in: admissionIds }, is_deleted: { $ne: true } })
+      .populate('admission_id', 'admissionNumber admissionDate dischargeDate status')
+      .sort({ issue_date: -1, created_at: -1, createdAt: -1 }).lean(),
+    IPDCharge.find({ hospitalId, patientId, admissionId: { $in: admissionIds }, status: { $nin: ['VOIDED', 'CANCELLED'] } })
+      .sort({ chargeDate: -1, createdAt: -1 }).lean(),
+    FinancialTransaction.find({ hospitalId, patientId, admissionId: { $in: admissionIds }, status: 'POSTED' })
+      .populate('invoiceId', 'invoice_number invoice_type status admission_id')
+      .populate('admissionId', 'admissionNumber admissionDate dischargeDate status')
+      .sort({ createdAt: -1 }).lean(),
+    PatientAdvanceLedger.find({ hospitalId, patientId, admissionId: { $in: admissionIds }, status: 'POSTED' })
+      .sort({ createdAt: 1 }).lean()
+  ]);
+
+  const activeInvoices = invoices.filter((invoice) =>
+    invoice.document_stage !== 'VOID' &&
+    invoice.document_stage !== 'CREDIT_NOTE' &&
+    invoice.invoice_type !== 'Credit Note' &&
+    invoice.status !== 'Cancelled'
+  );
+  const unbilledCharges = charges.filter((charge) => !charge.isBilled && charge.status !== 'INVOICED');
+  const latestAdvanceByAdmission = new Map();
+  advanceLedger.forEach((entry) => latestAdvanceByAdmission.set(idString(entry.admissionId), entry));
+  const advanceAvailable = Array.from(latestAdvanceByAdmission.values())
+    .reduce((sum, entry) => sum + asNumber(entry.balanceAfter), 0);
+  const settlementDiscounts = transactions
+    .filter((row) => String(row.transactionType || '').toUpperCase() === 'SETTLEMENT')
+    .reduce((sum, row) => sum + asNumber(row.amount), 0);
+  const refunds = transactions
+    .filter((row) => ['REFUND', 'ADVANCE_REFUND'].includes(String(row.transactionType || '').toUpperCase()))
+    .reduce((sum, row) => sum + asNumber(row.amount), 0);
+
+  const admissionSummaries = admissions.map((admission) => {
+    const admissionId = idString(admission._id);
+    const admissionCharges = charges.filter((row) => idString(row.admissionId) === admissionId);
+    const admissionInvoices = activeInvoices.filter((row) => idString(row.admission_id) === admissionId);
+    const admissionTransactions = transactions.filter((row) => idString(row.admissionId) === admissionId);
+    const admissionUnbilled = admissionCharges.filter((row) => !row.isBilled && row.status !== 'INVOICED');
+    const admissionDiscounts = admissionCharges.reduce((sum, row) => sum + asNumber(row.discountAmount || row.discount), 0)
+      + admissionTransactions.filter((row) => String(row.transactionType || '').toUpperCase() === 'SETTLEMENT').reduce((sum, row) => sum + asNumber(row.amount), 0);
+    const calculatedChargeTotal = admissionCharges.reduce((sum, row) => sum + asNumber(row.netAmount ?? row.amount), 0);
+    const calculatedPaid = admissionInvoices.reduce((sum, row) => sum + asNumber(row.amount_paid), 0);
+    const calculatedOutstanding = admissionInvoices.reduce((sum, row) => sum + invoiceOutstanding(row), 0)
+      + admissionUnbilled.reduce((sum, row) => sum + asNumber(row.patientLiability ?? row.netAmount ?? row.amount), 0);
+    return {
+      admissionId,
+      admissionNumber: admission.admissionNumber,
+      status: admission.status,
+      admissionDate: admission.admissionDate,
+      dischargeDate: admission.dischargeDate,
+      department: admission.departmentId,
+      doctor: admission.primaryDoctorId,
+      ward: admission.wardId,
+      bed: admission.bedId,
+      // Admission-level running totals are canonical and avoid double-counting
+      // interim/final invoices that may represent the same operational charges.
+      totalChargeAmount: admission.totalBillAmount !== undefined ? asNumber(admission.totalBillAmount) : calculatedChargeTotal,
+      paidAmount: admission.paidAmount !== undefined ? asNumber(admission.paidAmount) : calculatedPaid,
+      outstandingAmount: admission.dueAmount !== undefined ? asNumber(admission.dueAmount) : calculatedOutstanding,
+      unbilledTotal: admissionUnbilled.reduce((sum, row) => sum + asNumber(row.patientLiability ?? row.netAmount ?? row.amount), 0),
+      discountAmount: admissionDiscounts,
+      refundAmount: admissionTransactions.filter((row) => ['REFUND', 'ADVANCE_REFUND'].includes(String(row.transactionType || '').toUpperCase())).reduce((sum, row) => sum + asNumber(row.amount), 0),
+      advanceAvailable: asNumber(latestAdvanceByAdmission.get(admissionId)?.balanceAfter),
+      invoiceCount: admissionInvoices.length,
+      chargeCount: admissionCharges.length
+    };
+  });
+
+  return {
+    scope: { encounterType: 'IPD', mode: 'OVERALL', patientId },
+    patient,
+    hospital,
+    admissions,
+    admissionSummaries,
+    bills,
+    invoices,
+    charges,
+    transactions,
+    advanceLedger,
+    summary: {
+      admissionCount: admissions.length,
+      totalChargeAmount: admissionSummaries.reduce((sum, row) => sum + asNumber(row.totalChargeAmount), 0),
+      paidAmount: admissionSummaries.reduce((sum, row) => sum + asNumber(row.paidAmount), 0),
+      outstandingAmount: admissionSummaries.reduce((sum, row) => sum + asNumber(row.outstandingAmount), 0),
+      unbilledTotal: admissionSummaries.reduce((sum, row) => sum + asNumber(row.unbilledTotal), 0),
+      discountAmount: charges.reduce((sum, row) => sum + asNumber(row.discountAmount || row.discount), 0) + settlementDiscounts,
+      refundAmount: refunds,
+      advanceAvailable,
+      invoiceCount: activeInvoices.length,
+      chargeCount: charges.length
+    }
+  };
+}
+
 module.exports = {
   listPatientBillingSummaries,
   getPatientBillingDetails,
+  getPatientIPDHistory,
   groupCharges,
   chargeSection
 };
