@@ -2,6 +2,7 @@ const { operationNow } = require('../utils/operationTimeContext');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Patient = require('../models/Patient');
+const Appointment = require('../models/Appointment');
 const Doctor = require('../models/Doctor');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
@@ -85,6 +86,12 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
     fallbackPolicy: 'cash_fallback'
   } : undefined;
   const encounterContext = normalizeEncounterContext(payload.encounterContext);
+  // Appointment cart rows carry a stable sourceId even if an older Desk client
+  // loses the workflow discriminator (`Appointment.type` is time/number-based).
+  // Recover that canonical encounter for pricing and billing linkage.
+  if (!encounterContext.appointmentId && encounterType === 'OPD') {
+    encounterContext.appointmentId = appointmentIdFromSourceRows(rows);
+  }
   const globalDiscountType = payload.payment?.settlementDiscountType === 'percentage' ? 'percentage' : 'fixed';
   const globalDiscountValue = Number(payload.payment?.settlementDiscountValue ?? (globalDiscountType === 'percentage' ? payload.payment?.settlementDiscountRate : payload.payment?.settlementDiscountAmount) ?? 0);
   let remainingGlobalDiscount = globalDiscountType === 'fixed' ? Number(payload.payment?.settlementDiscountAmount ?? globalDiscountValue) : 0;
@@ -611,6 +618,17 @@ function normalizeEncounterContext(context = {}) {
   };
 }
 
+function appointmentIdFromSourceRows(rows = []) {
+  const ids = new Set(
+    (rows || [])
+      .filter((row) => String(row?.sourceModule || '').toLowerCase() === 'appointment')
+      .map((row) => idOf(row?.sourceId))
+      .filter(Boolean)
+      .map(String)
+  );
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
 function isClinicalRequestRow(row) {
   return clinicalRequestTypes.has(row.serviceType)
     && row.billingIntent !== 'EXTERNAL_REFERRAL';
@@ -1090,6 +1108,21 @@ async function commitDeskCheckout(payload, user) {
     }
 
     const financialEncounterContext = normalizeEncounterContext(payload.encounterContext);
+    if (!financialEncounterContext.appointmentId && preview.encounterType === 'OPD') {
+      financialEncounterContext.appointmentId = appointmentIdFromSourceRows(preview.rows);
+    }
+    if (financialEncounterContext.appointmentId) {
+      const linkedAppointment = await Appointment.findOne({
+        _id: financialEncounterContext.appointmentId,
+        hospital_id: hospitalId,
+        patient_id: patient._id
+      }).select('_id doctor_id department_id');
+      if (!linkedAppointment) {
+        throw checkoutError('Selected OPD appointment does not match the Desk patient', 409, 'OPD_APPOINTMENT_MISMATCH');
+      }
+      financialEncounterContext.doctorId = financialEncounterContext.doctorId || idOf(linkedAppointment.doctor_id);
+      financialEncounterContext.departmentId = financialEncounterContext.departmentId || idOf(linkedAppointment.department_id);
+    }
     const billIds = [];
     const chargeIds = [];
     const invoiceIds = [];

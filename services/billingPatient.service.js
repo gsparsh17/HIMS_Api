@@ -14,6 +14,7 @@ const asNumber = (value) => {
 };
 
 const idString = (value) => String(value?._id || value || '');
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const patientDisplayName = (patient = {}) => (
   [patient.first_name || patient.firstName, patient.middle_name || patient.middleName, patient.last_name || patient.lastName].filter(Boolean).join(' ')
@@ -249,9 +250,25 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
       throw error;
     }
   } else {
-    billFilter.$or = [{ admission_id: { $exists: false } }, { admission_id: null }];
+    const opdOnly = [{ admission_id: { $exists: false } }, { admission_id: null }];
+    if (appointmentId) {
+      // New Desk bills carry appointment_id directly. A short-lived legacy Desk
+      // bug still wrote the stable appointment sourceLineKey but lost the top-level
+      // appointment_id, so include that canonical source linkage for read compatibility.
+      billFilter.$and = [
+        { $or: opdOnly },
+        {
+          $or: [
+            { appointment_id: appointmentId },
+            { 'items.source_snapshot.sourceLineKey': { $regex: `^appointment:${escapeRegex(appointmentId)}:` } },
+            { 'items.source_snapshot.originModule': 'Appointment', 'items.source_snapshot.sourceId': String(appointmentId) }
+          ]
+        }
+      ];
+    } else {
+      billFilter.$or = opdOnly;
+    }
     invoiceFilter.$or = [{ admission_id: { $exists: false } }, { admission_id: null }];
-    if (appointmentId) billFilter.appointment_id = appointmentId;
     // OPD details intentionally exclude IPD charges.
     chargeFilter.$or = [{ admissionId: { $exists: false } }, { admissionId: null }];
   }
@@ -353,7 +370,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     : bills.flatMap((bill) => (bill.items || []).map((item, index) => ({
         _id: item._id || `${bill._id}:${index}`,
         patientId,
-        appointmentId: bill.appointment_id,
+        appointmentId: bill.appointment_id || (appointmentId || null),
         billId: bill._id,
         invoiceId: bill.invoice_id,
         chargeType: item.item_type || 'Miscellaneous',

@@ -11,9 +11,10 @@ const workflow = require('../controllers/departmentWorkflow.controller');
 const governance = require('../controllers/diagnosticGovernance.controller');
 
 const view = [protect, requireModuleAccess('radiology', 'view')];
+// Management is permission-driven. Staff Login may explicitly delegate
+// Radiology Manage to registrar or another operational role.
 const manage = [
   protect,
-  authorize('admin', 'mediqliq_super_admin', 'radiology_staff'),
   requireModuleAccess('radiology', 'manage')
 ];
 const order = [

@@ -9,6 +9,7 @@ const OTRequest = require('../models/OTRequest');
 const LabTest = require('../models/LabTest');
 const ImagingTest = require('../models/ImagingTest');
 const Procedure = require('../models/Procedure');
+const Prescription = require('../models/Prescription');
 const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
 const { activatePackageEpisode, recordPackageUtilization, reversePackageUtilization } = require('./packageAdjudication.service');
 const { activeCoverage, activeAppointmentCoverage } = require('./coverage.service');
@@ -67,6 +68,27 @@ const SOURCE_CONFIG = {
 function isIPDSourceRequest(request, sourceModule) {
   if (!request?.admissionId) return false;
   return request.sourceType === 'IPD' || sourceModule === 'OTRequest' || String(request.encounterType || '').toUpperCase() === 'IPD';
+}
+
+async function resolveOPDAppointmentIdFromRequest(request, hospitalId, session) {
+  if (!request || isIPDSourceRequest(request)) return null;
+  if (request.appointmentId) return request.appointmentId;
+  if (!request.prescriptionId) return null;
+
+  const prescription = await Prescription.findOne({
+    _id: request.prescriptionId,
+    hospitalId,
+    patient_id: request.patientId,
+    appointment_id: { $ne: null }
+  }, 'appointment_id', opts(session)).lean();
+  if (!prescription?.appointment_id) return null;
+
+  // Older OPD clinical requests could be created from a prescription without
+  // copying prescription.appointment_id. Repair that encounter linkage once so
+  // Lab/Radiology/Procedure finance and the selected-appointment workspace agree.
+  request.appointmentId = prescription.appointment_id;
+  if (typeof request.save === 'function') await request.save(opts(session));
+  return prescription.appointment_id;
 }
 
 function canSelectFinancialMode(user) {
@@ -315,10 +337,66 @@ async function postSourceCharge({ sourceModule, sourceId, billingIntent, selecte
   if (!config) { const e = new Error('Unsupported charge source'); e.statusCode = 400; throw e; }
   const request = await config.Model.findOne({ _id: sourceId, hospitalId: user.hospital_id }, null, opts(session));
   if (!request) { const e = new Error('Source request not found'); e.statusCode = 404; throw e; }
+
+  const resolvedAppointmentId = isIPDSourceRequest(request, sourceModule)
+    ? null
+    : await resolveOPDAppointmentIdFromRequest(request, user.hospital_id, session);
+
+  // Desk checkout can create the clinical request after the canonical bill/invoice
+  // has already been posted, and links those document ids back onto the request.
+  // Re-entering the Lab/Radiology/Procedure worklist must therefore reuse those
+  // documents instead of trying to create a second charge with a different key.
+  if ((request.billIds || []).length || (request.invoiceIds || []).length || request.invoiceId) {
+    const existingStatus = await getSourceFinancialStatus({ sourceModule, sourceId, user, session });
+    if (existingStatus.bill || existingStatus.invoices.length || existingStatus.charge) {
+      let invoice = existingStatus.invoices[existingStatus.invoices.length - 1] || null;
+      if (!invoice && existingStatus.bill && !isIPDSourceRequest(request, sourceModule)) {
+        const issued = await patientFinancial.issueOPDInvoice(request.patientId, {
+          billIds: [existingStatus.bill._id],
+          idempotencyKey: `${sourceModule}:${sourceId}:linked-invoice`,
+          notes: `${sourceModule} ${sourceId} linked source invoice`
+        }, user);
+        invoice = issued.invoice;
+        await appendBillingLink({
+          sourceModule,
+          sourceId,
+          hospitalId: user.hospital_id,
+          billId: existingStatus.bill._id,
+          invoiceId: invoice?._id,
+          state: invoice ? 'INVOICED' : 'CHARGE_POSTED',
+          action: invoice ? 'INVOICE_ISSUED' : 'CHARGE_POSTED',
+          actorId: user._id,
+          session
+        });
+      }
+      return {
+        charge: existingStatus.charge || null,
+        bill: existingStatus.bill || null,
+        invoice,
+        request,
+        sourceModule,
+        financialPolicy: {
+          selectedMode: existingStatus.selectedMode,
+          requiredNow: existingStatus.requiredNow,
+          clearanceState: existingStatus.clearanceState,
+          policySnapshot: existingStatus.policySnapshot || {}
+        },
+        alreadyExists: true,
+        reusedLinkedFinancials: true
+      };
+    }
+  }
+
   if (isIPDSourceRequest(request, sourceModule)) {
     return postIPDSourceCharge({ sourceModule, sourceId, billingIntent, selectedMode, requestedDeposit, adjustments, overrideReason, idempotencyKey, user, session });
   }
-  if (!request.appointmentId) { const e = new Error('OPD source request must be linked to an appointment'); e.statusCode = 409; throw e; }
+  const normalizedSourceType = String(request.sourceType || '').toUpperCase();
+  if (normalizedSourceType === 'OPD' && !resolvedAppointmentId) {
+    const e = new Error('This OPD clinical request is missing its appointment link. Open/re-save the source request or use a prescription that belongs to an appointment.');
+    e.statusCode = 409;
+    e.code = 'SOURCE_APPOINTMENT_REQUIRED';
+    throw e;
+  }
   const master = request[config.masterField]
     ? await config.Master.findOne({ _id: request[config.masterField], hospitalId: user.hospital_id, is_active: { $ne: false } }, null, opts(session)).lean()
     : null;
@@ -331,11 +409,13 @@ async function postSourceCharge({ sourceModule, sourceId, billingIntent, selecte
   ensureSourceMasterOrOverride({ request, config, user, overrideReason });
   const key = idempotencyKey || `${sourceModule}:${sourceId}:opd-charge`;
   const Appointment = require('../models/Appointment');
-  const sourceAppointment = await Appointment.findOne({ _id: request.appointmentId, hospital_id: user.hospital_id }, 'selectedBillingMode', opts(session)).lean();
-  if (!sourceAppointment) { const e = new Error('OPD appointment not found'); e.statusCode = 404; throw e; }
+  const sourceAppointment = resolvedAppointmentId
+    ? await Appointment.findOne({ _id: resolvedAppointmentId, hospital_id: user.hospital_id }, 'selectedBillingMode', opts(session)).lean()
+    : null;
+  if (resolvedAppointmentId && !sourceAppointment) { const e = new Error('OPD appointment not found'); e.statusCode = 404; throw e; }
   const effectiveRequestedMode = canSelectFinancialMode(user) ? selectedMode : undefined;
   const result = await patientFinancial.addOPDCharge(request.patientId, {
-    appointmentId: request.appointmentId,
+    appointmentId: resolvedAppointmentId || undefined,
     idempotencyKey: key,
     chargeType: config.chargeType,
     serviceType: config.serviceType,
@@ -347,7 +427,7 @@ async function postSourceCharge({ sourceModule, sourceId, billingIntent, selecte
     quantity: 1,
     rate: request[config.masterField] ? 0 : Number(request.amount ?? request.cost ?? request.price ?? 0),
     selectedMode: effectiveRequestedMode,
-    inheritedMode: sourceAppointment.selectedBillingMode,
+    inheritedMode: sourceAppointment?.selectedBillingMode,
     urgency: request.priority || request.urgency,
     effectiveAt: request.requestedDate || operationNow(),
     requestedDeposit,
@@ -360,6 +440,9 @@ async function postSourceCharge({ sourceModule, sourceId, billingIntent, selecte
     taxRate: adjustments.taxRate,
     taxReason: adjustments.taxReason,
     overrideReason,
+    sourceModule,
+    sourceId: request._id,
+    sourceLineKey: `${sourceModule}:${request._id}:default`,
     createdFrom: `${sourceModule}:source-charge`
   }, user);
   const policy = result.financialPolicy;
@@ -578,7 +661,7 @@ async function getSourceFinancialStatus({ sourceModule, sourceId, user, session 
     }
   }
 
-  const invoiceIds = (request.invoiceIds || []).filter(Boolean);
+  const invoiceIds = [...new Set([...(request.invoiceIds || []), request.invoiceId].filter(Boolean).map(String))];
   const invoices = invoiceIds.length
     ? await Invoice.find({ _id: { $in: invoiceIds }, hospital_id: user.hospital_id, document_stage: { $ne: 'VOID' } }, null, opts(session)).lean()
     : [];

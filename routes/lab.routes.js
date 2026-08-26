@@ -24,9 +24,11 @@ const upload = multer({
 });
 
 const view = [protect, requireModuleAccess('laboratory', 'view')];
+// Operational authority is permission-driven. Staff Login can explicitly grant
+// Laboratory Manage to registrar/other roles; do not re-block those users with
+// a hard-coded role allow-list after the module permission has already allowed it.
 const manage = [
   protect,
-  authorize('admin', 'mediqliq_super_admin', 'pathology_staff'),
   requireModuleAccess('laboratory', 'manage')
 ];
 const order = [
@@ -36,8 +38,7 @@ const order = [
 ];
 const collect = [
   protect,
-  authorize('admin', 'mediqliq_super_admin', 'pathology_staff', 'nurse'),
-  requireModuleAccess('laboratory', 'view')
+  requireModuleAccess('laboratory', 'manage')
 ];
 
 // Masters

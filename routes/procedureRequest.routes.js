@@ -4,7 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const { tempDir } = require('../config/upload.config');
 const controller = require('../controllers/procedureRequest.controller');
-const { protect, authorize } = require('../middlewares/auth');
+const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
@@ -34,19 +34,22 @@ router.use(
   authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'ot_staff', 'radiology_staff')
 );
 
+const view = [requireModuleAccess('operation_theatre', 'view')];
+const manage = [requireModuleAccess('operation_theatre', 'manage')];
+
 // ============== PROCEDURE REQUEST ROUTES ==============
-router.post('/requests', controller.createProcedureRequest);
-router.get('/requests', controller.getProcedureRequests);
-router.get('/requests/:id', controller.getProcedureRequestById);
-router.patch('/requests/:id/status', controller.updateRequestStatus);
-router.post('/requests/:id/findings', controller.addProcedureFindings);
-router.post('/requests/:id/upload', upload.single('file'), controller.uploadAttachment);
-router.patch('/requests/:id/billed', controller.markAsBilled);
+router.post('/requests', ...manage, controller.createProcedureRequest);
+router.get('/requests', ...view, controller.getProcedureRequests);
+router.get('/requests/:id', ...view, controller.getProcedureRequestById);
+router.patch('/requests/:id/status', ...manage, controller.updateRequestStatus);
+router.post('/requests/:id/findings', ...manage, controller.addProcedureFindings);
+router.post('/requests/:id/upload', ...manage, upload.single('file'), controller.uploadAttachment);
+router.patch('/requests/:id/billed', ...manage, controller.markAsBilled);
 
 // ============== ADMISSION-BASED QUERIES ==============
-router.get('/admission/:admissionId/requests', controller.getRequestsByAdmission);
-router.get('/admission/:admissionId/pending', controller.getPendingIPDRequests);
-router.get('/patient/:patientId/requests', controller.getRequestsByPatient);
-router.get('/dashboard/stats', controller.getDashboardStats);
+router.get('/admission/:admissionId/requests', ...view, controller.getRequestsByAdmission);
+router.get('/admission/:admissionId/pending', ...view, controller.getPendingIPDRequests);
+router.get('/patient/:patientId/requests', ...view, controller.getRequestsByPatient);
+router.get('/dashboard/stats', ...view, controller.getDashboardStats);
 
 module.exports = router;
