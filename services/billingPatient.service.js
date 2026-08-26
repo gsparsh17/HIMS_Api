@@ -302,13 +302,20 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     invoices = rawInvoices
       .filter((invoice) => {
         if (idString(invoice.appointment_id) === idString(appointmentId)) return true;
-        const linkedIds = [invoice.bill_id, ...(invoice.bill_ids || [])].map(idString).filter(Boolean);
+        const linkedIds = Array.from(new Set(
+          [invoice.bill_id, ...(invoice.bill_ids || [])].map(idString).filter(Boolean)
+        ));
         return linkedIds.some((billId) => scopedBillIds.has(billId));
       })
       .map((invoice) => {
-        const linkedIds = [invoice.bill_id, ...(invoice.bill_ids || [])].map(idString).filter(Boolean);
+        // Invoice stores both bill_id (primary) and bill_ids (aggregate list).
+        // For a one-bill invoice those fields legitimately contain the same id;
+        // deduplicate before deciding whether the document spans other encounters.
+        const linkedIds = Array.from(new Set(
+          [invoice.bill_id, ...(invoice.bill_ids || [])].map(idString).filter(Boolean)
+        ));
         const matchingBills = bills.filter((bill) => linkedIds.includes(idString(bill._id)));
-        const mixedEncounterInvoice = linkedIds.length > matchingBills.length;
+        const mixedEncounterInvoice = linkedIds.some((billId) => !scopedBillIds.has(billId));
         if (!mixedEncounterInvoice || !matchingBills.length) return invoice;
         const scopeTotal = matchingBills.reduce((sum, bill) => sum + asNumber(bill.total_amount), 0);
         const scopePaid = matchingBills.reduce((sum, bill) => sum + asNumber(bill.paid_amount), 0);
@@ -431,9 +438,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
 
   const calculatedOutstanding = admissionId
     ? activeInvoices.reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) + unbilledTotal
-    : appointmentId
-      ? bills.reduce((sum, bill) => sum + billOutstanding(bill), 0)
-      : opdOutstanding;
+    : opdOutstanding;
   const outstanding = admissionId && admission?.dueAmount !== undefined
     ? asNumber(admission.dueAmount)
     : calculatedOutstanding;
@@ -444,9 +449,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
       : asNumber(billTotal + orphanInvoiceTotal);
   const paidAmount = admissionId
     ? (admission?.paidAmount !== undefined ? asNumber(admission.paidAmount) : activeInvoices.reduce((sum, invoice) => sum + asNumber(invoice.amount_paid), 0))
-    : appointmentId
-      ? bills.reduce((sum, bill) => sum + asNumber(bill.paid_amount), 0)
-      : opdPaid;
+    : opdPaid;
 
   const billEntries = bills
     .filter((bill) => !['VOID', 'Cancelled'].includes(bill.document_stage || bill.status))

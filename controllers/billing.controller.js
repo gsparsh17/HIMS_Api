@@ -2945,24 +2945,38 @@ exports.reviewDiscountApproval = async (req, res, next) => {
 
 /**
  * Get Bill / Billing Details by Appointment ID
+ *
+ * Bill does not have top-level doctor_id / department_id fields. Those belong
+ * to Appointment (and bill item snapshots), so populate through appointment_id
+ * instead of asking Mongoose to populate non-schema paths. Legacy Desk bills
+ * that lost appointment_id are still addressable by their canonical source key.
  */
 exports.getBillByAppointmentId = async (req, res, next) => {
   try {
     const hospitalId = requestHospitalId(req);
     const { appointmentId } = req.params;
+    const sourceLinePrefix = `appointment:${String(appointmentId)}:`;
 
     const bill = await Bill.findOne({
       hospital_id: hospitalId,
       $or: [
         { appointment_id: appointmentId },
         { 'details.appointmentId': appointmentId },
-        { 'items.source_snapshot.appointmentId': appointmentId }
+        { 'items.source_snapshot.appointmentId': appointmentId },
+        { 'items.source_snapshot.sourceLineKey': { $regex: `^${sourceLinePrefix}` } },
+        { 'items.source_snapshot.originModule': 'Appointment', 'items.source_snapshot.sourceId': String(appointmentId) }
       ],
       is_deleted: { $ne: true }
     })
       .populate('patient_id')
-      .populate('doctor_id')
-      .populate('department_id')
+      .populate({
+        path: 'appointment_id',
+        select: 'appointment_number appointment_date start_time duration_minutes type consultation_type status doctor_id department_id patient_id',
+        populate: [
+          { path: 'doctor_id', select: 'firstName lastName first_name last_name name specialization' },
+          { path: 'department_id', select: 'name department_name' }
+        ]
+      })
       .populate('invoice_id')
       .populate('discount_approval.requested_by', 'name email role')
       .populate('discount_approval.approved_by', 'name email role')
@@ -2975,13 +2989,39 @@ exports.getBillByAppointmentId = async (req, res, next) => {
         is_deleted: { $ne: true }
       })
         .populate('patient_id')
-        .populate('appointment_id')
+        .populate({
+          path: 'appointment_id',
+          select: 'appointment_number appointment_date start_time duration_minutes type consultation_type status doctor_id department_id patient_id',
+          populate: [
+            { path: 'doctor_id', select: 'firstName lastName first_name last_name name specialization' },
+            { path: 'department_id', select: 'name department_name' }
+          ]
+        })
         .sort({ createdAt: -1 });
 
       if (invoice) {
         return res.json({ success: true, bill: invoice, invoice });
       }
       return res.status(404).json({ success: false, error: 'Bill not found for this appointment' });
+    }
+
+    // A short-lived Desk bug retained the stable sourceId/sourceLineKey but
+    // omitted bill.appointment_id. Repair the response for print/slip callers
+    // immediately, and repair the persisted link best-effort for future reads.
+    if (!bill.appointment_id) {
+      const appointment = await Appointment.findOne({ _id: appointmentId, hospital_id: hospitalId })
+        .populate('doctor_id', 'firstName lastName first_name last_name name specialization')
+        .populate('department_id', 'name department_name')
+        .lean();
+      if (appointment) {
+        bill.appointment_id = appointment._id;
+        await bill.save().catch((repairError) => {
+          console.warn('Could not repair legacy bill appointment link:', repairError.message);
+        });
+        const billObject = bill.toObject();
+        billObject.appointment_id = appointment;
+        return res.json({ success: true, bill: billObject, data: { bill: billObject } });
+      }
     }
 
     return res.json({

@@ -155,6 +155,12 @@ exports.listBillingAdmissions = async (req, res) => {
   } catch (error) { sendError(res, error); }
 };
 
+exports.getIPDFinanceWorkspace = async (req, res) => {
+  try {
+    res.json(await financial.getFinanceWorkspace(req.params.admissionId, req.user));
+  } catch (error) { sendError(res, error); }
+};
+
 exports.getRunningBill = async (req, res) => {
   try {
     res.json(await financial.getRunningBill(req.params.admissionId, req.user));

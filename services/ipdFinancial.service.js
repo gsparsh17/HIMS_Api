@@ -622,9 +622,11 @@ async function listBillingAdmissions(user, query = {}) {
   return { success: true, admissions: filtered };
 }
 
-async function getRunningBill(admissionId, user) {
-  await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
-  const snapshot = await calculateAdmissionFinancials(admissionId, { user });
+async function getRunningBill(admissionId, user, options = {}) {
+  if (!options.snapshot && !options.skipEnsure) {
+    await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
+  }
+  const snapshot = options.snapshot || await calculateAdmissionFinancials(admissionId, { user });
 
   const admission = await IPDAdmission.findOne({
     _id: admissionId,
@@ -637,23 +639,27 @@ async function getRunningBill(admissionId, user) {
     .populate('roomId', 'roomNumber name')
     .populate('bedId', 'bedNumber bed_number');
 
-  const receipts = await FinancialTransaction.find({
-    hospitalId: admission.hospitalId,
-    admissionId,
-    status: 'POSTED'
-  })
-    .sort({ createdAt: -1 })
-    .limit(100)
-    .lean();
+  const receipts = options.transactions
+    ? [...options.transactions].sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)).slice(0, 100)
+    : await FinancialTransaction.find({
+        hospitalId: admission.hospitalId,
+        admissionId,
+        status: 'POSTED'
+      })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .lean();
 
-  const advanceLedger = await PatientAdvanceLedger.find({
-    hospitalId: admission.hospitalId,
-    admissionId,
-    status: 'POSTED'
-  })
-    .sort({ createdAt: -1 })
-    .limit(100)
-    .lean();
+  const advanceLedger = options.advanceLedger
+    ? [...options.advanceLedger].sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)).slice(0, 100)
+    : await PatientAdvanceLedger.find({
+        hospitalId: admission.hospitalId,
+        admissionId,
+        status: 'POSTED'
+      })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .lean();
 
   const pendingDiscountApprovals = await ApprovalRequest.find({
     hospitalId: admission.hospitalId,
@@ -1954,12 +1960,6 @@ async function recordAdvance(admissionId, payload, user) {
   return runFinancialTransaction(async (session) => {
     const admission = await findAdmission(admissionId, session, user);
 
-    if (admission.status === 'Discharged' || admission.finalDischargedAt) {
-      const error = new Error('Cannot add advance payment to a patient who has already been discharged');
-      error.statusCode = 400;
-      throw error;
-    }
-
     if (payload.idempotencyKey) {
       const existing = await FinancialTransaction.findOne(
         { idempotencyKey: payload.idempotencyKey },
@@ -2364,24 +2364,24 @@ async function refundInvoice(invoiceId, payload, user) {
   });
 }
 
-async function getFinancialLedger(admissionId, user) {
-  const snapshot = await calculateAdmissionFinancials(admissionId, { user });
+async function getFinancialLedger(admissionId, user, options = {}) {
+  const snapshot = options.snapshot || await calculateAdmissionFinancials(admissionId, { user });
 
   const [transactions, advanceLedger] = await Promise.all([
-    FinancialTransaction.find({
-      hospitalId: snapshot.admission.hospitalId,
-      admissionId,
-      status: 'POSTED'
-    })
-      .sort({ createdAt: 1 })
-      .lean(),
-    PatientAdvanceLedger.find({
-      hospitalId: snapshot.admission.hospitalId,
-      admissionId,
-      status: 'POSTED'
-    })
-      .sort({ createdAt: 1 })
-      .lean()
+    options.transactions
+      ? Promise.resolve(options.transactions)
+      : FinancialTransaction.find({
+          hospitalId: snapshot.admission.hospitalId,
+          admissionId,
+          status: 'POSTED'
+        }).sort({ createdAt: 1 }).lean(),
+    options.advanceLedger
+      ? Promise.resolve(options.advanceLedger)
+      : PatientAdvanceLedger.find({
+          hospitalId: snapshot.admission.hospitalId,
+          admissionId,
+          status: 'POSTED'
+        }).sort({ createdAt: 1 }).lean()
   ]);
 
   const entries = [
@@ -2437,9 +2437,11 @@ async function getFinancialLedger(admissionId, user) {
   };
 }
 
-async function getFinancialClearance(admissionId, user) {
-  await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
-  const snapshot = await calculateAdmissionFinancials(admissionId, { user });
+async function getFinancialClearance(admissionId, user, options = {}) {
+  if (!options.snapshot && !options.skipEnsure) {
+    await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
+  }
+  const snapshot = options.snapshot || await calculateAdmissionFinancials(admissionId, { user });
   const admission = snapshot.admission;
   const workflowPolicy = await loadIPDWorkflowPolicy(admission.hospitalId);
 
@@ -2517,6 +2519,28 @@ async function getFinancialClearance(admissionId, user) {
     pharmacyInvoices: snapshot.pharmacyInvoices
   };
 }
+async function getFinanceWorkspace(admissionId, user) {
+  // Load the canonical IPD financial snapshot once. The previous UI called
+  // running-bill, ledger and clearance independently, causing the same costly
+  // admission calculation to run three times for every workspace open/refresh.
+  await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
+  const snapshot = await calculateAdmissionFinancials(admissionId, { user });
+  const hospitalId = snapshot.admission.hospitalId;
+
+  const [transactions, advanceLedger] = await Promise.all([
+    FinancialTransaction.find({ hospitalId, admissionId, status: 'POSTED' }).sort({ createdAt: 1 }).lean(),
+    PatientAdvanceLedger.find({ hospitalId, admissionId, status: 'POSTED' }).sort({ createdAt: 1 }).lean()
+  ]);
+
+  const [runningBill, ledger, clearance] = await Promise.all([
+    getRunningBill(admissionId, user, { snapshot, transactions, advanceLedger, skipEnsure: true }),
+    getFinancialLedger(admissionId, user, { snapshot, transactions, advanceLedger }),
+    getFinancialClearance(admissionId, user, { snapshot, skipEnsure: true })
+  ]);
+
+  return { success: true, runningBill, ledger, clearance };
+}
+
 async function finaliseFinancialClearance(admissionId, payload = {}, user) {
   let admissionForPolicy = await findAdmission(admissionId, null, user);
   const workflowPolicy = await loadIPDWorkflowPolicy(admissionForPolicy.hospitalId);
@@ -2633,6 +2657,7 @@ module.exports = {
   calculateAdmissionFinancials,
   listBillingAdmissions,
   getRunningBill,
+  getFinanceWorkspace,
   addManualCharge,
   adjustExistingUnbilledCharge,
   generateBedCharge,
