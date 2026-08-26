@@ -74,6 +74,7 @@ exports.createStaff = async (req, res) => {
       name,
       email,
       phone,
+      address,
       employeeId,
       designation,
       specializations = [],
@@ -92,9 +93,12 @@ exports.createStaff = async (req, res) => {
       });
     }
 
+    const normalizedEmployeeId = String(employeeId).trim().toUpperCase();
+    const normalizedEmail = String(email).trim().toLowerCase();
+
     if (await RadiologyStaff.exists({
       hospitalId,
-      employeeId: String(employeeId).toUpperCase()
+      employeeId: normalizedEmployeeId
     })) {
       return res.status(409).json({
         success: false,
@@ -102,42 +106,48 @@ exports.createStaff = async (req, res) => {
       });
     }
 
+    if (await RadiologyStaff.exists({
+      hospitalId,
+      email: normalizedEmail
+    })) {
+      return res.status(409).json({
+        success: false,
+        error: 'Staff member with this email already exists in this hospital'
+      });
+    }
+
     let user = await User.findOne({
       hospital_id: hospitalId,
-      email: String(email).toLowerCase()
+      email: normalizedEmail
     });
 
-    if (!user) {
-      const generatedPassword = password || crypto.randomBytes(12).toString('base64url');
+    if (user) {
+      user.role = 'radiology_staff';
+      user.phone = phone.trim();
+      user.hospital_id = hospitalId;
+      user.is_active = is_active;
+      if (name) user.name = name.trim();
+      if (password) user.password = password;
+      await user.save();
+    } else if (password) {
       const modulePermissions = defaultFeaturePermissions('radiology_staff', {
-        grantedBy: req.user._id
+        grantedBy: req.user?._id
       });
 
       user = await User.create({
-        name,
-        email: String(email).toLowerCase(),
-        phone,
-        password: generatedPassword,
+        name: name.trim(),
+        email: normalizedEmail,
+        phone: phone.trim(),
+        password,
         role: 'radiology_staff',
         hospital_id: hospitalId,
         is_active,
         modulePermissions,
         dashboard_access: dashboardAccessFromFeatures(modulePermissions)
       });
-    } else {
-      user.role = 'radiology_staff';
-      user.phone = phone;
-      user.hospital_id = hospitalId;
-      user.is_active = is_active;
-
-      if (password) {
-        user.password = password;
-      }
-
-      await user.save();
     }
 
-    if (await RadiologyStaff.exists({
+    if (user && await RadiologyStaff.exists({
       hospitalId,
       userId: user._id
     })) {
@@ -149,18 +159,22 @@ exports.createStaff = async (req, res) => {
 
     const staff = await RadiologyStaff.create({
       hospitalId,
-      userId: user._id,
-      employeeId: String(employeeId).toUpperCase(),
+      userId: user?._id || undefined,
+      name: name.trim(),
+      email: normalizedEmail,
+      phone: phone.trim(),
+      address: address ? String(address).trim() : '',
+      employeeId: normalizedEmployeeId,
       designation,
       specializations,
-      qualification,
-      experience_years,
-      license_number,
+      qualification: qualification ? String(qualification).trim() : '',
+      experience_years: Number(experience_years) || 0,
+      license_number: license_number ? String(license_number).trim() : '',
       joined_date: joined_date || new Date(),
       is_active
     });
 
-    await syncHRProfileFromSource('RadiologyStaff', staff, { hospital_id: hospitalId });
+    await syncHRProfileFromSource('RadiologyStaff', staff, { hospital_id: hospitalId, email: normalizedEmail });
 
     const data = await populate(
       RadiologyStaff.findOne({ _id: staff._id, hospitalId })
@@ -180,9 +194,7 @@ exports.updateStaff = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
 
-    const staff = await populate(
-      RadiologyStaff.findOne({ _id: req.params.id, hospitalId })
-    );
+    const staff = await RadiologyStaff.findOne({ _id: req.params.id, hospitalId });
 
     if (!staff) {
       return res.status(404).json({
@@ -191,31 +203,65 @@ exports.updateStaff = async (req, res) => {
       });
     }
 
-    const { name, email, phone, password } = req.body;
-    const userUpdates = {};
+    const { name, email, phone, address, password } = req.body;
+    const staffUpdates = {};
 
-    if (name) userUpdates.name = name;
-    if (email) userUpdates.email = String(email).toLowerCase();
-    if (phone) userUpdates.phone = phone;
+    if (name !== undefined) staffUpdates.name = String(name).trim();
+    if (email !== undefined) staffUpdates.email = String(email).trim().toLowerCase();
+    if (phone !== undefined) staffUpdates.phone = String(phone).trim();
+    if (address !== undefined) staffUpdates.address = String(address).trim();
+    if (req.body.is_active !== undefined) staffUpdates.is_active = Boolean(req.body.is_active);
 
-    if (req.body.is_active !== undefined) {
-      userUpdates.is_active = Boolean(req.body.is_active);
-    }
+    const linkedUserId = staff.userId?._id || staff.userId;
 
-    if (Object.keys(userUpdates).length) {
-      await User.updateOne(
-        { _id: staff.userId._id, hospital_id: hospitalId },
-        { $set: userUpdates }
-      );
-    }
+    if (linkedUserId) {
+      const userUpdates = {};
+      if (name !== undefined) userUpdates.name = String(name).trim();
+      if (email !== undefined) userUpdates.email = String(email).trim().toLowerCase();
+      if (phone !== undefined) userUpdates.phone = String(phone).trim();
+      if (req.body.is_active !== undefined) userUpdates.is_active = Boolean(req.body.is_active);
 
-    if (password) {
-      const user = await User.findOne({
-        _id: staff.userId._id,
-        hospital_id: hospitalId
-      });
-      user.password = password;
-      await user.save();
+      if (Object.keys(userUpdates).length) {
+        await User.updateOne(
+          { _id: linkedUserId, hospital_id: hospitalId },
+          { $set: userUpdates }
+        );
+      }
+
+      if (password) {
+        const user = await User.findOne({
+          _id: linkedUserId,
+          hospital_id: hospitalId
+        });
+        if (user) {
+          user.password = password;
+          await user.save();
+        }
+      }
+    } else if (password) {
+      const targetEmail = staffUpdates.email || staff.email;
+      let user = await User.findOne({ hospital_id: hospitalId, email: targetEmail });
+      if (user) {
+        user.password = password;
+        user.role = 'radiology_staff';
+        await user.save();
+      } else {
+        const modulePermissions = defaultFeaturePermissions('radiology_staff', {
+          grantedBy: req.user?._id
+        });
+        user = await User.create({
+          name: staffUpdates.name || staff.name || 'Radiology Staff',
+          email: targetEmail,
+          phone: staffUpdates.phone || staff.phone || '',
+          password,
+          role: 'radiology_staff',
+          hospital_id: hospitalId,
+          is_active: staffUpdates.is_active !== undefined ? staffUpdates.is_active : staff.is_active,
+          modulePermissions,
+          dashboard_access: dashboardAccessFromFeatures(modulePermissions)
+        });
+      }
+      staffUpdates.userId = user._id;
     }
 
     const allowed = [
@@ -231,24 +277,21 @@ exports.updateStaff = async (req, res) => {
       'availabilityStatus'
     ];
 
-    const updates = Object.fromEntries(
-      allowed
-        .filter((key) => req.body[key] !== undefined)
-        .map((key) => [
-          key,
-          key === 'employeeId' ? String(req.body[key]).toUpperCase() : req.body[key]
-        ])
-    );
+    allowed.forEach((key) => {
+      if (req.body[key] !== undefined) {
+        staffUpdates[key] = key === 'employeeId' ? String(req.body[key]).toUpperCase() : req.body[key];
+      }
+    });
 
     const updated = await populate(
       RadiologyStaff.findOneAndUpdate(
         { _id: req.params.id, hospitalId },
-        { $set: updates },
+        { $set: staffUpdates },
         { new: true, runValidators: true }
       )
     );
 
-    await syncHRProfileFromSource('RadiologyStaff', updated, { hospital_id: hospitalId });
+    await syncHRProfileFromSource('RadiologyStaff', updated, { hospital_id: hospitalId, email: updated.email });
 
     return res.json({
       success: true,
@@ -279,10 +322,12 @@ exports.toggleStaffStatus = async (req, res) => {
     staff.is_active = !staff.is_active;
     await staff.save();
 
-    await User.updateOne(
-      { _id: staff.userId, hospital_id: hospitalId },
-      { $set: { is_active: staff.is_active } }
-    );
+    if (staff.userId) {
+      await User.updateOne(
+        { _id: staff.userId, hospital_id: hospitalId },
+        { $set: { is_active: staff.is_active } }
+      );
+    }
 
     return res.json({
       success: true,
@@ -316,10 +361,12 @@ exports.deleteStaff = async (req, res) => {
     staff.deletion_reason = String(req.body?.reason || 'Radiology staff deactivated by user').trim();
     await staff.save();
 
-    await User.updateOne(
-      { _id: staff.userId, hospital_id: hospitalId },
-      { $set: { is_active: false, deleted_at: staff.deleted_at, deleted_by: staff.deleted_by, deletion_reason: staff.deletion_reason } }
-    );
+    if (staff.userId) {
+      await User.updateOne(
+        { _id: staff.userId, hospital_id: hospitalId },
+        { $set: { is_active: false, deleted_at: staff.deleted_at, deleted_by: staff.deleted_by, deletion_reason: staff.deletion_reason } }
+      );
+    }
 
     return res.json({
       success: true,

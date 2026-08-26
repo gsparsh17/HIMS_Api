@@ -116,14 +116,15 @@ function sourceToProfilePayload(sourceModel, doc, user, hospitalId) {
   }
 
   const compactSourceName = sourceModel.replace('Staff', ' Staff');
-  const fullName = user?.name || `${compactSourceName} ${plain.employeeId || plain.employee_id || ''}`.trim();
+  const fullName = plain.name || user?.name || `${compactSourceName} ${plain.employeeId || plain.employee_id || ''}`.trim();
   const { firstName, lastName } = splitName(fullName);
   const staffType = sourceModel === 'LabStaff' ? 'pathology_staff' : sourceModel === 'RadiologyStaff' ? 'radiology_staff' : 'ot_staff';
   const refField = sourceModel === 'LabStaff' ? 'lab_staff_id' : sourceModel === 'RadiologyStaff' ? 'radiology_staff_id' : 'ot_staff_id';
   return {
     source_model: sourceModel, source_id: id, [refField]: id, user_id: userId,
     full_name: fullName, first_name: firstName, last_name: lastName,
-    email: toLower(user?.email), phone: plain.phone,
+    email: toLower(firstDefined(plain.email, user?.email)), phone: firstDefined(plain.phone, user?.phone),
+    address: firstDefined(plain.address, user?.address),
     staff_type: staffType, designation: plain.designation || compactSourceName,
     specialization: Array.isArray(plain.specializations) ? plain.specializations.join(', ') : plain.specialization,
     qualification: plain.qualification, license_number: plain.license_number,
