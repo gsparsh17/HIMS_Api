@@ -1243,6 +1243,43 @@ async function commitDeskCheckout(payload, user) {
       });
     }
 
+    const receiptDocumentFor = item => {
+      const transactions = Array.isArray(item?.transactions)
+        ? item.transactions.filter(Boolean)
+        : item?.transaction
+          ? [item.transaction]
+          : [];
+      const primaryTransaction = transactions.find(transaction =>
+        String(transaction?.transactionType || '').toUpperCase() === 'RECEIPT'
+      ) || transactions[0] || null;
+      const transactionCollection = transactions
+        .filter(transaction => ['RECEIPT', 'ADVANCE_DEPOSIT'].includes(String(transaction?.transactionType || '').toUpperCase()))
+        .reduce((sum, transaction) => sum + Number(transaction?.amountReceived ?? transaction?.amount ?? 0), 0);
+      const tenderedNetOfChange = Number(item?.amountTendered || 0) - Number(item?.changeReturned || 0);
+      const collectedAmount = Number.isFinite(tenderedNetOfChange) && tenderedNetOfChange > 0
+        ? tenderedNetOfChange
+        : Number(item?.amount ?? item?.amountApplied ?? transactionCollection ?? 0);
+      const isIpd = String(item?.paymentKind || '').startsWith('IPD_');
+
+      return {
+        type: 'RECEIPT',
+        id: item.receiptNumber,
+        label: isIpd ? 'Admission receipt' : 'Receipt',
+        receiptType: item.paymentKind === 'IPD_ADVANCE'
+          ? 'IPD_ADVANCE'
+          : item.paymentKind === 'IPD_PAYMENT'
+            ? 'IPD_PAYMENT'
+            : 'OPD_PAYMENT',
+        amount: round(collectedAmount),
+        amountApplied: Number(item?.amountApplied ?? primaryTransaction?.amount ?? 0),
+        amountTendered: Number(item?.amountTendered ?? collectedAmount ?? 0),
+        changeReturned: Number(item?.changeReturned || 0),
+        paymentMethod: item?.paymentMethod || primaryTransaction?.paymentMethod || payload.payment?.paymentMethod || 'Cash',
+        reference: item?.reference || primaryTransaction?.paymentReference || payload.payment?.reference || '',
+        url: null
+      };
+    };
+
     const documents = [
       ...invoiceIds.map(id => ({
         type: 'INVOICE',
@@ -1258,16 +1295,7 @@ async function commitDeskCheckout(payload, user) {
       })),
       ...paymentResults
         .filter(item => item?.receiptNumber)
-        .map(item => ({
-          type: 'RECEIPT',
-          id: item.receiptNumber,
-          label: String(item.paymentKind || '').startsWith('IPD_') ? 'Admission receipt' : 'Receipt',
-          receiptType: item.paymentKind === 'IPD_ADVANCE' ? 'IPD_ADVANCE' : 'IPD_PAYMENT',
-          amount: item.amount,
-          paymentMethod: item.paymentMethod,
-          reference: item.reference || '',
-          url: null
-        }))
+        .map(receiptDocumentFor)
     ];
 
     const result = {
