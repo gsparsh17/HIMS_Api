@@ -25,6 +25,7 @@ const HRStaffProfile = require('../models/HRStaffProfile');
 const StaffAvailability = require('../models/StaffAvailability');
 const { rememberDeclaredPreference } = require('../services/patientCoveragePreference.service');
 const { resolveFinancialPolicy } = require('../services/financialPolicy.service');
+const appointmentCalendarManagement = require('../services/appointmentCalendarManagement.service');
 const {
   DEFAULT_HOSPITAL_TIME_ZONE,
   hospitalDateKey,
@@ -91,6 +92,31 @@ async function notifyAppointment(appointmentOrId, eventType, userId, extra = {},
     { $addToSet: { notificationDeliveryIds: delivery._id } }
   );
   return delivery;
+}
+
+
+function canManageDoctorCalendar(user) {
+  return ['admin', 'mediqliq_super_admin', 'registrar'].includes(String(user?.role || '').trim().toLowerCase());
+}
+
+function requireDoctorCalendarManager(req) {
+  if (!canManageDoctorCalendar(req.user)) {
+    const error = new Error('Registrar or administrator access is required to manage the doctor calendar');
+    error.statusCode = 403;
+    error.code = 'DOCTOR_CALENDAR_MANAGE_FORBIDDEN';
+    throw error;
+  }
+}
+
+async function recalculateAffectedCalendarQueues({ hospitalId, date, rows = [] }) {
+  const departmentIds = [...new Set(
+    rows.map((row) => row?.department_id).filter(Boolean).map((value) => String(value))
+  )];
+  await Promise.all(departmentIds.map((departmentId) => recalculateQueue({
+    hospitalId,
+    departmentId,
+    date,
+  })));
 }
 
 function startRoleAllowed(user) {
@@ -1786,6 +1812,107 @@ exports.getAppointmentById = async (req, res) => {
 };
 
 // Update or reschedule an appointment while preserving the existing calendar flow.
+
+exports.getRegistrarDoctorCalendarDay = async (req, res) => {
+  try {
+    requireDoctorCalendarManager(req);
+    const hospitalId = requireHospitalId(req);
+    const data = await appointmentCalendarManagement.getDoctorDay({
+      hospitalId,
+      doctorId: req.params.doctorId,
+      date: req.params.date,
+    });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+      details: error.details,
+    });
+  }
+};
+
+exports.bulkShiftDoctorAppointments = async (req, res) => {
+  try {
+    requireDoctorCalendarManager(req);
+    const hospitalId = requireHospitalId(req);
+    const result = await appointmentCalendarManagement.bulkShift({
+      hospitalId,
+      doctorId: req.body.doctorId,
+      date: req.body.date,
+      direction: req.body.direction,
+      minutes: req.body.minutes,
+      scope: req.body.scope,
+      anchorAppointmentId: req.body.anchorAppointmentId,
+      includeAnchor: Boolean(req.body.includeAnchor),
+    });
+
+    await recalculateAffectedCalendarQueues({ hospitalId, date: result.date || req.body.date, rows: result.changed || [] });
+
+    await Promise.all((result.changed || []).map(async (row) => {
+      try {
+        await notifyAppointment(String(row._id), 'appointment_updated', req.user?._id, {
+          subject: 'Appointment time updated',
+          body: `Your appointment time has been ${req.body.direction === 'earlier' ? 'preponed' : 'postponed'} by ${Number(req.body.minutes)} minutes.`,
+        }, hospitalId);
+      } catch (_error) {}
+    }));
+
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+      details: error.details,
+    });
+  }
+};
+
+exports.createDoctorCalendarBlock = async (req, res) => {
+  try {
+    requireDoctorCalendarManager(req);
+    const hospitalId = requireHospitalId(req);
+    const result = await appointmentCalendarManagement.createBlock({
+      hospitalId,
+      doctorId: req.body.doctorId,
+      date: req.body.date,
+      startTime: req.body.startTime,
+      endTime: req.body.endTime,
+      reason: req.body.reason,
+      conflictStrategy: req.body.conflictStrategy || 'move_later',
+      userId: req.user?._id,
+    });
+
+    await recalculateAffectedCalendarQueues({
+      hospitalId,
+      date: result.date || req.body.date,
+      rows: [...(result.moved || []), ...(result.cancelled || [])],
+    });
+
+    await Promise.all([...(result.moved || []), ...(result.cancelled || [])].map(async (row) => {
+      try {
+        await notifyAppointment(String(row._id), row.start_time ? 'appointment_updated' : 'appointment_cancelled', req.user?._id, {
+          subject: row.start_time ? 'Appointment time updated' : 'Appointment cancelled',
+          body: row.start_time
+            ? `Your appointment was moved because the doctor calendar was blocked: ${req.body.reason || 'Doctor unavailable'}.`
+            : `Your appointment was cancelled because the doctor is unavailable: ${req.body.reason || 'Doctor unavailable'}.`,
+        }, hospitalId);
+      } catch (_error) {}
+    }));
+
+    return res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+      details: error.details,
+    });
+  }
+};
+
 exports.updateAppointment = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
@@ -2128,16 +2255,38 @@ exports.cancelAppointment = async (req, res) => {
       cancelledBy: req.user?._id
     });
 
-    await Promise.all([
-      appointment.save(),
-      removeAppointmentFromCalendar(appointment)
-    ]);
+    await appointment.save();
+    await removeAppointmentFromCalendar(appointment);
 
-    await recalculateQueue({
+    let queueShift = null;
+    let queueShiftWarning = null;
+    if (Boolean(req.body.shiftFollowingEarlier) && appointment.type === 'time-based' && appointment.start_time) {
+      try {
+        queueShift = await appointmentCalendarManagement.shiftFollowingIntoCancelledSlot({
+          hospitalId,
+          appointment,
+        });
+      } catch (shiftError) {
+        queueShiftWarning = {
+          code: shiftError.code || 'QUEUE_SHIFT_SKIPPED',
+          message: shiftError.message,
+        };
+      }
+    }
+
+    await recalculateAffectedCalendarQueues({
       hospitalId: appointment.hospital_id,
-      departmentId: appointment.department_id,
-      date: appointment.appointment_date
+      date: appointment.appointment_date,
+      rows: [{ department_id: appointment.department_id }, ...(queueShift?.changed || [])],
     });
+    await Promise.all((queueShift?.changed || []).map(async (row) => {
+      try {
+        await notifyAppointment(String(row._id), 'appointment_updated', req.user?._id, {
+          subject: 'Appointment time updated',
+          body: `Your appointment was preponed by ${Number(queueShift?.minutes || appointment.duration || 10)} minutes after an earlier slot became available.`,
+        }, hospitalId);
+      } catch (_error) {}
+    }));
     await notifyAppointment(appointment, 'appointment_cancelled', req.user?._id, {
       subject: 'Appointment cancelled',
       body: `Your appointment has been cancelled. Reason: ${reason}`
@@ -2164,7 +2313,9 @@ exports.cancelAppointment = async (req, res) => {
       success: true,
       message: 'Appointment cancelled successfully',
       appointment: populated,
-      cancellationReceipt
+      cancellationReceipt,
+      queueShift,
+      queueShiftWarning
     });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });

@@ -4,6 +4,9 @@ const appointmentController = require('../controllers/appointment.controller');
 
 // Static collection routes must precede parameterized /:id routes.
 router.get('/check-conflict', appointmentController.checkAppointmentConflict);
+router.get('/calendar/doctor/:doctorId/:date', appointmentController.getRegistrarDoctorCalendarDay);
+router.post('/calendar/bulk-shift', appointmentController.bulkShiftDoctorAppointments);
+router.post('/calendar/block', appointmentController.createDoctorCalendarBlock);
 router.post('/bulk-add', appointmentController.bulkCreateAppointments);
 router.get('/by-temp-id/:tempId', appointmentController.getAppointmentByTempId);
 router.post('/external-sync', appointmentController.syncExternalAppointment);

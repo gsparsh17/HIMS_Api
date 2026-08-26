@@ -21,6 +21,7 @@ const { registerPatient, assertPatientReadyForContext } = require('./patientRegi
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('./requestPayerContext.service');
 const { resolveDeclaredCoveragePreference } = require('./patientCoveragePreference.service');
 const { quotePricing } = require('./pricingEngine.service');
+const { resolveDoctorTariff } = require('./doctorTariff.service');
 const { resolveFinancialPolicy } = require('./financialPolicy.service');
 const { _hasActionPermission } = require('../middlewares/auth');
 
@@ -256,12 +257,10 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
       }
     }
 
-    if (!row.masterId || row.serviceType === 'MANUAL') {
-      if (row.serviceType === 'MANUAL') {
-        if (!String(row.name || '').trim()) throw checkoutError('Manual service description is required');
-        if (!_hasActionPermission(user, 'pricing_override')) {
-          throw checkoutError('Manual service pricing requires pricing override permission', 403, 'MANUAL_PRICING_PERMISSION_REQUIRED');
-        }
+    if (row.serviceType === 'MANUAL') {
+      if (!String(row.name || '').trim()) throw checkoutError('Manual service description is required');
+      if (!_hasActionPermission(user, 'pricing_override')) {
+        throw checkoutError('Manual service pricing requires pricing override permission', 403, 'MANUAL_PRICING_PERMISSION_REQUIRED');
       }
       const manualAmount = round(Number(row.rate || 0) * Number(row.quantity || 1));
       const policy = await resolveFinancialPolicy({
@@ -315,26 +314,45 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
       encounterType,
       limit: 60
     });
-    const match = matches.find(item =>
-      String(item.masterId || '') === String(row.masterId) && item.serviceType === row.serviceType
-    );
+    const match = matches.find(item => {
+      if (item.serviceType !== row.serviceType) return false;
+      if (row.masterId) return String(item.masterId || '') === String(row.masterId);
+      const requestedCode = String(row.code || '').trim().toUpperCase();
+      if (requestedCode) return String(item.code || '').trim().toUpperCase() === requestedCode;
+      return String(item.name || '').trim().toLowerCase() === String(row.name || '').trim().toLowerCase();
+    });
     if (!match) throw checkoutError(`Service is inactive or unavailable: ${row.name || row.code}`);
 
     const serviceTypeMap = { LAB: 'laboratory', RADIOLOGY: 'radiology', PROCEDURE: 'procedure', CONSULTATION: 'consultation', OT: 'ot', NURSING: 'other' };
-    const quote = await quotePricing({
-      hospitalId,
-      admissionId: encounterType === 'IPD' ? payload.admissionId : undefined,
-      appointmentId: encounterType === 'OPD' ? encounterContext.appointmentId : undefined,
-      coverage: simulatedCoverage,
-      serviceDate: operationNow(),
-      chargeType: row.serviceType,
-      serviceType: serviceTypeMap[row.serviceType] || String(row.serviceType || 'other').toLowerCase(),
-      internalServiceModel: match.internalServiceModel,
-      internalServiceId: match.internalServiceId,
-      internalCode: match.code,
-      standardAmount: match.internalServiceId ? undefined : match.defaultRate,
-      quantity: row.quantity
-    });
+    let quote;
+    if (row.serviceType === 'CONSULTATION' && encounterContext.doctorId) {
+      const doctorTariff = await resolveDoctorTariff({
+        hospitalId,
+        doctorId: encounterContext.doctorId,
+        encounterType,
+        visitType: row.visitType || row.appointment_type || 'NEW',
+        admissionId: encounterType === 'IPD' ? payload.admissionId : undefined,
+        appointmentId: encounterType === 'OPD' ? encounterContext.appointmentId : undefined,
+        serviceDate: operationNow(),
+        coverage: simulatedCoverage
+      });
+      quote = doctorTariff.quote;
+    } else {
+      quote = await quotePricing({
+        hospitalId,
+        admissionId: encounterType === 'IPD' ? payload.admissionId : undefined,
+        appointmentId: encounterType === 'OPD' ? encounterContext.appointmentId : undefined,
+        coverage: simulatedCoverage,
+        serviceDate: operationNow(),
+        chargeType: row.serviceType,
+        serviceType: serviceTypeMap[row.serviceType] || String(row.serviceType || 'other').toLowerCase(),
+        internalServiceModel: match.internalServiceModel,
+        internalServiceId: match.internalServiceId,
+        internalCode: match.code,
+        standardAmount: match.internalServiceId ? undefined : match.defaultRate,
+        quantity: row.quantity
+      });
+    }
     const policy = await resolveFinancialPolicy({
       hospitalId,
       user,
@@ -1565,7 +1583,18 @@ async function commitDeskCheckout(payload, user) {
   }
 }
 
+async function quoteDeskServices(payload = {}, user) {
+  const encounterType = String(payload.encounterType || 'OPD').toUpperCase() === 'IPD' ? 'IPD' : 'OPD';
+  return authoritativeCart({
+    user,
+    cart: Array.isArray(payload.serviceCart) ? payload.serviceCart : [],
+    encounterType,
+    payload
+  });
+}
+
 module.exports = {
   previewDeskCheckout,
-  commitDeskCheckout
+  commitDeskCheckout,
+  quoteDeskServices
 };

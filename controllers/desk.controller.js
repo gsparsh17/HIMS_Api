@@ -113,6 +113,16 @@ exports.searchServices = async (req, res) => {
   }
 };
 
+
+exports.quoteServices = async (req, res) => {
+  try {
+    const data = await desk.quoteDeskServices(req.body || {}, req.user);
+    return res.json({ success: true, data });
+  } catch (e) {
+    return sendError(res, e);
+  }
+};
+
 exports.preview = async (req, res) => {
   try {
     const data = await desk.previewDeskCheckout(req.body, req.user);
