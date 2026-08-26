@@ -35,6 +35,7 @@ router.post('/patients/:patientId/advances', requireModuleAccess('billing_financ
 router.post('/patients/:patientId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.refundOPDAdvance);
 
 router.get('/ipd/admissions', finance.listBillingAdmissions);
+router.get('/ipd/:admissionId/workspace', finance.getIPDFinanceWorkspace);
 router.get('/ipd/:admissionId/running-bill', finance.getRunningBill);
 router.get('/ipd/:admissionId/ledger', finance.getFinancialLedger);
 router.get('/ipd/:admissionId/clearance', finance.getFinancialClearance);
