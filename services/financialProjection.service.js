@@ -178,9 +178,11 @@ function invoiceRow(invoice) {
 }
 
 function transactionRow(tx) {
+  const txDate = tx.postedAt || tx.createdAt || tx.date || tx.transactionDate;
   return {
     id: tx._id,
-    postedAt: tx.postedAt || tx.createdAt,
+    date: txDate,
+    postedAt: txDate,
     transactionNumber: tx.transactionNumber || tx.referenceNumber || '',
     transactionType: tx.transactionType,
     direction: tx.direction,
@@ -212,12 +214,28 @@ function group(rows, keyGetter, seedFactory, reducer) {
 }
 
 function dayKey(date, timezone = 'Asia/Kolkata') {
-  try { return new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(date)); }
-  catch (_) { return new Date(date).toISOString().slice(0, 10); }
+  if (!date) return '';
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone || 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(d);
+  } catch (_) {
+    try {
+      return d.toISOString().slice(0, 10);
+    } catch {
+      return '';
+    }
+  }
 }
 
 function monthKey(date, timezone = 'Asia/Kolkata') {
-  return dayKey(date, timezone).slice(0, 7);
+  const day = dayKey(date, timezone);
+  return day ? day.slice(0, 7) : '';
 }
 
 function project(data) {
@@ -241,7 +259,7 @@ function project(data) {
     refunds: sumRows(refunds, 'amount'),
     netCashCollection: money(sumRows(receipts, 'amount') + sumRows(advances, 'amount') - sumRows(refunds, 'amount')),
     outstanding: sumRows(invoiceRows, 'outstanding'),
-    unbilledProduction: money(data.unbilledCharges.reduce((s, row) => s + Number(row.netAmount ?? row.totalAmount ?? row.amount ?? 0), 0)),
+    unbilledProduction: money((data.unbilledCharges || []).reduce((s, row) => s + Number(row.netAmount ?? row.totalAmount ?? row.amount ?? 0), 0)),
     invoiceCount: invoiceRows.length,
     receiptCount: receipts.length,
     averageInvoiceValue: invoiceRows.length ? money(sumRows(invoiceRows, 'netRevenue') / invoiceRows.length) : 0
@@ -260,10 +278,11 @@ function project(data) {
     a.departmentId ||= r.departmentId; a.departmentName = r.departmentName; a.netRevenue = money(a.netRevenue + r.netRevenue); a.doctorCommission = money(a.doctorCommission + r.doctorCommission); a.hospitalShare = money(a.hospitalShare + r.hospitalShare); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1;
   }).sort((a, b) => b.netRevenue - a.netRevenue);
   const paymentMethods = group(externalCredits, (r) => r.paymentMethod, (paymentMethod) => ({ paymentMethod, amount: 0, count: 0 }), (a, r) => { a.amount = money(a.amount + r.amount); a.count += 1; }).sort((a, b) => b.amount - a.amount);
-  const daily = group(invoiceRows, (r) => dayKey(r.date, data.range.timezone), (date) => ({ date, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0, collections: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.date.localeCompare(b.date));
+  const daily = group(invoiceRows, (r) => dayKey(r.date, data.range?.timezone) || 'Unknown', (date) => ({ date, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0, collections: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.date.localeCompare(b.date));
   const dailyMap = new Map(daily.map((row) => [row.date, row]));
   receipts.forEach((row) => {
-    const date = dayKey(row.date, data.range.timezone);
+    const txDate = row.date || row.postedAt;
+    const date = dayKey(txDate, data.range?.timezone) || 'Unknown';
     if (!dailyMap.has(date)) {
       const item = { date, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0, collections: 0 };
       dailyMap.set(date, item);
@@ -272,7 +291,7 @@ function project(data) {
     dailyMap.get(date).collections = money(dailyMap.get(date).collections + row.amount);
   });
   daily.sort((a, b) => a.date.localeCompare(b.date));
-  const monthly = group(invoiceRows, (r) => monthKey(r.date, data.range.timezone), (month) => ({ month, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.month.localeCompare(b.month));
+  const monthly = group(invoiceRows, (r) => monthKey(r.date, data.range?.timezone) || 'Unknown', (month) => ({ month, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.month.localeCompare(b.month));
 
   return { range: data.range, summary, bySource, byService, byDoctor, byDepartment, paymentMethods, daily, monthly, invoiceRows, transactionRows: allTransactions };
 }
@@ -317,4 +336,4 @@ async function getReport(reportKey, query, user) {
   throw error;
 }
 
-module.exports = { parseHospitalRange, getKpis, getReport };
+module.exports = { parseHospitalRange, getKpis, getReport, project, dayKey, monthKey, invoiceRow, transactionRow };

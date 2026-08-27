@@ -1249,7 +1249,11 @@ exports.getReturns = asyncHandler(async (req, res) => {
 exports.getLedgerDaily = asyncHandler(async (req, res) => {
   const hospitalId = getHospitalId(req);
   const selectedDay = operationDateKey();
-  const range = semanticDateRange(req.query.startDate || selectedDay, req.query.endDate || selectedDay);
+  const startDate = req.query.startDate || selectedDay;
+  const endDate = req.query.endDate || selectedDay;
+  const range = semanticDateRange(startDate, endDate);
+  const start = range.$gte;
+  const end = range.$lt;
 
   const match = {
     entryDate: range,
@@ -1320,7 +1324,7 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
   });
 
   const billsQuery = {
-    generated_at: { $gte: start, $lte: end },
+    generated_at: range,
     is_pharmacy_bill: true,
     ...(hospitalId ? { hospital_id: hospitalId } : {})
   };

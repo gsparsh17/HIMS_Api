@@ -303,7 +303,7 @@ async function patientWorklistMeta({ hospitalId }) {
 async function listPatientWorklist({ hospitalId, query = {} }) {
   const { pipeline, page, limit } = await buildPatientWorklistFilteredPipeline({ hospitalId, query });
   const includeMeta = String(query.includeMeta ?? 'true').toLowerCase() !== 'false';
-  const [result = {}, meta] = await Promise.all([
+  const [[result = {}] = [], meta] = await Promise.all([
     Patient.aggregate([
       ...pipeline,
       {

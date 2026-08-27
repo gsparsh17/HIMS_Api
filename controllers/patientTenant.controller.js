@@ -59,6 +59,10 @@ function fail(res, error, status = 500) {
 
 async function ensureOwned(req, res) {
   const hospitalId = requireHospitalId(req);
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    res.status(404).json({ error: 'Patient not found' });
+    return null;
+  }
   const patient = await Patient.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
 
   if (!patient) {
@@ -526,6 +530,9 @@ exports.getPatientById = async (req, res) => {
 exports.updatePatient = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: 'Patient not found' });
+    }
     const patient = await Patient.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
     if (!patient) {
       return res.status(404).json({ error: 'Patient not found' });
@@ -613,6 +620,7 @@ exports.updatePatient = async (req, res) => {
 exports.deletePatient = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Patient not found' });
     const patient = await Patient.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
     if (!patient) return res.status(404).json({ error: 'Patient not found' });
 
@@ -831,6 +839,7 @@ exports.getSyncStatus = async (req, res) => {
 exports.getLongitudinalRecord = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Patient not found' });
     const patient = await Patient.findOne({ _id: req.params.id, hospitalId }).lean();
     if (!patient) return res.status(404).json({ error: 'Patient not found' });
 
@@ -880,6 +889,7 @@ exports.getLongitudinalRecord = async (req, res) => {
 exports.sharePatientRecord = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Patient not found' });
     const patient = await Patient.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
     if (!patient) return res.status(404).json({ error: 'Patient not found' });
     const facility = String(req.body.facility || '').trim();

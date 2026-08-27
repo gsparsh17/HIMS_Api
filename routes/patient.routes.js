@@ -46,7 +46,7 @@ router.get('/phone/:phone', canReadPatient, patientController.getPatientByPhone)
 router.get('/search', canReadPatient, patientController.searchPatientsCompact);
 router.get('/worklist/export', canReadPatient, patientController.exportPatientWorklist);
 router.get('/worklist', canReadPatient, patientController.getPatientWorklist);
-router.get('/dashboard-overview', authorize('admin', 'mediqliq_super_admin'), patientController.getDashboardOverview);
+router.get('/dashboard-overview', canReadPatient, patientController.getDashboardOverview);
 router.get('/staff-dashboard-overview', canReadPatient, patientController.getStaffDashboardOverview);
 router.get('/registration-trend', canReadPatient, patientController.getPatientRegistrationTrend);
 

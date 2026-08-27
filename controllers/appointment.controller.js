@@ -1866,6 +1866,7 @@ exports.getAllAppointments = async (req, res) => {
 exports.getAppointmentById = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Appointment not found' });
     const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } })
       .populate('patient_id')
       .populate('doctor_id')
@@ -1994,6 +1995,7 @@ exports.createDoctorCalendarBlock = async (req, res) => {
 exports.updateAppointment = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Appointment not found' });
     const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
 
@@ -2273,6 +2275,7 @@ exports.cancelAppointment = async (req, res) => {
     const reason = String(req.body.reason || req.body.cancellationReason || '').trim();
     if (!reason) return res.status(400).json({ error: 'Cancellation reason is required' });
 
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Appointment not found' });
     const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
     if (appointment.status === 'Completed') {
@@ -2588,6 +2591,7 @@ exports.referToDoctor = async (req, res) => {
 exports.deleteAppointment = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Appointment not found' });
     const appointment = await Appointment.findOne({
       _id: req.params.id,
       hospital_id: hospitalId,
