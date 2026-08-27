@@ -24,6 +24,41 @@ const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requestHospitalId } = require('../utils/hospitalScope');
 
+async function attachAdmissionDetailsToPrescriptions(prescriptions, hospitalId, { includeWardCode = false } = {}) {
+  const rows = prescriptions.map((prescription) =>
+    typeof prescription?.toObject === 'function' ? prescription.toObject() : prescription
+  );
+  const admissionIds = [...new Set(rows.map((row) => row?.ipd_admission_id?.toString?.() || row?.ipd_admission_id).filter(Boolean))];
+  if (!admissionIds.length) return rows;
+
+  const admissions = await IPDAdmission.find({ _id: { $in: admissionIds }, hospitalId })
+    .select('admissionNumber shipNumber wardId bedId status admissionDate')
+    .populate('wardId', 'name code')
+    .populate('bedId', 'bedNumber name')
+    .lean();
+  const admissionMap = new Map(admissions.map((admission) => [String(admission._id), admission]));
+
+  return rows.map((row) => {
+    if (!row.ipd_admission_id) return row;
+    const admission = admissionMap.get(String(row.ipd_admission_id));
+    if (!admission) return row;
+    row.admission_details = {
+      _id: admission._id,
+      admissionNumber: admission.admissionNumber,
+      shipNumber: admission.shipNumber,
+      ward_name: admission.wardId?.name || 'N/A',
+      ...(includeWardCode ? { ward_code: admission.wardId?.code || '' } : {}),
+      bed_number: admission.bedId?.bedNumber || 'N/A',
+      status: admission.status,
+      admission_date: admission.admissionDate
+    };
+    row.ward = admission.wardId?.name || 'N/A';
+    row.bed_number = admission.bedId?.bedNumber || 'N/A';
+    row.admission_number = admission.admissionNumber;
+    return row;
+  });
+}
+
 
 
 // ============== HELPER FUNCTIONS ==============
@@ -982,6 +1017,7 @@ exports.getAllPrescriptions = async (req, res) => {
       limit = 20,
       patient_id,
       doctor_id,
+      appointment_id,
       source_type,
       ipd_admission_id,
       status,
@@ -992,6 +1028,7 @@ exports.getAllPrescriptions = async (req, res) => {
     const filter = { hospitalId: requestHospitalId(req) };
     if (patient_id) filter.patient_id = patient_id;
     if (doctor_id) filter.doctor_id = doctor_id;
+    if (appointment_id) filter.appointment_id = appointment_id;
     if (source_type) filter.source_type = source_type;
     if (ipd_admission_id) filter.ipd_admission_id = ipd_admission_id;
     if (status) filter.status = status;
@@ -1013,39 +1050,10 @@ exports.getAllPrescriptions = async (req, res) => {
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit));
 
-    // ========== FIX: Get admission details for IPD prescriptions ==========
-    const IPDAdmission = require('../models/IPDAdmission');
-    const prescriptionsWithAdmission = await Promise.all(
-      prescriptions.map(async (prescription) => {
-        const prescriptionObj = prescription.toObject();
-
-        if (prescription.ipd_admission_id) {
-          const admission = await IPDAdmission.findById(prescription.ipd_admission_id)
-            .populate('wardId', 'name code')
-            .populate('bedId', 'bedNumber name')
-            .lean();
-
-          if (admission) {
-            prescriptionObj.admission_details = {
-              _id: admission._id,
-              admissionNumber: admission.admissionNumber,
-              shipNumber: admission.shipNumber,
-              ward_name: admission.wardId?.name || 'N/A',
-              ward_code: admission.wardId?.code || '',
-              bed_number: admission.bedId?.bedNumber || 'N/A',
-              status: admission.status,
-              admission_date: admission.admissionDate
-            };
-
-            // For backward compatibility - add ward and bed directly to prescription object
-            prescriptionObj.ward = admission.wardId?.name || 'N/A';
-            prescriptionObj.bed_number = admission.bedId?.bedNumber || 'N/A';
-            prescriptionObj.admission_number = admission.admissionNumber;
-          }
-        }
-
-        return prescriptionObj;
-      })
+    const prescriptionsWithAdmission = await attachAdmissionDetailsToPrescriptions(
+      prescriptions,
+      requestHospitalId(req),
+      { includeWardCode: true }
     );
 
     const total = await Prescription.countDocuments(filter);
@@ -1067,13 +1075,15 @@ exports.getAllPrescriptions = async (req, res) => {
 exports.getPrescriptionsByPatientId = async (req, res) => {
   try {
     const { patientId } = req.params;
-    const { status, page = 1, limit = 10 } = req.query;
+    const { status, doctor_id, appointment_id, page = 1, limit = 10 } = req.query;
 
     const hospitalId = requestHospitalId(req);
     const patientExists = await Patient.exists({ _id: patientId, hospitalId });
     if (!patientExists) return res.status(404).json({ error: 'Patient not found' });
     const filter = { hospitalId, patient_id: patientId };
     if (status) filter.status = status;
+    if (doctor_id) filter.doctor_id = doctor_id;
+    if (appointment_id) filter.appointment_id = appointment_id;
 
     const prescriptions = await Prescription.find(filter)
       .populate('doctor_id', 'firstName lastName specialization')
@@ -1084,39 +1094,7 @@ exports.getPrescriptionsByPatientId = async (req, res) => {
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit));
 
-    // ========== FIX: Get admission details for IPD prescriptions ==========
-    const IPDAdmission = require('../models/IPDAdmission');
-    const prescriptionsWithAdmission = await Promise.all(
-      prescriptions.map(async (prescription) => {
-        const prescriptionObj = prescription.toObject();
-
-        if (prescription.ipd_admission_id) {
-          const admission = await IPDAdmission.findById(prescription.ipd_admission_id)
-            .populate('wardId', 'name code')
-            .populate('bedId', 'bedNumber name')
-            .lean();
-
-          if (admission) {
-            prescriptionObj.admission_details = {
-              _id: admission._id,
-              admissionNumber: admission.admissionNumber,
-              shipNumber: admission.shipNumber,
-              ward_name: admission.wardId?.name || 'N/A',
-              bed_number: admission.bedId?.bedNumber || 'N/A',
-              status: admission.status,
-              admission_date: admission.admissionDate
-            };
-
-            // For backward compatibility
-            prescriptionObj.ward = admission.wardId?.name || 'N/A';
-            prescriptionObj.bed_number = admission.bedId?.bedNumber || 'N/A';
-            prescriptionObj.admission_number = admission.admissionNumber;
-          }
-        }
-
-        return prescriptionObj;
-      })
-    );
+    const prescriptionsWithAdmission = await attachAdmissionDetailsToPrescriptions(prescriptions, hospitalId);
 
     const total = await Prescription.countDocuments(filter);
 
@@ -1223,36 +1201,9 @@ exports.getActivePrescriptions = async (req, res) => {
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit));
 
-    // ========== FIX: Get admission details for IPD prescriptions ==========
-    const IPDAdmission = require('../models/IPDAdmission');
-    const prescriptionsWithAdmission = await Promise.all(
-      prescriptions.map(async (prescription) => {
-        const prescriptionObj = prescription.toObject();
-
-        if (prescription.ipd_admission_id) {
-          const admission = await IPDAdmission.findById(prescription.ipd_admission_id)
-            .populate('wardId', 'name code')
-            .populate('bedId', 'bedNumber name')
-            .lean();
-
-          if (admission) {
-            prescriptionObj.admission_details = {
-              _id: admission._id,
-              admissionNumber: admission.admissionNumber,
-              ward_name: admission.wardId?.name || 'N/A',
-              bed_number: admission.bedId?.bedNumber || 'N/A',
-              status: admission.status
-            };
-
-            // For backward compatibility
-            prescriptionObj.ward = admission.wardId?.name || 'N/A';
-            prescriptionObj.bed_number = admission.bedId?.bedNumber || 'N/A';
-            prescriptionObj.admission_number = admission.admissionNumber;
-          }
-        }
-
-        return prescriptionObj;
-      })
+    const prescriptionsWithAdmission = await attachAdmissionDetailsToPrescriptions(
+      prescriptions,
+      requestHospitalId(req)
     );
 
     const total = await Prescription.countDocuments(filter);

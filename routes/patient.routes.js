@@ -43,9 +43,12 @@ router.post('/bulk-add', canManagePatient, patientController.bulkCreatePatients)
 router.get('/by-temp-id/:tempId', canReadPatient, patientController.getPatientByTempId);
 router.get('/sync/status', authorize('admin', 'registrar'), patientController.getSyncStatus);
 router.get('/phone/:phone', canReadPatient, patientController.getPatientByPhone);
+router.get('/search', canReadPatient, patientController.searchPatientsCompact);
 router.get('/worklist/export', canReadPatient, patientController.exportPatientWorklist);
 router.get('/worklist', canReadPatient, patientController.getPatientWorklist);
 router.get('/dashboard-overview', authorize('admin', 'mediqliq_super_admin'), patientController.getDashboardOverview);
+router.get('/staff-dashboard-overview', canReadPatient, patientController.getStaffDashboardOverview);
+router.get('/registration-trend', canReadPatient, patientController.getPatientRegistrationTrend);
 
 router.post('/', canManagePatient, patientController.createPatient);
 router.get('/', canReadPatient, patientController.getAllPatients);

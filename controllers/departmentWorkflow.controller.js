@@ -1,11 +1,17 @@
-const { operationNow } = require('../utils/operationTimeContext');
+const { operationNow, operationDateKey } = require('../utils/operationTimeContext');
 const LabRequest = require('../models/LabRequest');
 const { groupLabRequests } = require('../services/labWorklistGrouping.service');
 const LabTest = require('../models/LabTest');
+const Patient = require('../models/Patient');
+const Doctor = require('../models/Doctor');
+const IPDAdmission = require('../models/IPDAdmission');
+const ImagingTest = require('../models/ImagingTest');
+const Hospital = require('../models/Hospital');
 const { queueNotification } = require('../services/nabhNotification.service');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const IPDCharge = require('../models/IPDCharge');
 const { requireHospitalId } = require('../services/tenantScope.service');
+const { hospitalDayBounds, DEFAULT_HOSPITAL_TIME_ZONE } = require('../utils/hospitalDateTime');
 const labWorkflow = require('../services/labWorkflow.service');
 const radiologyWorkflow = require('../services/radiologyWorkflow.service');
 const { quotePricing, pricingSnapshot } = require('../services/pricingEngine.service');
@@ -57,6 +63,36 @@ function requestFilter(req, hospitalId) {
     filter.sourceType = req.query.sourceType;
   }
 
+  if (req.query.category) {
+    filter.category = req.query.category;
+  }
+
+  if (req.query.billing === 'pending') {
+    filter.financialClearanceState = { $in: ['PAYMENT_REQUIRED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'HOLD'] };
+  } else if (req.query.billing === 'billed') {
+    filter.billingState = 'INVOICED';
+  }
+
+  if (req.query.report === 'has_report') {
+    filter.$and = [...(filter.$and || []), {
+      $or: [
+        { report_url: { $exists: true, $nin: [null, ''] } },
+        { report_mode: { $in: ['manual', 'uploaded'] } },
+        { 'manual_report.sections.0': { $exists: true } },
+        { 'manual_report.observations.0': { $exists: true } }
+      ]
+    }];
+  } else if (req.query.report === 'no_report') {
+    filter.$and = [...(filter.$and || []), {
+      $nor: [
+        { report_url: { $exists: true, $nin: [null, ''] } },
+        { report_mode: { $in: ['manual', 'uploaded'] } },
+        { 'manual_report.sections.0': { $exists: true } },
+        { 'manual_report.observations.0': { $exists: true } }
+      ]
+    }];
+  }
+
   if (req.query.admissionId) {
     filter.admissionId = req.query.admissionId;
   }
@@ -70,24 +106,143 @@ function requestFilter(req, hospitalId) {
   }
 
   if (req.query.from || req.query.to) {
-    filter.requestedDate = {};
+    const dateField = req.query.dateField === 'scheduled' ? 'scheduledDate' : 'requestedDate';
+    filter[dateField] = {};
     if (req.query.from) {
-      filter.requestedDate.$gte = new Date(req.query.from);
+      filter[dateField].$gte = new Date(req.query.from);
     }
     if (req.query.to) {
-      filter.requestedDate.$lte = new Date(req.query.to);
+      const end = new Date(req.query.to);
+      end.setHours(23, 59, 59, 999);
+      filter[dateField].$lte = end;
     }
   }
 
+  if (req.query.nurse === 'true') {
+    filter.is_referred_out = { $ne: true };
+    filter.$and = [...(filter.$and || []), {
+      $or: [
+        { status: { $in: ['Pending', 'Sample Collected', 'Processing'] } },
+        {
+          status: { $in: ['Completed', 'Reported'] },
+          $or: [
+            { report_url: { $exists: true, $nin: [null, ''] } },
+            { report_mode: 'manual' },
+            { 'manual_report.sections.0': { $exists: true } },
+            { 'manual_report.observations.0': { $exists: true } }
+          ]
+        }
+      ]
+    }];
+  }
+
   if (req.query.q) {
+    const regex = new RegExp(escapedSearch(req.query.q), 'i');
     filter.$or = [
-      { requestNumber: new RegExp(req.query.q, 'i') },
-      { testName: new RegExp(req.query.q, 'i') },
-      { accessionNumber: new RegExp(req.query.q, 'i') }
+      { requestNumber: regex },
+      { testName: regex },
+      { accessionNumber: regex }
     ];
   }
 
   return filter;
+}
+
+
+function escapedSearch(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function withoutDirectSearch(filter) {
+  const copy = { ...filter };
+  delete copy.$or;
+  return copy;
+}
+
+function labGroupKeyExpression() {
+  const nonEmpty = (field) => ({ $ne: [{ $ifNull: [field, ''] }, ''] });
+  const asString = (field) => ({ $toString: field });
+  const legacyPart = (field, fallback) => ({
+    $cond: [
+      { $ne: [{ $ifNull: [field, null] }, null] },
+      asString(field),
+      fallback
+    ]
+  });
+  return {
+    $switch: {
+      branches: [
+        { case: nonEmpty('$requestGroupKey'), then: asString('$requestGroupKey') },
+        { case: nonEmpty('$orderNumber'), then: asString('$orderNumber') },
+        { case: { $ne: [{ $ifNull: ['$orderGroupId', null] }, null] }, then: asString('$orderGroupId') },
+        { case: nonEmpty('$deskCheckoutKey'), then: { $concat: ['CHECKOUT:', asString('$deskCheckoutKey')] } },
+        { case: { $ne: [{ $ifNull: ['$prescriptionId', null] }, null] }, then: { $concat: ['RX:', asString('$prescriptionId')] } }
+      ],
+      default: {
+        $concat: [
+          'LEGACY:',
+          legacyPart('$patientId', 'PATIENT'), ':',
+          {
+            $cond: [
+              { $ne: [{ $ifNull: ['$admissionId', null] }, null] },
+              asString('$admissionId'),
+              legacyPart('$appointmentId', 'WALKIN')
+            ]
+          }, ':',
+          legacyPart('$doctorId', 'DOCTOR'), ':',
+          {
+            $dateToString: {
+              format: '%Y-%m-%dT%H:%M',
+              date: { $ifNull: ['$requestedDate', '$$NOW'] },
+              timezone: 'UTC'
+            }
+          }
+        ]
+      }
+    }
+  };
+}
+
+async function searchedLabFlatPage({ filter, q, skip, limit }) {
+  const regex = new RegExp(escapedSearch(q), 'i');
+  const [result = {}] = await LabRequest.aggregate([
+    { $match: withoutDirectSearch(filter) },
+    { $lookup: { from: Patient.collection.name, localField: 'patientId', foreignField: '_id', pipeline: [{ $project: { first_name: 1, last_name: 1, patientId: 1, uhid: 1, gender: 1, age: 1, phone: 1 } }], as: '_patient' } },
+    { $lookup: { from: Doctor.collection.name, localField: 'doctorId', foreignField: '_id', pipeline: [{ $project: { firstName: 1, lastName: 1, specialization: 1 } }], as: '_doctor' } },
+    { $lookup: { from: IPDAdmission.collection.name, localField: 'admissionId', foreignField: '_id', pipeline: [{ $project: { admissionNumber: 1, wardId: 1, roomId: 1, bedId: 1, coverageId: 1 } }], as: '_admission' } },
+    { $lookup: { from: LabTest.collection.name, localField: 'labTestId', foreignField: '_id', pipeline: [{ $project: { name: 1, code: 1, category: 1, specimen_type: 1, specimen_detail: 1, parameters: 1, normal_range: 1, units: 1 } }], as: '_test' } },
+    { $set: { patientId: { $arrayElemAt: ['$_patient', 0] }, doctorId: { $arrayElemAt: ['$_doctor', 0] }, admissionId: { $arrayElemAt: ['$_admission', 0] }, labTestId: { $arrayElemAt: ['$_test', 0] } } },
+    { $unset: ['_patient', '_doctor', '_admission', '_test'] },
+    { $match: { $or: [
+      { requestNumber: regex }, { testName: regex }, { testCode: regex }, { accessionNumber: regex },
+      { 'patientId.first_name': regex }, { 'patientId.last_name': regex }, { 'patientId.patientId': regex }, { 'patientId.uhid': regex },
+      { 'doctorId.firstName': regex }, { 'doctorId.lastName': regex }
+    ] } },
+    { $sort: { priority: -1, requestedDate: 1 } },
+    { $facet: { items: [{ $skip: skip }, { $limit: limit }], total: [{ $count: 'value' }] } }
+  ]).allowDiskUse(true);
+  return { items: result.items || [], total: result.total?.[0]?.value || 0 };
+}
+
+async function searchedRadiologyFlatPage({ filter, q, skip, limit }) {
+  const regex = new RegExp(escapedSearch(q), 'i');
+  const [result = {}] = await RadiologyRequest.aggregate([
+    { $match: withoutDirectSearch(filter) },
+    { $lookup: { from: Patient.collection.name, localField: 'patientId', foreignField: '_id', pipeline: [{ $project: { first_name: 1, last_name: 1, patientId: 1, uhid: 1, gender: 1, age: 1, phone: 1 } }], as: '_patient' } },
+    { $lookup: { from: Doctor.collection.name, localField: 'doctorId', foreignField: '_id', pipeline: [{ $project: { firstName: 1, lastName: 1, specialization: 1 } }], as: '_doctor' } },
+    { $lookup: { from: IPDAdmission.collection.name, localField: 'admissionId', foreignField: '_id', pipeline: [{ $project: { admissionNumber: 1, wardId: 1, roomId: 1, bedId: 1, coverageId: 1 } }], as: '_admission' } },
+    { $lookup: { from: ImagingTest.collection.name, localField: 'imagingTestId', foreignField: '_id', pipeline: [{ $project: { name: 1, test_name: 1, code: 1, category: 1, modality: 1 } }], as: '_test' } },
+    { $set: { patientId: { $arrayElemAt: ['$_patient', 0] }, doctorId: { $arrayElemAt: ['$_doctor', 0] }, admissionId: { $arrayElemAt: ['$_admission', 0] }, imagingTestId: { $arrayElemAt: ['$_test', 0] } } },
+    { $unset: ['_patient', '_doctor', '_admission', '_test'] },
+    { $match: { $or: [
+      { requestNumber: regex }, { testName: regex }, { testCode: regex }, { accessionNumber: regex },
+      { 'patientId.first_name': regex }, { 'patientId.last_name': regex }, { 'patientId.patientId': regex }, { 'patientId.uhid': regex },
+      { 'doctorId.firstName': regex }, { 'doctorId.lastName': regex }
+    ] } },
+    { $sort: { scheduledStart: 1, priority: -1, requestedDate: 1 } },
+    { $facet: { items: [{ $skip: skip }, { $limit: limit }], total: [{ $count: 'value' }] } }
+  ]).allowDiskUse(true);
+  return { items: result.items || [], total: result.total?.[0]?.value || 0 };
 }
 
 async function labById(req) {
@@ -133,6 +288,11 @@ exports.labWorklist = async (req, res) => {
     const flat = req.query.flat === 'true';
     if (flat) {
       const skip = (page - 1) * limit;
+      if (req.query.q) {
+        const { items, total } = await searchedLabFlatPage({ filter, q: req.query.q, skip, limit });
+        return res.json({ success: true, grouped: false, items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
+      }
+
       const [items, total] = await Promise.all([
         LabRequest.find(filter)
           .populate('patientId', 'first_name last_name patientId uhid gender age phone')
@@ -145,19 +305,48 @@ exports.labWorklist = async (req, res) => {
       return res.json({ success: true, grouped: false, items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
     }
 
-    const all = await LabRequest.find(filter)
-      .populate('patientId', 'first_name last_name patientId uhid gender age phone')
-      .populate('doctorId', 'firstName lastName specialization')
-      .populate('admissionId', 'admissionNumber wardId roomId bedId coverageId')
-      .populate('labTestId', 'name code category specimen_type specimen_detail parameters normal_range units')
-      .sort({ priority: -1, requestedDate: 1 })
-      .limit(Number(process.env.LAB_WORKLIST_GROUPING_LIMIT || 5000))
-      .lean();
-
-    const groups = groupLabRequests(all);
-    const total = groups.length;
+    // Determine only the requested group page inside MongoDB. Hydrate the
+    // requests belonging to those groups afterwards and pass them through the
+    // existing grouping service so group/status semantics stay byte-for-byte
+    // compatible with the legacy implementation.
     const skip = (page - 1) * limit;
-    const items = groups.slice(skip, skip + limit);
+    const [groupPage = {}] = await LabRequest.aggregate([
+      { $match: filter },
+      { $set: { _worklistGroupKey: labGroupKeyExpression() } },
+      {
+        $group: {
+          _id: '$_worklistGroupKey',
+          requestedDate: { $min: '$requestedDate' },
+          requestIds: { $push: '$_id' }
+        }
+      },
+      { $sort: { requestedDate: 1, _id: 1 } },
+      {
+        $facet: {
+          groups: [{ $skip: skip }, { $limit: limit }],
+          total: [{ $count: 'value' }]
+        }
+      }
+    ]).allowDiskUse(true);
+
+    const pageGroups = groupPage.groups || [];
+    const requestIds = pageGroups.flatMap((group) => group.requestIds || []);
+    const hydratedRows = requestIds.length
+      ? await LabRequest.find({ _id: { $in: requestIds }, hospitalId })
+        .populate('patientId', 'first_name last_name patientId uhid gender age phone')
+        .populate('doctorId', 'firstName lastName specialization')
+        .populate('admissionId', 'admissionNumber wardId roomId bedId coverageId')
+        .populate('labTestId', 'name code category specimen_type specimen_detail parameters normal_range units')
+        .lean()
+      : [];
+
+    const hydratedGroups = groupLabRequests(hydratedRows);
+    const groupMap = new Map(hydratedGroups.map((group) => [String(group.groupId), group]));
+    const items = pageGroups
+      .map((group) => groupMap.get(String(group._id)))
+      .filter(Boolean);
+    const total = groupPage.total?.[0]?.value || 0;
+
     return res.json({ success: true, grouped: true, items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (e) {
     sendError(res, e);
@@ -536,66 +725,137 @@ exports.labStats = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const now = operationNow();
+    const hospital = await Hospital.findById(hospitalId).select('timezone').lean();
+    const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+    const todayKey = operationDateKey(timeZone);
+    const { start: todayStart, end: todayEnd } = hospitalDayBounds(todayKey, timeZone);
 
-    const rows = await LabRequest.aggregate([
-      { $match: { hospitalId } },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          avgTurnaroundMs: {
-            $avg: {
-              $cond: [
-                { $and: ['$releasedAt', '$requestedDate'] },
-                { $subtract: ['$releasedAt', '$requestedDate'] },
-                null
-              ]
-            }
-          },
-          overdue: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    { $lt: ['$turnaroundDueAt', now] },
-                    { $not: { $in: ['$status', ['Reported', 'Cancelled']] } }
-                  ]
-                },
-                1,
-                0
-              ]
-            }
-          },
-          rejected: {
-            $sum: {
-              $cond: [
-                { $eq: ['$status', 'Rejected'] },
-                1,
-                0
-              ]
-            }
-          },
-          criticalOpen: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    '$critical.isCritical',
-                    { $eq: [{ $size: { $ifNull: ['$critical.acknowledgements', []] } }, 0] }
-                  ]
-                },
-                1,
-                0
-              ]
+    const [rows, summaryRows] = await Promise.all([
+      LabRequest.aggregate([
+        { $match: { hospitalId } },
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            avgTurnaroundMs: {
+              $avg: {
+                $cond: [
+                  { $and: ['$releasedAt', '$requestedDate'] },
+                  { $subtract: ['$releasedAt', '$requestedDate'] },
+                  null
+                ]
+              }
+            },
+            overdue: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $lt: ['$turnaroundDueAt', now] },
+                      { $not: { $in: ['$status', ['Reported', 'Cancelled']] } }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+            rejected: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$status', 'Rejected'] },
+                  1,
+                  0
+                ]
+              }
+            },
+            criticalOpen: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      '$critical.isCritical',
+                      { $eq: [{ $size: { $ifNull: ['$critical.acknowledgements', []] } }, 0] }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
             }
           }
         }
-      }
+      ]),
+      LabRequest.aggregate([
+        { $match: { hospitalId } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            totalPending: { $sum: { $cond: [{ $eq: ['$status', 'Pending'] }, 1, 0] } },
+            totalApproved: { $sum: { $cond: [{ $eq: ['$status', 'Approved'] }, 1, 0] } },
+            samplesCollected: { $sum: { $cond: [{ $eq: ['$status', 'Sample Collected'] }, 1, 0] } },
+            processing: { $sum: { $cond: [{ $eq: ['$status', 'Processing'] }, 1, 0] } },
+            completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
+            referredOut: { $sum: { $cond: [{ $eq: ['$status', 'Referred Out'] }, 1, 0] } },
+            todayRequests: {
+              $sum: { $cond: [{ $and: [{ $gte: ['$scheduledDate', todayStart] }, { $lte: ['$scheduledDate', todayEnd] }] }, 1, 0] }
+            },
+            completedToday: {
+              $sum: { $cond: [{ $and: [{ $gte: ['$processing_completed_at', todayStart] }, { $lte: ['$processing_completed_at', todayEnd] }] }, 1, 0] }
+            },
+            todayCollected: {
+              $sum: { $cond: [{ $and: [{ $gte: ['$sample_collected_at', todayStart] }, { $lte: ['$sample_collected_at', todayEnd] }] }, 1, 0] }
+            },
+            pendingBilling: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $in: ['$financialClearanceState', ['PAYMENT_REQUIRED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'HOLD']] },
+                      { $not: { $in: ['$status', ['Cancelled', 'Referred Out']] } }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+            billedOperationalValue: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$billingState', 'INVOICED'] },
+                  { $ifNull: ['$pricingSnapshot.amounts.contracted', { $ifNull: ['$pricingSnapshot.contractedAmount', 0] }] },
+                  0
+                ]
+              }
+            }
+          }
+        }
+      ])
     ]);
+
+    const summary = summaryRows[0] || {
+      total: 0,
+      totalPending: 0,
+      totalApproved: 0,
+      samplesCollected: 0,
+      processing: 0,
+      completed: 0,
+      referredOut: 0,
+      todayRequests: 0,
+      completedToday: 0,
+      todayCollected: 0,
+      pendingBilling: 0,
+      billedOperationalValue: 0
+    };
+    delete summary._id;
+    summary.readyForCollection = summary.totalPending;
 
     res.json({
       success: true,
       byStatus: rows,
+      summary,
       generatedAt: now
     });
   } catch (e) {
@@ -611,6 +871,15 @@ exports.radiologyWorklist = async (req, res) => {
 
     if (req.query.modality) {
       filter.modality = req.query.modality;
+    }
+
+    if (req.query.q) {
+      const { items, total } = await searchedRadiologyFlatPage({ filter, q: req.query.q, skip, limit });
+      return res.json({
+        success: true,
+        items,
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+      });
     }
 
     const [items, total] = await Promise.all([
@@ -874,7 +1143,7 @@ exports.radiologyStats = async (req, res) => {
     const hospitalId = requireHospitalId(req);
     const now = operationNow();
 
-    const [byStatus, byModality] = await Promise.all([
+    const [byStatus, byModality, summaryRows] = await Promise.all([
       RadiologyRequest.aggregate([
         { $match: { hospitalId } },
         {
@@ -920,13 +1189,54 @@ exports.radiologyStats = async (req, res) => {
             count: { $sum: 1 }
           }
         }
+      ]),
+      RadiologyRequest.aggregate([
+        { $match: { hospitalId } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            pending: { $sum: { $cond: [{ $eq: ['$status', 'Pending'] }, 1, 0] } },
+            scheduled: { $sum: { $cond: [{ $eq: ['$status', 'Scheduled'] }, 1, 0] } },
+            inProgress: { $sum: { $cond: [{ $eq: ['$status', 'In Progress'] }, 1, 0] } },
+            completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
+            reported: { $sum: { $cond: [{ $eq: ['$status', 'Reported'] }, 1, 0] } },
+            pendingBilling: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $in: ['$financialClearanceState', ['PAYMENT_REQUIRED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'HOLD']] },
+                      { $ne: ['$status', 'Cancelled'] }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+            revenue: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$billingState', 'INVOICED'] },
+                  { $ifNull: ['$pricingSnapshot.amounts.contracted', { $ifNull: ['$pricingSnapshot.contractedAmount', 0] }] },
+                  0
+                ]
+              }
+            }
+          }
+        }
       ])
     ]);
+
+    const summary = summaryRows[0] || { total: 0, pending: 0, scheduled: 0, inProgress: 0, completed: 0, reported: 0, pendingBilling: 0, revenue: 0 };
+    delete summary._id;
 
     res.json({
       success: true,
       byStatus,
       byModality,
+      summary,
       generatedAt: now
     });
   } catch (e) {

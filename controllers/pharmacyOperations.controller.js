@@ -1593,78 +1593,159 @@ exports.getLedgerDaily = asyncHandler(async (req, res) => {
 });
 
 exports.getIPDPatients = asyncHandler(async (req, res) => {
-  const { search = '', status = 'Admitted,Under Treatment', limit = 100 } = req.query;
-  const statusArray = status.split(',').map(s => s.trim());
-
-  const query = {
+  const { search = '', status = 'Admitted,Under Treatment', page = 1, limit = 50 } = req.query;
+  const hospitalId = getHospitalId(req);
+  const statusArray = String(status).split(',').map(s => s.trim()).filter(Boolean);
+  const safePage = Math.max(1, Number(page) || 1);
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+  const skip = (safePage - 1) * safeLimit;
+  const text = String(search || '').trim();
+  const baseMatch = {
+    ...(hospitalId ? { hospitalId } : {}),
+    is_active: { $ne: false },
     status: { $in: statusArray }
   };
 
-  if (search) {
-    const patients = await Patient.find({
-      $or: [
-        { first_name: { $regex: search, $options: 'i' } },
-        { last_name: { $regex: search, $options: 'i' } },
-        { patientId: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } }
-      ]
-    }).select('_id');
-
-    query.patientId = { $in: patients.map(p => p._id) };
+  let ids = [];
+  let total = 0;
+  if (text) {
+    const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'i');
+    const [result = {}] = await IPDAdmission.aggregate([
+      { $match: baseMatch },
+      {
+        $lookup: {
+          from: Patient.collection.name,
+          let: { patientId: '$patientId' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$patientId'] } } },
+            { $match: {
+              ...(hospitalId ? { hospitalId } : {}),
+              $or: [
+                { first_name: regex }, { last_name: regex }, { patientId: regex },
+                { uhid: regex }, { phone: regex }
+              ]
+            } },
+            { $project: { _id: 1 } }
+          ],
+          as: '_patientSearch'
+        }
+      },
+      {
+        $match: {
+          $or: [
+            { admissionNumber: regex },
+            { shipNumber: regex },
+            { '_patientSearch.0': { $exists: true } }
+          ]
+        }
+      },
+      { $sort: { admissionDate: -1, _id: -1 } },
+      {
+        $facet: {
+          ids: [{ $skip: skip }, { $limit: safeLimit }, { $project: { _id: 1 } }],
+          total: [{ $count: 'value' }]
+        }
+      }
+    ]).allowDiskUse(true);
+    ids = (result.ids || []).map(row => row._id);
+    total = result.total?.[0]?.value || 0;
+  } else {
+    const [idRows, count] = await Promise.all([
+      IPDAdmission.find(baseMatch).select('_id').sort({ admissionDate: -1, _id: -1 }).skip(skip).limit(safeLimit).lean(),
+      IPDAdmission.countDocuments(baseMatch)
+    ]);
+    ids = idRows.map(row => row._id);
+    total = count;
   }
 
-  const admissions = await IPDAdmission.find(query)
-    .populate('patientId', 'first_name last_name patientId phone age gender')
+  if (!ids.length) {
+    return res.json({
+      success: true,
+      patients: [],
+      total: 0,
+      pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.max(1, Math.ceil(total / safeLimit)) }
+    });
+  }
+
+  const admissions = await IPDAdmission.find({ _id: { $in: ids }, ...(hospitalId ? { hospitalId } : {}) })
+    .populate('patientId', 'first_name last_name patientId uhid phone age gender pharmacy_outstanding_balance pharmacy_advance_balance')
     .populate('bedId', 'bedNumber bedType')
     .populate('wardId', 'name')
     .populate('primaryDoctorId', 'firstName lastName')
-    .sort({ admissionDate: -1 })
-    .limit(Number(limit));
+    .lean();
+  const admissionById = new Map(admissions.map(row => [String(row._id), row]));
+  const orderedAdmissions = ids.map(id => admissionById.get(String(id))).filter(Boolean);
 
-  const patientsWithBalances = await Promise.all(admissions.map(async (admission) => {
-    const pharmacyAdvance = await getAdvanceBalance({
-      admissionId: admission._id,
-      patientId: admission.patientId._id,
-      walletType: 'PHARMACY_IPD'
-    });
+  const [walletRows, deferredRows, recentRows] = await Promise.all([
+    PatientAdvanceLedger.aggregate([
+      { $match: { admissionId: { $in: ids }, walletType: { $in: ['PHARMACY_IPD', 'IPD_SHARED'] } } },
+      { $sort: { postedAt: -1, createdAt: -1, _id: -1 } },
+      { $group: { _id: { admissionId: '$admissionId', walletType: '$walletType' }, balanceAfter: { $first: '$balanceAfter' } } }
+    ]),
+    Sale.aggregate([
+      { $match: { admission_id: { $in: ids }, payment_deferred: true, status: 'Pending' } },
+      { $group: { _id: '$admission_id', totalDeferredAmount: { $sum: { $ifNull: ['$balance_due', 0] } }, deferredCount: { $sum: 1 } } }
+    ]),
+    Sale.aggregate([
+      { $match: { admission_id: { $in: ids }, payment_deferred: { $ne: true } } },
+      { $sort: { admission_id: 1, sale_date: -1, _id: -1 } },
+      { $group: { _id: '$admission_id', rows: { $push: { total_amount: '$total_amount', sale_date: '$sale_date' } } } },
+      { $project: { recent: { $slice: ['$rows', 5] } } },
+      {
+        $project: {
+          recentSalesCount: { $size: '$recent' },
+          totalSalesAmount: { $sum: '$recent.total_amount' },
+          lastSaleDate: { $arrayElemAt: ['$recent.sale_date', 0] }
+        }
+      }
+    ]).allowDiskUse(true)
+  ]);
 
-    const sharedIpdAdvance = await getAdvanceBalance({
-      admissionId: admission._id,
-      patientId: admission.patientId._id,
-      walletType: 'IPD_SHARED'
-    });
+  const walletByAdmission = new Map();
+  for (const row of walletRows) {
+    const key = String(row._id.admissionId);
+    const current = walletByAdmission.get(key) || {};
+    current[row._id.walletType] = Number(row.balanceAfter || 0);
+    walletByAdmission.set(key, current);
+  }
+  const deferredByAdmission = new Map(deferredRows.map(row => [String(row._id), row]));
+  const recentByAdmission = new Map(recentRows.map(row => [String(row._id), row]));
 
-    const deferredPayments = await Sale.find({
-      admission_id: admission._id,
-      payment_deferred: true,
-      status: 'Pending'
-    });
-
-    const totalDeferredAmount = deferredPayments.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
-
-    const recentSales = await Sale.find({
-      admission_id: admission._id,
-      payment_deferred: { $ne: true }
-    }).sort({ sale_date: -1 }).limit(5);
-
-    const totalSalesAmount = recentSales.reduce((sum, sale) => sum + sale.total_amount, 0);
-
+  const patientsWithBalances = orderedAdmissions.map((admission) => {
+    const key = String(admission._id);
+    const wallet = walletByAdmission.get(key) || {};
+    const deferred = deferredByAdmission.get(key) || {};
+    const recent = recentByAdmission.get(key) || {};
+    const pharmacyAdvance = Number(wallet.PHARMACY_IPD || 0);
+    const sharedIpdAdvance = wallet.IPD_SHARED !== undefined
+      ? Number(wallet.IPD_SHARED || 0)
+      : Number(admission.advanceAmount || 0);
+    const totalDeferredAmount = Number(deferred.totalDeferredAmount || 0);
     return {
-      ...admission.toObject(),
+      ...admission,
       pharmacyAdvance,
+      pharmacyAdvanceBalance: pharmacyAdvance,
       sharedIpdAdvance,
       totalDeferredAmount,
-      deferredCount: deferredPayments.length,
-      recentSalesCount: recentSales.length,
-      totalSalesAmount,
-      lastSaleDate: recentSales[0]?.sale_date || null
+      pharmacyOutstandingBalance: totalDeferredAmount,
+      deferredCount: Number(deferred.deferredCount || 0),
+      recentSalesCount: Number(recent.recentSalesCount || 0),
+      totalSalesAmount: Number(recent.totalSalesAmount || 0),
+      lastSaleDate: recent.lastSaleDate || null
     };
-  }));
+  });
 
   res.json({
     success: true,
     patients: patientsWithBalances,
-    total: patientsWithBalances.length
+    total: patientsWithBalances.length,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / safeLimit))
+    }
   });
 });
 

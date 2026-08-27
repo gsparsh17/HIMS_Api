@@ -348,6 +348,7 @@ exports.getMedicineCatalogSummary = async (req, res) => {
     const filter = aggregateMedicineScope(req, { is_active: true });
     const now = operationNow();
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const thirtyDaysFromNow = new Date(now.getTime() + (30 * 24 * 60 * 60 * 1000));
 
     // The dashboard historically derived general stock/value/expiry metrics from
     // active positive batches, but its "low stock" widget came from the older
@@ -404,7 +405,11 @@ exports.getMedicineCatalogSummary = async (req, res) => {
                 ] }, 1, 0] } },
                 missingGST: { $sum: { $cond: ['$_gstGap', 1, 0] } },
                 nonCapexCount: { $sum: { $cond: ['$_nonCapex', 1, 0] } },
-                capexCount: { $sum: { $cond: ['$_nonCapex', 0, 1] } }
+                capexCount: { $sum: { $cond: ['$_nonCapex', 0, 1] } },
+                nonCapexStock: { $sum: { $cond: ['$_nonCapex', '$_stock', 0] } },
+                capexStock: { $sum: { $cond: ['$_nonCapex', 0, '$_stock'] } },
+                nonCapexValue: { $sum: { $cond: ['$_nonCapex', '$_value', 0] } },
+                capexValue: { $sum: { $cond: ['$_nonCapex', 0, '$_value'] } }
               }
             },
             { $project: { _id: 0 } }
@@ -455,7 +460,29 @@ exports.getMedicineCatalogSummary = async (req, res) => {
       }
     ]).allowDiskUse(true);
 
-    const [catalogRows, lowStockRows] = await Promise.all([catalogPromise, legacyLowStockPromise]);
+    const expiryPromise = MedicineBatch.aggregate([
+      { $match: { quantity: { $gt: 0 } } },
+      {
+        $lookup: {
+          from: Medicine.collection.name,
+          localField: 'medicine_id',
+          foreignField: '_id',
+          pipeline: [{ $match: filter }, { $project: { _id: 1 } }],
+          as: '_medicine'
+        }
+      },
+      { $match: { '_medicine.0': { $exists: true } } },
+      {
+        $group: {
+          _id: null,
+          expiringSoonCount: { $sum: { $cond: [{ $and: [{ $gte: ['$expiry_date', now] }, { $lte: ['$expiry_date', thirtyDaysFromNow] }] }, 1, 0] } },
+          expiredCount: { $sum: { $cond: [{ $lt: ['$expiry_date', now] }, 1, 0] } }
+        }
+      },
+      { $project: { _id: 0 } }
+    ]);
+
+    const [catalogRows, lowStockRows, expiryRows] = await Promise.all([catalogPromise, legacyLowStockPromise, expiryPromise]);
     const result = catalogRows?.[0] || {};
     const legacyLowStock = lowStockRows?.[0] || {};
     const summary = result.summary?.[0] || {
@@ -464,6 +491,8 @@ exports.getMedicineCatalogSummary = async (req, res) => {
       missingGST: 0, capexCount: 0, nonCapexCount: 0
     };
     const categoryDistribution = result.categoryDistribution || [];
+    const expirySummary = expiryRows?.[0] || { expiringSoonCount: 0, expiredCount: 0 };
+    Object.assign(summary, expirySummary);
     return res.json({
       success: true,
       summary,
@@ -850,6 +879,7 @@ exports.searchMedicines = async (req, res) => {
       query,
       q,
       includeBatches = 'true',
+      searchBatches = 'true',
       limit = 20
     } = req.query;
 
@@ -862,13 +892,15 @@ exports.searchMedicines = async (req, res) => {
     const escapedTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const wordRegex = escapedTerm.split(/\s+/).filter(Boolean).join('|');
 
-    const batchMatches = await MedicineBatch
-      .find({
-        batch_number: { $regex: escapedTerm, $options: 'i' },
-        is_active: true
-      })
-      .select('medicine_id')
-      .limit(Number(limit));
+    const batchMatches = searchBatches === 'false'
+      ? []
+      : await MedicineBatch
+        .find({
+          batch_number: { $regex: escapedTerm, $options: 'i' },
+          is_active: true
+        })
+        .select('medicine_id')
+        .limit(Number(limit));
 
     const medicineQuery = {
       hospitalId: hospitalIdFor(req),

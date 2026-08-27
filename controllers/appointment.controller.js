@@ -1134,7 +1134,7 @@ exports.getAppointmentsByPatientId = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const { patientId } = req.params;
-    const { status } = req.query;
+    const { status, doctor_id } = req.query;
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
     const limit = Math.min(200, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
 
@@ -1142,6 +1142,7 @@ exports.getAppointmentsByPatientId = async (req, res) => {
     if (!patientExists) return res.status(404).json({ error: 'Patient not found' });
     const filter = { patient_id: patientId, hospital_id: hospitalId, is_active: { $ne: false } };
     if (status) filter.status = status;
+    if (doctor_id) filter.doctor_id = doctor_id;
 
     const appointments = await Appointment.find(filter)
       .populate('doctor_id', 'firstName lastName specialization')
@@ -1744,6 +1745,31 @@ exports.getAppointmentWorklist = async (req, res) => {
   }
 };
 
+exports.getStaffAppointmentCalendar = async (req, res) => {
+  try {
+    const items = await scalableRead.staffAppointmentCalendar({
+      hospitalId: requireHospitalId(req),
+      query: req.query
+    });
+    return res.json({ success: true, items });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+exports.getDoctorPatientWorklist = async (req, res) => {
+  try {
+    const data = await scalableRead.doctorPatientWorklist({
+      hospitalId: requireHospitalId(req),
+      doctorId: req.params.doctorId,
+      query: req.query
+    });
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
 exports.getDoctorDashboardReadModel = async (req, res) => {
   try {
     const data = await scalableRead.doctorDashboard({
@@ -1757,6 +1783,17 @@ exports.getDoctorDashboardReadModel = async (req, res) => {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
+
+exports.getDoctorScheduleReadModel = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const data = await scalableRead.doctorScheduleReadModel({ hospitalId, doctorId: req.params.doctorId, query: req.query });
+    res.json(data);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
 
 exports.getNurseDashboardReadModel = async (req, res) => {
   try {
@@ -2627,14 +2664,26 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
     const { doctorId } = req.params;
     const doctorExists = await Doctor.exists({ _id: doctorId, hospitalId, is_active: { $ne: false } });
     if (!doctorExists) return res.status(404).json({ error: 'Doctor not found' });
-    const appointments = await Appointment.find({ doctor_id: doctorId, hospital_id: hospitalId, is_active: { $ne: false } })
+    const filter = { doctor_id: doctorId, hospital_id: hospitalId, is_active: { $ne: false } };
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.from || req.query.to) {
+      const hospital = await Hospital.findById(hospitalId).select('timezone');
+      const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+      const keyRange = {};
+      if (req.query.from) keyRange.$gte = hospitalDateKey(req.query.from, timeZone);
+      if (req.query.to) keyRange.$lte = hospitalDateKey(req.query.to, timeZone);
+      filter.appointment_date_key = keyRange;
+    }
+
+    const appointments = await Appointment.find(filter)
       .populate('patient_id')
       .populate('doctor_id')
       .populate('department_id')
       .populate('hospital_id')
       .populate('referral.referringDoctorId', 'firstName lastName specialization department doctorId')
       .populate('referral.referredDoctorId', 'firstName lastName specialization department doctorId')
-      .populate('referral.departmentId', 'name');
+      .populate('referral.departmentId', 'name')
+      .sort({ appointment_date: -1, start_time: -1 });
 
     // Preserve the legacy response contract while removing the per-row Vital query.
     const appointmentIds = appointments.map((appt) => appt._id);

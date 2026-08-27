@@ -333,6 +333,19 @@ function csvCell(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+
+exports.searchPatientsCompact = async (req, res) => {
+  try {
+    const data = await scalableRead.searchPatientsCompact({
+      hospitalId: requireHospitalId(req),
+      query: req.query
+    });
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    return fail(res, error, 400);
+  }
+};
+
 exports.getPatientWorklist = async (req, res) => {
   try {
     const data = await scalableRead.listPatientWorklist({
@@ -405,6 +418,27 @@ exports.exportPatientWorklist = async (req, res) => {
     return res.end();
   } catch (error) {
     if (res.headersSent) return res.end();
+    return fail(res, error, 500);
+  }
+};
+
+exports.getStaffDashboardOverview = async (req, res) => {
+  try {
+    const data = await scalableRead.staffDashboardOverview({ hospitalId: requireHospitalId(req) });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return fail(res, error, 500);
+  }
+};
+
+exports.getPatientRegistrationTrend = async (req, res) => {
+  try {
+    const data = await scalableRead.patientRegistrationTrend({
+      hospitalId: requireHospitalId(req),
+      range: req.query.range
+    });
+    return res.json({ success: true, data });
+  } catch (error) {
     return fail(res, error, 500);
   }
 };

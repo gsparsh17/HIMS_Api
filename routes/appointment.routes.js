@@ -13,9 +13,12 @@ router.post('/external-sync', appointmentController.syncExternalAppointment);
 router.get('/queue/current', appointmentController.getCurrentQueue);
 router.get('/worklist', appointmentController.getAppointmentWorklist);
 router.get('/nurse/dashboard', appointmentController.getNurseDashboardReadModel);
+router.get('/staff/calendar', appointmentController.getStaffAppointmentCalendar);
 router.post('/link-episode', appointmentController.linkAppointmentToEpisodeSuggestion);
 
 router.get('/doctor/:doctorId/dashboard', appointmentController.getDoctorDashboardReadModel);
+router.get('/doctor/:doctorId/schedule', appointmentController.getDoctorScheduleReadModel);
+router.get('/doctor/:doctorId/patients', appointmentController.getDoctorPatientWorklist);
 router.get('/doctor/:doctorId/procedures/:date', appointmentController.getDoctorProceduresForDate);
 router.get('/doctor/:doctorId/today', appointmentController.getTodaysAppointmentsByDoctorId);
 router.get('/doctor/:doctorId', appointmentController.getAppointmentsByDoctorId);

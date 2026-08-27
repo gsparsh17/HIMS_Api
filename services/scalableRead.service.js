@@ -9,6 +9,7 @@ const Department = require('../models/Department');
 const Vital = require('../models/Vital');
 const Staff = require('../models/Staff');
 const Hospital = require('../models/Hospital');
+const Bill = require('../models/Bill');
 const { hospitalDateKey, hospitalDayBounds, DEFAULT_HOSPITAL_TIME_ZONE } = require('../utils/hospitalDateTime');
 
 const ACTIVE_ADMISSION_STATUSES = [
@@ -376,9 +377,27 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
   const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
   const todayKey = hospitalDateKey(new Date(), timeZone);
   const now = new Date();
+  const effectiveDateKeyExpr = {
+    $ifNull: [
+      '$appointment_date_key',
+      {
+        $dateToString: {
+          format: '%Y-%m-%d',
+          date: { $ifNull: ['$appointment_date', '$start_time'] },
+          timezone: timeZone,
+          onNull: null
+        }
+      }
+    ]
+  };
 
   const baseMatch = { hospital_id: hospitalObjectId, is_active: { $ne: false } };
-  if (query.status && query.status !== 'all') baseMatch.status = query.status;
+  if (query.status && query.status !== 'all') {
+    baseMatch.status = query.status;
+  } else if (query.statuses) {
+    const statuses = String(query.statuses).split(',').map((value) => value.trim()).filter(Boolean).slice(0, 20);
+    if (statuses.length) baseMatch.status = { $in: statuses };
+  }
   if (query.visit_mode) baseMatch.visit_mode = query.visit_mode;
   if (query.from || query.to) {
     const keyRange = {};
@@ -443,17 +462,26 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
     });
   }
 
-  const upcomingExpr = {
-    $and: [
-      { $not: [{ $in: ['$status', ['Completed', 'Cancelled']] }] },
-      {
-        $or: [
-          { $gt: ['$start_time', now] },
-          { $and: [{ $eq: [{ $ifNull: ['$start_time', null] }, null] }, { $gte: ['$appointment_date_key', todayKey] }] }
+  pipeline.push({ $set: { _effectiveAppointmentDateKey: effectiveDateKeyExpr } });
+
+  const upcomingExpr = query.splitMode === 'date'
+    ? {
+        $and: [
+          { $not: [{ $in: ['$status', ['Completed', 'Cancelled']] }] },
+          { $gte: ['$_effectiveAppointmentDateKey', todayKey] }
         ]
       }
-    ]
-  };
+    : {
+        $and: [
+          { $not: [{ $in: ['$status', ['Completed', 'Cancelled']] }] },
+          {
+            $or: [
+              { $gt: ['$start_time', now] },
+              { $and: [{ $eq: [{ $ifNull: ['$start_time', null] }, null] }, { $gte: ['$_effectiveAppointmentDateKey', todayKey] }] }
+            ]
+          }
+        ]
+      };
 
   const rowProject = {
     _id: 1, patient_id: 1, doctor_id: 1, department_id: 1, appointment_date: 1, appointment_date_key: 1,
@@ -466,12 +494,12 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
     $facet: {
       upcoming: [
         { $match: { $expr: upcomingExpr } },
-        { $sort: { appointment_date_key: 1, start_time: 1, serial_number: 1 } },
+        { $sort: { _effectiveAppointmentDateKey: 1, start_time: 1, serial_number: 1 } },
         { $skip: (upcomingPage - 1) * limit }, { $limit: limit }, { $project: rowProject }
       ],
       history: [
         { $match: { $expr: { $not: [upcomingExpr] } } },
-        { $sort: { appointment_date_key: -1, start_time: -1, serial_number: -1 } },
+        { $sort: { _effectiveAppointmentDateKey: -1, start_time: -1, serial_number: -1 } },
         { $skip: (historyPage - 1) * limit }, { $limit: limit }, { $project: rowProject }
       ],
       counts: [
@@ -479,7 +507,7 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
           $group: {
             _id: null,
             total: { $sum: 1 },
-            today: { $sum: { $cond: [{ $eq: ['$appointment_date_key', todayKey] }, 1, 0] } },
+            today: { $sum: { $cond: [{ $eq: ['$_effectiveAppointmentDateKey', todayKey] }, 1, 0] } },
             pending: { $sum: { $cond: [{ $eq: ['$status', 'Scheduled'] }, 1, 0] } },
             upcoming: { $sum: { $cond: [upcomingExpr, 1, 0] } },
             completed: { $sum: { $cond: [{ $not: [upcomingExpr] }, 1, 0] } }
@@ -496,7 +524,14 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
   const [[result = {}], globalTotal, globalToday, globalPending] = await Promise.all([
     Appointment.aggregate(pipeline).allowDiskUse(true),
     Appointment.countDocuments(globalBase),
-    Appointment.countDocuments({ ...globalBase, appointment_date_key: todayKey }),
+    Appointment.countDocuments({
+      ...globalBase,
+      $or: [
+        { appointment_date_key: todayKey },
+        { appointment_date_key: { $exists: false }, appointment_date: { $gte: hospitalDayBounds(todayKey, timeZone).start, $lt: hospitalDayBounds(todayKey, timeZone).end } },
+        { appointment_date_key: null, appointment_date: { $gte: hospitalDayBounds(todayKey, timeZone).start, $lt: hospitalDayBounds(todayKey, timeZone).end } }
+      ]
+    }),
     Appointment.countDocuments({ ...globalBase, status: 'Scheduled' })
   ]);
 
@@ -605,6 +640,56 @@ async function doctorDashboard({ hospitalId, doctorId, query = {} }) {
   };
 }
 
+async function doctorScheduleReadModel({ hospitalId, doctorId, query = {} }) {
+  const hospitalObjectId = asObjectId(hospitalId);
+  const doctorObjectId = asObjectId(doctorId);
+  const hospital = await Hospital.findById(hospitalObjectId).select('timezone').lean();
+  const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+  const todayKey = hospitalDateKey(new Date(), timeZone);
+  const fromKey = hospitalDateKey(query.from || todayKey, timeZone);
+  const toKey = hospitalDateKey(query.to || todayKey, timeZone);
+  const now = new Date();
+  const fromInstant = hospitalDayBounds(fromKey, timeZone).start;
+  const toInstant = hospitalDayBounds(toKey, timeZone).end;
+  const todayStart = hospitalDayBounds(todayKey, timeZone).start;
+  const base = { hospital_id: hospitalObjectId, doctor_id: doctorObjectId, is_active: { $ne: false } };
+  const upcomingMatch = {
+    ...base,
+    status: { $nin: ['Completed', 'Cancelled'] },
+    $or: [
+      { start_time: { $gt: now } },
+      { start_time: { $exists: false }, appointment_date_key: { $gt: todayKey } },
+      { start_time: { $exists: false }, appointment_date_key: { $exists: false }, appointment_date: { $gte: todayStart } },
+      { start_time: null, appointment_date_key: { $gt: todayKey } },
+      { start_time: null, appointment_date_key: null, appointment_date: { $gte: todayStart } }
+    ]
+  };
+  const calendarMatch = {
+    ...base,
+    status: { $ne: 'Cancelled' },
+    $or: [
+      { appointment_date_key: { $gte: fromKey, $lte: toKey } },
+      { appointment_date_key: { $exists: false }, appointment_date: { $gte: fromInstant, $lt: toInstant } },
+      { appointment_date_key: null, appointment_date: { $gte: fromInstant, $lt: toInstant } }
+    ]
+  };
+
+  const [calendarAppointments, upcomingAppointments, upcomingTotal] = await Promise.all([
+    Appointment.find(calendarMatch)
+      .select('_id patient_id appointment_date appointment_date_key start_time end_time duration time_slot type appointment_type status')
+      .populate('patient_id', 'first_name last_name patientId')
+      .sort({ appointment_date_key: 1, start_time: 1 }).lean(),
+    Appointment.find(upcomingMatch)
+      .select('_id patient_id appointment_date appointment_date_key start_time end_time duration time_slot type appointment_type status')
+      .populate('patient_id', 'first_name last_name patientId')
+      .sort({ appointment_date_key: 1, start_time: 1 })
+      .limit(safeLimit(query.upcomingLimit, 20, 50)).lean(),
+    Appointment.countDocuments(upcomingMatch)
+  ]);
+
+  return { calendarAppointments, upcomingAppointments, upcomingTotal };
+}
+
 async function nurseDashboard({ hospitalId }) {
   const hospitalObjectId = asObjectId(hospitalId);
   const hospital = await Hospital.findById(hospitalObjectId).select('timezone').lean();
@@ -708,14 +793,428 @@ async function adminOverview({ hospitalId }) {
   };
 }
 
+
+async function staffDashboardOverview({ hospitalId }) {
+  const hospitalObjectId = asObjectId(hospitalId);
+  const hospital = await Hospital.findById(hospitalObjectId)
+    .select('_id name address phone email logo timezone')
+    .lean();
+  const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+  const todayKey = hospitalDateKey(new Date(), timeZone);
+  const { start, end } = hospitalDayBounds(todayKey, timeZone);
+
+  const patientScope = { hospitalId: hospitalObjectId, is_active: { $ne: false } };
+  const appointmentScope = { hospital_id: hospitalObjectId, is_active: { $ne: false } };
+  const billScope = {
+    hospital_id: hospitalObjectId,
+    generated_at: { $gte: start, $lt: end },
+    status: { $in: ['Paid', 'Pending'] }
+  };
+
+  const [todayPatients, totalPatients, todayAppointments, recentPatients, recentAppointments, financeRows] = await Promise.all([
+    Patient.countDocuments({ ...patientScope, registered_at: { $gte: start, $lt: end } }),
+    Patient.countDocuments(patientScope),
+    Appointment.countDocuments({
+      ...appointmentScope,
+      $or: [
+        { appointment_date_key: todayKey },
+        { appointment_date_key: { $exists: false }, appointment_date: { $gte: start, $lt: end } },
+        { appointment_date_key: null, appointment_date: { $gte: start, $lt: end } }
+      ]
+    }),
+    Patient.find(patientScope)
+      .select('_id patientId uhid salutation first_name last_name phone gender dob blood_group patient_image registered_at')
+      .sort({ registered_at: -1, _id: -1 })
+      .limit(20)
+      .lean(),
+    Appointment.find(appointmentScope)
+      .select('_id patient_id doctor_id department_id appointment_date appointment_date_key start_time end_time duration type appointment_type status priority serial_number')
+      .populate('patient_id', 'first_name last_name patientId uhid patient_image phone gender dob')
+      .populate('doctor_id', 'firstName lastName specialization doctorId')
+      .populate('department_id', 'name')
+      .sort({ appointment_date: -1, start_time: -1, _id: -1 })
+      .limit(6)
+      .lean(),
+    Bill.aggregate([
+      { $match: billScope },
+      { $group: { _id: '$status', amount: { $sum: { $ifNull: ['$total_amount', 0] } } } }
+    ])
+  ]);
+
+  const finance = { paid: 0, pending: 0 };
+  for (const row of financeRows) {
+    if (row._id === 'Paid') finance.paid = Number(row.amount || 0);
+    if (row._id === 'Pending') finance.pending = Number(row.amount || 0);
+  }
+
+  return {
+    hospital,
+    counts: { todayPatients, totalPatients, todayAppointments },
+    finance,
+    recentPatients,
+    recentAppointments
+  };
+}
+
+async function patientRegistrationTrend({ hospitalId, range = 'weekly' }) {
+  const hospitalObjectId = asObjectId(hospitalId);
+  const normalizedRange = ['weekly', 'monthly', 'yearly'].includes(String(range)) ? String(range) : 'weekly';
+  const now = new Date();
+  let currentStart;
+  let previousStart;
+  let dateFormat;
+
+  if (normalizedRange === 'weekly') {
+    currentStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    previousStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+    dateFormat = '%Y-%m-%d';
+  } else if (normalizedRange === 'monthly') {
+    currentStart = new Date(now);
+    currentStart.setMonth(currentStart.getMonth() - 1);
+    previousStart = new Date(now);
+    previousStart.setMonth(previousStart.getMonth() - 2);
+    dateFormat = '%Y-%m-%d';
+  } else {
+    currentStart = new Date(now);
+    currentStart.setFullYear(currentStart.getFullYear() - 1);
+    previousStart = new Date(now);
+    previousStart.setFullYear(previousStart.getFullYear() - 2);
+    dateFormat = '%Y-%m';
+  }
+
+  const [rows = {}] = await Patient.aggregate([
+    {
+      $match: {
+        hospitalId: hospitalObjectId,
+        is_active: { $ne: false },
+        registered_at: { $gte: previousStart }
+      }
+    },
+    {
+      $facet: {
+        currentCount: [
+          { $match: { registered_at: { $gte: currentStart } } },
+          { $count: 'value' }
+        ],
+        previousCount: [
+          { $match: { registered_at: { $gte: previousStart, $lt: currentStart } } },
+          { $count: 'value' }
+        ],
+        series: [
+          { $match: { registered_at: { $gte: currentStart } } },
+          {
+            $group: {
+              _id: { $dateToString: { format: dateFormat, date: '$registered_at' } },
+              value: { $sum: 1 },
+              firstDate: { $min: '$registered_at' }
+            }
+          },
+          { $sort: { firstDate: 1 } },
+          { $project: { _id: 0, key: '$_id', value: 1, firstDate: 1 } }
+        ]
+      }
+    }
+  ]);
+
+  const current = rows.currentCount?.[0]?.value || 0;
+  const previous = rows.previousCount?.[0]?.value || 0;
+  const change = previous > 0 ? Number((((current - previous) / previous) * 100).toFixed(1)) : 0;
+  return { range: normalizedRange, total: current, previous, change, series: rows.series || [] };
+}
+
+async function staffAppointmentCalendar({ hospitalId, query = {} }) {
+  const hospitalObjectId = asObjectId(hospitalId);
+  const hospital = await Hospital.findById(hospitalObjectId).select('timezone').lean();
+  const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+  const todayKey = hospitalDateKey(new Date(), timeZone);
+  const fromKey = hospitalDateKey(query.from || `${todayKey.slice(0, 7)}-01`, timeZone);
+  const toKey = hospitalDateKey(query.to || todayKey, timeZone);
+  if (fromKey > toKey) {
+    const error = new Error('Invalid appointment calendar range');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const fromInstant = hospitalDayBounds(fromKey, timeZone).start;
+  const toInstant = hospitalDayBounds(toKey, timeZone).end;
+  return Appointment.find({
+    hospital_id: hospitalObjectId,
+    is_active: { $ne: false },
+    $or: [
+      { appointment_date_key: { $gte: fromKey, $lte: toKey } },
+      { appointment_date_key: { $exists: false }, appointment_date: { $gte: fromInstant, $lt: toInstant } },
+      { appointment_date_key: null, appointment_date: { $gte: fromInstant, $lt: toInstant } }
+    ]
+  })
+    .select('_id patient_id doctor_id department_id appointment_date appointment_date_key start_time end_time duration type appointment_type status priority serial_number')
+    .populate('patient_id', 'first_name last_name patientId uhid')
+    .populate('doctor_id', 'firstName lastName')
+    .populate('department_id', 'name')
+    .sort({ appointment_date_key: 1, start_time: 1, serial_number: 1 })
+    .lean();
+}
+
+async function doctorPatientWorklist({ hospitalId, doctorId, query = {} }) {
+  const hospitalObjectId = asObjectId(hospitalId);
+  const doctorObjectId = asObjectId(doctorId);
+  const page = safePage(query.page);
+  const limit = safeLimit(query.limit, 30, 100);
+  const tab = ['opd', 'ipd'].includes(String(query.type || query.careType || '').toLowerCase())
+    ? String(query.type || query.careType).toLowerCase()
+    : 'all';
+  const search = String(query.search || '').trim();
+
+  const doctorExists = await Doctor.exists({ _id: doctorObjectId, hospitalId: hospitalObjectId, is_active: { $ne: false } });
+  if (!doctorExists) return { rows: [], counts: { all: 0, opd: 0, ipd: 0 }, pagination: { page, limit, total: 0, totalPages: 1 } };
+
+  const activeAdmissionStatuses = ACTIVE_ADMISSION_STATUSES;
+  const basePipeline = [
+    {
+      $match: {
+        hospital_id: hospitalObjectId,
+        doctor_id: doctorObjectId,
+        is_active: { $ne: false },
+        status: { $ne: 'Cancelled' }
+      }
+    },
+    {
+      $project: {
+        patientId: '$patient_id',
+        hasOpd: { $literal: 1 },
+        hasIpd: { $literal: 0 },
+        lastVisitDate: { $ifNull: ['$appointment_date', { $ifNull: ['$start_time', '$createdAt'] }] }
+      }
+    },
+    {
+      $unionWith: {
+        coll: IPDAdmission.collection.name,
+        pipeline: [
+          {
+            $match: {
+              hospitalId: hospitalObjectId,
+              primaryDoctorId: doctorObjectId,
+              is_active: { $ne: false }
+            }
+          },
+          {
+            $project: {
+              patientId: '$patientId',
+              hasOpd: { $literal: 0 },
+              hasIpd: { $literal: 1 },
+              lastVisitDate: { $ifNull: ['$admissionDate', { $ifNull: ['$createdAt', '$updatedAt'] }] }
+            }
+          }
+        ]
+      }
+    },
+    {
+      $group: {
+        _id: '$patientId',
+        hasOpd: { $max: '$hasOpd' },
+        hasIpd: { $max: '$hasIpd' },
+        lastVisitDate: { $max: '$lastVisitDate' }
+      }
+    },
+    {
+      $lookup: {
+        from: Patient.collection.name,
+        localField: '_id',
+        foreignField: '_id',
+        pipeline: [
+          { $match: { hospitalId: hospitalObjectId, is_active: { $ne: false } } },
+          { $project: { _id: 1, patientId: 1, uhid: 1, salutation: 1, first_name: 1, last_name: 1, dob: 1, gender: 1, blood_group: 1, phone: 1, patient_image: 1, profile_image: 1 } }
+        ],
+        as: 'patient'
+      }
+    },
+    { $set: { patient: { $arrayElemAt: ['$patient', 0] } } },
+    { $match: { patient: { $ne: null } } }
+  ];
+
+  const filters = [];
+  if (tab === 'opd') filters.push({ $match: { hasOpd: 1 } });
+  if (tab === 'ipd') filters.push({ $match: { hasIpd: 1 } });
+  if (search) {
+    const regex = new RegExp(escapeRegex(search), 'i');
+    filters.push({
+      $match: {
+        $or: [
+          { 'patient.first_name': regex }, { 'patient.last_name': regex }, { 'patient.patientId': regex },
+          { 'patient.uhid': regex }, { 'patient.phone': regex }, { 'patient.gender': regex }, { 'patient.blood_group': regex }
+        ]
+      }
+    });
+  }
+
+  const [result = {}] = await Appointment.aggregate([
+    ...basePipeline,
+    {
+      $facet: {
+        meta: [
+          {
+            $group: {
+              _id: null,
+              all: { $sum: 1 },
+              opd: { $sum: { $cond: [{ $eq: ['$hasOpd', 1] }, 1, 0] } },
+              ipd: { $sum: { $cond: [{ $eq: ['$hasIpd', 1] }, 1, 0] } }
+            }
+          }
+        ],
+        total: [...filters, { $count: 'value' }],
+        rows: [
+          ...filters,
+          { $sort: { lastVisitDate: -1, _id: -1 } },
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          {
+            $lookup: {
+              from: Appointment.collection.name,
+              let: { patientId: '$_id' },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $and: [
+                        { $eq: ['$patient_id', '$$patientId'] },
+                        { $eq: ['$hospital_id', hospitalObjectId] },
+                        { $eq: ['$doctor_id', doctorObjectId] },
+                        { $ne: ['$is_active', false] },
+                        { $ne: ['$status', 'Cancelled'] }
+                      ]
+                    }
+                  }
+                },
+                { $sort: { appointment_date: -1, start_time: -1, createdAt: -1 } },
+                { $limit: 1 },
+                { $project: { _id: 1, appointment_date: 1, appointment_date_key: 1, start_time: 1, status: 1, type: 1, appointment_type: 1 } }
+              ],
+              as: 'latestAppointment'
+            }
+          },
+          {
+            $lookup: {
+              from: IPDAdmission.collection.name,
+              let: { patientId: '$_id' },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $and: [
+                        { $eq: ['$patientId', '$$patientId'] },
+                        { $eq: ['$hospitalId', hospitalObjectId] },
+                        { $eq: ['$primaryDoctorId', doctorObjectId] },
+                        { $ne: ['$is_active', false] }
+                      ]
+                    }
+                  }
+                },
+                { $set: { _activeRank: { $cond: [{ $in: ['$status', activeAdmissionStatuses] }, 1, 0] } } },
+                { $sort: { _activeRank: -1, admissionDate: -1, createdAt: -1, updatedAt: -1 } },
+                { $limit: 1 },
+                { $project: { _id: 1, admissionNumber: 1, shipNumber: 1, admissionDate: 1, status: 1 } }
+              ],
+              as: 'selectedAdmission'
+            }
+          },
+          {
+            $project: {
+              _id: 0,
+              mongoId: '$patient._id',
+              patientId: { $ifNull: ['$patient.patientId', '$patient.uhid'] },
+              uhid: '$patient.uhid',
+              salutation: '$patient.salutation',
+              first_name: '$patient.first_name',
+              last_name: '$patient.last_name',
+              dob: '$patient.dob',
+              gender: '$patient.gender',
+              blood_group: '$patient.blood_group',
+              phone: '$patient.phone',
+              patient_image: '$patient.patient_image',
+              profile_image: '$patient.profile_image',
+              hasOpd: { $eq: ['$hasOpd', 1] },
+              hasIpd: { $eq: ['$hasIpd', 1] },
+              lastVisitDate: 1,
+              latestAppointment: { $arrayElemAt: ['$latestAppointment', 0] },
+              selectedAdmission: { $arrayElemAt: ['$selectedAdmission', 0] }
+            }
+          }
+        ]
+      }
+    }
+  ]).allowDiskUse(true);
+
+  const counts = result.meta?.[0] || { all: 0, opd: 0, ipd: 0 };
+  const total = result.total?.[0]?.value || 0;
+  return {
+    rows: result.rows || [],
+    counts,
+    pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) }
+  };
+}
+
+async function searchPatientsCompact({ hospitalId, query = {} }) {
+  const hospitalObjectId = asObjectId(hospitalId);
+  const q = String(query.q || query.search || '').trim();
+  const limit = safeLimit(query.limit, 20, 50);
+  if (q.length < 2) return { patients: [] };
+
+  const searchFields = ['patientId', 'uhid', 'first_name', 'middle_name', 'last_name', 'phone', 'normalizedPhone', 'email', 'abha.number', 'abha.address'];
+  const tokens = q.split(/\s+/).filter(Boolean).slice(0, 5);
+  const tokenClauses = tokens.map((token) => {
+    const regex = new RegExp(escapeRegex(token), 'i');
+    return { $or: searchFields.map((field) => ({ [field]: regex })) };
+  });
+  const patients = await Patient.find({
+    hospitalId: hospitalObjectId,
+    is_active: { $ne: false },
+    ...(tokenClauses.length === 1 ? tokenClauses[0] : { $and: tokenClauses })
+  })
+    .select('_id patientId uhid salutation first_name middle_name last_name dob gender blood_group phone email address patient_image sponsor_type sponsor_name abha pharmacy_outstanding_balance pharmacy_advance_balance registered_at is_walkin')
+    .sort({ registered_at: -1, _id: -1 })
+    .limit(limit)
+    .lean();
+
+  if (!patients.length) return { patients: [] };
+
+  const ids = patients.map((patient) => patient._id);
+  const admissions = await IPDAdmission.find({
+    hospitalId: hospitalObjectId,
+    patientId: { $in: ids },
+    is_active: { $ne: false },
+    status: { $in: ACTIVE_ADMISSION_STATUSES }
+  })
+    .select('_id patientId admissionNumber shipNumber status admissionDate wardId bedId roomId primaryDoctorId departmentId')
+    .sort({ admissionDate: -1, createdAt: -1 })
+    .lean();
+
+  const activeByPatient = new Map();
+  for (const admission of admissions) {
+    const key = String(admission.patientId);
+    if (!activeByPatient.has(key)) activeByPatient.set(key, admission);
+  }
+
+  return {
+    patients: patients.map((patient) => ({
+      ...patient,
+      activeAdmission: activeByPatient.get(String(patient._id)) || null
+    }))
+  };
+}
+
 module.exports = {
   listPatientWorklist,
   patientWorklistCursor,
   getPatientVisitHistory,
   appointmentWorklist,
   doctorDashboard,
+  doctorScheduleReadModel,
   nurseDashboard,
   adminOverview,
+  staffDashboardOverview,
+  patientRegistrationTrend,
+  staffAppointmentCalendar,
+  doctorPatientWorklist,
+  searchPatientsCompact,
   ACTIVE_ADMISSION_STATUSES,
   ACTIVE_APPOINTMENT_STATUSES
 };
