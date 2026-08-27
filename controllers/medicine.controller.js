@@ -17,6 +17,16 @@ function medicineScope(req, extra = {}) {
   return { hospitalId: hospitalIdFor(req), ...extra };
 }
 
+function aggregateHospitalIdFor(req) {
+  const value = hospitalIdFor(req);
+  if (value instanceof mongoose.Types.ObjectId) return value;
+  return mongoose.isValidObjectId(value) ? new mongoose.Types.ObjectId(String(value)) : value;
+}
+
+function aggregateMedicineScope(req, extra = {}) {
+  return { hospitalId: aggregateHospitalIdFor(req), ...extra };
+}
+
 // Helper function to validate GST rate (India specific)
 const validateGSTRate = (rate) => {
   const gstRate = parseFloat(rate);
@@ -139,73 +149,431 @@ exports.addMedicine = async (req, res) => {
   }
 };
 
-// Get all medicines with stock and tax info
+// Get all medicines with stock and tax info.
+// Legacy callers still receive the original array shape. High-volume screens opt in
+// to the compact paginated read model with ?view=list or ?view=pos.
+const NON_CAPEX_CATEGORY_REGEX = /(equipment|accessor|instrument|device|consumable|disposable|hardware|kit|surgical|furniture|ppe|sterilization)/i;
+
+function medicineItemTypeMatch(itemType) {
+  if (itemType === 'capex') {
+    // Frontend legacy semantics define CAPEX as anything that is not explicitly
+    // classified as non-CAPEX. Preserve that behavior for server-side filtering.
+    return {
+      $nor: [
+        { item_type: 'non_capex' },
+        { is_capex: false },
+        { category: NON_CAPEX_CATEGORY_REGEX }
+      ]
+    };
+  }
+  if (itemType === 'non_capex') {
+    return {
+      $or: [
+        { item_type: 'non_capex' },
+        { is_capex: false },
+        { category: NON_CAPEX_CATEGORY_REGEX }
+      ]
+    };
+  }
+  return null;
+}
+
+function buildMedicineFilter(req, { includeSearch = true } = {}) {
+  // This filter is used by both find() and aggregate(). Aggregate pipelines do
+  // not cast schema fields, so normalize the tenant id here.
+  const filter = aggregateMedicineScope(req, { is_active: true });
+  const itemTypeMatch = medicineItemTypeMatch(req.query.item_type || req.query.itemType);
+  if (itemTypeMatch) Object.assign(filter, itemTypeMatch);
+
+  if (req.query.category) filter.category = req.query.category;
+  if (req.query.gst === 'missing') {
+    filter.$and = [
+      ...(filter.$and || []),
+      { $or: [{ hsn_code: { $exists: false } }, { hsn_code: '' }, { gst_rate: { $exists: false } }, { gst_rate: null }] }
+    ];
+  } else if (req.query.gst !== undefined && req.query.gst !== '' && req.query.gst !== 'all') {
+    const rate = Number(req.query.gst);
+    if (Number.isFinite(rate)) filter.gst_rate = rate;
+  }
+
+  const search = includeSearch ? String(req.query.search || req.query.q || '').trim() : '';
+  if (search) {
+    const regex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    filter.$and = [
+      ...(filter.$and || []),
+      { $or: [
+        { name: regex }, { generic_name: regex }, { brand: regex }, { category: regex },
+        { hsn_code: regex }, { manufacturer: regex }, { manufacturer_brand_owner: regex },
+        { composition: regex }, { composition_keywords: regex }, { strength: regex }
+      ] }
+    ];
+  }
+  return filter;
+}
+
+function compactBatchProjection() {
+  return {
+    _id: 1, medicine_id: 1, batch_number: 1, expiry_date: 1, quantity: 1, quantity_base_units: 1,
+    units_per_pack: 1, purchase_price: 1, selling_price: 1,
+    purchase_price_per_pack: 1, selling_price_per_pack: 1, mrp_per_pack: 1,
+    purchase_price_per_base_unit: 1, selling_price_per_base_unit: 1, tax_snapshot: 1
+  };
+}
+
+async function attachStockToMedicines(medicines, { includeBatches = true } = {}) {
+  const ids = medicines.map((medicine) => medicine._id);
+  const batches = ids.length ? await MedicineBatch.find({
+    medicine_id: { $in: ids },
+    is_active: true,
+    quantity: { $gt: 0 }
+  }).select(compactBatchProjection()).sort({ expiry_date: 1 }).lean() : [];
+
+  const byMedicine = new Map();
+  for (const batch of batches) {
+    const key = String(batch.medicine_id);
+    if (!byMedicine.has(key)) byMedicine.set(key, []);
+    byMedicine.get(key).push(batch);
+  }
+
+  return medicines.map((medicine) => {
+    const medicineObj = typeof medicine.toObject === 'function' ? medicine.toObject() : medicine;
+    const rows = byMedicine.get(String(medicineObj._id)) || [];
+    const totalStock = rows.reduce((sum, batch) => sum + Number(batch.quantity || batch.quantity_base_units || 0), 0);
+    const totalValue = rows.reduce((sum, batch) => sum + (Number(batch.purchase_price || 0) * Number(batch.quantity || batch.quantity_base_units || 0)), 0);
+    return {
+      ...medicineObj,
+      stock_quantity: totalStock,
+      batch_count: rows.length,
+      earliest_expiry: rows[0]?.expiry_date || null,
+      total_stock_value: totalValue,
+      ...(includeBatches ? { batches: rows } : {}),
+      tax_info: {
+        hsn_code: medicineObj.hsn_code,
+        gst_rate: medicineObj.gst_rate,
+        cgst_rate: (medicineObj.gst_rate || 0) / 2,
+        sgst_rate: (medicineObj.gst_rate || 0) / 2,
+        is_valid: validateGSTRate(medicineObj.gst_rate)
+      }
+    };
+  });
+}
+
+async function paginatedMedicineRead(req) {
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.pageSize || req.query.limit, 10) || (req.query.view === 'pos' ? 30 : 50)));
+  const filter = buildMedicineFilter(req);
+  const sortBy = String(req.query.sortBy || 'name');
+  const sortOrder = req.query.sortOrder === 'desc' ? -1 : 1;
+  const sortMap = {
+    name: { name: sortOrder }, category: { category: sortOrder, name: 1 }, gst: { gst_rate: sortOrder, name: 1 },
+    hsn: { hsn_code: sortOrder, name: 1 }, stock: { stock_quantity: sortOrder, name: 1 },
+    value: { total_stock_value: sortOrder, name: 1 }, expiry: { earliest_expiry: sortOrder, name: 1 }
+  };
+
+  const pipeline = [
+    { $match: filter },
+    {
+      $lookup: {
+        from: MedicineBatch.collection.name,
+        let: { medicineId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $and: [
+            { $eq: ['$medicine_id', '$$medicineId'] },
+            { $eq: ['$is_active', true] },
+            { $gt: [{ $ifNull: ['$quantity', '$quantity_base_units'] }, 0] }
+          ] } } },
+          { $sort: { expiry_date: 1 } },
+          { $project: compactBatchProjection() }
+        ],
+        as: '_stockBatches'
+      }
+    },
+    {
+      $set: {
+        stock_quantity: { $sum: { $map: { input: '$_stockBatches', as: 'batch', in: { $ifNull: ['$$batch.quantity', '$$batch.quantity_base_units'] } } } },
+        batch_count: { $size: '$_stockBatches' },
+        earliest_expiry: { $arrayElemAt: ['$_stockBatches.expiry_date', 0] },
+        total_stock_value: { $sum: { $map: { input: '$_stockBatches', as: 'batch', in: { $multiply: [{ $ifNull: ['$$batch.purchase_price', 0] }, { $ifNull: ['$$batch.quantity', '$$batch.quantity_base_units'] }] } } } }
+      }
+    }
+  ];
+
+  const stock = req.query.stock;
+  if (stock === 'out') pipeline.push({ $match: { stock_quantity: { $lte: 0 } } });
+  if (stock === 'low') pipeline.push({ $match: { $expr: { $and: [
+    { $gt: ['$stock_quantity', 0] },
+    { $lt: ['$stock_quantity', { $ifNull: ['$min_stock_level_base_units', { $ifNull: ['$min_stock_level', 10] }] }] }
+  ] } } });
+  if (stock === 'adequate') pipeline.push({ $match: { $expr: { $gte: ['$stock_quantity', { $ifNull: ['$min_stock_level_base_units', { $ifNull: ['$min_stock_level', 10] }] }] } } });
+
+  const expiry = String(req.query.expiry || '').toLowerCase();
+  if (expiry === 'this_month' || expiry === 'month') {
+    const now = operationNow();
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    pipeline.push({ $match: { earliest_expiry: { $gte: now, $lt: monthEnd } } });
+  } else if (expiry === 'expired') {
+    pipeline.push({ $match: { earliest_expiry: { $lt: operationNow() } } });
+  }
+
+  pipeline.push({ $sort: sortMap[sortBy] || sortMap.name });
+  pipeline.push({
+    $facet: {
+      medicines: [
+        { $skip: (page - 1) * limit }, { $limit: limit },
+        ...(req.query.view === 'pos' ? [{ $unset: '_stockBatches' }] : [{ $unset: '_stockBatches' }])
+      ],
+      total: [{ $count: 'value' }]
+    }
+  });
+
+  const [result = {}] = await Medicine.aggregate(pipeline).allowDiskUse(true);
+  const total = result.total?.[0]?.value || 0;
+  return {
+    medicines: (result.medicines || []).map((medicine) => ({
+      ...medicine,
+      tax_info: {
+        hsn_code: medicine.hsn_code,
+        gst_rate: medicine.gst_rate,
+        cgst_rate: Number(medicine.gst_rate || 0) / 2,
+        sgst_rate: Number(medicine.gst_rate || 0) / 2,
+        is_valid: validateGSTRate(medicine.gst_rate)
+      }
+    })),
+    pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) }
+  };
+}
+
+exports.getMedicineCatalogSummary = async (req, res) => {
+  try {
+    const filter = aggregateMedicineScope(req, { is_active: true });
+    const now = operationNow();
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+    // The dashboard historically derived general stock/value/expiry metrics from
+    // active positive batches, but its "low stock" widget came from the older
+    // /medicines/low-stock query (all batches, fixed threshold=10). Run both
+    // aggregations in parallel so the compact read model preserves those visible
+    // semantics rather than silently changing the card values.
+    const catalogPromise = Medicine.aggregate([
+      { $match: filter },
+      {
+        $lookup: {
+          from: MedicineBatch.collection.name,
+          let: { medicineId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $and: [
+              { $eq: ['$medicine_id', '$$medicineId'] }, { $eq: ['$is_active', true] },
+              { $gt: [{ $ifNull: ['$quantity', '$quantity_base_units'] }, 0] }
+            ] } } },
+            { $sort: { expiry_date: 1 } },
+            { $project: { quantity: 1, quantity_base_units: 1, purchase_price: 1, expiry_date: 1 } }
+          ],
+          as: '_batches'
+        }
+      },
+      {
+        $set: {
+          _stock: { $sum: { $map: { input: '$_batches', as: 'b', in: { $ifNull: ['$$b.quantity', '$$b.quantity_base_units'] } } } },
+          _value: { $sum: { $map: { input: '$_batches', as: 'b', in: { $multiply: [{ $ifNull: ['$$b.purchase_price', 0] }, { $ifNull: ['$$b.quantity', '$$b.quantity_base_units'] }] } } } },
+          _earliestExpiry: { $arrayElemAt: ['$_batches.expiry_date', 0] },
+          _minimum: { $ifNull: ['$min_stock_level_base_units', { $ifNull: ['$min_stock_level', 10] }] },
+          _nonCapex: { $or: [
+            { $eq: ['$item_type', 'non_capex'] }, { $eq: ['$is_capex', false] },
+            { $regexMatch: { input: { $ifNull: ['$category', ''] }, regex: NON_CAPEX_CATEGORY_REGEX } }
+          ] },
+          _gstGap: { $or: [
+            { $eq: [{ $ifNull: ['$hsn_code', ''] }, ''] },
+            { $eq: [{ $ifNull: ['$gst_rate', null] }, null] }
+          ] }
+        }
+      },
+      {
+        $facet: {
+          summary: [
+            {
+              $group: {
+                _id: null,
+                total: { $sum: 1 }, active: { $sum: 1 },
+                inStock: { $sum: { $cond: [{ $gt: ['$_stock', 0] }, 1, 0] } },
+                lowStock: { $sum: { $cond: [{ $and: [{ $gt: ['$_stock', 0] }, { $lt: ['$_stock', '$_minimum'] }] }, 1, 0] } },
+                outOfStock: { $sum: { $cond: [{ $lte: ['$_stock', 0] }, 1, 0] } },
+                totalValue: { $sum: '$_value' },
+                totalBaseUnitsInStock: { $sum: '$_stock' },
+                expiringThisMonthCount: { $sum: { $cond: [{ $and: [
+                  { $gte: ['$_earliestExpiry', now] }, { $lt: ['$_earliestExpiry', monthEnd] }
+                ] }, 1, 0] } },
+                missingGST: { $sum: { $cond: ['$_gstGap', 1, 0] } },
+                nonCapexCount: { $sum: { $cond: ['$_nonCapex', 1, 0] } },
+                capexCount: { $sum: { $cond: ['$_nonCapex', 0, 1] } }
+              }
+            },
+            { $project: { _id: 0 } }
+          ],
+          lowStockPreview: [
+            { $match: { $expr: { $and: [{ $gt: ['$_stock', 0] }, { $lt: ['$_stock', '$_minimum'] }] } } },
+            { $limit: 5 },
+            { $project: { _id: 1, name: 1, generic_name: 1, category: 1, base_unit: 1, pack_unit: 1, units_per_pack: 1, stock_quantity: '$_stock', total_stock: '$_stock', min_stock_level: '$_minimum' } }
+          ],
+          categoryDistribution: [
+            { $group: { _id: { $ifNull: ['$category', 'Other'] }, value: { $sum: 1 } } },
+            { $sort: { value: -1, _id: 1 } },
+            { $project: { _id: 0, name: '$_id', value: 1 } }
+          ],
+          expiringThisMonthPreview: [
+            { $match: { _earliestExpiry: { $gte: now, $lt: monthEnd } } },
+            { $sort: { _earliestExpiry: 1 } },
+            { $limit: 5 },
+            { $project: { _id: 1, name: 1, stock_quantity: '$_stock', base_unit: 1, expiry_date: '$_earliestExpiry', earliest_expiry: '$_earliestExpiry' } }
+          ]
+        }
+      }
+    ]).allowDiskUse(true);
+
+    const legacyLowStockPromise = Medicine.aggregate([
+      { $match: filter },
+      {
+        $lookup: {
+          from: MedicineBatch.collection.name,
+          localField: '_id',
+          foreignField: 'medicine_id',
+          as: '_allBatches'
+        }
+      },
+      { $set: { _legacyTotalStock: { $sum: '$_allBatches.quantity' } } },
+      { $match: { _legacyTotalStock: { $lt: 10 } } },
+      {
+        $facet: {
+          count: [{ $count: 'value' }],
+          preview: [
+            { $limit: 5 },
+            { $project: {
+              _id: 1, name: 1, generic_name: 1, category: 1, base_unit: 1, pack_unit: 1,
+              units_per_pack: 1, stock_quantity: '$_legacyTotalStock', total_stock: '$_legacyTotalStock', min_stock_level: 1
+            } }
+          ]
+        }
+      }
+    ]).allowDiskUse(true);
+
+    const [catalogRows, lowStockRows] = await Promise.all([catalogPromise, legacyLowStockPromise]);
+    const result = catalogRows?.[0] || {};
+    const legacyLowStock = lowStockRows?.[0] || {};
+    const summary = result.summary?.[0] || {
+      total: 0, active: 0, inStock: 0, lowStock: 0, outOfStock: 0, totalValue: 0,
+      totalBaseUnitsInStock: 0, expiringThisMonthCount: 0,
+      missingGST: 0, capexCount: 0, nonCapexCount: 0
+    };
+    const categoryDistribution = result.categoryDistribution || [];
+    return res.json({
+      success: true,
+      summary,
+      categories: categoryDistribution.map((row) => row.name).filter(Boolean),
+      categoryDistribution,
+      lowStockPreview: result.lowStockPreview || [],
+      dashboardLowStockCount: legacyLowStock.count?.[0]?.value || 0,
+      dashboardLowStockPreview: legacyLowStock.preview || [],
+      expiringThisMonthPreview: result.expiringThisMonthPreview || []
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+function medicineDelimitedCell(value, separator) {
+  const escaped = String(value == null ? '' : value).replace(/"/g, '""');
+  return `"${escaped}"`;
+}
+
+exports.exportMedicineCatalogue = async (req, res) => {
+  try {
+    const filter = buildMedicineFilter(req);
+    const sortBy = String(req.query.sortBy || 'name');
+    const sortOrder = req.query.sortOrder === 'desc' ? -1 : 1;
+    const sortMap = {
+      name: { name: sortOrder }, category: { category: sortOrder, name: 1 }, gst: { gst_rate: sortOrder, name: 1 },
+      hsn: { hsn_code: sortOrder, name: 1 }, stock: { stock_quantity: sortOrder, name: 1 },
+      value: { total_stock_value: sortOrder, name: 1 }, expiry: { earliest_expiry: sortOrder, name: 1 }
+    };
+    const pipeline = [
+      { $match: filter },
+      {
+        $lookup: {
+          from: MedicineBatch.collection.name,
+          let: { medicineId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $and: [
+              { $eq: ['$medicine_id', '$$medicineId'] },
+              { $eq: ['$is_active', true] },
+              { $gt: [{ $ifNull: ['$quantity', '$quantity_base_units'] }, 0] }
+            ] } } },
+            { $sort: { expiry_date: 1 } },
+            { $project: { quantity: 1, quantity_base_units: 1, purchase_price: 1, expiry_date: 1 } }
+          ],
+          as: '_stockBatches'
+        }
+      },
+      {
+        $set: {
+          stock_quantity: { $sum: { $map: { input: '$_stockBatches', as: 'batch', in: { $ifNull: ['$$batch.quantity', '$$batch.quantity_base_units'] } } } },
+          batch_count: { $size: '$_stockBatches' },
+          earliest_expiry: { $arrayElemAt: ['$_stockBatches.expiry_date', 0] },
+          total_stock_value: { $sum: { $map: { input: '$_stockBatches', as: 'batch', in: { $multiply: [{ $ifNull: ['$$batch.purchase_price', 0] }, { $ifNull: ['$$batch.quantity', '$$batch.quantity_base_units'] }] } } } },
+          _minimum: { $ifNull: ['$min_stock_level_base_units', { $ifNull: ['$min_stock_level', 10] }] }
+        }
+      }
+    ];
+    const stock = req.query.stock;
+    if (stock === 'out') pipeline.push({ $match: { stock_quantity: { $lte: 0 } } });
+    if (stock === 'low') pipeline.push({ $match: { $expr: { $and: [{ $gt: ['$stock_quantity', 0] }, { $lt: ['$stock_quantity', '$_minimum'] }] } } });
+    if (stock === 'adequate') pipeline.push({ $match: { $expr: { $gte: ['$stock_quantity', '$_minimum'] } } });
+    pipeline.push({ $sort: sortMap[sortBy] || sortMap.name });
+    pipeline.push({ $project: {
+      name: 1, generic_name: 1, composition: 1, brand: 1, category: 1, hsn_code: 1, gst_rate: 1,
+      item_type: 1, is_capex: 1, is_active: 1, stock_quantity: 1, batch_count: 1, earliest_expiry: 1, total_stock_value: 1
+    } });
+
+    const format = String(req.query.format || 'xls').toLowerCase() === 'csv' ? 'csv' : 'xls';
+    const separator = format === 'csv' ? ',' : '\t';
+    const extension = format === 'csv' ? 'csv' : 'xls';
+    res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.ms-excel; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="medicine-catalogue-${new Date().toISOString().slice(0, 10)}.${extension}"`);
+    res.write(['Type', 'Name', 'Generic/Molecule', 'Brand', 'Category', 'HSN', 'GST %', 'Stock', 'Batches', 'Earliest Expiry', 'Stock Value', 'Active']
+      .map((value) => medicineDelimitedCell(value, separator)).join(separator) + '\n');
+
+    const cursor = Medicine.aggregate(pipeline).allowDiskUse(true).cursor({ batchSize: 200 }).exec();
+    for await (const medicine of cursor) {
+      const category = String(medicine.category || '');
+      const nonCapex = medicine.item_type === 'non_capex' || medicine.is_capex === false || NON_CAPEX_CATEGORY_REGEX.test(category);
+      const row = [
+        nonCapex ? 'Non-Capex' : 'Capex', medicine.name || '', medicine.generic_name || medicine.composition || '',
+        medicine.brand || '', category, medicine.hsn_code || '', medicine.gst_rate ?? '', medicine.stock_quantity || 0,
+        medicine.batch_count || 0, medicine.earliest_expiry ? new Date(medicine.earliest_expiry).toISOString().slice(0, 10) : '',
+        medicine.total_stock_value || 0, medicine.is_active !== false ? 'Yes' : 'No'
+      ];
+      if (!res.write(row.map((value) => medicineDelimitedCell(value, separator)).join(separator) + '\n')) {
+        await new Promise((resolve) => res.once('drain', resolve));
+      }
+    }
+    return res.end();
+  } catch (err) {
+    if (!res.headersSent) return res.status(500).json({ error: err.message });
+    return res.end();
+  }
+};
+
 exports.getAllMedicines = async (req, res) => {
   try {
-    const filter = medicineScope(req, { is_active: true });
-    if (req.query.item_type === 'capex') {
-      filter.$or = [{ item_type: 'capex' }, { is_capex: true }, { item_type: { $exists: false } }];
-    } else if (req.query.item_type === 'non_capex') {
-      filter.$or = [{ item_type: 'non_capex' }, { is_capex: false }];
+    if (['list', 'pos'].includes(String(req.query.view || '').toLowerCase())) {
+      return res.json(await paginatedMedicineRead(req));
     }
 
-    const medicines = await Medicine
-      .find(filter)
-      .sort({ name: 1 });
-
-    const medicinesWithStock = await Promise.all(
-      medicines.map(async (medicine) => {
-        const medicineObj = medicine.toObject();
-
-        const batches = await MedicineBatch.find({
-          medicine_id: medicine._id,
-          is_active: true,
-          quantity: { $gt: 0 }
-        });
-
-        const totalStock = batches.reduce(
-          (sum, batch) => sum + (batch.quantity || 0),
-          0
-        );
-
-        const earliestExpiry = batches.length > 0
-          ? batches.reduce(
-            (earliest, batch) =>
-              batch.expiry_date < earliest ? batch.expiry_date : earliest,
-            batches[0].expiry_date
-          )
-          : null;
-
-        const totalValue = batches.reduce(
-          (sum, batch) =>
-            sum + ((batch.purchase_price || 0) * (batch.quantity || 0)),
-          0
-        );
-
-        return {
-          ...medicineObj,
-          stock_quantity: totalStock,
-          batch_count: batches.length,
-          earliest_expiry: earliestExpiry,
-          total_stock_value: totalValue,
-          batches,
-          tax_info: {
-            hsn_code: medicineObj.hsn_code,
-            gst_rate: medicineObj.gst_rate,
-            cgst_rate: (medicineObj.gst_rate || 0) / 2,
-            sgst_rate: (medicineObj.gst_rate || 0) / 2,
-            is_valid: validateGSTRate(medicineObj.gst_rate)
-          }
-        };
-      })
-    );
-
-    res.json(medicinesWithStock);
+    const filter = buildMedicineFilter(req);
+    const medicines = await Medicine.find(filter).sort({ name: 1 });
+    // Same legacy array response, but one batch query instead of one query per medicine.
+    return res.json(await attachStockToMedicines(medicines, { includeBatches: true }));
   } catch (err) {
     console.error('Error fetching medicines:', err);
-    res.status(500).json({
-      error: err.message
-    });
+    return res.status(500).json({ error: err.message });
   }
 };
 
@@ -513,6 +881,7 @@ exports.searchMedicines = async (req, res) => {
         { composition: { $regex: escapedTerm, $options: 'i' } },
         { composition_keywords: { $regex: escapedTerm.toLowerCase(), $options: 'i' } },
         { hsn_code: { $regex: escapedTerm, $options: 'i' } },
+        { barcode: { $regex: escapedTerm, $options: 'i' } },
         { name: { $regex: wordRegex, $options: 'i' } },
         ...(batchMatches.length
           ? [{ _id: { $in: batchMatches.map(b => b.medicine_id) } }]
@@ -523,7 +892,7 @@ exports.searchMedicines = async (req, res) => {
     const medicines = await Medicine
       .find(medicineQuery)
       .limit(Number(limit))
-      .select('name generic_name composition compositions brand strength category dosage_form manufacturer manufacturer_brand_owner hsn_code gst_rate taxComplianceStatus base_unit pack_unit units_per_pack allow_loose_sale min_stock_level location prescription_required is_high_risk is_high_alert medicationSafety is_own_brand masterSource')
+      .select('name generic_name composition compositions brand strength category dosage_form manufacturer manufacturer_brand_owner barcode hsn_code gst_rate taxComplianceStatus base_unit pack_unit units_per_pack allow_loose_sale min_stock_level location prescription_required is_high_risk is_high_alert medicationSafety is_own_brand masterSource')
       .lean();
 
     if (includeBatches === 'false') {
@@ -536,10 +905,10 @@ exports.searchMedicines = async (req, res) => {
       .find({
         medicine_id: { $in: medicineIds },
         is_active: true,
-        quantity_base_units: { $gt: 0 }
+        $or: [{ quantity_base_units: { $gt: 0 } }, { quantity: { $gt: 0 } }]
       })
       .sort({ expiry_date: 1 })
-      .select('medicine_id batch_number expiry_date quantity quantity_base_units units_per_pack selling_price selling_price_per_pack selling_price_per_base_unit mrp_per_pack')
+      .select('medicine_id batch_number expiry_date quantity quantity_base_units units_per_pack purchase_price purchase_price_per_pack purchase_price_per_base_unit selling_price selling_price_per_pack selling_price_per_base_unit mrp mrp_per_pack')
       .lean();
 
     const batchesByMedicine = batches.reduce((acc, batch) => {

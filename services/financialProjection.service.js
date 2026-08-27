@@ -260,7 +260,18 @@ function project(data) {
     a.departmentId ||= r.departmentId; a.departmentName = r.departmentName; a.netRevenue = money(a.netRevenue + r.netRevenue); a.doctorCommission = money(a.doctorCommission + r.doctorCommission); a.hospitalShare = money(a.hospitalShare + r.hospitalShare); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1;
   }).sort((a, b) => b.netRevenue - a.netRevenue);
   const paymentMethods = group(externalCredits, (r) => r.paymentMethod, (paymentMethod) => ({ paymentMethod, amount: 0, count: 0 }), (a, r) => { a.amount = money(a.amount + r.amount); a.count += 1; }).sort((a, b) => b.amount - a.amount);
-  const daily = group(invoiceRows, (r) => dayKey(r.date, data.range.timezone), (date) => ({ date, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.date.localeCompare(b.date));
+  const daily = group(invoiceRows, (r) => dayKey(r.date, data.range.timezone), (date) => ({ date, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0, collections: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.date.localeCompare(b.date));
+  const dailyMap = new Map(daily.map((row) => [row.date, row]));
+  receipts.forEach((row) => {
+    const date = dayKey(row.date, data.range.timezone);
+    if (!dailyMap.has(date)) {
+      const item = { date, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0, collections: 0 };
+      dailyMap.set(date, item);
+      daily.push(item);
+    }
+    dailyMap.get(date).collections = money(dailyMap.get(date).collections + row.amount);
+  });
+  daily.sort((a, b) => a.date.localeCompare(b.date));
   const monthly = group(invoiceRows, (r) => monthKey(r.date, data.range.timezone), (month) => ({ month, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.month.localeCompare(b.month));
 
   return { range: data.range, summary, bySource, byService, byDoctor, byDepartment, paymentMethods, daily, monthly, invoiceRows, transactionRows: allTransactions };

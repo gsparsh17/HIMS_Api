@@ -23,6 +23,10 @@ const createSupplier = async (req, res) => {
 // @access  Private
 const getAllSuppliers = async (req, res) => {
   try {
+    if (String(req.query.summary || '').toLowerCase() === 'true') {
+      const total = await Supplier.countDocuments({ isActive: true });
+      return res.status(200).json({ success: true, total });
+    }
     const suppliers = await Supplier.find({ isActive: true });
     res.status(200).json(suppliers);
   } catch (error) {

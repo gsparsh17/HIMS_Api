@@ -16,6 +16,7 @@ const manageBilling = requireModuleAccess('billing_finance', 'manage');
 router.use(protect);
 
 // Patient-first dashboard routes must be declared before /:id.
+router.get('/worklist', viewBilling, billingController.getBillingTransactionWorklist);
 router.get('/patients/summary', viewBilling, billingController.getPatientBillingSummaries);
 router.get('/patients/:patientId/details', viewBilling, billingController.getPatientBillingDetails);
 

@@ -1,4 +1,6 @@
+const mongoose = require('mongoose');
 const { hospitalDateKey } = require('../utils/hospitalDateTime');
+const { operationDateKey } = require('../utils/operationTimeContext');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
 const IPDCharge = require('../models/IPDCharge');
@@ -82,140 +84,617 @@ function groupCharges(charges = []) {
   }));
 }
 
-async function listPatientBillingSummaries({ hospitalId, type = 'all', search = '', limit = 250 }) {
-  const [bills, invoices, admissions, charges] = await Promise.all([
-    Bill.find({ hospital_id: hospitalId, is_deleted: { $ne: true } })
-      .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob age')
-      .populate('admission_id', 'admissionNumber status admissionDate dischargeDate')
-      .sort({ updatedAt: -1 }).lean(),
-    Invoice.find({ hospital_id: hospitalId, is_deleted: { $ne: true } })
-      .select('patient_id admission_id appointment_id total amount_paid balance_due status updated_at updatedAt created_at createdAt invoice_type')
-      .lean(),
-    IPDAdmission.find({ hospitalId })
-      .populate('patientId', 'first_name middle_name last_name patientId uhid phone gender dob age')
-      .populate('primaryDoctorId', 'firstName lastName first_name last_name name')
-      .populate('wardId', 'name wardName')
-      .populate('bedId', 'bedNumber bed_number name')
-      .sort({ updatedAt: -1 }).lean(),
-    IPDCharge.find({ hospitalId, status: { $ne: 'VOIDED' } }).sort({ chargeDate: -1 }).lean()
+function billingPatientLookup() {
+  return {
+    $lookup: {
+      from: Patient.collection.name,
+      localField: 'patientId',
+      foreignField: '_id',
+      pipeline: [{ $project: { first_name: 1, middle_name: 1, last_name: 1, name: 1, patientId: 1, uhid: 1, phone: 1, gender: 1, dob: 1, age: 1 } }],
+      as: '_patient'
+    }
+  };
+}
+
+function billingSearchStage(search) {
+  const term = String(search || '').trim();
+  if (!term) return null;
+  const regex = new RegExp(escapeRegex(term), 'i');
+  return {
+    $match: {
+      $or: [
+        { patientName: regex }, { uhid: regex }, { phone: regex }, { admissionNumber: regex }
+      ]
+    }
+  };
+}
+
+function invoiceUpdateExpression(prefix = '$$invoice') {
+  return {
+    $ifNull: [
+      `${prefix}.updated_at`,
+      { $ifNull: [`${prefix}.updatedAt`, { $ifNull: [`${prefix}.created_at`, `${prefix}.createdAt`] }] }
+    ]
+  };
+}
+
+async function aggregateIpdBillingRows({ hospitalObjectId, search, startDate = '', endDate = '', rowLimit = null, skip = 0 }) {
+  const pipeline = [
+    { $match: { hospitalId: hospitalObjectId } },
+    { $set: { patientId: '$patientId' } },
+    billingPatientLookup(),
+    { $set: { _patient: { $arrayElemAt: ['$_patient', 0] } } },
+    {
+      $lookup: {
+        from: Invoice.collection.name,
+        let: { admissionId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $and: [
+            { $eq: ['$hospital_id', hospitalObjectId] },
+            { $eq: ['$admission_id', '$$admissionId'] },
+            { $ne: ['$is_deleted', true] }
+          ] } } },
+          { $project: { total: 1, amount_paid: 1, balance_due: 1, status: 1, updated_at: 1, updatedAt: 1, created_at: 1, createdAt: 1 } }
+        ],
+        as: '_invoices'
+      }
+    },
+    {
+      $lookup: {
+        from: IPDCharge.collection.name,
+        let: { admissionId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $and: [
+            { $eq: ['$hospitalId', hospitalObjectId] },
+            { $eq: ['$admissionId', '$$admissionId'] },
+            { $ne: ['$status', 'VOIDED'] }
+          ] } } },
+          { $project: { netAmount: 1, amount: 1, isBilled: 1, status: 1, updatedAt: 1, chargeDate: 1, createdAt: 1 } }
+        ],
+        as: '_charges'
+      }
+    },
+    {
+      $lookup: {
+        from: require('../models/Doctor').collection.name,
+        localField: 'primaryDoctorId', foreignField: '_id',
+        pipeline: [{ $project: { firstName: 1, lastName: 1, first_name: 1, last_name: 1, name: 1 } }],
+        as: '_doctor'
+      }
+    },
+    {
+      $lookup: {
+        from: require('../models/Ward').collection.name,
+        localField: 'wardId', foreignField: '_id',
+        pipeline: [{ $project: { name: 1, wardName: 1 } }], as: '_ward'
+      }
+    },
+    {
+      $lookup: {
+        from: require('../models/Bed').collection.name,
+        localField: 'bedId', foreignField: '_id',
+        pipeline: [{ $project: { bedNumber: 1, bed_number: 1, name: 1 } }], as: '_bed'
+      }
+    },
+    {
+      $set: {
+        _doctor: { $arrayElemAt: ['$_doctor', 0] }, _ward: { $arrayElemAt: ['$_ward', 0] }, _bed: { $arrayElemAt: ['$_bed', 0] },
+        _issuedTotal: { $sum: '$_invoices.total' },
+        _chargeTotal: { $sum: { $map: { input: '$_charges', as: 'c', in: { $ifNull: ['$$c.netAmount', '$$c.amount'] } } } },
+        _unbilled: { $filter: { input: '$_charges', as: 'c', cond: { $and: [{ $ne: ['$$c.isBilled', true] }, { $ne: ['$$c.status', 'INVOICED'] }] } } },
+        _invoiceOutstanding: { $sum: { $map: { input: '$_invoices', as: 'i', in: {
+          $cond: [
+            { $ne: [{ $type: '$$i.balance_due' }, 'missing'] },
+            { $ifNull: ['$$i.balance_due', 0] },
+            { $max: [0, { $subtract: [{ $ifNull: ['$$i.total', 0] }, { $ifNull: ['$$i.amount_paid', 0] }] }] }
+          ]
+        } } } }
+      }
+    },
+    {
+      $set: {
+        _unbilledTotal: { $sum: { $map: { input: '$_unbilled', as: 'c', in: { $ifNull: ['$$c.netAmount', '$$c.amount'] } } } },
+        _invoiceDates: { $map: { input: '$_invoices', as: 'invoice', in: invoiceUpdateExpression('$$invoice') } },
+        _chargeDates: { $map: { input: '$_charges', as: 'charge', in: { $ifNull: ['$$charge.updatedAt', { $ifNull: ['$$charge.chargeDate', '$$charge.createdAt'] }] } } }
+      }
+    },
+    {
+      $project: {
+        _id: 0,
+        encounterType: { $literal: 'IPD' },
+        rowKey: { $concat: ['ipd:', { $toString: '$_id' }] },
+        patientId: { $toString: '$_patient._id' },
+        patientName: {
+          $let: {
+            vars: { fullName: { $trim: { input: { $concat: [
+              { $ifNull: ['$_patient.first_name', ''] }, ' ', { $ifNull: ['$_patient.middle_name', ''] }, ' ', { $ifNull: ['$_patient.last_name', ''] }
+            ] } } } },
+            in: { $cond: [{ $gt: [{ $strLenCP: '$$fullName' }, 0] }, '$$fullName', { $ifNull: ['$_patient.name', 'Patient'] }] }
+          }
+        },
+        uhid: { $ifNull: ['$_patient.uhid', { $ifNull: ['$_patient.patientId', '—'] }] },
+        phone: { $ifNull: ['$_patient.phone', ''] },
+        admissionId: { $toString: '$_id' },
+        admissionNumber: { $ifNull: ['$admissionNumber', { $ifNull: ['$shipNumber', '—'] }] },
+        admissionStatus: { $ifNull: ['$status', 'Admitted'] },
+        consultant: {
+          $let: {
+            vars: { fullName: { $trim: { input: { $concat: [
+              { $ifNull: ['$_doctor.firstName', { $ifNull: ['$_doctor.first_name', { $ifNull: ['$_doctor.name', ''] }] }] }, ' ',
+              { $ifNull: ['$_doctor.lastName', { $ifNull: ['$_doctor.last_name', ''] }] }
+            ] } } } },
+            in: { $cond: [{ $gt: [{ $strLenCP: '$$fullName' }, 0] }, '$$fullName', 'Patient'] }
+          }
+        },
+        ward: { $ifNull: ['$_ward.name', { $ifNull: ['$_ward.wardName', ''] }] },
+        bed: { $ifNull: ['$_bed.bedNumber', { $ifNull: ['$_bed.bed_number', { $ifNull: ['$_bed.name', ''] }] }] },
+        totalBill: {
+          $cond: [
+            { $ne: [{ $type: '$totalBillAmount' }, 'missing'] },
+            { $ifNull: ['$totalBillAmount', 0] },
+            { $cond: [{ $gt: ['$_chargeTotal', 0] }, '$_chargeTotal', { $add: ['$_issuedTotal', '$_unbilledTotal'] }] }
+          ]
+        },
+        outstandingAmount: {
+          $cond: [
+            { $ne: [{ $type: '$dueAmount' }, 'missing'] },
+            { $ifNull: ['$dueAmount', 0] },
+            { $add: ['$_invoiceOutstanding', '$_unbilledTotal'] }
+          ]
+        },
+        invoiceCount: { $size: '$_invoices' }, chargeCount: { $size: '$_charges' },
+        lastUpdated: { $max: { $concatArrays: [[{ $ifNull: ['$updatedAt', '$admissionDate'] }], '$_invoiceDates', '$_chargeDates'] } }
+      }
+    }
+  ];
+  const searchStage = billingSearchStage(search);
+  if (searchStage) pipeline.push(searchStage);
+  const dateStage = billingLastUpdatedStage(startDate, endDate);
+  if (dateStage) pipeline.push(dateStage);
+  pipeline.push({ $sort: { lastUpdated: -1 } });
+  pipeline.push({ $facet: {
+    rows: [{ $skip: skip }, ...(rowLimit ? [{ $limit: rowLimit }] : [])],
+    count: [{ $count: 'value' }]
+  } });
+  const [result = {}] = await IPDAdmission.aggregate(pipeline).allowDiskUse(true);
+  return { rows: result.rows || [], count: result.count?.[0]?.value || 0 };
+}
+
+async function aggregateOpdBillingRows({ hospitalObjectId, search, startDate = '', endDate = '', rowLimit = null, skip = 0 }) {
+  const pipeline = [
+    { $match: { hospital_id: hospitalObjectId, is_deleted: { $ne: true }, $or: [{ admission_id: null }, { admission_id: { $exists: false } }] } },
+    {
+      $set: {
+        _billOutstanding: {
+          $cond: [
+            { $ne: [{ $type: '$balance_due' }, 'missing'] },
+            { $ifNull: ['$balance_due', 0] },
+            { $max: [0, { $subtract: [{ $ifNull: ['$total_amount', 0] }, { $ifNull: ['$paid_amount', 0] }] }] }
+          ]
+        },
+        _billUpdated: { $ifNull: ['$updatedAt', { $ifNull: ['$createdAt', '$generated_at'] }] }
+      }
+    },
+    {
+      $group: {
+        _id: '$patient_id', totalBill: { $sum: { $ifNull: ['$total_amount', 0] } },
+        outstandingAmount: { $sum: '$_billOutstanding' }, billCount: { $sum: 1 }, lastUpdated: { $max: '$_billUpdated' }
+      }
+    },
+    { $match: { _id: { $ne: null } } },
+    { $set: { patientId: '$_id' } },
+    billingPatientLookup(),
+    { $set: { _patient: { $arrayElemAt: ['$_patient', 0] } } },
+    {
+      $lookup: {
+        from: Invoice.collection.name,
+        let: { patientId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $and: [
+            { $eq: ['$hospital_id', hospitalObjectId] }, { $eq: ['$patient_id', '$$patientId'] },
+            { $ne: ['$is_deleted', true] }, { $eq: [{ $ifNull: ['$admission_id', null] }, null] }
+          ] } } },
+          { $project: { updated_at: 1, updatedAt: 1, created_at: 1, createdAt: 1 } }
+        ],
+        as: '_invoices'
+      }
+    },
+    {
+      $project: {
+        _id: 0, encounterType: { $literal: 'OPD' }, rowKey: { $concat: ['opd:', { $toString: '$_id' }] },
+        patientId: { $toString: '$_id' },
+        patientName: {
+          $let: {
+            vars: { fullName: { $trim: { input: { $concat: [
+              { $ifNull: ['$_patient.first_name', ''] }, ' ', { $ifNull: ['$_patient.middle_name', ''] }, ' ', { $ifNull: ['$_patient.last_name', ''] }
+            ] } } } },
+            in: { $cond: [{ $gt: [{ $strLenCP: '$$fullName' }, 0] }, '$$fullName', { $ifNull: ['$_patient.name', 'Patient'] }] }
+          }
+        },
+        uhid: { $ifNull: ['$_patient.uhid', { $ifNull: ['$_patient.patientId', '—'] }] },
+        phone: { $ifNull: ['$_patient.phone', ''] },
+        admissionId: { $literal: null }, admissionNumber: { $literal: 'OPD' }, admissionStatus: { $literal: 'OPD' },
+        totalBill: 1, outstandingAmount: 1, billCount: 1, invoiceCount: { $size: '$_invoices' }, chargeCount: { $literal: 0 },
+        lastUpdated: { $max: { $concatArrays: [
+          ['$lastUpdated'],
+          { $map: { input: '$_invoices', as: 'invoice', in: invoiceUpdateExpression('$$invoice') } }
+        ] } }
+      }
+    }
+  ];
+  const searchStage = billingSearchStage(search);
+  if (searchStage) pipeline.push(searchStage);
+  const dateStage = billingLastUpdatedStage(startDate, endDate);
+  if (dateStage) pipeline.push(dateStage);
+  pipeline.push({ $sort: { lastUpdated: -1 } });
+  pipeline.push({ $facet: {
+    rows: [{ $skip: skip }, ...(rowLimit ? [{ $limit: rowLimit }] : [])],
+    count: [{ $count: 'value' }]
+  } });
+  const [result = {}] = await Bill.aggregate(pipeline).allowDiskUse(true);
+  return { rows: result.rows || [], count: result.count?.[0]?.value || 0 };
+}
+
+async function getGlobalBillingCounts(hospitalObjectId) {
+  const [ipd, opdRows] = await Promise.all([
+    IPDAdmission.countDocuments({ hospitalId: hospitalObjectId }),
+    Bill.aggregate([
+      { $match: { hospital_id: hospitalObjectId, is_deleted: { $ne: true }, $or: [{ admission_id: null }, { admission_id: { $exists: false } }] } },
+      { $group: { _id: '$patient_id' } },
+      { $match: { _id: { $ne: null } } },
+      { $count: 'value' }
+    ])
+  ]);
+  const opd = opdRows?.[0]?.value || 0;
+  return { all: ipd + opd, ipd, opd };
+}
+
+
+function utcDateRange(startDate, endDate, { requireBoth = false } = {}) {
+  const start = String(startDate || '').trim();
+  const end = String(endDate || '').trim();
+  if (requireBoth && (!start || !end)) return null;
+  const range = {};
+  if (start) range.$gte = new Date(`${start}T00:00:00.000Z`);
+  if (end) {
+    const endExclusive = new Date(`${end}T00:00:00.000Z`);
+    endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
+    range.$lt = endExclusive;
+  }
+  return Object.keys(range).length ? range : null;
+}
+
+function billingLastUpdatedStage(startDate, endDate) {
+  const range = utcDateRange(startDate, endDate);
+  return range ? { $match: { lastUpdated: range } } : null;
+}
+
+function transactionSearchStage(search) {
+  const term = String(search || '').trim();
+  if (!term) return null;
+  const regex = new RegExp(escapeRegex(term), 'i');
+  return { $match: { $or: [
+    { patientName: regex },
+    { _idText: regex },
+    { invoice_number: regex },
+    { bill_number: regex }
+  ] } };
+}
+
+function transactionStatusStage(status) {
+  const value = String(status || '').trim();
+  if (!value || value === 'All') return null;
+  return { $match: { status: value } };
+}
+
+function transactionDateStage(startDate, endDate) {
+  // Preserve the existing dashboard behavior: transaction date filtering only
+  // activates after BOTH bounds are selected.
+  const range = utcDateRange(startDate, endDate, { requireBoth: true });
+  return range ? { $match: { displayDate: range } } : null;
+}
+
+function patientNameExpression(patientPath = '$_patient', fallbackPath = null) {
+  return {
+    $let: {
+      vars: { fullName: { $trim: { input: { $concat: [
+        { $ifNull: [`${patientPath}.first_name`, ''] }, ' ',
+        { $ifNull: [`${patientPath}.middle_name`, ''] }, ' ',
+        { $ifNull: [`${patientPath}.last_name`, ''] }
+      ] } } } },
+      in: {
+        $cond: [
+          { $gt: [{ $strLenCP: '$$fullName' }, 0] },
+          '$$fullName',
+          fallbackPath ? { $ifNull: [fallbackPath, 'Unknown Patient'] } : 'Unknown Patient'
+        ]
+      }
+    }
+  };
+}
+
+async function aggregateBillTransactions({ hospitalObjectId, search, status, startDate, endDate, scope = 'all', rowLimit = null }) {
+  const baseMatch = { hospital_id: hospitalObjectId, is_deleted: { $ne: true } };
+  if (scope === 'opd') baseMatch.$or = [{ admission_id: null }, { admission_id: { $exists: false } }];
+  const pipeline = [
+    { $match: baseMatch },
+    {
+      $lookup: {
+        from: Patient.collection.name,
+        localField: 'patient_id',
+        foreignField: '_id',
+        pipeline: [{ $project: { first_name: 1, middle_name: 1, last_name: 1, patientId: 1, uhid: 1 } }],
+        as: '_patient'
+      }
+    },
+    { $set: { _patient: { $arrayElemAt: ['$_patient', 0] } } },
+    {
+      $project: {
+        _id: 1,
+        _idText: { $toString: '$_id' },
+        _sourceType: { $literal: 'bill' },
+        patient_id: {
+          _id: '$_patient._id', first_name: '$_patient.first_name', middle_name: '$_patient.middle_name',
+          last_name: '$_patient.last_name', patientId: '$_patient.patientId', uhid: '$_patient.uhid'
+        },
+        patientId: { $toString: '$patient_id' },
+        patientName: patientNameExpression('$_patient'),
+        documentLabel: {
+          $cond: [
+            { $ne: [{ $ifNull: ['$admission_id', null] }, null] }, 'IPD Bill',
+            { $cond: [{ $eq: ['$is_pharmacy_bill', true] }, 'Pharmacy Bill', 'OPD Bill'] }
+          ]
+        },
+        bill_number: 1,
+        invoice_number: { $literal: null },
+        invoice_type: { $literal: null },
+        admission_id: 1,
+        status: 1,
+        displayAmount: { $ifNull: ['$total_amount', 0] },
+        displayDate: { $ifNull: ['$generated_at', '$createdAt'] },
+        itemDescriptions: { $slice: [{ $ifNull: ['$items.description', []] }, 5] },
+        notes: 1,
+        total_amount: { $ifNull: ['$total_amount', 0] },
+        paid_amount: { $ifNull: ['$paid_amount', 0] },
+        balance_due: {
+          $ifNull: ['$balance_due', { $max: [0, { $subtract: [{ $ifNull: ['$total_amount', 0] }, { $ifNull: ['$paid_amount', 0] }] }] }]
+        },
+        payment_method: { $ifNull: ['$payment_method', 'N/A'] },
+        deletion_request: 1,
+        generated_at: 1,
+        createdAt: 1
+      }
+    }
+  ];
+  [transactionSearchStage(search), transactionStatusStage(status), transactionDateStage(startDate, endDate)]
+    .filter(Boolean).forEach((stage) => pipeline.push(stage));
+  pipeline.push({ $sort: { displayDate: -1, _id: -1 } });
+  pipeline.push({ $facet: {
+    rows: rowLimit ? [{ $limit: rowLimit }] : [],
+    count: [{ $count: 'value' }]
+  } });
+  const [result = {}] = await Bill.aggregate(pipeline).allowDiskUse(true);
+  const rows = (result.rows || []).map((row) => ({
+    ...row,
+    displayDescription: (row.itemDescriptions || []).filter(Boolean).join(', ') || row.notes || 'Bill items'
+  }));
+  return { rows, count: result.count?.[0]?.value || 0 };
+}
+
+async function aggregateInvoiceTransactions({ hospitalObjectId, search, status, startDate, endDate, scope = 'all', rowLimit = null }) {
+  const baseMatch = { hospital_id: hospitalObjectId, is_deleted: { $ne: true } };
+  if (scope === 'opd') {
+    baseMatch.$and = [
+      { $or: [{ admission_id: null }, { admission_id: { $exists: false } }] },
+      { invoice_type: { $ne: 'Purchase' } }
+    ];
+  }
+  const pipeline = [
+    { $match: baseMatch },
+    {
+      $lookup: {
+        from: Patient.collection.name,
+        localField: 'patient_id',
+        foreignField: '_id',
+        pipeline: [{ $project: { first_name: 1, middle_name: 1, last_name: 1, patientId: 1, uhid: 1 } }],
+        as: '_patient'
+      }
+    },
+    { $set: { _patient: { $arrayElemAt: ['$_patient', 0] } } },
+    {
+      $project: {
+        _id: 1,
+        _idText: { $toString: '$_id' },
+        _sourceType: { $literal: 'invoice' },
+        patient_id: {
+          _id: '$_patient._id', first_name: '$_patient.first_name', middle_name: '$_patient.middle_name',
+          last_name: '$_patient.last_name', patientId: '$_patient.patientId', uhid: '$_patient.uhid'
+        },
+        patientId: { $toString: '$patient_id' },
+        patientName: patientNameExpression('$_patient', '$customer_name'),
+        documentLabel: { $concat: [{ $ifNull: ['$invoice_type', 'Patient'] }, ' Invoice'] },
+        invoice_number: 1,
+        bill_number: { $literal: null },
+        invoice_type: 1,
+        bill_id: 1,
+        admission_id: 1,
+        status: { $cond: [{ $eq: ['$status', 'Partial'] }, 'Partially Paid', '$status'] },
+        displayAmount: { $ifNull: ['$total', 0] },
+        displayDate: { $ifNull: ['$issue_date', { $ifNull: ['$issued_at', { $ifNull: ['$created_at', '$createdAt'] }] }] },
+        itemDescriptions: { $slice: [{ $ifNull: ['$service_items.description', []] }, 5] },
+        total_amount: { $ifNull: ['$total', 0] },
+        total: { $ifNull: ['$total', 0] },
+        paid_amount: { $ifNull: ['$amount_paid', 0] },
+        amount_paid: { $ifNull: ['$amount_paid', 0] },
+        balance_due: {
+          $ifNull: ['$balance_due', { $max: [0, { $subtract: [{ $ifNull: ['$total', 0] }, { $ifNull: ['$amount_paid', 0] }] }] }]
+        },
+        payment_method: { $ifNull: [{ $arrayElemAt: ['$payment_history.method', -1] }, 'N/A'] },
+        issue_date: 1,
+        issued_at: 1,
+        created_at: 1,
+        createdAt: 1
+      }
+    }
+  ];
+  [transactionSearchStage(search), transactionStatusStage(status), transactionDateStage(startDate, endDate)]
+    .filter(Boolean).forEach((stage) => pipeline.push(stage));
+  pipeline.push({ $sort: { displayDate: -1, _id: -1 } });
+  pipeline.push({ $facet: {
+    rows: rowLimit ? [{ $limit: rowLimit }] : [],
+    count: [{ $count: 'value' }]
+  } });
+  const [result = {}] = await Invoice.aggregate(pipeline).allowDiskUse(true);
+  const rows = (result.rows || []).map((row) => ({
+    ...row,
+    displayDescription: (row.itemDescriptions || []).filter(Boolean).join(', ') || `${row.invoice_type || 'Patient'} invoice ${row.invoice_number || ''}`.trim()
+  }));
+  return { rows, count: result.count?.[0]?.value || 0 };
+}
+
+async function getBillingDashboardStats(hospitalObjectId) {
+  const today = operationDateKey();
+  const [result = {}] = await Bill.aggregate([
+    { $match: { hospital_id: hospitalObjectId, is_deleted: { $ne: true } } },
+    {
+      $project: {
+        total_amount: { $ifNull: ['$total_amount', 0] },
+        paid_amount: { $ifNull: ['$paid_amount', 0] },
+        balance_due: {
+          $ifNull: ['$balance_due', { $max: [0, { $subtract: [{ $ifNull: ['$total_amount', 0] }, { $ifNull: ['$paid_amount', 0] }] }] }]
+        },
+        status: 1,
+        paid_at: 1,
+        todayPayments: {
+          $sum: {
+            $map: {
+              input: { $ifNull: ['$payments', []] },
+              as: 'payment',
+              in: {
+                $cond: [
+                  { $eq: [{ $substrBytes: [{ $ifNull: [{ $toString: '$$payment.date' }, ''] }, 0, 10] }, today] },
+                  { $ifNull: ['$$payment.amount', 0] },
+                  0
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        totalOutstanding: { $sum: { $cond: [{ $in: ['$status', ['Pending', 'Partially Paid', 'Generated']] }, '$balance_due', 0] } },
+        collectedToday: { $sum: {
+          $cond: [
+            { $gt: ['$todayPayments', 0] }, '$todayPayments',
+            { $cond: [
+              { $eq: [{ $substrBytes: [{ $ifNull: [{ $toString: '$paid_at' }, ''] }, 0, 10] }, today] }, '$paid_amount', 0
+            ] }
+          ]
+        } },
+        overdueCount: { $sum: { $cond: [{ $in: ['$status', ['Pending', 'Partially Paid']] }, 1, 0] } },
+        totalCollected: { $sum: {
+          $cond: [
+            { $gt: ['$paid_amount', 0] }, '$paid_amount',
+            { $cond: [{ $eq: ['$status', 'Paid'] }, '$total_amount', 0] }
+          ]
+        } },
+        totalBilled: { $sum: { $cond: [{ $in: ['$status', ['Paid', 'Pending', 'Partially Paid']] }, '$total_amount', 0] } }
+      }
+    }
+  ]);
+  return {
+    totalOutstanding: asNumber(result.totalOutstanding),
+    collectedToday: asNumber(result.collectedToday),
+    overdueCount: asNumber(result.overdueCount),
+    totalCollected: asNumber(result.totalCollected),
+    totalBilled: asNumber(result.totalBilled)
+  };
+}
+
+async function listBillingTransactions({ hospitalId, search = '', status = 'All', startDate = '', endDate = '', scope = 'all', limit = 50, page = 1 }) {
+  const hospitalObjectId = new mongoose.Types.ObjectId(String(hospitalId));
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+  const safePage = Math.max(1, Number(page) || 1);
+  const skip = (safePage - 1) * safeLimit;
+  const candidateLimit = safePage * safeLimit;
+  const normalizedScope = scope === 'opd' ? 'opd' : 'all';
+
+  const [bills, invoices, stats, openIpdCount, patientCounts] = await Promise.all([
+    aggregateBillTransactions({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope, rowLimit: candidateLimit }),
+    aggregateInvoiceTransactions({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope, rowLimit: candidateLimit }),
+    getBillingDashboardStats(hospitalObjectId),
+    IPDAdmission.countDocuments({ hospitalId: hospitalObjectId, status: { $ne: 'Cancelled' }, financialClearanceStatus: { $ne: 'cleared' } }),
+    getGlobalBillingCounts(hospitalObjectId)
   ]);
 
-  const invoiceByAdmission = new Map();
-  const invoiceByPatientOpd = new Map();
-  invoices.forEach((invoice) => {
-    const admissionId = idString(invoice.admission_id);
-    if (admissionId) {
-      if (!invoiceByAdmission.has(admissionId)) invoiceByAdmission.set(admissionId, []);
-      invoiceByAdmission.get(admissionId).push(invoice);
-    } else {
-      const patientId = idString(invoice.patient_id);
-      if (!patientId) return;
-      if (!invoiceByPatientOpd.has(patientId)) invoiceByPatientOpd.set(patientId, []);
-      invoiceByPatientOpd.get(patientId).push(invoice);
-    }
-  });
-
-  const chargesByAdmission = new Map();
-  charges.forEach((charge) => {
-    const admissionId = idString(charge.admissionId);
-    if (!chargesByAdmission.has(admissionId)) chargesByAdmission.set(admissionId, []);
-    chargesByAdmission.get(admissionId).push(charge);
-  });
-
-  const ipdRows = admissions.map((admission) => {
-    const admissionId = idString(admission._id);
-    const patient = admission.patientId || {};
-    const relatedInvoices = invoiceByAdmission.get(admissionId) || [];
-    const relatedCharges = chargesByAdmission.get(admissionId) || [];
-    const unbilled = relatedCharges.filter((charge) => !charge.isBilled && charge.status !== 'INVOICED');
-    const issuedTotal = relatedInvoices.reduce((sum, invoice) => sum + asNumber(invoice.total), 0);
-    const chargeTotal = relatedCharges.reduce((sum, charge) => sum + asNumber(charge.netAmount ?? charge.amount), 0);
-    const unbilledTotal = unbilled.reduce((sum, charge) => sum + asNumber(charge.netAmount ?? charge.amount), 0);
-    const calculatedOutstanding = relatedInvoices.reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) + unbilledTotal;
-    // Admission totals are the canonical running-bill values and avoid counting
-    // the same operational charge twice when an interim/pharmacy invoice is
-    // later consolidated into a final IPD invoice.
-    const totalBill = admission.totalBillAmount !== undefined
-      ? asNumber(admission.totalBillAmount)
-      : (chargeTotal || issuedTotal + unbilledTotal);
-    const outstanding = admission.dueAmount !== undefined
-      ? asNumber(admission.dueAmount)
-      : calculatedOutstanding;
-    return {
-      encounterType: 'IPD',
-      rowKey: `ipd:${admissionId}`,
-      patientId: idString(patient._id),
-      patientName: patientDisplayName(patient),
-      uhid: patient.uhid || patient.patientId || '—',
-      phone: patient.phone || '',
-      admissionId,
-      admissionNumber: admission.admissionNumber || admission.shipNumber || '—',
-      admissionStatus: admission.status || 'Admitted',
-      consultant: patientDisplayName(admission.primaryDoctorId || {}),
-      ward: admission.wardId?.name || admission.wardId?.wardName || '',
-      bed: admission.bedId?.bedNumber || admission.bedId?.bed_number || admission.bedId?.name || '',
-      totalBill,
-      outstandingAmount: outstanding,
-      invoiceCount: relatedInvoices.length,
-      chargeCount: relatedCharges.length,
-      lastUpdated: latestDate(
-        admission.updatedAt,
-        relatedInvoices.map((item) => item.updated_at || item.updatedAt || item.created_at || item.createdAt),
-        relatedCharges.map((item) => item.updatedAt || item.chargeDate || item.createdAt)
-      )
-    };
-  });
-
-  const opdBills = bills.filter((bill) => !bill.admission_id);
-  const opdMap = new Map();
-  opdBills.forEach((bill) => {
-    const patient = bill.patient_id || {};
-    const patientId = idString(patient._id || bill.patient_id);
-    if (!patientId) return;
-    if (!opdMap.has(patientId)) {
-      opdMap.set(patientId, {
-        encounterType: 'OPD',
-        rowKey: `opd:${patientId}`,
-        patientId,
-        patientName: patientDisplayName(patient),
-        uhid: patient.uhid || patient.patientId || '—',
-        phone: patient.phone || '',
-        admissionId: null,
-        admissionNumber: 'OPD',
-        admissionStatus: 'OPD',
-        totalBill: 0,
-        outstandingAmount: 0,
-        billCount: 0,
-        invoiceCount: 0,
-        chargeCount: 0,
-        lastUpdated: null
-      });
-    }
-    const row = opdMap.get(patientId);
-    row.totalBill += asNumber(bill.total_amount);
-    row.outstandingAmount += billOutstanding(bill);
-    row.billCount += 1;
-    row.lastUpdated = latestDate(row.lastUpdated, bill.updatedAt || bill.createdAt || bill.generated_at);
-  });
-  for (const [patientId, relatedInvoices] of invoiceByPatientOpd.entries()) {
-    const row = opdMap.get(patientId);
-    if (!row) continue;
-    row.invoiceCount = relatedInvoices.length;
-    row.lastUpdated = latestDate(row.lastUpdated, relatedInvoices.map((item) => item.updated_at || item.updatedAt || item.created_at || item.createdAt));
-  }
-  const opdRows = Array.from(opdMap.values());
-
-  let rows = type === 'ipd' ? ipdRows : type === 'opd' ? opdRows : [...ipdRows, ...opdRows];
-  const term = String(search || '').trim().toLowerCase();
-  if (term) {
-    rows = rows.filter((row) => [row.patientName, row.uhid, row.phone, row.admissionNumber]
-      .some((value) => String(value || '').toLowerCase().includes(term)));
-  }
-  rows.sort((left, right) => new Date(right.lastUpdated || 0) - new Date(left.lastUpdated || 0));
-
+  const rows = [...bills.rows, ...invoices.rows]
+    .sort((left, right) => {
+      const dateDiff = new Date(right.displayDate || 0) - new Date(left.displayDate || 0);
+      return dateDiff || String(right._id).localeCompare(String(left._id));
+    })
+    .slice(skip, skip + safeLimit)
+    .map(({ itemDescriptions, _idText, ...row }) => ({ ...row, _worklistCompact: true }));
+  const total = bills.count + invoices.count;
   return {
-    rows: rows.slice(0, Math.max(1, Math.min(1000, Number(limit) || 250))),
-    counts: { all: ipdRows.length + opdRows.length, ipd: ipdRows.length, opd: opdRows.length }
+    rows,
+    stats,
+    openIpdCount,
+    patientCounts,
+    pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.max(1, Math.ceil(total / safeLimit)) }
+  };
+}
+
+async function listPatientBillingSummaries({ hospitalId, type = 'all', search = '', startDate = '', endDate = '', limit = 250, page = 1 }) {
+  const hospitalObjectId = new mongoose.Types.ObjectId(String(hospitalId));
+  // Preserve the legacy endpoint's accepted response size for callers that have
+  // not yet migrated, while new high-traffic screens use much smaller pages.
+  const safeLimit = Math.min(1000, Math.max(1, Number(limit) || 250));
+  const safePage = Math.max(1, Number(page) || 1);
+  const skip = (safePage - 1) * safeLimit;
+  const countsPromise = getGlobalBillingCounts(hospitalObjectId);
+
+  if (type === 'ipd') {
+    const [result, counts] = await Promise.all([
+      aggregateIpdBillingRows({ hospitalObjectId, search, startDate, endDate, rowLimit: safeLimit, skip }),
+      countsPromise
+    ]);
+    return {
+      rows: result.rows,
+      counts,
+      pagination: { page: safePage, limit: safeLimit, total: result.count, totalPages: Math.max(1, Math.ceil(result.count / safeLimit)) }
+    };
+  }
+  if (type === 'opd') {
+    const [result, counts] = await Promise.all([
+      aggregateOpdBillingRows({ hospitalObjectId, search, startDate, endDate, rowLimit: safeLimit, skip }),
+      countsPromise
+    ]);
+    return {
+      rows: result.rows,
+      counts,
+      pagination: { page: safePage, limit: safeLimit, total: result.count, totalPages: Math.max(1, Math.ceil(result.count / safeLimit)) }
+    };
+  }
+
+  // Fetch only enough sorted candidates from each encounter type to construct
+  // the requested combined page. This keeps Node memory bounded while preserving
+  // the exact cross-type lastUpdated ordering used by the previous implementation.
+  const candidateLimit = safePage * safeLimit;
+  const [ipd, opd, counts] = await Promise.all([
+    aggregateIpdBillingRows({ hospitalObjectId, search, startDate, endDate, rowLimit: candidateLimit, skip: 0 }),
+    aggregateOpdBillingRows({ hospitalObjectId, search, startDate, endDate, rowLimit: candidateLimit, skip: 0 }),
+    countsPromise
+  ]);
+  const combined = [...ipd.rows, ...opd.rows]
+    .sort((left, right) => new Date(right.lastUpdated || 0) - new Date(left.lastUpdated || 0));
+  const filteredTotal = ipd.count + opd.count;
+  return {
+    rows: combined.slice(skip, skip + safeLimit),
+    counts,
+    pagination: { page: safePage, limit: safeLimit, total: filteredTotal, totalPages: Math.max(1, Math.ceil(filteredTotal / safeLimit)) }
   };
 }
 
@@ -793,6 +1272,7 @@ async function getPatientIPDHistory({ hospitalId, patientId }) {
 
 module.exports = {
   listPatientBillingSummaries,
+  listBillingTransactions,
   getPatientBillingDetails,
   getPatientIPDHistory,
   groupCharges,

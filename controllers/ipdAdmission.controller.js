@@ -950,88 +950,295 @@ exports.getAdmissionInvoice = async (req, res) => {
   }
 };
 
+const IPD_READ_STATUS_GROUPS = {
+  active: ['Admitted', 'Under Treatment'],
+  discharge: ['Discharge Initiated', 'Discharge Summary Pending', 'Billing Pending', 'Payment Pending', 'Ready for Discharge'],
+  completed: ['Discharged'],
+  terminated: ['Cancelled', 'LAMA', 'DAMA', 'Expired']
+};
+
+async function buildAdmissionReadFilter(req) {
+  const hospitalId = requireAdmissionHospitalId(req);
+  const {
+    status,
+    patientId,
+    doctorId,
+    departmentId,
+    startDate,
+    endDate,
+    search,
+    clinicalAssessmentCompleted,
+    pharmacyClearanceStatus
+  } = req.query;
+
+  const hospitalObjectId = hospitalId instanceof mongoose.Types.ObjectId
+    ? hospitalId
+    : new mongoose.Types.ObjectId(String(hospitalId));
+  // Aggregate pipelines do not apply Mongoose schema casting. Keep the tenant
+  // key as an ObjectId here so the paginated/search pipelines match the same
+  // admissions as the legacy find() path.
+  const filter = { hospitalId: hospitalObjectId, is_active: { $ne: false } };
+  if (status) {
+    const rows = String(status).split(',').map((value) => value.trim()).filter(Boolean);
+    if (rows.length) filter.status = rows.length === 1 ? rows[0] : { $in: rows };
+  }
+  if (patientId) filter.patientId = patientId;
+  if (doctorId) filter.primaryDoctorId = doctorId;
+  if (departmentId && departmentId !== 'all') filter.departmentId = departmentId;
+  if (clinicalAssessmentCompleted !== undefined) {
+    filter.clinicalAssessmentCompleted = clinicalAssessmentCompleted === 'true';
+  }
+  if (pharmacyClearanceStatus) filter.pharmacyClearanceStatus = pharmacyClearanceStatus;
+  if (startDate || endDate) filter.admissionDate = semanticDateRange(startDate, endDate);
+
+  const searchRegex = search
+    ? new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+    : null;
+
+  return { hospitalId, filter, searchRegex };
+}
+
+function admissionSearchStages(searchRegex) {
+  if (!searchRegex) return [];
+  return [
+    {
+      $lookup: {
+        from: Patient.collection.name,
+        localField: 'patientId',
+        foreignField: '_id',
+        pipeline: [
+          {
+            $match: {
+              $or: [
+                { first_name: searchRegex },
+                { last_name: searchRegex },
+                { patientId: searchRegex },
+                { phone: searchRegex },
+                { uhid: searchRegex }
+              ]
+            }
+          },
+          { $project: { _id: 1 } }
+        ],
+        as: '_patientSearch'
+      }
+    },
+    {
+      $match: {
+        $or: [
+          { admissionNumber: searchRegex },
+          { shipNumber: searchRegex },
+          { '_patientSearch.0': { $exists: true } }
+        ]
+      }
+    }
+  ];
+}
+
+function populateAdmissionListQuery(query) {
+  return query
+    .populate('patientId', 'first_name last_name patientId uhid phone dob gender')
+    .populate('primaryDoctorId', 'firstName lastName specialization')
+    .populate('departmentId', 'name')
+    .populate('bedId', 'bedNumber bedType dailyCharge status')
+    .populate('roomId', 'room_number type')
+    .populate('wardId', 'name');
+}
+
+async function fetchAdmissionsByOrderedIds(ids, hospitalId) {
+  if (!ids.length) return [];
+  const rows = await populateAdmissionListQuery(
+    IPDAdmission.find({ _id: { $in: ids }, hospitalId, is_active: { $ne: false } })
+  ).lean();
+  const byId = new Map(rows.map((row) => [String(row._id), row]));
+  return ids.map((id) => byId.get(String(id))).filter(Boolean);
+}
+
+async function admissionSearchPage({ filter, searchRegex, page, limit }) {
+  const [result = {}] = await IPDAdmission.aggregate([
+    { $match: filter },
+    ...admissionSearchStages(searchRegex),
+    { $sort: { admissionDate: -1, _id: -1 } },
+    {
+      $facet: {
+        ids: [
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          { $project: { _id: 1 } }
+        ],
+        total: [{ $count: 'value' }]
+      }
+    }
+  ]).allowDiskUse(true);
+  return {
+    ids: (result.ids || []).map((row) => row._id),
+    total: result.total?.[0]?.value || 0
+  };
+}
+
+async function admissionGlobalSummary(hospitalId) {
+  const [row] = await IPDAdmission.aggregate([
+    { $match: { hospitalId: new mongoose.Types.ObjectId(String(hospitalId)), is_active: { $ne: false } } },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: 1 },
+        active: { $sum: { $cond: [{ $in: ['$status', IPD_READ_STATUS_GROUPS.active] }, 1, 0] } },
+        discharge: { $sum: { $cond: [{ $in: ['$status', IPD_READ_STATUS_GROUPS.discharge] }, 1, 0] } },
+        completed: { $sum: { $cond: [{ $in: ['$status', IPD_READ_STATUS_GROUPS.completed] }, 1, 0] } },
+        terminated: { $sum: { $cond: [{ $in: ['$status', IPD_READ_STATUS_GROUPS.terminated] }, 1, 0] } }
+      }
+    },
+    { $project: { _id: 0, total: 1, active: 1, discharge: 1, completed: 1, terminated: 1 } }
+  ]);
+  return row || { total: 0, active: 0, discharge: 0, completed: 0, terminated: 0 };
+}
+
+function delimitedCell(value, separator) {
+  const text = value == null ? '' : String(value);
+  const escaped = text.replace(/"/g, '""');
+  // Quoting every cell keeps commas/tabs/newlines safe for both CSV and Excel-compatible TSV.
+  return `"${escaped}"`;
+}
+
 // Get all admissions with filters
 exports.getAllAdmissions = async (req, res) => {
   try {
-    const hospitalId = requireAdmissionHospitalId(req);
-    const {
-      page = 1,
-      limit = 20,
-      status,
-      patientId,
-      doctorId,
-      startDate,
-      endDate,
-      search,
-      clinicalAssessmentCompleted,
-      pharmacyClearanceStatus
-    } = req.query;
+    const { hospitalId, filter, searchRegex } = await buildAdmissionReadFilter(req);
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 20));
+    const includeSummary = String(req.query.includeSummary || '').toLowerCase() === 'true';
 
-    const filter = { hospitalId, is_active: { $ne: false } };
+    let admissions;
+    let total;
 
-    if (status) {
-      const rows = String(status).split(',').map((value) => value.trim());
-      filter.status = rows.length === 1 ? rows[0] : { $in: rows };
+    if (searchRegex) {
+      const [searchPage, summary] = await Promise.all([
+        admissionSearchPage({ filter, searchRegex, page, limit }),
+        includeSummary ? admissionGlobalSummary(hospitalId) : Promise.resolve(undefined)
+      ]);
+      admissions = await fetchAdmissionsByOrderedIds(searchPage.ids, hospitalId);
+      total = searchPage.total;
+
+      return res.json({
+        admissions,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
+          totalAdmissions: total,
+          limit
+        },
+        ...(summary ? { summary } : {})
+      });
     }
 
-    if (patientId) filter.patientId = patientId;
-    if (doctorId) filter.primaryDoctorId = doctorId;
-    if (clinicalAssessmentCompleted !== undefined) {
-      filter.clinicalAssessmentCompleted = clinicalAssessmentCompleted === 'true';
-    }
-    if (pharmacyClearanceStatus) {
-      filter.pharmacyClearanceStatus = pharmacyClearanceStatus;
-    }
-
-    if (startDate || endDate) {
-      filter.admissionDate = semanticDateRange(startDate, endDate);
-    }
-
-    if (search) {
-      const regex = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      const patients = await Patient.find({
-        hospitalId,
-        $or: [
-          { first_name: regex },
-          { last_name: regex },
-          { patientId: regex },
-          { phone: regex },
-          { uhid: regex }
-        ]
-      }).select('_id');
-
-      filter.$or = [
-        { admissionNumber: regex },
-        { shipNumber: regex },
-        { patientId: { $in: patients.map((row) => row._id) } }
-      ];
-    }
-
-    const [admissions, total] = await Promise.all([
-      IPDAdmission.find(filter)
-        .populate('patientId', 'first_name last_name patientId uhid phone dob gender')
-        .populate('primaryDoctorId', 'firstName lastName specialization')
-        .populate('departmentId', 'name')
-        .populate('bedId', 'bedNumber bedType dailyCharge status')
-        .populate('roomId', 'room_number type')
-        .populate('wardId', 'name')
-        .sort({ admissionDate: -1 })
-        .skip((Number(page) - 1) * Number(limit))
-        .limit(Number(limit)),
-      IPDAdmission.countDocuments(filter)
+    const [rows, rowCount, summary] = await Promise.all([
+      populateAdmissionListQuery(IPDAdmission.find(filter))
+        .sort({ admissionDate: -1, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      IPDAdmission.countDocuments(filter),
+      includeSummary ? admissionGlobalSummary(hospitalId) : Promise.resolve(undefined)
     ]);
+    admissions = rows;
+    total = rowCount;
 
     return res.json({
       admissions,
       pagination: {
-        currentPage: Number(page),
-        totalPages: Math.ceil(total / Number(limit)),
+        currentPage: page,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
         totalAdmissions: total,
-        limit: Number(limit)
-      }
+        limit
+      },
+      ...(summary ? { summary } : {})
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });
+  }
+};
+
+// Stream all admissions matching the same worklist filters. This intentionally bypasses UI pagination.
+exports.exportAdmissions = async (req, res) => {
+  try {
+    const { hospitalId, filter, searchRegex } = await buildAdmissionReadFilter(req);
+    const format = String(req.query.format || 'xls').toLowerCase() === 'csv' ? 'csv' : 'xls';
+    const separator = format === 'csv' ? ',' : '\t';
+    const extension = format === 'csv' ? 'csv' : 'xls';
+    res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.ms-excel; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="ipd-admissions-${new Date().toISOString().slice(0, 10)}.${extension}"`);
+    res.write(['IPD No', 'Patient', 'UHID', 'Admission Date', 'Ward / Bed', 'Consultant', 'Diagnosis', 'Status', 'Pharmacy Clearance']
+      .map((value) => delimitedCell(value, separator)).join(separator) + '\n');
+
+    const writeAdmission = async (admission) => {
+      const row = [
+        admission.admissionNumber || '',
+        `${admission.patientId?.first_name || ''} ${admission.patientId?.last_name || ''}`.trim(),
+        admission.patientId?.patientId || admission.patientId?.uhid || '',
+        admission.admissionDate ? new Date(admission.admissionDate).toISOString() : '',
+        `${admission.wardId?.name || ''} ${admission.bedId?.bedNumber || ''}`.trim(),
+        `${admission.primaryDoctorId?.firstName || ''} ${admission.primaryDoctorId?.lastName || ''}`.trim(),
+        admission.diagnosis || admission.primaryDiagnosis || '',
+        admission.status || '',
+        admission.pharmacyClearanceStatus || ''
+      ];
+      if (!res.write(row.map((value) => delimitedCell(value, separator)).join(separator) + '\n')) {
+        await new Promise((resolve) => res.once('drain', resolve));
+      }
+    };
+
+    if (!searchRegex) {
+      const cursor = IPDAdmission.find(filter)
+        .select('admissionNumber admissionDate wardId bedId primaryDoctorId patientId diagnosis primaryDiagnosis status pharmacyClearanceStatus')
+        .populate('patientId', 'first_name last_name patientId uhid')
+        .populate('primaryDoctorId', 'firstName lastName')
+        .populate('wardId', 'name')
+        .populate('bedId', 'bedNumber')
+        .sort({ admissionDate: -1, _id: -1 })
+        .lean()
+        .cursor({ batchSize: 200 });
+
+      for await (const admission of cursor) await writeAdmission(admission);
+      return res.end();
+    }
+
+    // Search export streams matching identifiers in small chunks, then populates
+    // only that chunk. It never constructs a potentially huge patient-id list.
+    const idCursor = IPDAdmission.aggregate([
+      { $match: filter },
+      ...admissionSearchStages(searchRegex),
+      { $sort: { admissionDate: -1, _id: -1 } },
+      { $project: { _id: 1 } }
+    ]).allowDiskUse(true).cursor({ batchSize: 200 }).exec();
+
+    let ids = [];
+    const flush = async () => {
+      if (!ids.length) return;
+      const rows = await IPDAdmission.find({ _id: { $in: ids }, hospitalId })
+        .select('admissionNumber admissionDate wardId bedId primaryDoctorId patientId diagnosis primaryDiagnosis status pharmacyClearanceStatus')
+        .populate('patientId', 'first_name last_name patientId uhid')
+        .populate('primaryDoctorId', 'firstName lastName')
+        .populate('wardId', 'name')
+        .populate('bedId', 'bedNumber')
+        .lean();
+      const byId = new Map(rows.map((row) => [String(row._id), row]));
+      for (const id of ids) {
+        const admission = byId.get(String(id));
+        if (admission) await writeAdmission(admission);
+      }
+      ids = [];
+    };
+
+    for await (const row of idCursor) {
+      ids.push(row._id);
+      if (ids.length >= 200) await flush();
+    }
+    await flush();
+    return res.end();
+  } catch (error) {
+    if (!res.headersSent) return res.status(500).json({ error: error.message });
+    return res.end();
   }
 };
 

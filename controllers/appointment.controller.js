@@ -26,6 +26,7 @@ const StaffAvailability = require('../models/StaffAvailability');
 const { rememberDeclaredPreference } = require('../services/patientCoveragePreference.service');
 const { resolveFinancialPolicy } = require('../services/financialPolicy.service');
 const appointmentCalendarManagement = require('../services/appointmentCalendarManagement.service');
+const scalableRead = require('../services/scalableRead.service');
 const {
   DEFAULT_HOSPITAL_TIME_ZONE,
   hospitalDateKey,
@@ -1729,6 +1730,43 @@ exports.getCurrentQueue = async (req, res) => {
   }
 };
 
+// Compact, paginated read model for the high-frequency front desk worklist.
+// The legacy GET /appointments contract remains unchanged for other consumers.
+exports.getAppointmentWorklist = async (req, res) => {
+  try {
+    const data = await scalableRead.appointmentWorklist({
+      hospitalId: requireHospitalId(req),
+      query: req.query
+    });
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+exports.getDoctorDashboardReadModel = async (req, res) => {
+  try {
+    const data = await scalableRead.doctorDashboard({
+      hospitalId: requireHospitalId(req),
+      doctorId: req.params.doctorId,
+      query: req.query
+    });
+    if (!data.doctor) return res.status(404).json({ error: 'Doctor not found' });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
+exports.getNurseDashboardReadModel = async (req, res) => {
+  try {
+    const data = await scalableRead.nurseDashboard({ hospitalId: requireHospitalId(req) });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
 // Get all appointments
 exports.getAllAppointments = async (req, res) => {
   try {
@@ -1770,12 +1808,15 @@ exports.getAllAppointments = async (req, res) => {
       .sort({ appointment_date: -1 })
       .limit(limit);
 
-    const appointmentsWithVitals = await Promise.all(appointments.map(async (appt) => {
-      const vital = await Vital.findOne({ appointment_id: appt._id });
-      return {
-        ...appt.toObject(),
-        vitals: vital || null
-      };
+    // Preserve the legacy response contract while removing the per-row Vital query.
+    const appointmentIds = appointments.map((appt) => appt._id);
+    const vitals = appointmentIds.length
+      ? await Vital.find({ appointment_id: { $in: appointmentIds } }).lean()
+      : [];
+    const vitalMap = new Map(vitals.map((vital) => [String(vital.appointment_id), vital]));
+    const appointmentsWithVitals = appointments.map((appt) => ({
+      ...appt.toObject(),
+      vitals: vitalMap.get(String(appt._id)) || null
     }));
 
     res.json(appointmentsWithVitals);
@@ -2595,12 +2636,15 @@ exports.getAppointmentsByDoctorId = async (req, res) => {
       .populate('referral.referredDoctorId', 'firstName lastName specialization department doctorId')
       .populate('referral.departmentId', 'name');
 
-    const appointmentsWithVitals = await Promise.all(appointments.map(async (appt) => {
-      const vital = await Vital.findOne({ appointment_id: appt._id });
-      return {
-        ...appt.toObject(),
-        vitals: vital || null
-      };
+    // Preserve the legacy response contract while removing the per-row Vital query.
+    const appointmentIds = appointments.map((appt) => appt._id);
+    const vitals = appointmentIds.length
+      ? await Vital.find({ appointment_id: { $in: appointmentIds } }).lean()
+      : [];
+    const vitalMap = new Map(vitals.map((vital) => [String(vital.appointment_id), vital]));
+    const appointmentsWithVitals = appointments.map((appt) => ({
+      ...appt.toObject(),
+      vitals: vitalMap.get(String(appt._id)) || null
     }));
 
     res.json(appointmentsWithVitals);

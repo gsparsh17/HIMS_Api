@@ -171,6 +171,11 @@ router.get(
 );
 
 router.get(
+  '/admissions/export',
+  admissions.exportAdmissions
+);
+
+router.get(
   '/admissions/dashboard/stats',
   // ...read,
   // requireModuleAccess('ipd.patient_file', 'view'),

@@ -2570,6 +2570,29 @@ exports.deleteBill = async (req, res) => {
 
 
 
+// Compact billing dashboard transaction read model. This endpoint deliberately
+// contains only fields rendered by the dashboard table; full financial documents
+// remain on the existing detail routes and are fetched on demand.
+exports.getBillingTransactionWorklist = async (req, res, next) => {
+  try {
+    const hospitalId = requestHospitalId(req);
+    const data = await billingPatientService.listBillingTransactions({
+      hospitalId,
+      search: req.query.search || '',
+      status: req.query.status || 'All',
+      startDate: req.query.startDate || '',
+      endDate: req.query.endDate || '',
+      scope: req.query.scope || 'all',
+      limit: req.query.limit || 50,
+      page: req.query.page || 1
+    });
+    res.json({ success: true, data });
+  } catch (error) {
+    if (next) return next(error);
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+};
+
 // Patient-first billing dashboard summaries and encounter details.
 exports.getPatientBillingSummaries = async (req, res, next) => {
   try {
@@ -2578,7 +2601,10 @@ exports.getPatientBillingSummaries = async (req, res, next) => {
       hospitalId,
       type: req.query.type || 'all',
       search: req.query.search || '',
-      limit: req.query.limit || 250
+      startDate: req.query.startDate || '',
+      endDate: req.query.endDate || '',
+      limit: req.query.limit || 250,
+      page: req.query.page || 1
     });
     res.json({ success: true, ...data });
   } catch (error) {

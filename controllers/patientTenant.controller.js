@@ -28,6 +28,7 @@ const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
 const { queueNotification } = require('../services/nabhNotification.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { getPatientCoveragePreference } = require('../services/patientCoveragePreference.service');
+const scalableRead = require('../services/scalableRead.service');
 
 
 async function nextShareRecordNumber(hospitalId) {
@@ -323,6 +324,97 @@ exports.verifyMobileOtp = async (req, res) => {
     return res.json({ success: true, data });
   } catch (error) {
     return fail(res, error, 400);
+  }
+};
+
+function csvCell(value) {
+  if (value === null || value === undefined) return '""';
+  const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+exports.getPatientWorklist = async (req, res) => {
+  try {
+    const data = await scalableRead.listPatientWorklist({
+      hospitalId: requireHospitalId(req),
+      query: req.query
+    });
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    return fail(res, error, 400);
+  }
+};
+
+exports.getPatientVisitHistory = async (req, res) => {
+  try {
+    const data = await scalableRead.getPatientVisitHistory({
+      hospitalId: requireHospitalId(req),
+      patientId: req.params.id,
+      query: req.query
+    });
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    return fail(res, error, 400);
+  }
+};
+
+exports.exportPatientWorklist = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const cursor = await scalableRead.patientWorklistCursor({ hospitalId, query: req.query });
+    const headers = [
+      'Type', 'Patient ID', 'Name', 'Email', 'Phone', 'Age', 'Date of Birth', 'Gender', 'Blood Group', 'Aadhaar Number',
+      'ABHA Number', 'ABHA Address', 'ABHA Status', 'Address', 'Registration Date', 'Sponsor Type',
+      'Sponsor Name', 'Pharmacy Outstanding', 'Pharmacy Advance', 'Department', 'Last Visited Doctor',
+      'Last Visit', 'Total Appointments', 'Total Collection'
+    ];
+    const format = String(req.query.format || 'csv').toLowerCase() === 'xls' ? 'xls' : 'csv';
+    const separator = format === 'xls' ? '\t' : ',';
+    const contentType = format === 'xls' ? 'application/vnd.ms-excel; charset=utf-8' : 'text/csv; charset=utf-8';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="patient-worklist-${Date.now()}.${format}"`);
+    res.write(`\uFEFF${headers.map(csvCell).join(separator)}\n`);
+
+    for await (const row of cursor) {
+      const apptDoctor = row.latestAppointment?.doctor_id;
+      const admissionDoctor = row.selectedAdmission?.primaryDoctorId;
+      const apptDept = row.latestAppointment?.department_id;
+      const admissionDept = row.selectedAdmission?.departmentId;
+      const doctorName = row.lastVisitedDoctor
+        ? `Dr. ${row.lastVisitedDoctor}`
+        : apptDoctor
+          ? `Dr. ${[apptDoctor.firstName, apptDoctor.lastName].filter(Boolean).join(' ')}`
+          : admissionDoctor
+            ? `Dr. ${[admissionDoctor.firstName, admissionDoctor.lastName].filter(Boolean).join(' ')}`
+            : 'N/A';
+      const values = [
+        row.careType || 'UNASSIGNED', row.patientId || row.uhid || 'N/A',
+        [row.salutation, row.first_name, row.last_name].filter(Boolean).join(' '), row.email || 'N/A', row.phone || '',
+        row.dob ? Math.max(0, new Date().getUTCFullYear() - new Date(row.dob).getUTCFullYear() - ((new Date().getUTCMonth() < new Date(row.dob).getUTCMonth() || (new Date().getUTCMonth() === new Date(row.dob).getUTCMonth() && new Date().getUTCDate() < new Date(row.dob).getUTCDate())) ? 1 : 0)) : 'N/A',
+        row.dob ? new Date(row.dob).toISOString().slice(0, 10) : 'N/A', row.gender || '', row.blood_group || 'N/A', row.aadhaar_number || 'N/A',
+        row.abha?.number || '', row.abha?.address || '', row.abha?.status || 'not_linked', row.address || 'N/A',
+        row.registered_at ? new Date(row.registered_at).toISOString().slice(0, 10) : 'N/A', row.sponsor_type || 'self', row.sponsor_name || 'N/A',
+        Number(row.pharmacy_outstanding_balance || 0), Number(row.pharmacy_advance_balance || 0),
+        row.lastVisitedDepartment || apptDept?.name || admissionDept?.name || 'N/A', doctorName,
+        row.latestCareDate ? new Date(row.latestCareDate).toISOString().slice(0, 10) : 'N/A', Number(row.totalAppointments || 0), Number(row.totalCollection || 0)
+      ];
+      if (!res.write(`${values.map(csvCell).join(separator)}\n`)) {
+        await new Promise((resolve) => res.once('drain', resolve));
+      }
+    }
+    return res.end();
+  } catch (error) {
+    if (res.headersSent) return res.end();
+    return fail(res, error, 500);
+  }
+};
+
+exports.getDashboardOverview = async (req, res) => {
+  try {
+    const data = await scalableRead.adminOverview({ hospitalId: requireHospitalId(req) });
+    return res.json({ success: true, data });
+  } catch (error) {
+    return fail(res, error, 500);
   }
 };
 

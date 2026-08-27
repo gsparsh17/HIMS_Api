@@ -2,6 +2,7 @@ const { operationNow } = require('../utils/operationTimeContext');
 const { hospitalDateKey } = require('../utils/hospitalDateTime');
 const mongoose = require('mongoose');
 const IPDAdmission = require('../models/IPDAdmission');
+const Patient = require('../models/Patient');
 const IPDCharge = require('../models/IPDCharge');
 const Invoice = require('../models/Invoice');
 const Bill = require('../models/Bill');
@@ -592,35 +593,81 @@ async function listBillingAdmissions(user, query = {}) {
   const requestedStatus = String(query.status || '').trim();
   if (requestedStatus) filter.status = requestedStatus;
   else filter.status = { $nin: ['Cancelled'] };
+  if (String(query.openOnly || '').toLowerCase() === 'true') {
+    filter.financialClearanceStatus = { $ne: 'cleared' };
+  }
 
-  const limit = Math.min(Math.max(Number(query.limit) || 150, 1), 300);
-  const admissions = await IPDAdmission.find(filter)
+  const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 100);
+  const page = Math.max(Number(query.page) || 1, 1);
+  const skip = (page - 1) * limit;
+  const search = String(query.search || '').trim();
+  let ids = [];
+  let total = 0;
+
+  if (search) {
+    const regex = new RegExp(escapeRegex(search), 'i');
+    const hospitalObjectId = new mongoose.Types.ObjectId(String(hospitalId));
+    const pipeline = [
+      { $match: { ...filter, hospitalId: hospitalObjectId } },
+      {
+        $lookup: {
+          from: Patient.collection.name,
+          localField: 'patientId',
+          foreignField: '_id',
+          pipeline: [{ $project: { first_name: 1, last_name: 1, patientId: 1 } }],
+          as: '_patient'
+        }
+      },
+      { $set: { _patient: { $arrayElemAt: ['$_patient', 0] } } },
+      {
+        $match: {
+          $or: [
+            { admissionNumber: regex },
+            { shipNumber: regex },
+            { '_patient.first_name': regex },
+            { '_patient.last_name': regex },
+            { '_patient.patientId': regex }
+          ]
+        }
+      },
+      { $sort: { admissionDate: -1, _id: -1 } },
+      { $facet: {
+        ids: [{ $skip: skip }, { $limit: limit }, { $project: { _id: 1 } }],
+        count: [{ $count: 'value' }]
+      } }
+    ];
+    const [result = {}] = await IPDAdmission.aggregate(pipeline).allowDiskUse(true);
+    ids = (result.ids || []).map((row) => row._id);
+    total = result.count?.[0]?.value || 0;
+  } else {
+    const [idRows, count] = await Promise.all([
+      IPDAdmission.find(filter).select('_id').sort({ admissionDate: -1, _id: -1 }).skip(skip).limit(limit).lean(),
+      IPDAdmission.countDocuments(filter)
+    ]);
+    ids = idRows.map((row) => row._id);
+    total = count;
+  }
+
+  if (!ids.length) {
+    return { success: true, admissions: [], pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } };
+  }
+
+  const admissions = await IPDAdmission.find({ hospitalId, _id: { $in: ids } })
     .populate('patientId', 'first_name last_name patientId phone age gender')
     .populate('primaryDoctorId', 'firstName lastName specialization')
     .populate('departmentId', 'name')
     .populate('wardId', 'name wardName')
     .populate('roomId', 'roomNumber name')
     .populate('bedId', 'bedNumber bed_number')
-    .sort({ admissionDate: -1 })
-    .limit(limit)
     .lean();
+  const byId = new Map(admissions.map((row) => [String(row._id), row]));
+  const ordered = ids.map((id) => byId.get(String(id))).filter(Boolean);
 
-  const search = String(query.search || '').trim().toLowerCase();
-  const filtered = search
-    ? admissions.filter((admission) => {
-        const patient = admission.patientId || {};
-        const haystack = [
-          patient.first_name,
-          patient.last_name,
-          patient.patientId,
-          admission.admissionNumber,
-          admission.shipNumber
-        ].filter(Boolean).join(' ').toLowerCase();
-        return haystack.includes(search);
-      })
-    : admissions;
-
-  return { success: true, admissions: filtered };
+  return {
+    success: true,
+    admissions: ordered,
+    pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) }
+  };
 }
 
 async function getRunningBill(admissionId, user, options = {}) {
