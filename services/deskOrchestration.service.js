@@ -788,6 +788,16 @@ function requestBillingState(row, refs) {
   return 'PENDING_CHARGE';
 }
 
+function clinicalClearanceAfterCheckout(row, checkoutFullySettled) {
+  const currentState = String(row?.clearanceState || 'PAYMENT_REQUIRED').toUpperCase();
+
+  // Sponsor/authorisation/exception states must keep their policy meaning. Only
+  // a cash-style PAYMENT_REQUIRED row becomes CLEARED when the Desk checkout
+  // has actually settled the consolidated patient liability in full.
+  if (currentState === 'PAYMENT_REQUIRED' && checkoutFullySettled) return 'CLEARED';
+  return row?.clearanceState || currentState;
+}
+
 async function createIdempotentRequest(Model, query, values) {
   const existing = await Model.findOne(query);
   if (existing) return { request: existing, created: false };
@@ -813,7 +823,8 @@ async function createClinicalRequest({
   refs,
   payerContext,
   idempotencyKey,
-  user
+  user,
+  checkoutFullySettled = false
 }) {
   if (!isClinicalRequestRow(row)) return null;
 
@@ -851,7 +862,7 @@ async function createClinicalRequest({
     financialPolicySnapshot: row.financialPolicySnapshot || {},
     selectedBillingMode: row.selectedMode,
     requiredNowAmount: row.requiredNow,
-    financialClearanceState: row.clearanceState,
+    financialClearanceState: clinicalClearanceAfterCheckout(row, checkoutFullySettled),
     billingHistory: [{
       from: 'PENDING_CHARGE',
       to: billingState,
@@ -1575,8 +1586,26 @@ async function commitDeskCheckout(payload, user) {
     let committedPayment = preview.payment;
 
     if (preview.encounterType === 'OPD' && payload.payment?.collectNow && invoiceIds.length && !hasDiscountPendingApproval) {
+      const receiptOriginalAmount = round(preview.totals?.standardAmount ?? preview.totals?.gross ?? 0);
+      const receiptDiscountAmount = round(preview.totals?.discountAmount ?? preview.totals?.lineDiscount ?? 0);
+      const receiptDiscountPercent = receiptOriginalAmount > 0
+        ? round((receiptDiscountAmount / receiptOriginalAmount) * 100)
+        : 0;
+      const receiptNetPayable = round(
+        preview.payment?.netPayable
+          ?? preview.totals?.requiredNow
+          ?? preview.totals?.payableNow
+          ?? preview.totals?.net
+          ?? Math.max(0, receiptOriginalAmount - receiptDiscountAmount)
+      );
       const paymentPayload = {
         ...payload.payment,
+        receiptSummary: {
+          originalAmount: receiptOriginalAmount,
+          discountAmount: receiptDiscountAmount,
+          discountPercent: receiptDiscountPercent,
+          netPayable: receiptNetPayable
+        },
         settlementDiscountAmount: 0,
         settlementDiscountValue: 0,
         settlementDiscountRate: 0,
@@ -1681,6 +1710,13 @@ async function commitDeskCheckout(payload, user) {
       }
     }
 
+    const checkoutFullySettled = Boolean(
+      payload.payment?.collectNow
+        && !hasDiscountPendingApproval
+        && committedPayment
+        && Number(committedPayment.balanceAfter || 0) <= 0.009
+    );
+
     const clinicalContext = await resolveClinicalContext({
       payload,
       user,
@@ -1714,7 +1750,8 @@ async function commitDeskCheckout(payload, user) {
         refs: rowFinancialRefs[index],
         payerContext: requestPayerContext,
         idempotencyKey,
-        user
+        user,
+        checkoutFullySettled
       });
       if (request) clinicalRequests.push(request);
     }
@@ -1772,6 +1809,7 @@ async function commitDeskCheckout(payload, user) {
         changeReturned: Number(item?.changeReturned || 0),
         paymentMethod: item?.paymentMethod || primaryTransaction?.paymentMethod || payload.payment?.paymentMethod || 'Cash',
         reference: item?.reference || primaryTransaction?.paymentReference || payload.payment?.reference || '',
+        receiptSummary: primaryTransaction?.metadata?.receiptSummary || item?.receiptSummary || null,
         url: null
       };
     };

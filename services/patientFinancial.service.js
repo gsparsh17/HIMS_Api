@@ -1177,6 +1177,14 @@ async function recordOPDPayment(patientId, payload, user) {
       }
 
       if (paymentPart > 0) {
+        const receiptSummary = payload.receiptSummary && typeof payload.receiptSummary === 'object'
+          ? {
+              originalAmount: amount(payload.receiptSummary.originalAmount),
+              discountAmount: amount(payload.receiptSummary.discountAmount),
+              discountPercent: Number(payload.receiptSummary.discountPercent || 0),
+              netPayable: amount(payload.receiptSummary.netPayable)
+            }
+          : null;
         const transaction = new FinancialTransaction({
           hospitalId, patientId: patient._id,
           billId: row.type === 'bill' ? document._id : document.bill_id,
@@ -1192,7 +1200,8 @@ async function recordOPDPayment(patientId, payload, user) {
           paymentBreakdown: [{ method: paymentMethod, amount: paymentPart, reference: payload.reference }],
           sourceModule: 'OPD', sourceId: patient._id, status: 'POSTED', remarks: payload.notes,
           createdBy: user?._id,
-          idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:${row.type}:${document._id}` : undefined
+          idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:${row.type}:${document._id}` : undefined,
+          metadata: receiptSummary ? { receiptSummary } : undefined
         });
         await transaction.save(sessionOptions(session));
         transactions.push(transaction);
@@ -1263,7 +1272,16 @@ async function recordOPDPayment(patientId, payload, user) {
       await advanceTransaction.save(sessionOptions(session));
       transactions.push(advanceTransaction);
     }
-    return { receiptNumber, transactions, amountApplied: requestedAmount, amountTendered: settlementPreview.amountTendered, changeReturned, advanceCreated, alreadyExists: false };
+    return {
+      receiptNumber,
+      transactions,
+      amountApplied: requestedAmount,
+      amountTendered: settlementPreview.amountTendered,
+      changeReturned,
+      advanceCreated,
+      receiptSummary: payload.receiptSummary || null,
+      alreadyExists: false
+    };
   });
 }
 
