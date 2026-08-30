@@ -23,6 +23,7 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const { matchTemplateDetailed } = require('../services/radiologyReportTemplate.service');
+const { catalogVersion: labCatalogVersion, getTemplate: getLabTemplate, matchTemplate: matchLabTemplate } = require('../services/labReportTemplate.service');
 
 const { ObjectId } = mongoose.Types;
 
@@ -188,6 +189,130 @@ async function selectClinicalMaster(db, collection, baseFilter, label, {
   })[0];
 }
 
+
+function cleanFlag(value = '') {
+  const text = String(value || '').trim();
+  if (!text || /normal|no printed flag/i.test(text)) return '';
+  return text;
+}
+
+function normalNumericResult(item = {}) {
+  const reference = String(item.referenceText || item.referenceRange || '').trim().replace(/,/g, '');
+  const range = reference.match(/^\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*(?:-|–|—|to)\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*$/i);
+  if (range) {
+    const low = Number(range[1]);
+    const high = Number(range[2]);
+    const decimals = Math.max((range[1].split('.')[1] || '').length, (range[2].split('.')[1] || '').length);
+    return ((low + high) / 2).toFixed(Math.min(decimals, 2));
+  }
+  const oneSided = reference.match(/^\s*(<=|>=|<|>|≤|≥)\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*$/);
+  if (oneSided) {
+    const boundary = Number(oneSided[2]);
+    const lowerBound = oneSided[1].includes('>') || oneSided[1] === '≥';
+    return String(money(lowerBound ? boundary * 1.1 : Math.max(0, boundary * 0.8)));
+  }
+  return String(item.exampleResult ?? item.defaultResult ?? '');
+}
+
+function labObservationFromTemplate(item = {}) {
+  const resultType = item.resultType === 'numeric' ? 'numeric' : 'text';
+  const raw = resultType === 'numeric' ? normalNumericResult(item) : (item.exampleResult ?? item.defaultResult ?? 'Within expected range');
+  return {
+    analyteCode: item.analyteCode || item.code || '',
+    name: item.name || item.label || 'Investigation',
+    resultType,
+    resultNumeric: resultType === 'numeric' ? String(raw) : '',
+    resultText: resultType === 'numeric' ? '' : String(raw || 'Within expected range'),
+    printedFlag: '',
+    derivedFlag: '',
+    referenceLow: item.referenceLow || '',
+    referenceHigh: item.referenceHigh || '',
+    referenceText: item.referenceText || item.referenceRange || '',
+    unit: item.unit || '',
+    method: item.method || '',
+    instrument: item.instrument || '',
+    comments: '',
+    remarks: '',
+    isAbnormal: false,
+    isCritical: false
+  };
+}
+
+function buildLabManualReport({ template, labTest, reportedAt, reportedBy, technicianName, pathologistName, hospital }) {
+  const observations = (template?.observations || []).map(labObservationFromTemplate);
+  if (!observations.length) {
+    throw new Error(`Structured lab template ${template?.id || labTest?.report_template_id || labTest?.name || ''} has no observations`);
+  }
+  return {
+    templateId: template.id,
+    templateNumber: template.number || '',
+    templateVersion: labCatalogVersion,
+    templateName: template.name || labTest.report_template_name || labTest.name,
+    specimenType: template.specimen || labTest.specimen_detail || labTest.specimen_type || 'Blood',
+    instrument: template.instrument || '',
+    observations,
+    narrativeSections: (template.narrativeSections || []).map((section, index) => ({
+      key: section.key || `section-${index + 1}`,
+      label: section.label || section.title || `Comments ${index + 1}`,
+      text: section.defaultText || section.text || '',
+      isDefault: true
+    })),
+    additionalTables: template.additionalTables || [],
+    collectionLocation: [hospital?.hospitalName, hospital?.address, hospital?.city].filter(Boolean).join(' - '),
+    technicianName: technicianName || 'Lab Technician',
+    pathologistName: pathologistName || 'Pathologist',
+    authorizedSignatoryName: pathologistName || 'Authorized Signatory',
+    disclaimer: template.disclaimer || '',
+    reportedAt,
+    reportedBy
+  };
+}
+
+function radiologySectionText(section = {}, clinicalContext = 'Febrile illness evaluation') {
+  const key = String(section.key || '').toLowerCase();
+  const label = String(section.label || '').toLowerCase();
+  const text = `${key} ${label}`;
+  if (/view|projection/.test(text)) return 'PA chest radiograph.';
+  if (/clinical/.test(text)) return clinicalContext;
+  if (/lung/.test(text)) return 'Both lung fields are clear. No focal air-space opacity is seen.';
+  if (/pleura|costophrenic/.test(text)) return 'No pleural effusion or pneumothorax. Costophrenic angles are clear.';
+  if (/cardio|mediastin/.test(text)) return 'Cardiomediastinal silhouette is within normal limits.';
+  if (/bone|soft tissue/.test(text)) return 'No acute osseous or soft-tissue abnormality identified.';
+  if (/finding/.test(text)) return 'No focal pulmonary opacity, pleural effusion or pneumothorax.';
+  if (/impression/.test(text)) return 'No acute cardiopulmonary abnormality.';
+  if (/advice|recommend/.test(text)) return 'Clinical correlation advised.';
+  if (String(section.defaultText || '').trim()) return String(section.defaultText).trim();
+  return section.required ? 'No significant abnormality identified.' : '';
+}
+
+function buildRadiologyManualReport({ template, at, reportedBy, radiologistName, technicianName, clinicalContext }) {
+  return {
+    templateId: template.id,
+    templateNumber: template.number,
+    templateVersion: template.version,
+    templateName: template.name,
+    sections: (template.sections || []).map((section) => ({
+      key: section.key,
+      label: section.label,
+      text: radiologySectionText(section, clinicalContext)
+    })),
+    tables: (template.tables || []).map((table) => ({ ...table })),
+    images: [],
+    radiologistName: radiologistName || 'Radiologist',
+    technicianName: technicianName || 'Radiology Technician',
+    disclaimer: '',
+    reportedAt: at,
+    reportedBy
+  };
+}
+
+function reportSummaryFromLab(manualReport = {}) {
+  return (manualReport.observations || []).slice(0, 6).map((item) => {
+    const value = item.resultNumeric || item.resultText || '';
+    return `${item.name}: ${value}${item.unit ? ` ${item.unit}` : ''}`;
+  }).join('; ');
+}
+
 async function selectNormalIpdBed(db, hospitalId) {
   const beds = await db.collection('beds').find({
     hospitalId,
@@ -341,9 +466,21 @@ async function main() {
     || await findOneRequired(db, 'nurses', {}, 'nurse profile');
 
   const pathologyUser = await db.collection('users').findOne({ hospital_id: hospitalId, role: 'pathology_staff', is_active: { $ne: false } }) || financeUser;
-  const labStaff = await db.collection('labstaffs').findOne({}) || null;
+  const labStaff = await db.collection('labstaffs').findOne({ is_active: { $ne: false } }) || null;
+  const labTechnicianProfile = await db.collection('labstaffs').findOne({ designation: { $in: ['Lab Technician', 'Lab Assistant', 'Phlebotomist'] }, is_active: { $ne: false } }) || labStaff;
+  const pathologistProfile = await db.collection('labstaffs').findOne({ designation: 'Pathologist', is_active: { $ne: false } }) || labStaff;
+  const labTechnicianUser = labTechnicianProfile?.userId ? await db.collection('users').findOne({ _id: labTechnicianProfile.userId }) : null;
+  const pathologistUser = pathologistProfile?.userId ? await db.collection('users').findOne({ _id: pathologistProfile.userId }) : null;
+  const labTechnicianPrintName = labTechnicianUser?.name || 'Lab Technician';
+  const pathologistPrintName = pathologistUser?.name || pathologyUser?.name || 'Pathologist';
+
   const radiologyUser = await db.collection('users').findOne({ hospital_id: hospitalId, role: 'radiology_staff', is_active: { $ne: false } }) || financeUser;
-  const radiologyStaff = await db.collection('radiologystaffs').findOne({}) || null;
+  const radiologistStaff = await db.collection('radiologystaffs').findOne({ hospitalId, designation: 'Radiologist', is_active: { $ne: false } }) || null;
+  const radiologyTechnicianStaff = await db.collection('radiologystaffs').findOne({ hospitalId, designation: { $in: ['X-Ray Technician', 'Radiology Technician'] }, is_active: { $ne: false } }) || null;
+  const fallbackRadiologyStaff = radiologistStaff || radiologyTechnicianStaff || await db.collection('radiologystaffs').findOne({ hospitalId, is_active: { $ne: false } }) || null;
+  const radiologyStaff = fallbackRadiologyStaff;
+  const radiologistPrintName = fullName(radiologistStaff) || radiologyUser?.name || 'Radiologist';
+  const radiologyTechnicianPrintName = fullName(radiologyTechnicianStaff) || 'Radiology Technician';
 
   const labTest = await selectClinicalMaster(
     db, 'labtests',
@@ -363,29 +500,17 @@ async function main() {
       preferredPatterns: [/chest.*x[- ]?ray|x[- ]?ray.*chest|chest radiograph/i, /x[- ]?ray|radiograph/i]
     }
   );
-  const radiologyTemplateMatch = matchTemplateDetailed(imagingTest.name, imagingTest.code);
+  const labTemplate = getLabTemplate(labTest.report_template_id)
+    || matchLabTemplate(labTest.name, labTest.code, labTest.report_template_id || '');
+  if (!labTemplate) {
+    throw new Error(`No structured lab report template matches ${labTest.code || ''} ${labTest.name || ''}`.trim());
+  }
+
+  const radiologyTemplateMatch = matchTemplateDetailed(imagingTest.name, imagingTest.code, imagingTest.report_template_id || '');
   if (!radiologyTemplateMatch?.template) {
     throw new Error(`No structured radiology report template matches ${imagingTest.code || ''} ${imagingTest.name || ''}`.trim());
   }
   const radiologyTemplate = radiologyTemplateMatch.template;
-  const radiologistPrintName = fullName(radiologyStaff) || radiologyUser?.name || 'Radiologist';
-  const radiologyManualReport = ({ findings, impression, at }) => ({
-    templateId: radiologyTemplate.id,
-    templateNumber: radiologyTemplate.number,
-    templateVersion: radiologyTemplate.version,
-    templateName: radiologyTemplate.name,
-    sections: [
-      { key: 'findings', label: 'Findings', text: findings },
-      { key: 'impression', label: 'Impression', text: impression }
-    ],
-    tables: [],
-    images: [],
-    radiologistName: radiologistPrintName,
-    technicianName: radiologistPrintName,
-    disclaimer: 'Fixture report generated from the structured radiology workflow.',
-    reportedAt: at,
-    reportedBy: radiologyUser._id
-  });
 
   const procedure = await selectClinicalMaster(
     db, 'procedures',
@@ -394,7 +519,7 @@ async function main() {
       minPrice: 100,
       preferredMaxPrice: 25000,
       preferredPatterns: [/nebul/i, /intravenous|\biv\b.*infusion|infusion/i, /injection/i, /dressing/i],
-      excludedPatterns: [/dental|dentist|tooth|teeth|amalgam|root canal|orthodont|periodont|crown|implant|extraction/i]
+      excludedPatterns: [/dental|dentist|tooth|teeth|oral evaluation|oral exam|\bd0160\b|amalgam|root canal|endodont|orthodont|periodont|prosthodont|crown|implant|extraction|cataract|cesarean|hysterectomy|angioplasty|dialysis|endoscopy|bronchoscopy|biopsy/i]
     }
   );
   const { bed, room, ward } = await selectNormalIpdBed(db, hospitalId);
@@ -498,11 +623,11 @@ async function main() {
         patient_id: opdPatient._id, doctor_id: opdDoctor._id, hospital_id: hospitalId, department_id: opdDepartmentId,
         appointment_date: opdStart, appointment_date_key: dateKey(opdStart), scheduled_timezone: hospital.timezone || 'Asia/Kolkata',
         start_time: opdConsultStart, end_time: opdClinicalEnd, type: 'time-based', appointment_type: 'consultation', priority: 'Normal',
-        notes: 'Fixture: complete OPD visit with vitals, consultation, diagnostics, procedure, pharmacy and settlement.',
+        notes: 'Complete OPD visit with vitals, consultation, diagnostics, procedure, pharmacy and settlement.',
         status: 'Completed', actual_start_time: opdConsultStart, actual_end_time: opdCompleteAt, duration: Math.round((opdCompleteAt-opdConsultStart)/60000),
         token: `OPD-FLOW-${dateKey(opdStart).replace(/-/g,'')}-001`, submissionSource: 'FLOW_FIXTURE', bookedBy: financeUser._id,
         sponsorType: 'self', sponsorName: 'Self / Cash', selectedBillingMode: 'FULL_PREPAY', requiredNowAmount: 0,
-        financialPolicySnapshot: { payerCategory: 'self', fixture: true }, financialClearanceState: 'CLEARED', visit_mode: 'physical',
+        financialPolicySnapshot: { payerCategory: 'self' }, financialClearanceState: 'CLEARED', visit_mode: 'physical',
         lifecycleTimestamps: { bookedAt: opdStart, checkedInAt: opdConsultStart, consultationStartedAt: opdConsultStart, consultationEndedAt: opdClinicalEnd, checkoutCompletedAt: opdCompleteAt },
         ...docTimes(opdStart, opdCompleteAt)
       }, { session });
@@ -518,25 +643,38 @@ async function main() {
         _id: ids.opdPrescription, _testScenario: OPD_TAG,
         prescription_number: 'FLOW-OPD-RX-001', hospitalId, patient_id: opdPatient._id, doctor_id: opdDoctor._id, appointment_id: ids.opdAppointment, source_type: 'OPD',
         presenting_complaint: 'Fever, body ache and intermittent cough for three days.', history_of_presenting_complaint: 'No breathlessness; tolerating oral intake.',
-        diagnosis: 'Acute upper respiratory tract infection - fixture', symptoms: 'Fever, myalgia, cough', investigation: 'CBC, imaging and minor procedure as clinically indicated.',
+        diagnosis: 'Acute upper respiratory tract infection', symptoms: 'Fever, myalgia, cough', investigation: 'CBC, imaging and minor procedure as clinically indicated.',
         treatment_plan: 'Symptomatic treatment, investigations, medicine, hydration and follow-up.', physical_examination: 'Afebrile at consultation; chest clear; vitals stable.', outcome_expected: 'Clinical improvement.',
         items: [{ medicine_name: medicine.name, generic_name: medicine.generic_name || medicine.composition || medicine.name, medicine_id: medicine._id, dosage_form: medicine.dosage_form || 'Tablet', medicine_type: 'Tablet', route_of_administration: 'Oral', dosage: '1 unit', frequency: 'BD', duration: '1 day', quantity: opdMedQty, dose_qty_base_units: 1, required_qty_base_units: opdMedQty, requires_pharmacy_dispense: true, instructions: 'After food', timing: 'After food', is_dispensed: true, dispensed_quantity: opdMedQty, dispensed_date: opdPharmacyAt }],
         lab_test_requests: [{ lab_test_id: labTest._id, lab_test_code: labTest.code, lab_test_name: labTest.name, category: labTest.category, clinical_history: 'Fever work-up', priority: 'Routine', cost: labPrice, request_id: ids.opdLab, created_at: opdClinicalEnd }],
         radiology_test_requests: [{ imaging_test_id: imagingTest._id, imaging_test_code: imagingTest.code, imaging_test_name: imagingTest.name, category: imagingTest.category, clinical_history: 'Persistent cough', priority: 'Routine', cost: imagingPrice, request_id: ids.opdRad, created_at: opdClinicalEnd }],
-        procedure_requests: [{ procedure_id: procedure._id, procedure_code: procedure.code, procedure_name: procedure.name, category: procedure.category, clinical_history: 'OPD fixture procedure', clinical_indication: 'Diagnostic/therapeutic indication', priority: 'Routine', cost: procedurePrice, request_id: ids.opdProc, created_at: opdClinicalEnd }],
-        notes: 'Completed OPD fixture prescription.', status: 'Completed', issue_date: opdClinicalEnd, validity_days: 30, follow_up_date: addDays(opdClinicalEnd, 7), created_by: opdDoctorUserId,
+        procedure_requests: [{ procedure_id: procedure._id, procedure_code: procedure.code, procedure_name: procedure.name, category: procedure.category, clinical_history: 'OPD procedure', clinical_indication: 'Diagnostic/therapeutic indication', priority: 'Routine', cost: procedurePrice, request_id: ids.opdProc, created_at: opdClinicalEnd }],
+        notes: 'Completed OPD prescription.', status: 'Completed', issue_date: opdClinicalEnd, validity_days: 30, follow_up_date: addDays(opdClinicalEnd, 7), created_by: opdDoctorUserId,
         ...docTimes(opdClinicalEnd, opdCompleteAt)
       }, { session });
 
       const opdBilling = commonBilling({ billId: ids.opdBill, invoiceId: ids.opdInvoice, amount: opdServiceSubtotal, at: opdPaidAt, userId: financeUser._id });
+      const opdLabReportedAt = addHours(opdClinicalEnd, 1.25);
+      const opdLabManualReport = buildLabManualReport({
+        template: labTemplate, labTest, reportedAt: opdLabReportedAt, reportedBy: pathologyUser._id,
+        technicianName: labTechnicianPrintName, pathologistName: pathologistPrintName, hospital
+      });
+      const opdLabSummary = reportSummaryFromLab(opdLabManualReport);
+      const opdRadiologyManualReport = buildRadiologyManualReport({
+        template: radiologyTemplate, at: addHours(opdClinicalEnd, 1.5), reportedBy: radiologyUser._id,
+        radiologistName: radiologistPrintName, technicianName: radiologyTechnicianPrintName,
+        clinicalContext: 'Persistent cough and febrile illness.'
+      });
+      const opdRadiologyFindings = opdRadiologyManualReport.sections.find((item) => /finding|lung/i.test(`${item.key} ${item.label}`) && item.text)?.text || 'No acute abnormality identified.';
+      const opdRadiologyImpression = opdRadiologyManualReport.sections.find((item) => /impression/i.test(`${item.key} ${item.label}`))?.text || 'No acute cardiopulmonary abnormality.';
       await db.collection('labrequests').insertOne({
         _id: ids.opdLab, _testScenario: OPD_TAG, hospitalId, requestNumber: 'FLOW-OPD-LAB-001', requestGroupKey: 'FLOW-OPD-ORDER-GRP-001', collectionEventKey: 'FLOW-OPD-LAB-COLLECTION-001', deskCheckoutKey: 'FLOW-OPD-DESK-LAB-001', sourceType: 'OPD', appointmentId: ids.opdAppointment, prescriptionId: ids.opdPrescription,
         patientId: opdPatient._id, doctorId: opdDoctor._id, labTestId: labTest._id, testCode: labTest.code, testName: labTest.name, category: labTest.category,
         clinical_indication: 'Fever work-up', priority: 'Routine', requestedDate: opdClinicalEnd, scheduledDate: opdClinicalEnd,
         sample_collected_at: addHours(opdClinicalEnd, .25), sample_collected_by: labStaff?._id, processing_started_at: addHours(opdClinicalEnd,.5), processing_completed_at: addHours(opdClinicalEnd,1),
         status: 'Reported', approvedBy: labStaff?._id, approvedAt: opdClinicalEnd, verifiedBy: labStaff?._id, verifiedAt: addHours(opdClinicalEnd,1.25),
-        result_value: 'Within expected fixture range', result_interpretation: 'No significant abnormality in fixture result.', normal_range_used: 'Fixture reference range', is_abnormal: false,
-        report_mode: 'manual', manual_report: { templateName: labTest.report_template_name || labTest.name, specimenType: labTest.specimen_type || 'Blood', observations: [{ name: 'Fixture Result', resultType: 'text', resultText: 'Within normal limits', isAbnormal: false }], reportedAt: addHours(opdClinicalEnd,1.25), reportedBy: pathologyUser._id },
+        result_value: opdLabSummary, result_interpretation: 'No critical abnormality identified.', normal_range_used: opdLabManualReport.observations.map((item) => item.referenceText).filter(Boolean).join('; '), is_abnormal: opdLabManualReport.observations.some((item) => item.isAbnormal),
+        report_mode: 'manual', reportTemplateId: labTemplate.id, reportTemplateName: labTemplate.name, manual_report: opdLabManualReport,
         reportFinalisation: { isFinal: true, finalisedAt: addHours(opdClinicalEnd,1.25), finalisedBy: pathologyUser._id, checksum: 'FLOW-OPD-LAB-FINAL', version: 1 },
         accessionNumber: 'FLOW-OPD-ACC-001', specimen: { type: labTest.specimen_type || 'Blood', barcode: 'FLOWOPDLAB001', collectedAt: addHours(opdClinicalEnd,.25), collectedBy: pathologyUser._id, receivedAt: addHours(opdClinicalEnd,.4), receivedBy: pathologyUser._id, condition: 'Acceptable' },
         collectedByUserId: pathologyUser._id, receivedAt: addHours(opdClinicalEnd,.4), receivedBy: pathologyUser._id, resultEnteredAt: addHours(opdClinicalEnd,1), verifierUserId: pathologyUser._id, releasedAt: addHours(opdClinicalEnd,1.25), releasedBy: pathologyUser._id,
@@ -545,15 +683,15 @@ async function main() {
       }, { session });
       await db.collection('labreports').insertOne({
         _id: ids.opdLabReport, _testScenario: OPD_TAG, hospitalId, lab_request_id: ids.opdLab, patient_id: opdPatient._id, doctor_id: opdDoctor._id, prescription_id: ids.opdPrescription, lab_test_id: labTest._id,
-        report_type: labTest.name, report_mode: 'manual', manual_report: { result: 'Within normal limits', interpretation: 'Fixture normal report' }, report_date: addHours(opdClinicalEnd,1.25), notes: 'Finalized OPD fixture lab report.', created_by: pathologyUser._id,
+        report_type: labTest.name, report_mode: 'manual', manual_report: opdLabManualReport, report_date: opdLabReportedAt, notes: 'Finalized structured OPD lab report.', created_by: pathologyUser._id,
         ...docTimes(addHours(opdClinicalEnd,1.25))
       }, { session });
       await db.collection('radiologyrequests').insertOne({
         _id: ids.opdRad, _testScenario: OPD_TAG, hospitalId, requestNumber: 'FLOW-OPD-RAD-001', deskCheckoutKey: 'FLOW-OPD-DESK-RAD-001', sourceType: 'OPD', appointmentId: ids.opdAppointment, prescriptionId: ids.opdPrescription,
         patientId: opdPatient._id, doctorId: opdDoctor._id, imagingTestId: imagingTest._id, testCode: imagingTest.code, testName: imagingTest.name, category: imagingTest.category,
         clinical_indication: 'Persistent cough', priority: 'Routine', requestedDate: opdClinicalEnd, scheduledDate: addHours(opdClinicalEnd,.5), status: 'Reported',
-        approvedBy: radiologyStaff?._id, approvedAt: opdClinicalEnd, performedBy: radiologyStaff?._id, performedAt: addHours(opdClinicalEnd,.75), reportedBy: radiologyStaff?._id, reportedAt: addHours(opdClinicalEnd,1.5),
-        findings: 'No acute abnormality identified in fixture study.', impression: 'No significant acute radiological finding.', report_mode: 'manual', reportTemplateId: radiologyTemplate.id, reportTemplateName: radiologyTemplate.name, manual_report: radiologyManualReport({ findings: 'No acute abnormality identified in fixture study.', impression: 'No significant acute radiological finding.', at: addHours(opdClinicalEnd,1.5) }), reportFinalisation: { isFinal: true, finalisedAt: addHours(opdClinicalEnd,1.5), finalisedBy: radiologyUser._id, checksum: 'FLOW-OPD-RAD-FINAL', version: 1 },
+        approvedBy: radiologyStaff?._id, approvedAt: opdClinicalEnd, performedBy: radiologyTechnicianStaff?._id || radiologyStaff?._id, performedAt: addHours(opdClinicalEnd,.75), reportedBy: radiologistStaff?._id || radiologyStaff?._id, reportedAt: addHours(opdClinicalEnd,1.5),
+        findings: opdRadiologyFindings, impression: opdRadiologyImpression, report_mode: 'manual', reportTemplateId: radiologyTemplate.id, reportTemplateName: radiologyTemplate.name, manual_report: opdRadiologyManualReport, reportFinalisation: { isFinal: true, finalisedAt: addHours(opdClinicalEnd,1.5), finalisedBy: radiologyUser._id, checksum: 'FLOW-OPD-RAD-FINAL', version: 1 },
         contraindicationAssessment: { pregnancyStatus: 'not_applicable', renalRisk: 'low', contrastAllergy: false, decision: 'proceed', assessedAt: opdClinicalEnd, assessedBy: radiologyUser._id },
         patientPreparation: { instructions: 'Routine preparation', status: 'complete', completedAt: addHours(opdClinicalEnd,.4), completedBy: radiologyUser._id },
         resultEnteredAt: addHours(opdClinicalEnd,1.25), verifiedAt: addHours(opdClinicalEnd,1.4), verifiedByUserId: radiologyUser._id, releasedAt: addHours(opdClinicalEnd,1.5), releasedBy: radiologyUser._id,
@@ -563,9 +701,9 @@ async function main() {
       await db.collection('procedurerequests').insertOne({
         _id: ids.opdProc, _testScenario: OPD_TAG, hospitalId, requestNumber: 'FLOW-OPD-PROC-001', deskCheckoutKey: 'FLOW-OPD-DESK-PROC-001', sourceType: 'OPD', appointmentId: ids.opdAppointment, prescriptionId: ids.opdPrescription,
         patientId: opdPatient._id, doctorId: opdDoctor._id, procedureId: procedure._id, procedureCode: procedure.code, procedureName: procedure.name, category: procedure.category, subcategory: procedure.subcategory,
-        clinical_indication: 'Fixture outpatient procedure', priority: 'Routine', requestedDate: opdClinicalEnd, scheduledDate: addHours(opdClinicalEnd,.75), estimated_duration_minutes: procedure.duration_minutes || 30,
+        clinical_indication: 'Outpatient procedure', priority: 'Routine', requestedDate: opdClinicalEnd, scheduledDate: addHours(opdClinicalEnd,.75), estimated_duration_minutes: procedure.duration_minutes || 30,
         anesthesia_type: 'None', consent_obtained: true, consent_obtained_at: addHours(opdClinicalEnd,.5), consent_obtained_by: financeUser._id,
-        status: 'Completed', approvedBy: financeUser._id, approvedAt: opdClinicalEnd, performedBy: opdDoctorUserId, performedAt: addHours(opdClinicalEnd,.8), completedBy: opdDoctorUserId, completedAt: addHours(opdClinicalEnd,1.3), findings: 'Procedure completed uneventfully.', complications: 'None', post_procedure_instructions: 'Routine observation and discharge.', surgeon_notes: 'Fixture OPD procedure completed.',
+        status: 'Completed', approvedBy: financeUser._id, approvedAt: opdClinicalEnd, performedBy: opdDoctorUserId, performedAt: addHours(opdClinicalEnd,.8), completedBy: opdDoctorUserId, completedAt: addHours(opdClinicalEnd,1.3), findings: 'Procedure completed uneventfully.', complications: 'None', post_procedure_instructions: 'Routine observation and discharge.', surgeon_notes: 'OPD procedure completed.',
         cost: procedurePrice, is_billed: true, invoiceId: ids.opdInvoice, payerContext: { payerCategory: 'self', payerName: 'Self / Cash', source: 'EXPLICIT' }, createdBy: opdDoctorUserId,
         ...opdBilling, ...docTimes(opdClinicalEnd, opdPaidAt)
       }, { session });
@@ -581,7 +719,7 @@ async function main() {
         hospital_id: hospitalId, patient_id: opdPatient._id, appointment_id: ids.opdAppointment, prescription_id: ids.opdPrescription, invoice_id: ids.opdInvoice,
         total_amount: opdServiceSubtotal, gross_amount: opdServiceSubtotal, subtotal: opdServiceSubtotal, taxable_amount: opdServiceSubtotal, tax_amount: 0, discount: 0,
         payment_method: 'UPI', payments: [{ method: 'UPI', amount: opdServiceSubtotal, reference: 'FLOW-OPD-RCPT-001', externalReference: 'FLOW-OPD-UPI', date: opdPaidAt }], items: opdBillItems,
-        status: 'Paid', generated_at: opdClinicalEnd, paid_at: opdPaidAt, paid_amount: opdServiceSubtotal, balance_due: 0, created_by: financeUser._id, notes: 'Complete OPD fixture bill.',
+        status: 'Paid', generated_at: opdClinicalEnd, paid_at: opdPaidAt, paid_amount: opdServiceSubtotal, balance_due: 0, created_by: financeUser._id, notes: 'Complete OPD bill.',
         ...docTimes(opdClinicalEnd, opdPaidAt)
       }, { session });
       await db.collection('invoices').insertOne({
@@ -598,7 +736,7 @@ async function main() {
       await db.collection('financialtransactions').insertOne({
         _id: new ObjectId(), _testScenario: OPD_TAG, hospitalId, patientId: opdPatient._id, billId: ids.opdBill, invoiceId: ids.opdInvoice, transactionNumber: 'FLOW-OPD-RCPT-001', transactionType: 'RECEIPT', direction: 'CREDIT', amount: opdServiceSubtotal,
         postedAt: opdPaidAt, externalMoneyMovement: true, cashFlowClass: 'EXTERNAL_COLLECTION', amountTendered: opdServiceSubtotal, amountApplied: opdServiceSubtotal, amountReceived: opdServiceSubtotal, balanceAfter: 0,
-        paymentMethod: 'UPI', paymentReference: 'FLOW-OPD-UPI', receiptType: 'Payment', sourceModule: 'OPD', sourceId: ids.opdAppointment, status: 'POSTED', remarks: 'OPD complete-flow fixture payment.', idempotencyKey: 'FLOW-OPD-RCPT-001', documentAllocations: [{ documentType: 'Invoice', documentId: ids.opdInvoice, amount: opdServiceSubtotal }], createdBy: financeUser._id, metadata: { fixture: true },
+        paymentMethod: 'UPI', paymentReference: 'FLOW-OPD-UPI', receiptType: 'Payment', sourceModule: 'OPD', sourceId: ids.opdAppointment, status: 'POSTED', remarks: 'OPD complete-flow payment.', idempotencyKey: 'FLOW-OPD-RCPT-001', documentAllocations: [{ documentType: 'Invoice', documentId: ids.opdInvoice, amount: opdServiceSubtotal }], createdBy: financeUser._id, metadata: { fixture: true },
         ...docTimes(opdPaidAt)
       }, { session });
 
@@ -741,12 +879,12 @@ async function main() {
       await db.collection('ipdadmissions').insertOne({
         _id: ids.ipdAdmission, _testScenario: IPD_TAG, admissionNumber: 'FLOW-IPD-ADM-001', shipNumber: 'FLOW-IPD-SHIP-001', patientId: ipdPatient._id, hospitalId, admissionDate: ipdAdmissionAt, dischargeDate: ipdDischargeAt,
         admissionType: 'Planned', status: 'Discharged', departmentId: ipdDepartmentId, primaryDoctorId: ipdDoctor._id, secondaryDoctorIds: [], bedId: bed._id, roomId: room._id, wardId: ward._id,
-        provisionalDiagnosis: 'Acute febrile illness with dehydration - fixture', finalDiagnosis: 'Acute febrile illness - improved', chiefComplaints: 'Fever, weakness and reduced oral intake.', historyOfPresentIllness: 'Symptoms for four days before admission.', clinicalAssessmentCompleted: true, clinicalAssessmentCompletedAt: addHours(ipdAdmissionAt,1), clinicalAssessmentCompletedBy: ipdDoctorUserId,
-        attendant: { name: 'Fixture Attendant', relation: 'Relative', mobile: '9999999999', address: ipdPatient.address || '' }, selectedBillingMode: 'PARTIAL_PREPAY', financialPolicySnapshot: { payerCategory: 'self', fixture: true },
+        provisionalDiagnosis: 'Acute febrile illness with dehydration', finalDiagnosis: 'Acute febrile illness - improved', chiefComplaints: 'Fever, weakness and reduced oral intake.', historyOfPresentIllness: 'Symptoms for four days before admission.', clinicalAssessmentCompleted: true, clinicalAssessmentCompletedAt: addHours(ipdAdmissionAt,1), clinicalAssessmentCompletedBy: ipdDoctorUserId,
+        attendant: { name: 'Rakesh Verma', relation: 'Relative', mobile: '9999999999', address: ipdPatient.address || '' }, selectedBillingMode: 'PARTIAL_PREPAY', financialPolicySnapshot: { payerCategory: 'self' },
         financeInitialization: { status: 'ready', requestedCollection: initialCollection, requestedDeposit: advanceDeposit, paymentMethod: 'Cash', selectedMode: 'PARTIAL_PREPAY', payerCategory: 'self', initialInvoiceId: ids.ipdInitialInvoice, plannedInvoiceCollection: initialInvoiceCollection, plannedAdvanceAmount: advanceDeposit, retryCount: 0, lastAttemptAt: ipdAdmissionAt, completedAt: ipdAdmissionAt, lastAttemptBy: financeUser._id },
-        chargeFreeze: { status: 'frozen', frozenAt: ipdFreezeAt, frozenBy: financeUser._id, freezeReason: 'Fixture: all clinical and pharmacy activity completed before final billing.', reopenCount: 0 },
+        chargeFreeze: { status: 'frozen', frozenAt: ipdFreezeAt, frozenBy: financeUser._id, freezeReason: 'All clinical and pharmacy activity completed before final billing.', reopenCount: 0 },
         requiredNowAmount: 0, paymentType: 'Cash', sponsorType: 'self', sponsorName: 'Self / Cash', advanceAmount: 0, totalBillAmount: ipdGrandTotal, paidAmount: ipdGrandTotal, dueAmount: 0, patientReceivable: 0, sponsorReceivable: 0,
-        admissionNotes: 'Complete IPD fixture admission.', dischargeReason: 'Clinically improved and fit for discharge.', dischargeType: 'Normal', plannedDischargeAt: ipdDischargeAt, plannedDischargeType: 'PLANNED', plannedDischargeReason: 'Recovered sufficiently for home care.',
+        admissionNotes: 'Admitted for hydration, monitoring and evaluation.', dischargeReason: 'Clinically improved and fit for discharge.', dischargeType: 'Normal', plannedDischargeAt: ipdDischargeAt, plannedDischargeType: 'PLANNED', plannedDischargeReason: 'Recovered sufficiently for home care.',
         pharmacyClearanceStatus: 'cleared', pharmacyClearanceDate: addHours(ipdFreezeAt,.5), pharmacyClearanceBy: pharmacyUser._id, pharmacyFinalBalance: 0,
         advanceReceivedAmount: advanceDeposit, advanceUtilizedAmount: advanceDeposit, advanceRefundedAmount: 0, advanceClearanceDisposition: 'none', advanceClearanceDispositionAt: addHours(ipdFreezeAt,1), advanceClearanceDispositionBy: financeUser._id,
         invoicedAmount: ipdGrandTotal, financialClearanceStatus: 'cleared', financialClearedAt: addHours(ipdFreezeAt,1.5), financialClearedBy: financeUser._id, finalInvoiceId: ids.ipdFinalInvoice, finalSettlementReceiptNumber: 'FLOW-IPD-FINAL-RCPT-001', finalDischargedAt: ipdDischargeAt, finalDischargedBy: financeUser._id,
@@ -765,16 +903,17 @@ async function main() {
         const vitalAt = addHours(roundAt, -.5);
         await db.collection('ipdvitals').insertOne({
           _id: ids.ipdVitals[d], _testScenario: IPD_TAG, admissionId: ids.ipdAdmission, patientId: ipdPatient._id, hospitalId, recordedBy: nurseUser._id, recordedByName: nurseUser.name || fullName(nurse), recordedByInitials: (nurseUser.name || 'NU').split(/\s+/).map(x=>x[0]).join('').slice(0,3).toUpperCase(), source: 'manual', recordedAt: vitalAt, recordedTimezone: hospital.timezone || 'Asia/Kolkata', chartDate: dateKey(vitalAt), clinicalShift: 'M',
-          temperature: d===0?38.1:d===1?37.4:36.9, temperatureUnit: 'Celsius', pulse: d===0?96:d===1?84:76, bloodPressure: { systolic: 118, diastolic: 76, map: 90 }, bloodPressureString: '118/76', respiratoryRate: 18, spo2: 98, consciousnessResponse: 'Alert', painScore: d===0?3:1, onOxygen: false, roomAir: true, noUrineOverSixHours: false,
+          temperature: d===0?38.1:d===1?37.4:36.9, temperatureUnit: 'Celsius', pulse: d===0?96:d===1?84:76, bloodPressure: { systolic: 118, diastolic: 76, map: 90 }, bloodPressureString: '118/76', respiratoryRate: 18, spo2: 98, consciousnessResponse: 'Alert', painScore: d===0?3:1, onOxygen: false, roomAir: true,
+          ivFluidsMl: d===0?1500:d===1?500:0, oralRtMl: d===0?800:d===1?1600:1800, urineMl: d===0?1300:d===1?1700:1600, rtOutputMl: 0, vomitMl: 0, bowelMovement: d===0?'Nil':d===1?'Once':'Once', noUrineOverSixHours: false,
           ewsTotal: 0, escalationRequired: false, createdBy: nurseUser._id, ...docTimes(vitalAt)
         }, { session });
         await db.collection('ipdrounds').insertOne({
           _id: ids.ipdRounds[d], _testScenario: IPD_TAG, admissionId: ids.ipdAdmission, patientId: ipdPatient._id, hospitalId, doctorId: ipdDoctor._id, roundDateTime: roundAt,
-          patientCondition: d===0?'Stable':d===1?'Improving':'Recovering', complaints: d===0?'Fever and weakness':d===1?'Mild weakness':'No active complaints', examinationFindings: 'Hemodynamically stable; hydration improving.', dailyHistoryAndExamination: `Fixture day ${d+1} consultant review.`, diagnosis: 'Acute febrile illness', treatmentPlan: d<2?'Continue hydration, medication and monitoring.':'Discharge planning after final clearance.', medicationChanges: d===0?'Start ordered medicine.':'Continue same medication.', advice: d===2?'Fit for discharge after billing and pharmacy clearance.':'Continue inpatient care.', vitalId: ids.ipdVitals[d], vitalSnapshot: { sourceTime: vitalAt, bp: '118/76', pulse: d===0?96:d===1?84:76, respiratoryRate: 18, spo2: 98 }, dischargeSuggested: d===2, dischargeAssessment: d===2?{ isFitForDischarge:true, intendedDischargeDate: ipdDischargeAt, dischargeInstructions:'Hydration, medicines and OPD follow-up.', consultantSignedAt: roundAt, consultantSignedBy: ipdDoctorUserId }:{ isFitForDischarge:false }, painScore: d===0?3:1,
+          patientCondition: d===0?'Stable':d===1?'Improving':'Recovering', complaints: d===0?'Fever and weakness':d===1?'Mild weakness':'No active complaints', examinationFindings: 'Hemodynamically stable; hydration improving.', dailyHistoryAndExamination: `Day ${d+1} consultant review.`, diagnosis: 'Acute febrile illness', treatmentPlan: d<2?'Continue hydration, medication and monitoring.':'Discharge planning after final clearance.', medicationChanges: d===0?'Start ordered medicine.':'Continue same medication.', advice: d===2?'Fit for discharge after billing and pharmacy clearance.':'Continue inpatient care.', vitalId: ids.ipdVitals[d], vitalSnapshot: { sourceTime: vitalAt, bp: '118/76', pulse: d===0?96:d===1?84:76, respiratoryRate: 18, spo2: 98 }, dischargeSuggested: d===2, dischargeAssessment: d===2?{ isFitForDischarge:true, intendedDischargeDate: ipdDischargeAt, dischargeInstructions:'Hydration, medicines and OPD follow-up.', consultantSignedAt: roundAt, consultantSignedBy: ipdDoctorUserId }:{ isFitForDischarge:false }, painScore: d===0?3:1,
           status: 'Signed', signedAt: addHours(roundAt,.25), signedBy: ipdDoctorUserId, createdBy: ipdDoctorUserId, idempotencyKey: `FLOW-IPD-ROUND-${d+1}`, ...docTimes(roundAt, addHours(roundAt,.25))
         }, { session });
         await db.collection('nursingnotes').insertOne({
-          _id: new ObjectId(), _testScenario: IPD_TAG, hospitalId, admissionId: ids.ipdAdmission, patientId: ipdPatient._id, nurseId: nurse._id, actorUserId: nurseUser._id, actorRole: 'nurse', actorNameSnapshot: nurseUser.name || fullName(nurse), noteDateTime: addHours(roundAt,1), noteType: 'Shift Note', note: d===0?'Patient admitted, IV/oral hydration maintained, medication received from pharmacy.':d===1?'Patient comfortable; vitals stable; medications administered as charted.':'Patient stable; discharge education provided after doctor review.', priority: 'Normal', shift: 'Morning', createdBy: nurseUser._id,
+          _id: new ObjectId(), _testScenario: IPD_TAG, hospitalId, admissionId: ids.ipdAdmission, patientId: ipdPatient._id, nurseId: nurse._id, actorUserId: nurseUser._id, actorRole: 'nurse', actorNameSnapshot: nurseUser.name || fullName(nurse), noteDateTime: addHours(roundAt,1), noteType: 'Shift Note', note: d===0?'Patient admitted, IV/oral hydration maintained, medication received from pharmacy.':d===1?'Patient comfortable; vitals stable; medications administered as charted.':'Patient stable; discharge education provided after doctor review.', priority: 'Normal', shift: 'Evening', createdBy: nurseUser._id,
           ...docTimes(addHours(roundAt,1))
         }, { session });
       }
@@ -794,21 +933,34 @@ async function main() {
       const ipdRequestBilling = (chargeId, amount) => ({
         billingIntent: 'BILL_NOW', billingState: 'INVOICED', chargeIds: [chargeId], billIds: [ids.ipdFinalBill], invoiceIds: [ids.ipdFinalInvoice], pricingSnapshot: { resultType: 'self', amounts: { hospitalStandard: amount, patientLiability: amount }, pricedAt: ipdFreezeAt }, financialPolicySnapshot: { payerCategory:'self', fixture:true }, selectedBillingMode:'PARTIAL_PREPAY', requiredNowAmount:0, financialClearanceState:'CLEARED', billingHistory:[{from:'PENDING_CHARGE',to:'CHARGE_POSTED',action:'FIXTURE_CHARGE',documentId:chargeId,at:ipdFreezeAt,by:financeUser._id},{from:'CHARGE_POSTED',to:'INVOICED',action:'FIXTURE_FINAL_INVOICE',documentId:ids.ipdFinalInvoice,at:ipdFreezeAt,by:financeUser._id}]
       });
+      const ipdLabReportedAt = addHours(ipdAdmissionAt, 11);
+      const ipdLabManualReport = buildLabManualReport({
+        template: labTemplate, labTest, reportedAt: ipdLabReportedAt, reportedBy: pathologyUser._id,
+        technicianName: labTechnicianPrintName, pathologistName: pathologistPrintName, hospital
+      });
+      const ipdLabSummary = reportSummaryFromLab(ipdLabManualReport);
+      const ipdRadiologyManualReport = buildRadiologyManualReport({
+        template: radiologyTemplate, at: addHours(ipdAdmissionAt, 12), reportedBy: radiologyUser._id,
+        radiologistName: radiologistPrintName, technicianName: radiologyTechnicianPrintName,
+        clinicalContext: 'Febrile illness with weakness and dehydration.'
+      });
+      const ipdRadiologyFindings = ipdRadiologyManualReport.sections.find((item) => /finding|lung/i.test(`${item.key} ${item.label}`) && item.text)?.text || 'No acute abnormality identified.';
+      const ipdRadiologyImpression = ipdRadiologyManualReport.sections.find((item) => /impression/i.test(`${item.key} ${item.label}`))?.text || 'No acute cardiopulmonary abnormality.';
       await db.collection('labrequests').insertOne({
         _id: ids.ipdLab, _testScenario: IPD_TAG, hospitalId, requestNumber: 'FLOW-IPD-LAB-001', requestGroupKey: 'FLOW-IPD-ORDER-GRP-001', collectionEventKey: 'FLOW-IPD-LAB-COLLECTION-001', deskCheckoutKey: 'FLOW-IPD-DESK-LAB-001', sourceType: 'IPD', admissionId: ids.ipdAdmission, prescriptionId: ids.ipdPrescription, patientId: ipdPatient._id, doctorId: ipdDoctor._id, labTestId: labTest._id, testCode: labTest.code, testName: labTest.name, category: labTest.category,
         clinical_indication:'Febrile illness work-up', priority:'Routine', requestedDate:addHours(ipdAdmissionAt,6), sample_collected_at:addHours(ipdAdmissionAt,8), status:'Reported', approvedBy:labStaff?._id, approvedAt:addHours(ipdAdmissionAt,7), verifiedBy:labStaff?._id, verifiedAt:addHours(ipdAdmissionAt,11),
-        result_value:'Fixture result within acceptable range', result_interpretation:'No critical abnormality.', is_abnormal:false, report_mode:'manual', manual_report:{templateName:labTest.report_template_name||labTest.name,specimenType:labTest.specimen_type||'Blood',observations:[{name:'Fixture Result',resultType:'text',resultText:'Acceptable',isAbnormal:false}],reportedAt:addHours(ipdAdmissionAt,11),reportedBy:pathologyUser._id}, reportFinalisation:{isFinal:true,finalisedAt:addHours(ipdAdmissionAt,11),finalisedBy:pathologyUser._id,checksum:'FLOW-IPD-LAB-FINAL',version:1},
+        result_value:ipdLabSummary, result_interpretation:'No critical abnormality identified.', normal_range_used:ipdLabManualReport.observations.map((item)=>item.referenceText).filter(Boolean).join('; '), is_abnormal:ipdLabManualReport.observations.some((item)=>item.isAbnormal), report_mode:'manual', reportTemplateId:labTemplate.id, reportTemplateName:labTemplate.name, manual_report:ipdLabManualReport, reportFinalisation:{isFinal:true,finalisedAt:ipdLabReportedAt,finalisedBy:pathologyUser._id,checksum:'FLOW-IPD-LAB-FINAL',version:1},
         accessionNumber:'FLOW-IPD-ACC-001', specimen:{type:labTest.specimen_type||'Blood',barcode:'FLOWIPDLAB001',collectedAt:addHours(ipdAdmissionAt,8),collectedBy:pathologyUser._id,receivedAt:addHours(ipdAdmissionAt,8.5),receivedBy:pathologyUser._id,condition:'Acceptable'}, collectedByUserId:pathologyUser._id,receivedAt:addHours(ipdAdmissionAt,8.5),receivedBy:pathologyUser._id,resultEnteredAt:addHours(ipdAdmissionAt,10.5),verifierUserId:pathologyUser._id,releasedAt:addHours(ipdAdmissionAt,11),releasedBy:pathologyUser._id,
         cost:labPrice,is_billed:true,invoiceId:ids.ipdFinalInvoice,payerContext:{payerCategory:'self',payerName:'Self / Cash',source:'EXPLICIT'},createdBy:ipdDoctorUserId,...ipdRequestBilling(ipdLabChargeId,labPrice),...docTimes(addHours(ipdAdmissionAt,6),ipdFreezeAt)
       }, { session });
-      await db.collection('labreports').insertOne({ _id:ids.ipdLabReport,_testScenario:IPD_TAG,hospitalId,lab_request_id:ids.ipdLab,patient_id:ipdPatient._id,doctor_id:ipdDoctor._id,prescription_id:ids.ipdPrescription,lab_test_id:labTest._id,report_type:labTest.name,report_mode:'manual',manual_report:{result:'Acceptable fixture result'},report_date:addHours(ipdAdmissionAt,11),notes:'Final IPD fixture lab report.',created_by:pathologyUser._id,...docTimes(addHours(ipdAdmissionAt,11)) }, { session });
+      await db.collection('labreports').insertOne({ _id:ids.ipdLabReport,_testScenario:IPD_TAG,hospitalId,lab_request_id:ids.ipdLab,patient_id:ipdPatient._id,doctor_id:ipdDoctor._id,prescription_id:ids.ipdPrescription,lab_test_id:labTest._id,report_type:labTest.name,report_mode:'manual',manual_report:ipdLabManualReport,report_date:ipdLabReportedAt,notes:'Final structured IPD lab report.',created_by:pathologyUser._id,...docTimes(addHours(ipdAdmissionAt,11)) }, { session });
       await db.collection('radiologyrequests').insertOne({
         _id:ids.ipdRad,_testScenario:IPD_TAG,hospitalId,requestNumber:'FLOW-IPD-RAD-001',deskCheckoutKey:'FLOW-IPD-DESK-RAD-001',sourceType:'IPD',admissionId:ids.ipdAdmission,prescriptionId:ids.ipdPrescription,patientId:ipdPatient._id,doctorId:ipdDoctor._id,imagingTestId:imagingTest._id,testCode:imagingTest.code,testName:imagingTest.name,category:imagingTest.category,clinical_indication:'Inpatient assessment',priority:'Routine',requestedDate:addHours(ipdAdmissionAt,6),scheduledDate:addHours(ipdAdmissionAt,10),status:'Reported',
-        approvedBy:radiologyStaff?._id,approvedAt:addHours(ipdAdmissionAt,7),performedBy:radiologyStaff?._id,performedAt:addHours(ipdAdmissionAt,10),reportedBy:radiologyStaff?._id,reportedAt:addHours(ipdAdmissionAt,12),findings:'No acute fixture abnormality.',impression:'No significant acute finding.',report_mode:'manual',reportTemplateId:radiologyTemplate.id,reportTemplateName:radiologyTemplate.name,manual_report:radiologyManualReport({findings:'No acute fixture abnormality.',impression:'No significant acute finding.',at:addHours(ipdAdmissionAt,12)}),reportFinalisation:{isFinal:true,finalisedAt:addHours(ipdAdmissionAt,12),finalisedBy:radiologyUser._id,checksum:'FLOW-IPD-RAD-FINAL',version:1},contraindicationAssessment:{pregnancyStatus:'not_applicable',renalRisk:'low',contrastAllergy:false,decision:'proceed',assessedAt:addHours(ipdAdmissionAt,7),assessedBy:radiologyUser._id},patientPreparation:{instructions:'Routine preparation',status:'complete',completedAt:addHours(ipdAdmissionAt,9),completedBy:radiologyUser._id},resultEnteredAt:addHours(ipdAdmissionAt,11.5),verifiedAt:addHours(ipdAdmissionAt,11.75),verifiedByUserId:radiologyUser._id,releasedAt:addHours(ipdAdmissionAt,12),releasedBy:radiologyUser._id,
+        approvedBy:radiologyStaff?._id,approvedAt:addHours(ipdAdmissionAt,7),performedBy:radiologyTechnicianStaff?._id || radiologyStaff?._id,performedAt:addHours(ipdAdmissionAt,10),reportedBy:radiologistStaff?._id || radiologyStaff?._id,reportedAt:addHours(ipdAdmissionAt,12),findings:ipdRadiologyFindings,impression:ipdRadiologyImpression,report_mode:'manual',reportTemplateId:radiologyTemplate.id,reportTemplateName:radiologyTemplate.name,manual_report:ipdRadiologyManualReport,reportFinalisation:{isFinal:true,finalisedAt:addHours(ipdAdmissionAt,12),finalisedBy:radiologyUser._id,checksum:'FLOW-IPD-RAD-FINAL',version:1},contraindicationAssessment:{pregnancyStatus:'not_applicable',renalRisk:'low',contrastAllergy:false,decision:'proceed',assessedAt:addHours(ipdAdmissionAt,7),assessedBy:radiologyUser._id},patientPreparation:{instructions:'Routine preparation',status:'complete',completedAt:addHours(ipdAdmissionAt,9),completedBy:radiologyUser._id},resultEnteredAt:addHours(ipdAdmissionAt,11.5),verifiedAt:addHours(ipdAdmissionAt,11.75),verifiedByUserId:radiologyUser._id,releasedAt:addHours(ipdAdmissionAt,12),releasedBy:radiologyUser._id,
         cost:imagingPrice,is_billed:true,invoiceId:ids.ipdFinalInvoice,payerContext:{payerCategory:'self',payerName:'Self / Cash',source:'EXPLICIT'},createdBy:ipdDoctorUserId,...ipdRequestBilling(ipdRadChargeId,imagingPrice),...docTimes(addHours(ipdAdmissionAt,6),ipdFreezeAt)
       }, { session });
       await db.collection('procedurerequests').insertOne({
-        _id:ids.ipdProc,_testScenario:IPD_TAG,hospitalId,requestNumber:'FLOW-IPD-PROC-001',deskCheckoutKey:'FLOW-IPD-DESK-PROC-001',sourceType:'IPD',admissionId:ids.ipdAdmission,prescriptionId:ids.ipdPrescription,patientId:ipdPatient._id,doctorId:ipdDoctor._id,procedureId:procedure._id,procedureCode:procedure.code,procedureName:procedure.name,category:procedure.category,clinical_indication:'Inpatient fixture procedure',priority:'Routine',requestedDate:addHours(ipdAdmissionAt,6),scheduledDate:addHours(ipdAdmissionAt,28),estimated_duration_minutes:procedure.duration_minutes||30,anesthesia_type:'None',consent_obtained:true,consent_obtained_at:addHours(ipdAdmissionAt,26),consent_obtained_by:financeUser._id,status:'Completed',approvedBy:financeUser._id,approvedAt:addHours(ipdAdmissionAt,24),performedBy:ipdDoctorUserId,performedAt:addHours(ipdAdmissionAt,28),completedBy:ipdDoctorUserId,completedAt:addHours(ipdAdmissionAt,29),findings:'Completed without complication.',complications:'None',post_procedure_instructions:'Continue routine inpatient observation.',surgeon_notes:'Fixture procedure completed.',
+        _id:ids.ipdProc,_testScenario:IPD_TAG,hospitalId,requestNumber:'FLOW-IPD-PROC-001',deskCheckoutKey:'FLOW-IPD-DESK-PROC-001',sourceType:'IPD',admissionId:ids.ipdAdmission,prescriptionId:ids.ipdPrescription,patientId:ipdPatient._id,doctorId:ipdDoctor._id,procedureId:procedure._id,procedureCode:procedure.code,procedureName:procedure.name,category:procedure.category,clinical_indication:'Inpatient supportive procedure',priority:'Routine',requestedDate:addHours(ipdAdmissionAt,6),scheduledDate:addHours(ipdAdmissionAt,28),estimated_duration_minutes:procedure.duration_minutes||30,anesthesia_type:'None',consent_obtained:true,consent_obtained_at:addHours(ipdAdmissionAt,26),consent_obtained_by:financeUser._id,status:'Completed',approvedBy:financeUser._id,approvedAt:addHours(ipdAdmissionAt,24),performedBy:ipdDoctorUserId,performedAt:addHours(ipdAdmissionAt,28),completedBy:ipdDoctorUserId,completedAt:addHours(ipdAdmissionAt,29),findings:'Completed without complication.',complications:'None',post_procedure_instructions:'Continue routine inpatient observation.',surgeon_notes:'Procedure completed.',
         cost:procedurePrice,is_billed:true,invoiceId:ids.ipdFinalInvoice,payerContext:{payerCategory:'self',payerName:'Self / Cash',source:'EXPLICIT'},createdBy:ipdDoctorUserId,...ipdRequestBilling(ipdProcChargeId,procedurePrice),...docTimes(addHours(ipdAdmissionAt,6),ipdFreezeAt)
       }, { session });
 
@@ -828,7 +980,7 @@ async function main() {
 
       // IPD pharmacy sale was deferred during stay, then completely settled at discharge.
       await db.collection('sales').insertOne({
-        _id:ids.ipdSale,_testScenario:IPD_TAG,sale_number:'FLOW-IPD-SALE-001',invoice_number:'FLOW-IPD-PHARM-INV-001',invoice_id:ids.ipdPharmacyInvoice,hospitalId,pharmacy_id:pharmacy._id,customer_type:'IPD',source_type:'IPD_MEDICATION',patient_id:ipdPatient._id,admission_id:ids.ipdAdmission,prescription_id:ids.ipdPrescription,doctor_id:ipdDoctor._id,doctor_name:fullName(ipdDoctor),uhid:ipdPatient.uhid||ipdPatient.patientId,registration_number:'FLOW-IPD-ADM-001',ship_no:'FLOW-IPD-SHIP-001',sponsor_type:'Self',sponsor_name:'Self / Cash',selected_billing_mode:'POSTPAID',required_now_amount:0,financial_clearance_state:'CLEARED',financial_policy_snapshot:{payerCategory:'self',fixture:true},customer_name:fullName(ipdPatient),customer_phone:ipdPatient.phone,sale_date:addHours(ipdAdmissionAt,7),
+        _id:ids.ipdSale,_testScenario:IPD_TAG,sale_number:'FLOW-IPD-SALE-001',invoice_number:'FLOW-IPD-PHARM-INV-001',invoice_id:ids.ipdPharmacyInvoice,hospitalId,pharmacy_id:pharmacy._id,customer_type:'IPD',source_type:'IPD_MEDICATION',patient_id:ipdPatient._id,admission_id:ids.ipdAdmission,prescription_id:ids.ipdPrescription,doctor_id:ipdDoctor._id,doctor_name:fullName(ipdDoctor),uhid:ipdPatient.uhid||ipdPatient.patientId,registration_number:'FLOW-IPD-ADM-001',ship_no:'FLOW-IPD-SHIP-001',sponsor_type:'Self',sponsor_name:'Self / Cash',selected_billing_mode:'POSTPAID',required_now_amount:0,financial_clearance_state:'CLEARED',financial_policy_snapshot:{payerCategory:'self'},customer_name:fullName(ipdPatient),customer_phone:ipdPatient.phone,sale_date:addHours(ipdAdmissionAt,7),
         items:[{...saleItem(ipdMedQty,ids.ipdMar),prescribed_by:ipdDoctor._id,prescribed_by_name:fullName(ipdDoctor),doctor_id:ipdDoctor._id,doctor_name:fullName(ipdDoctor)}],gross_amount:ipdPharmacyTotal,subtotal:ipdPharmacyTotal,taxable_amount:ipdPharmacyTotal,total_amount:ipdPharmacyTotal,current_bill_amount:ipdPharmacyTotal,total_collected_amount:ipdPharmacyTotal,previous_outstanding:0,amount_paid:ipdPharmacyTotal,settlement_amount:ipdPharmacyTotal,balance_due:0,closing_outstanding:0,payment_method:'UPI',payments:[{method:'UPI',amount:ipdPharmacyTotal,reference:'FLOW-IPD-PHARM-UPI'}],transactionGroupId:'FLOW-IPD-PHARM-GRP',idempotencyKey:'FLOW-IPD-SALE-001',status:'Completed',prescription_required:true,prescription_details:'Linked IPD MAR and prescription',created_by:pharmacyUser._id,payment_deferred:false,include_in_discharge_clearance:true,discharged_settled_at:addHours(ipdFreezeAt,.5),discharge_settlement_id:ids.ipdPharmacySettlement,net_amount_after_returns:ipdPharmacyTotal,settlement_refs:[{settlement_id:ids.ipdPharmacySettlement,amount:ipdPharmacyTotal,settled_at:addHours(ipdFreezeAt,.5)}],
         ...docTimes(addHours(ipdAdmissionAt,7),addHours(ipdFreezeAt,.5))
       }, { session });
@@ -855,7 +1007,7 @@ async function main() {
       await db.collection('ipdcharges').updateOne({ _id: ipdAdmissionChargeId }, { $set: { billId: ids.ipdInitialBill, invoiceId: ids.ipdInitialInvoice } }, { session });
       const finalBillItems = finalChargeRows.map(c => ({ charge_id:c._id,description:c.description,charge_type:c.chargeType,charge_head:c.chargeType,charge_date:c.chargeDate,gross_amount:c.grossAmount,net_amount:c.netAmount,amount:c.netAmount,quantity:1,item_type:c.chargeType==='Lab Test'?'Lab Test':c.chargeType==='Radiology'?'Radiology':c.chargeType==='Procedure'?'Procedure':['Doctor Visit','RMO / Duty Doctor'].includes(c.chargeType)?'Consultation':'Other',unit_price:c.rate,tax_rate:0,tax_amount:0,discount_amount:0,admission_id:ids.ipdAdmission,doctor_id:['Doctor Visit','RMO / Duty Doctor'].includes(c.chargeType)?ipdDoctor._id:undefined,doctor_name:['Doctor Visit','RMO / Duty Doctor'].includes(c.chargeType)?fullName(ipdDoctor):undefined }));
       await db.collection('bills').insertOne({
-        _id:ids.ipdFinalBill,_testScenario:IPD_TAG,bill_number:'FLOW-IPD-FINAL-BILL-001',document_stage:'INVOICED',invoice_ids:[ids.ipdFinalInvoice],invoiced_at:ipdFreezeAt,hospital_id:hospitalId,patient_id:ipdPatient._id,admission_id:ids.ipdAdmission,invoice_id:ids.ipdFinalInvoice,total_amount:ipdFinalTotal,gross_amount:ipdFinalTotal,subtotal:ipdFinalTotal,taxable_amount:ipdFinalTotal,tax_amount:0,discount:0,advance_applied:advanceDeposit,payment_method:'Split',payments:[{method:'IPDAdvance',amount:advanceDeposit,reference:'FLOW-IPD-ADV-001',date:ipdFreezeAt},{method:'Cash',amount:finalCash,reference:'FLOW-IPD-FINAL-RCPT-001',externalReference:'FLOW-IPD-FINAL-CASH',date:addHours(ipdFreezeAt,1)}],items:finalBillItems,status:'Paid',generated_at:ipdFreezeAt,paid_at:addHours(ipdFreezeAt,1),paid_amount:ipdFinalTotal,balance_due:0,created_by:financeUser._id,notes:'Final IPD fixture bill after charge freeze.',...docTimes(ipdFreezeAt,addHours(ipdFreezeAt,1))
+        _id:ids.ipdFinalBill,_testScenario:IPD_TAG,bill_number:'FLOW-IPD-FINAL-BILL-001',document_stage:'INVOICED',invoice_ids:[ids.ipdFinalInvoice],invoiced_at:ipdFreezeAt,hospital_id:hospitalId,patient_id:ipdPatient._id,admission_id:ids.ipdAdmission,invoice_id:ids.ipdFinalInvoice,total_amount:ipdFinalTotal,gross_amount:ipdFinalTotal,subtotal:ipdFinalTotal,taxable_amount:ipdFinalTotal,tax_amount:0,discount:0,advance_applied:advanceDeposit,payment_method:'Split',payments:[{method:'IPDAdvance',amount:advanceDeposit,reference:'FLOW-IPD-ADV-001',date:ipdFreezeAt},{method:'Cash',amount:finalCash,reference:'FLOW-IPD-FINAL-RCPT-001',externalReference:'FLOW-IPD-FINAL-CASH',date:addHours(ipdFreezeAt,1)}],items:finalBillItems,status:'Paid',generated_at:ipdFreezeAt,paid_at:addHours(ipdFreezeAt,1),paid_amount:ipdFinalTotal,balance_due:0,created_by:financeUser._id,notes:'Final IPD bill after charge freeze.',...docTimes(ipdFreezeAt,addHours(ipdFreezeAt,1))
       }, { session });
       await db.collection('invoices').insertOne({
         _id:ids.ipdFinalInvoice,_testScenario:IPD_TAG,invoice_number:'FLOW-IPD-FINAL-INV-001',hospital_id:hospitalId,patient_id:ipdPatient._id,customer_type:'Patient',customer_name:fullName(ipdPatient),customer_phone:ipdPatient.phone,admission_id:ids.ipdAdmission,bill_id:ids.ipdFinalBill,bill_ids:[ids.ipdFinalBill],invoice_type:'IPD Final',document_stage:'ISSUED',is_final_ipd_invoice:true,issued_at:ipdFreezeAt,issue_date:ipdFreezeAt,due_date:ipdFreezeAt,gross_amount:ipdFinalTotal,taxable_amount:ipdFinalTotal,advance_applied:advanceDeposit,
@@ -902,10 +1054,11 @@ async function main() {
 
   // Post-transaction financial sanity check. This intentionally validates the
   // persisted records using the same values the UI will later read.
-  const [seededAdmission, seededFinalInvoice, seededPharmacyInvoice, seededRadiology, recurringRows, fixtureTransactions] = await Promise.all([
+  const [seededAdmission, seededFinalInvoice, seededPharmacyInvoice, seededLab, seededRadiology, recurringRows, fixtureTransactions] = await Promise.all([
     db.collection('ipdadmissions').findOne({ _id: summary.ipd.admissionId }),
     db.collection('invoices').findOne({ _id: summary.ipd.finalInvoiceId }),
     db.collection('invoices').findOne({ invoice_number: 'FLOW-IPD-PHARM-INV-001', admission_id: summary.ipd.admissionId }),
+    db.collection('labrequests').findOne({ _testScenario: IPD_TAG, admissionId: summary.ipd.admissionId }),
     db.collection('radiologyrequests').findOne({ _id: summary.ipd.radiologyRequestId }),
     db.collection('ipdcharges').find({ admissionId: summary.ipd.admissionId, sourceModule: 'RecurringDaily' }).toArray(),
     db.collection('financialtransactions').find({ _testScenario: { $in: TAGS } }).toArray()
@@ -925,8 +1078,11 @@ async function main() {
   if (recurringRows.length !== 9 || nonCanonicalRecurring.length) {
     throw new Error(`IPD fixture sanity check failed: expected 9 canonical recurring rows (3 days x bed/nursing/rmo); found ${recurringRows.length}, nonCanonical=${nonCanonicalRecurring.length}`);
   }
-  if (!seededRadiology?.manual_report?.templateId || !Array.isArray(seededRadiology?.manual_report?.sections) || seededRadiology.manual_report.sections.length < 2) {
-    throw new Error('IPD fixture sanity check failed: structured radiology report is incomplete; View/Print/Download PDF would not be usable');
+  if (!seededLab?.manual_report?.templateId || !Array.isArray(seededLab?.manual_report?.observations) || seededLab.manual_report.observations.length !== (labTemplate.observations || []).length) {
+    throw new Error(`IPD fixture sanity check failed: lab report does not instantiate the configured template (${seededLab?.manual_report?.observations?.length || 0}/${(labTemplate.observations || []).length} observations)`);
+  }
+  if (!seededRadiology?.manual_report?.templateId || !Array.isArray(seededRadiology?.manual_report?.sections) || seededRadiology.manual_report.sections.length !== (radiologyTemplate.sections || []).length) {
+    throw new Error(`IPD fixture sanity check failed: radiology report does not instantiate the configured template (${seededRadiology?.manual_report?.sections?.length || 0}/${(radiologyTemplate.sections || []).length} sections)`);
   }
   const legacyTransactionNumbers = fixtureTransactions
     .map((row) => String(row.transactionNumber || ''))
@@ -947,7 +1103,8 @@ async function main() {
   console.log(`  Canonical recurring rows: ${recurringRows.length}`);
   console.log('  Financial sanity: admission due=0, final invoice balance=0, pharmacy invoice balance=0');
   console.log('  Receipt sanity: one canonical hospital receipt/transaction number per payment event');
-  console.log('  Radiology sanity: structured manual report is printable/downloadable');
+  console.log(`  Lab template sanity: ${labTemplate.id} with ${(labTemplate.observations || []).length} observations`);
+  console.log(`  Radiology template sanity: ${radiologyTemplate.id} with ${(radiologyTemplate.sections || []).length} sections`);
   console.log('Both patients end with zero current balance; frozen IPD ledgers must remain read-only after this point.');
 }
 
