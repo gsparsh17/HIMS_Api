@@ -249,7 +249,7 @@ const templates = [
       { key: 'diagnosis', label: 'Diagnosis / डायग्नोसिस', type: 'textarea' },
       { key: 'bloodComponents', label: 'Type of Blood / रक्त का प्रकार', type: 'checkbox-group', required: true, options: ['Whole Blood', 'Packed Red Cells', 'Platelets', 'Cryoprecipitate', 'Fresh Frozen Plasma (FFP)', 'Other'] },
       { key: 'otherBloodComponent', label: 'Other Blood Component / अन्य', type: 'text' },
-      { key: 'bloodGroup', label: 'Blood Group / रक्त समूह', type: 'text', required: true },
+      { key: 'bloodGroup', label: 'Blood Group / रक्त समूह', type: 'select', required: true, options: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] },
       { key: 'rhType', label: 'Rh Type', type: 'select', required: true, options: ['Positive', 'Negative'] },
       acknowledgement('I confirm that the complete benefits, possible risks and complications, severe outcomes and consent statement in English and Hindi were read and explained.'),
       patientField, relationshipField, doctorField, witnessField, ...consentDateFields
