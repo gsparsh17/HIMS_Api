@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const mongoose = require('mongoose');
 // controllers/ipdMedication.controller.js
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDAdmission = require('../models/IPDAdmission');
@@ -12,6 +13,27 @@ const { normaliseBoolean, resolveDoseQtyBaseUnits, calculateMedicationRequiredBa
 const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 const Patient = require('../models/Patient');
 const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
+const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
+const { resolveClinicalActor, resolveNurseWitness } = require('../services/clinicalActor.service');
+
+function assertAdmissionClinicallyOpen(admission) {
+  return assertAdmissionOpenForMutation(admission, { action: 'Clinical medication activity' });
+}
+
+async function loadScopedMedication(req, id, { session = null, populateMedicine = false } = {}) {
+  let query = IPDMedicationChart.findById(id);
+  if (session) query = query.session(session);
+  if (populateMedicine) query = query.populate('medicineId');
+  const medication = await query;
+  if (!medication) return { medication: null, admission: null };
+  let admissionQuery = IPDAdmission.findById(medication.admissionId).select('hospitalId status chargeFreeze');
+  if (session) admissionQuery = admissionQuery.session(session);
+  const admission = await admissionQuery;
+  if (!admission) return { medication, admission: null };
+  assertAdmissionHospitalAccess(req, admission);
+  assertAdmissionClinicallyOpen(admission);
+  return { medication, admission };
+}
 
 // ========== HELPER FUNCTIONS ==========
 
@@ -52,13 +74,14 @@ function generateTimingSlots(frequency, durationDays) {
 }
 
 // ========== UNIFIED PHARMACY REQUEST FUNCTION ==========
-async function createPharmacyRequest(medication, requestedQuantity = null, requestedBy = null, pharmacyId = null) {
+async function createPharmacyRequest(medication, requestedQuantity = null, requestedBy = null, pharmacyId = null, session = null) {
   return createOrUpdatePharmacyRequest({
     medication,
     requestedQuantity: requestedQuantity || medication.requiredQtyBaseUnits || 1,
     requestedBy: requestedBy || medication.createdBy || medication.prescribedBy,
     pharmacyId,
-    notePrefix: 'Medication indent'
+    notePrefix: 'Medication indent',
+    session
   });
 }
 
@@ -209,7 +232,7 @@ exports.createMedicationOrder = async (req, res) => {
     let unitsPerPack = 1;
 
     if (medicineId) {
-      medicineDetails = await Medicine.findById(medicineId);
+      medicineDetails = await Medicine.findOne({ _id: medicineId, hospitalId: admission.hospitalId });
       if (medicineDetails) {
         costPerUnit = medicineDetails.selling_price || medicineDetails.mrp || 0;
         baseUnit = medicineDetails.base_unit || 'unit';
@@ -228,6 +251,7 @@ exports.createMedicationOrder = async (req, res) => {
     });
 
     assertAdmissionHospitalAccess(req, admission);
+    assertAdmissionClinicallyOpen(admission);
     if (String(admission.patientId) !== String(patientId)) {
       return res.status(400).json({ success: false, error: 'The selected patient does not belong to this IPD admission.' });
     }
@@ -274,6 +298,7 @@ exports.createMedicationOrder = async (req, res) => {
     }
 
     const nursingNote = new NursingNote({
+      hospitalId: admission.hospitalId,
       admissionId,
       patientId,
       noteType: 'Medication',
@@ -305,7 +330,7 @@ exports.getMedicationsByAdmission = async (req, res) => {
     if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
     assertAdmissionHospitalAccess(req, admission);
 
-    const filter = { admissionId };
+    const filter = { hospitalId: admission.hospitalId, admissionId };
     if (status) filter.status = status;
 
     const medications = await IPDMedicationChart.find(filter)
@@ -314,16 +339,13 @@ exports.getMedicationsByAdmission = async (req, res) => {
       .populate('pharmacyRequest.pharmacyId', 'name')
       .sort({ startDate: -1 });
 
-    const patientStocks = await IPDPatientMedicineStock.find({ admissionId }).populate('medicineId', 'name strength');
+    const patientStocks = await IPDPatientMedicineStock.find({ hospitalId: admission.hospitalId, admissionId }).populate('medicineId', 'name strength');
 
     const normalizeMedicineName = (name) => {
       if (!name) return '';
-      return name.toLowerCase()
-        .replace(/\s+/g, ' ')
-        .replace(/\s*mg\s*/g, '')
-        .replace(/\s*ml\s*/g, '')
-        .replace(/\s*g\s*/g, '')
-        .trim();
+      // Keep strength/form tokens intact. Stripping mg/ml/g or doing substring
+      // matching can reconcile bedside stock to the wrong strength/form.
+      return String(name).toLowerCase().replace(/\s+/g, ' ').trim();
     };
 
     const stockByIdMap = {};
@@ -331,13 +353,16 @@ exports.getMedicationsByAdmission = async (req, res) => {
     const stockByNormalizedNameMap = {};
 
     const mergeStockSnapshot = (existing, stock, medicineName, normalizedName) => {
-      const current = Number(stock.currentBalanceBaseUnits || 0);
+      const physicalBalance = Number(stock.currentBalanceBaseUnits || 0);
+      const current = stock.receiptAcknowledged ? physicalBalance : 0;
+      const pendingReceiptBalance = stock.receiptAcknowledged ? 0 : physicalBalance;
       const issued = Number(stock.issuedQtyBaseUnits || 0);
       const administered = Number(stock.administeredQtyBaseUnits || 0);
       const returned = Number(stock.returnedQtyBaseUnits || 0);
       if (!existing) {
         return {
           currentBalance: current,
+          pendingReceiptBalance,
           issuedQty: issued,
           administeredQty: administered,
           returnedQty: returned,
@@ -352,6 +377,7 @@ exports.getMedicationsByAdmission = async (req, res) => {
       return {
         ...existing,
         currentBalance: existing.currentBalance + current,
+        pendingReceiptBalance: Number(existing.pendingReceiptBalance || 0) + pendingReceiptBalance,
         issuedQty: existing.issuedQty + issued,
         administeredQty: existing.administeredQty + administered,
         returnedQty: existing.returnedQty + returned,
@@ -383,19 +409,14 @@ exports.getMedicationsByAdmission = async (req, res) => {
       } else if (medicineName && stockByNameMap[medicineName]) {
         stockInfo = stockByNameMap[medicineName];
       } else if (normalizedMedName && stockByNormalizedNameMap[normalizedMedName]) {
+        // Exact normalized-name fallback is only for legacy/NLEM rows that have
+        // no stable medicineId. Never use substring/fuzzy medicine matching.
         stockInfo = stockByNormalizedNameMap[normalizedMedName];
-      } else if (medicineName) {
-        for (const [stockMedName, stock] of Object.entries(stockByNameMap)) {
-          const normalizedStockName = normalizeMedicineName(stockMedName);
-          if (normalizedStockName.includes(normalizedMedName) || normalizedMedName.includes(normalizedStockName)) {
-            stockInfo = stock;
-            break;
-          }
-        }
       }
 
       const finalStockInfo = stockInfo || {
         currentBalance: 0,
+        pendingReceiptBalance: 0,
         issuedQty: 0,
         administeredQty: 0,
         returnedQty: 0,
@@ -413,8 +434,7 @@ exports.getMedicationsByAdmission = async (req, res) => {
 
       const requiredStockForToday = todaysPendingDoses * Number(med.doseQtyBaseUnits || 1);
 
-      const isReceiptPending = med.stockReceiptStatus === 'PENDING_RECEIPT' &&
-        med.pharmacyRequest?.pharmacyStatus === 'Approved';
+      const isReceiptPending = med.stockReceiptStatus === 'PENDING_RECEIPT';
 
       return {
         ...med.toObject(),
@@ -449,20 +469,23 @@ exports.getMedicationById = async (req, res) => {
     if (!medication) {
       return res.status(404).json({ error: 'Medication not found' });
     }
-    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId');
+    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId status');
     if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
     assertAdmissionHospitalAccess(req, admission);
 
-    const patientStock = await IPDPatientMedicineStock.findOne({
+    const patientStocks = await IPDPatientMedicineStock.find({
+      hospitalId: admission.hospitalId,
       admissionId: medication.admissionId,
       patientId: medication.patientId,
-      medicineId: medication.medicineId
-    });
+      medicineId: medication.medicineId?._id || medication.medicineId,
+      receiptAcknowledged: true
+    }).select('currentBalanceBaseUnits');
+    const patientStockBalance = patientStocks.reduce((sum, stock) => sum + Number(stock.currentBalanceBaseUnits || 0), 0);
 
     res.json({
       success: true,
       medication,
-      patientStockBalance: patientStock?.currentBalanceBaseUnits || 0
+      patientStockBalance
     });
   } catch (err) {
     console.error('Error fetching medication:', err);
@@ -475,16 +498,28 @@ exports.getMedicationById = async (req, res) => {
 // rebuilt when the dose, route, frequency, or duration changes.
 exports.changeMedicationOrder = async (req, res) => {
   try {
-    const medication = await IPDMedicationChart.findById(req.params.id);
+    const session = req.transactionSession || null;
+    const medication = await IPDMedicationChart.findById(req.params.id).session(session || null);
     if (!medication) return res.status(404).json({ error: 'Medication not found' });
 
-    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId patientId');
+    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId patientId status chargeFreeze').session(session || null);
     if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
     assertAdmissionHospitalAccess(req, admission);
+    assertAdmissionClinicallyOpen(admission);
+    const actor = await resolveClinicalActor(req.user, { session });
 
     const action = String(req.body.action || 'modify').toLowerCase();
     if (!['continue', 'modify', 'stop'].includes(action)) {
       return res.status(400).json({ error: 'Action must be continue, modify, or stop' });
+    }
+
+    const requestedRoundId = req.body.roundId || null;
+    const lastChange = (medication.changeHistory || []).length
+      ? medication.changeHistory[medication.changeHistory.length - 1]
+      : null;
+    const expectedHistoryAction = action === 'stop' ? 'Stopped' : action === 'continue' ? 'Continued' : 'Modified';
+    if (requestedRoundId && String(medication.lastChangedRoundId || '') === String(requestedRoundId) && lastChange?.action === expectedHistoryAction) {
+      return res.json({ success: true, alreadyApplied: true, message: 'Medication change already applied for this ward round', medication });
     }
 
     const previous = {
@@ -500,7 +535,7 @@ exports.changeMedicationOrder = async (req, res) => {
       requiredQtyBaseUnits: medication.requiredQtyBaseUnits
     };
     const changedAt = operationNow();
-    const roundId = req.body.roundId || null;
+    const roundId = requestedRoundId;
     const reason = String(req.body.reason || req.body.stoppedReason || '').trim();
 
     if (action === 'stop') {
@@ -512,7 +547,9 @@ exports.changeMedicationOrder = async (req, res) => {
       medication.status = 'Stopped';
       medication.stoppedReason = reason;
       medication.stoppedAt = changedAt;
-      medication.stoppedBy = req.user?._id;
+      medication.stoppedByUser = actor.userId;
+      medication.stoppedByNameSnapshot = actor.name;
+      if (actor.staffModel === 'Doctor' && actor.staffProfileId) medication.stoppedBy = actor.staffProfileId;
       medication.endDate = changedAt;
       medication.timing.forEach((timing) => {
         if (timing.status === 'Pending') {
@@ -603,7 +640,8 @@ exports.changeMedicationOrder = async (req, res) => {
           medication,
           medication.requiredQtyBaseUnits,
           req.user?._id,
-          medication.pharmacyRequest?.pharmacyId
+          medication.pharmacyRequest?.pharmacyId,
+          session
         );
       }
     }
@@ -633,7 +671,7 @@ exports.changeMedicationOrder = async (req, res) => {
     medication.lastChangedAt = changedAt;
     medication.lastChangedBy = req.user?._id;
     medication.lastChangedRoundId = roundId;
-    await medication.save();
+    await medication.save(session ? { session } : undefined);
 
     const description = action === 'stop'
       ? `Medication stopped: ${medication.medicineName}. Reason: ${reason}`
@@ -641,14 +679,20 @@ exports.changeMedicationOrder = async (req, res) => {
         ? `Medication continued without change: ${medication.medicineName}.`
         : `Medication order changed: ${medication.medicineName} from ${previous.dosage} ${previous.frequency} to ${medication.dosage} ${medication.frequency}.${reason ? ` Reason: ${reason}` : ''}`;
 
-    await NursingNote.create({
+    const medicationChangeNote = {
+      hospitalId: admission.hospitalId,
       admissionId: medication.admissionId,
       patientId: medication.patientId,
       noteType: 'Medication',
       note: description,
       priority: action === 'stop' ? 'Important' : 'Normal',
+      actorUserId: actor.userId,
+      actorRole: actor.role,
+      actorNameSnapshot: actor.name,
       createdBy: req.user?._id
-    });
+    };
+    if (session) await NursingNote.create([medicationChangeNote], { session });
+    else await NursingNote.create(medicationChangeNote);
 
     return res.json({
       success: true,
@@ -702,6 +746,7 @@ exports.processPharmacyRequest = async (req, res) => {
     const admission = await IPDAdmission.findById(medication.admissionId);
     if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
     assertAdmissionHospitalAccess(req, admission);
+    assertAdmissionClinicallyOpen(admission);
 
     if (!medication.pharmacyRequest?.requestedToPharmacy) {
       return res.status(400).json({ success: false, error: 'This medication has not been indented to pharmacy.' });
@@ -717,9 +762,14 @@ exports.processPharmacyRequest = async (req, res) => {
       medication.status = 'Requested';
       await medication.save();
 
+      const pharmacyActor = await resolveClinicalActor(req.user);
       await NursingNote.create({
+        hospitalId: admission.hospitalId,
         admissionId: medication.admissionId,
         patientId: medication.patientId,
+        actorUserId: pharmacyActor.userId,
+        actorRole: pharmacyActor.role,
+        actorNameSnapshot: pharmacyActor.name,
         noteType: 'Medication',
         note: `Pharmacy ${action === 'reject' ? 'rejected' : 'reported out of stock for'} ${medication.medicineName}. ${notes || ''}`.trim(),
         priority: 'Important',
@@ -750,9 +800,10 @@ exports.acknowledgeStockReceipt = async (req, res) => {
     const { notes } = req.body;
     const medication = await IPDMedicationChart.findById(id).populate('medicineId');
     if (!medication) return res.status(404).json({ success: false, error: 'Medication not found.' });
-    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId');
+    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId status chargeFreeze finalDischargedAt');
     if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
     assertAdmissionHospitalAccess(req, admission);
+    assertAdmissionClinicallyOpen(admission);
     if (!medication.pharmacyRequest?.dispensedFromPharmacy || !medication.pharmacyRequest?.saleId) {
       return res.status(400).json({ success: false, error: 'No completed pharmacy sale is available to acknowledge.' });
     }
@@ -762,6 +813,7 @@ exports.acknowledgeStockReceipt = async (req, res) => {
 
     const stock = await IPDPatientMedicineStock.findOneAndUpdate(
       {
+        hospitalId: admission.hospitalId,
         admissionId: medication.admissionId,
         patientId: medication.patientId,
         medicineId: medication.pharmacyRequest.dispensedMedicineId || medication.medicineId?._id,
@@ -776,14 +828,26 @@ exports.acknowledgeStockReceipt = async (req, res) => {
     medication.pharmacyRequest.stockReceivedByNurse = true;
     medication.pharmacyRequest.stockReceivedAt = operationNow();
     medication.pharmacyRequest.stockReceivedBy = req.user?._id;
+    const latestHistory = medication.pharmacyRequest.dispenseHistory?.find((row) => String(row.saleId) === String(medication.pharmacyRequest.saleId));
+    if (latestHistory) { latestHistory.receivedAt = operationNow(); latestHistory.receivedBy = req.user?._id; }
     medication.stockReceiptStatus = 'RECEIVED';
+    if (Number(medication.pharmacyRequest.dispensedQuantity || 0) >= Number(medication.pharmacyRequest.requestedQuantity || 0)) {
+      medication.pharmacyRequest.pharmacyStatus = 'Delivered';
+    } else {
+      medication.pharmacyRequest.pharmacyStatus = 'PartiallyDispensed';
+    }
     medication.status = 'Active';
     await medication.save();
 
+    const receiptActor = await resolveClinicalActor(req.user);
     await NursingNote.create({
+      hospitalId: admission.hospitalId,
       admissionId: medication.admissionId,
       patientId: medication.patientId,
-      nurseId: req.user?._id,
+      ...(receiptActor.staffModel === 'Nurse' && receiptActor.staffProfileId ? { nurseId: receiptActor.staffProfileId } : {}),
+      actorUserId: receiptActor.userId,
+      actorRole: receiptActor.role,
+      actorNameSnapshot: receiptActor.name,
       noteType: 'Medication',
       note: `Nurse acknowledged receipt of ${medication.pharmacyRequest.dispensedQuantity} base unit(s) of ${medication.medicineName}. ${notes || ''}`.trim(),
       priority: 'Normal',
@@ -803,6 +867,7 @@ exports.getPendingStockReceipts = async (req, res) => {
     const admission = await IPDAdmission.findById(admissionId).select('hospitalId');
     if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
     assertAdmissionHospitalAccess(req, admission);
+    assertAdmissionClinicallyOpen(admission);
 
     const medications = await IPDMedicationChart.find({
       admissionId,
@@ -819,9 +884,10 @@ exports.getPendingStockReceipts = async (req, res) => {
 
     const medicationsWithStock = await Promise.all(medications.map(async (med) => {
       const stock = await IPDPatientMedicineStock.findOne({
+        hospitalId: admission.hospitalId,
         admissionId: med.admissionId,
         patientId: med.patientId,
-        medicineId: med.medicineId?._id,
+        medicineId: med.pharmacyRequest?.dispensedMedicineId || med.medicineId?._id,
         batchId: med.pharmacyRequest.dispensedBatchId
       });
 
@@ -855,9 +921,10 @@ exports.requestPharmacy = async (req, res) => {
     const quantity = Math.ceil(Number(req.body.quantity));
     const medication = await IPDMedicationChart.findById(id);
     if (!medication) return res.status(404).json({ success: false, error: 'Medication not found.' });
-    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId');
+    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId status chargeFreeze finalDischargedAt');
     if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
     assertAdmissionHospitalAccess(req, admission);
+    assertAdmissionClinicallyOpen(admission);
     if (medication.status === 'Stopped' || medication.status === 'Completed') return res.status(409).json({ success: false, error: 'Stock cannot be indented for a stopped or completed medication.' });
     const updatedMedication = await createPharmacyRequest(medication, quantity, req.user?._id, req.body.pharmacyId);
     return res.json({ success: true, message: 'Pharmacy indent saved. Pharmacy must process it as an actual sale.', medication: updatedMedication });
@@ -875,7 +942,7 @@ exports.getNurseTodaySchedule = async (req, res) => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const admissionFilter = { status: { $in: ['Admitted', 'Under Treatment'] } };
+    const admissionFilter = { status: { $in: ['Admitted', 'Under Treatment', 'Discharge Initiated', 'Discharge Summary Pending', 'Billing Pending', 'Payment Pending', 'Ready for Discharge'] } };
     const scopedHospitalId = userHospitalId(req.user);
     if (scopedHospitalId && !isPlatformAdmin(req.user)) admissionFilter.hospitalId = scopedHospitalId;
     const admissions = await IPDAdmission.find(admissionFilter).select('_id');
@@ -948,12 +1015,14 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
 
       let patientStockBalance = 0;
       if (med.medicineId) {
-        const stock = await IPDPatientMedicineStock.findOne({
+        const stocks = await IPDPatientMedicineStock.find({
+          hospitalId: admission.hospitalId,
           admissionId,
           patientId: med.patientId,
-          medicineId: med.medicineId._id
-        });
-        patientStockBalance = stock?.currentBalanceBaseUnits || 0;
+          medicineId: med.medicineId._id,
+          receiptAcknowledged: true
+        }).select('currentBalanceBaseUnits').lean();
+        patientStockBalance = stocks.reduce((sum, stock) => sum + Number(stock.currentBalanceBaseUnits || 0), 0);
       }
 
       return {
@@ -976,117 +1045,145 @@ exports.getMedicationScheduleForNurse = async (req, res) => {
 
 // ========== ADMINISTER MEDICATION (UPDATED for NLEM) ==========
 exports.administerMedication = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
     const { id } = req.params;
-    const { timingId, remarks, witnessedBy } = req.body;
-    const medication = await IPDMedicationChart.findById(id).populate('medicineId');
-    if (!medication) return res.status(404).json({ success: false, error: 'Medication not found.' });
-    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId');
-    if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
-    assertAdmissionHospitalAccess(req, admission);
-    if (medication.status !== 'Active') return res.status(409).json({ success: false, error: 'Only an active medication can be administered.' });
-    if (medication.requiresPharmacyDispense && medication.stockReceiptStatus !== 'RECEIVED') {
-      return res.status(409).json({ success: false, error: 'Pharmacy stock must be received and acknowledged before administration.' });
-    }
+    const { timingId, remarks, witnessedBy, witnessedByUserId } = req.body;
 
-    const timingIndex = medication.timing.findIndex(t => String(t._id) === String(timingId));
-    if (timingIndex < 0) return res.status(404).json({ success: false, error: 'Timing slot not found.' });
-    if (medication.timing[timingIndex].status !== 'Pending') return res.status(409).json({ success: false, error: 'This timing slot has already been actioned.' });
-    if (medication.isHighRisk && medication.requiresDoubleVerification && !witnessedBy) {
-      return res.status(400).json({ success: false, error: 'Double verification is required for this high-risk medication.' });
-    }
-    const setting = await getOrCreateNabhSetting(admission.hospitalId, req.user._id);
-    const identityRequired = Boolean(setting?.medication?.requirePatientBarcodeAtAdministration || medication.medicineId?.medicationSafety?.patientBarcodeRequired);
+    // Read policy/identity prerequisites before opening the write transaction.
+    const initial = await loadScopedMedication(req, id, { populateMedicine: true });
+    if (!initial.medication) return res.status(404).json({ success: false, error: 'Medication not found.' });
+    if (!initial.admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
+    const setting = await getOrCreateNabhSetting(initial.admission.hospitalId, req.user._id);
+    const identityRequired = Boolean(setting?.medication?.requirePatientBarcodeAtAdministration || initial.medication.medicineId?.medicationSafety?.patientBarcodeRequired);
     if (identityRequired) {
       const supplied = String(req.body.patientIdentifier || '').trim();
       if (!supplied) return res.status(400).json({ success: false, error: 'Patient identifier scan/entry is required before medication administration.' });
-      const patient = await Patient.findOne({ _id: medication.patientId, hospitalId: admission.hospitalId }).select('patientId uhid');
+      const patient = await Patient.findOne({ _id: initial.medication.patientId, hospitalId: initial.admission.hospitalId }).select('patientId uhid');
       if (!patient || ![String(patient._id), String(patient.patientId || ''), String(patient.uhid || '')].includes(supplied)) {
         return res.status(409).json({ success: false, error: 'Patient identifier does not match the medication order.' });
       }
     }
 
-    const doseQtyBaseUnits = Number(medication.doseQtyBaseUnits || resolveDoseQtyBaseUnits({ dosage: medication.dosage }));
+    let resultMedication = null;
     let remainingStock = null;
-    const stockMedicineId = medication.pharmacyRequest?.dispensedMedicineId || medication.medicineId?._id;
-    
-    // ========== FIX: Handle NLEM medicines without medicineId ==========
-    if (medication.requiresPharmacyDispense) {
-      // If there's no medicineId, find stock by medicineName
-      if (!stockMedicineId) {
-        // Find stock by medicineName (for NLEM prescriptions)
-        const stocks = await IPDPatientMedicineStock.find({
+    await session.withTransaction(async () => {
+      const scoped = await loadScopedMedication(req, id, { session, populateMedicine: true });
+      const medication = scoped.medication;
+      const admission = scoped.admission;
+      if (!medication) { const e = new Error('Medication not found.'); e.statusCode = 404; throw e; }
+      if (!admission) { const e = new Error('IPD admission not found.'); e.statusCode = 404; throw e; }
+      if (medication.status !== 'Active') { const e = new Error('Only an active medication can be administered.'); e.statusCode = 409; throw e; }
+      if (medication.requiresPharmacyDispense && medication.stockReceiptStatus !== 'RECEIVED') {
+        const e = new Error('Pharmacy stock must be received and acknowledged before administration.'); e.statusCode = 409; throw e;
+      }
+
+      const timingIndex = medication.timing.findIndex((t) => String(t._id) === String(timingId));
+      if (timingIndex < 0) { const e = new Error('Timing slot not found.'); e.statusCode = 404; throw e; }
+      if (medication.timing[timingIndex].status !== 'Pending') { const e = new Error('This timing slot has already been actioned.'); e.statusCode = 409; throw e; }
+      if (medication.isHighRisk && medication.requiresDoubleVerification && !witnessedBy && !witnessedByUserId) {
+        const e = new Error('Double verification is required for this high-risk medication.'); e.statusCode = 400; throw e;
+      }
+
+      const actor = await resolveClinicalActor(req.user, { session });
+      let witnessActor = null;
+      if (witnessedBy || witnessedByUserId) {
+        witnessActor = await resolveNurseWitness({
+          hospitalId: admission.hospitalId,
+          userId: witnessedByUserId || null,
+          nurseId: witnessedByUserId ? null : witnessedBy,
+          session
+        });
+        if (!witnessActor?.nurseProfileId) {
+          const e = new Error('Medication witness must resolve to a valid Nurse profile in this hospital.');
+          e.statusCode = 409;
+          e.code = 'INVALID_MEDICATION_WITNESS';
+          throw e;
+        }
+        if ((witnessActor.userId && String(witnessActor.userId) === String(actor.userId)) ||
+            (actor.staffModel === 'Nurse' && actor.staffProfileId && String(witnessActor.nurseProfileId) === String(actor.staffProfileId))) {
+          const e = new Error('High-risk medication witness must be a different nurse from the administering clinician.');
+          e.statusCode = 409;
+          e.code = 'MEDICATION_WITNESS_MUST_DIFFER';
+          throw e;
+        }
+      }
+
+      const doseQtyBaseUnits = Number(medication.doseQtyBaseUnits || resolveDoseQtyBaseUnits({ dosage: medication.dosage }));
+      const stockMedicineId = medication.pharmacyRequest?.dispensedMedicineId || medication.medicineId?._id;
+      if (medication.requiresPharmacyDispense) {
+        const stockFilter = {
+          hospitalId: admission.hospitalId,
           admissionId: medication.admissionId,
           patientId: medication.patientId,
-          medicineName: medication.medicineName,
-          medicineId: null,
           currentBalanceBaseUnits: { $gt: 0 },
-          receiptAcknowledged: true
-        }).sort({ lastIssuedAt: 1, createdAt: 1 });
-        
-        const available = stocks.reduce((sum, s) => sum + Number(s.currentBalanceBaseUnits || 0), 0);
+          receiptAcknowledged: true,
+          ...(stockMedicineId
+            ? { medicineId: stockMedicineId }
+            : { medicineId: null, medicineName: medication.medicineName })
+        };
+        const stocks = await IPDPatientMedicineStock.find(stockFilter).sort({ lastIssuedAt: 1, createdAt: 1 }).session(session);
+        const available = stocks.reduce((sum, row) => sum + Number(row.currentBalanceBaseUnits || 0), 0);
         if (available < doseQtyBaseUnits) {
-          return res.status(409).json({ 
-            success: false, 
-            error: `Insufficient received stock for ${medication.medicineName}. Available: ${available}, required: ${doseQtyBaseUnits}.` 
-          });
+          const e = new Error(`Insufficient received patient stock for ${medication.medicineName}. Available: ${available}, required: ${doseQtyBaseUnits}.`);
+          e.statusCode = 409;
+          throw e;
         }
-        
-        // Deduct from stocks
         let remaining = doseQtyBaseUnits;
         for (const stock of stocks) {
           if (remaining <= 0) break;
           const deductAmount = Math.min(Number(stock.currentBalanceBaseUnits || 0), remaining);
-          stock.administeredQtyBaseUnits += deductAmount;
-          stock.currentBalanceBaseUnits -= deductAmount;
-          if (!stock.medicationChartIds.some(id => String(id) === String(medication._id))) {
-            stock.medicationChartIds.push(medication._id);
-          }
+          stock.administeredQtyBaseUnits = Number(stock.administeredQtyBaseUnits || 0) + deductAmount;
+          stock.currentBalanceBaseUnits = Number(stock.currentBalanceBaseUnits || 0) - deductAmount;
+          if (!stock.medicationChartIds.some((chartId) => String(chartId) === String(medication._id))) stock.medicationChartIds.push(medication._id);
           stock.lastAdministeredAt = operationNow();
-          await stock.save();
+          await stock.save({ session });
           remaining -= deductAmount;
         }
         remainingStock = available - doseQtyBaseUnits;
-      } else {
-        // Use the regular deduction with medicineId
-        const result = await deductFromPatientMedicineStock(
-          medication.admissionId, 
-          medication.patientId, 
-          stockMedicineId, 
-          doseQtyBaseUnits, 
-          medication._id
-        );
-        if (!result.deducted) {
-          return res.status(409).json({ 
-            success: false, 
-            error: `Insufficient received patient stock for ${medication.medicineName}. Available: ${result.available || 0}, required: ${doseQtyBaseUnits}.` 
-          });
-        }
-        remainingStock = result.available;
       }
-    }
 
-    medication.timing[timingIndex].status = 'Administered';
-    medication.timing[timingIndex].administeredAt = operationNow();
-    medication.timing[timingIndex].administeredBy = req.user?._id;
-    medication.timing[timingIndex].remarks = remarks || '';
-    if (witnessedBy) medication.timing[timingIndex].witnessedBy = witnessedBy;
-    if (medication.timing.every(t => ['Administered', 'Skipped', 'Held', 'Refused', 'Missed'].includes(t.status))) medication.status = 'Completed';
-    await medication.save();
+      medication.timing[timingIndex].status = 'Administered';
+      medication.timing[timingIndex].administeredAt = operationNow();
+      medication.timing[timingIndex].administeredByUser = actor.userId;
+      medication.timing[timingIndex].administeredByStaffProfile = actor.staffProfileId || undefined;
+      medication.timing[timingIndex].administeredByStaffModel = actor.staffModel || undefined;
+      // Preserve legacy Nurse ref only when the authenticated actor actually has
+      // a Nurse profile. User IDs are never written into a Nurse/Doctor ref.
+      if (actor.staffModel === 'Nurse' && actor.staffProfileId) medication.timing[timingIndex].administeredBy = actor.staffProfileId;
+      medication.timing[timingIndex].administeredByInitials = req.user?.initials || actor.name || '';
+      medication.timing[timingIndex].signOffName = actor.name || '';
+      medication.timing[timingIndex].remarks = remarks || '';
+      if (witnessActor) {
+        if (witnessActor.userId) medication.timing[timingIndex].witnessedByUser = witnessActor.userId;
+        medication.timing[timingIndex].witnessedBy = witnessActor.nurseProfileId;
+        medication.timing[timingIndex].witnessedByInitials = witnessActor.name || '';
+      }
+      if (medication.timing.every((t) => ['Administered', 'Skipped', 'Held', 'Refused', 'Missed'].includes(t.status))) medication.status = 'Completed';
+      await medication.save({ session });
 
-    await NursingNote.create({
-      admissionId: medication.admissionId,
-      patientId: medication.patientId,
-      nurseId: req.user?._id,
-      noteType: 'Medication',
-      note: `Administered ${doseQtyBaseUnits} base unit(s) of ${medication.medicineName} (${medication.dosage}). ${remarks || ''}`.trim(),
-      priority: medication.isHighRisk ? 'Important' : 'Normal',
-      createdBy: req.user?._id
+      await NursingNote.create([{
+        hospitalId: admission.hospitalId,
+        admissionId: medication.admissionId,
+        patientId: medication.patientId,
+        ...(actor.staffModel === 'Nurse' && actor.staffProfileId ? { nurseId: actor.staffProfileId } : {}),
+        actorUserId: actor.userId,
+        actorRole: actor.role,
+        actorNameSnapshot: actor.name,
+        noteType: 'Medication',
+        note: `Administered ${doseQtyBaseUnits} base unit(s) of ${medication.medicineName} (${medication.dosage}). ${remarks || ''}`.trim(),
+        priority: medication.isHighRisk ? 'Important' : 'Normal',
+        createdBy: req.user?._id
+      }], { session });
+      resultMedication = medication;
     });
-    return res.json({ success: true, message: 'Medication administration recorded.', medication, remainingStock });
+
+    return res.json({ success: true, message: 'Medication administration recorded.', medication: resultMedication, remainingStock });
   } catch (err) {
     console.error('Error administering medication:', err);
     return res.status(err.statusCode || 500).json({ success: false, error: err.message || 'Unable to administer medication.' });
+  } finally {
+    await session.endSession();
   }
 };
 
@@ -1095,82 +1192,46 @@ exports.skipMedication = async (req, res) => {
   try {
     const { id } = req.params;
     const { timingId, remarks } = req.body;
-
-    const medication = await IPDMedicationChart.findById(id);
-    if (!medication) {
-      return res.status(404).json({ error: 'Medication not found' });
-    }
-
-    const timingIndex = medication.timing.findIndex(t => t._id.toString() === timingId);
-    if (timingIndex === -1) {
-      return res.status(404).json({ error: 'Timing not found' });
-    }
-
+    const { medication, admission } = await loadScopedMedication(req, id);
+    if (!medication) return res.status(404).json({ error: 'Medication not found' });
+    if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
+    if (medication.status !== 'Active') return res.status(409).json({ error: 'Only an active medication can be skipped' });
+    const timingIndex = medication.timing.findIndex((t) => String(t._id) === String(timingId));
+    if (timingIndex === -1) return res.status(404).json({ error: 'Timing not found' });
+    if (medication.timing[timingIndex].status !== 'Pending') return res.status(409).json({ error: 'Only a pending timing slot can be skipped' });
     medication.timing[timingIndex].status = 'Skipped';
-    medication.timing[timingIndex].remarks = remarks;
+    medication.timing[timingIndex].remarks = remarks || '';
+    const actor = await resolveClinicalActor(req.user);
     await medication.save();
-
-    const nursingNote = new NursingNote({
-      admissionId: medication.admissionId,
-      patientId: medication.patientId,
-      nurseId: req.user?._id || req.user?.id,
-      noteType: 'Medication',
-      note: `Medication skipped: ${medication.medicineName}. Reason: ${remarks || 'Not specified'}`,
-      priority: 'Normal',
-      createdBy: req.user?._id || req.user?.id
-    });
-    await nursingNote.save();
-
-    res.json({
-      success: true,
-      message: 'Medication skipped',
-      medication
-    });
+    await NursingNote.create({ hospitalId: admission.hospitalId, admissionId: medication.admissionId, patientId: medication.patientId, ...(actor.staffModel === 'Nurse' && actor.staffProfileId ? { nurseId: actor.staffProfileId } : {}), actorUserId: actor.userId, actorRole: actor.role, actorNameSnapshot: actor.name, noteType: 'Medication', note: `Medication skipped: ${medication.medicineName}. Reason: ${remarks || 'Not specified'}`, priority: 'Normal', createdBy: req.user?._id });
+    return res.json({ success: true, message: 'Medication skipped', medication });
   } catch (err) {
     console.error('Error skipping medication:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
-// Hold medication (Nurse action)
+// Hold medication (Nurse/Doctor action)
 exports.holdMedication = async (req, res) => {
   try {
     const { id } = req.params;
     const { timingId, remarks } = req.body;
-
-    const medication = await IPDMedicationChart.findById(id);
-    if (!medication) {
-      return res.status(404).json({ error: 'Medication not found' });
-    }
-
-    const timingIndex = medication.timing.findIndex(t => t._id.toString() === timingId);
-    if (timingIndex === -1) {
-      return res.status(404).json({ error: 'Timing not found' });
-    }
-
+    const { medication, admission } = await loadScopedMedication(req, id);
+    if (!medication) return res.status(404).json({ error: 'Medication not found' });
+    if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
+    if (medication.status !== 'Active') return res.status(409).json({ error: 'Only an active medication can be held' });
+    const timingIndex = medication.timing.findIndex((t) => String(t._id) === String(timingId));
+    if (timingIndex === -1) return res.status(404).json({ error: 'Timing not found' });
+    if (medication.timing[timingIndex].status !== 'Pending') return res.status(409).json({ error: 'Only a pending timing slot can be held' });
     medication.timing[timingIndex].status = 'Held';
-    medication.timing[timingIndex].remarks = remarks;
+    medication.timing[timingIndex].remarks = remarks || '';
+    const actor = await resolveClinicalActor(req.user);
     await medication.save();
-
-    const nursingNote = new NursingNote({
-      admissionId: medication.admissionId,
-      patientId: medication.patientId,
-      nurseId: req.user?._id || req.user?.id,
-      noteType: 'Medication',
-      note: `Medication held: ${medication.medicineName}. Reason: ${remarks || 'Not specified'}`,
-      priority: 'Important',
-      createdBy: req.user?._id || req.user?.id
-    });
-    await nursingNote.save();
-
-    res.json({
-      success: true,
-      message: 'Medication held',
-      medication
-    });
+    await NursingNote.create({ hospitalId: admission.hospitalId, admissionId: medication.admissionId, patientId: medication.patientId, ...(actor.staffModel === 'Nurse' && actor.staffProfileId ? { nurseId: actor.staffProfileId } : {}), actorUserId: actor.userId, actorRole: actor.role, actorNameSnapshot: actor.name, noteType: 'Medication', note: `Medication held: ${medication.medicineName}. Reason: ${remarks || 'Not specified'}`, priority: 'Important', createdBy: req.user?._id });
+    return res.json({ success: true, message: 'Medication held', medication });
   } catch (err) {
     console.error('Error holding medication:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
@@ -1179,36 +1240,25 @@ exports.stopMedication = async (req, res) => {
   try {
     const { id } = req.params;
     const { stoppedReason } = req.body;
-
-    const medication = await IPDMedicationChart.findById(id);
-    if (!medication) {
-      return res.status(404).json({ error: 'Medication not found' });
-    }
-
+    const { medication, admission } = await loadScopedMedication(req, id);
+    if (!medication) return res.status(404).json({ error: 'Medication not found' });
+    if (!admission) return res.status(404).json({ error: 'IPD admission not found' });
+    if (['Stopped', 'Completed'].includes(medication.status)) return res.status(409).json({ error: `Medication is already ${medication.status}` });
+    if (!String(stoppedReason || '').trim()) return res.status(400).json({ error: 'Stopped reason is required' });
     medication.status = 'Stopped';
+    const actor = await resolveClinicalActor(req.user);
     medication.stoppedReason = stoppedReason;
-    medication.stoppedBy = req.user?._id;
-    medication.endDate = operationNow();
+    medication.stoppedAt = operationNow();
+    medication.endDate = medication.stoppedAt;
+    medication.stoppedByUser = actor.userId;
+    medication.stoppedByNameSnapshot = actor.name;
+    if (actor.staffModel === 'Doctor' && actor.staffProfileId) medication.stoppedBy = actor.staffProfileId;
     await medication.save();
-
-    const nursingNote = new NursingNote({
-      admissionId: medication.admissionId,
-      patientId: medication.patientId,
-      noteType: 'Medication',
-      note: `Medication stopped: ${medication.medicineName}. Reason: ${stoppedReason}`,
-      priority: 'Normal',
-      createdBy: req.user?._id
-    });
-    await nursingNote.save();
-
-    res.json({
-      success: true,
-      message: 'Medication stopped successfully',
-      medication
-    });
+    await NursingNote.create({ hospitalId: admission.hospitalId, admissionId: medication.admissionId, patientId: medication.patientId, ...(actor.staffModel === 'Nurse' && actor.staffProfileId ? { nurseId: actor.staffProfileId } : {}), actorUserId: actor.userId, actorRole: actor.role, actorNameSnapshot: actor.name, noteType: 'Medication', note: `Medication stopped: ${medication.medicineName}. Reason: ${stoppedReason}`, priority: 'Normal', createdBy: req.user?._id });
+    return res.json({ success: true, message: 'Medication stopped successfully', medication });
   } catch (err) {
     console.error('Error stopping medication:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
@@ -1252,7 +1302,7 @@ exports.getMedicationSummary = async (req, res) => {
     if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
     assertAdmissionHospitalAccess(req, admission);
 
-    const medications = await IPDMedicationChart.find({ admissionId });
+    const medications = await IPDMedicationChart.find({ hospitalId: admission.hospitalId, admissionId });
 
     const summary = {
       total: medications.length,
@@ -1274,7 +1324,7 @@ exports.getMedicationSummary = async (req, res) => {
       summary.totalCost += med.totalCost || 0;
     });
 
-    const patientStocks = await IPDPatientMedicineStock.find({ admissionId });
+    const patientStocks = await IPDPatientMedicineStock.find({ hospitalId: admission.hospitalId, admissionId });
     const stockSummary = {
       totalMedicinesIssued: patientStocks.length,
       totalUnitsIssued: patientStocks.reduce((sum, s) => sum + s.issuedQtyBaseUnits, 0),
@@ -1296,10 +1346,13 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
   try {
 
     const { id } = req.params;
-    const { quantity } = req.body;
+    const { quantity, sourceType = 'PATIENT_SUPPLIED', receivedFrom, batchNumber, expiryDate, manufacturer, referenceNumber, verificationNote } = req.body;
 
     if (!quantity || quantity <= 0) {
       return res.status(400).json({ error: 'Valid quantity is required' });
+    }
+    if (!String(receivedFrom || '').trim() || !String(verificationNote || '').trim()) {
+      return res.status(400).json({ error: 'External stock requires receivedFrom and verificationNote for medication traceability' });
     }
 
     const medication = await IPDMedicationChart.findById(id).populate('medicineId');
@@ -1307,11 +1360,12 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
       return res.status(404).json({ error: 'Medication not found' });
     }
 
-    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId');
+    const admission = await IPDAdmission.findById(medication.admissionId).select('hospitalId status chargeFreeze finalDischargedAt');
     if (!admission) {
       return res.status(404).json({ error: 'IPD admission not found' });
     }
     assertAdmissionHospitalAccess(req, admission);
+    assertAdmissionClinicallyOpen(admission);
 
     const baseUnit = 'unit';
     const packUnit = 'pack';
@@ -1332,17 +1386,21 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
     if (medicineId) {
       // If we have a medicineId, find stock by medicineId
       patientStock = await IPDPatientMedicineStock.findOne({
+        hospitalId: admission.hospitalId,
         admissionId: medication.admissionId,
         patientId: medication.patientId,
         medicineId: medicineId,
+        stockSource: 'EXTERNAL_PHARMACY',
       });
     } else {
       // If no medicineId, find stock by medicineName (for NLEM prescriptions)
       patientStock = await IPDPatientMedicineStock.findOne({
         admissionId: medication.admissionId,
         patientId: medication.patientId,
+        hospitalId: admission.hospitalId,
         medicineName: medicineName,
         medicineId: null, // Explicitly look for stocks without medicineId
+        stockSource: 'EXTERNAL_PHARMACY',
       });
     }
 
@@ -1356,6 +1414,7 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
       patientStock.receiptAcknowledgedBy = req.user?._id;
       patientStock.stockSource = 'EXTERNAL_PHARMACY';
       patientStock.lastIssuedAt = operationNow();
+      patientStock.externalProvenance = { sourceType, receivedFrom, batchNumber, expiryDate: expiryDate ? new Date(expiryDate) : undefined, manufacturer, referenceNumber, verificationNote, verifiedBy: req.user?._id, receivedAt: operationNow() };
 
       if (!patientStock.medicationChartIds.some(id => String(id) === String(medication._id))) {
         patientStock.medicationChartIds.push(medication._id);
@@ -1369,6 +1428,7 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
       patientStock = new IPDPatientMedicineStock({
         admissionId: medication.admissionId,
         patientId: medication.patientId,
+        hospitalId: admission.hospitalId,
         medicineId: medicineId, // Will be null for NLEM prescriptions
         batchId: null,
         medicineName: medicineName,
@@ -1385,7 +1445,8 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
         receiptAcknowledgedAt: operationNow(),
         receiptAcknowledgedBy: req.user?._id,
         stockSource: 'EXTERNAL_PHARMACY',
-        lastIssuedAt: operationNow()
+        lastIssuedAt: operationNow(),
+        externalProvenance: { sourceType, receivedFrom, batchNumber, expiryDate: expiryDate ? new Date(expiryDate) : undefined, manufacturer, referenceNumber, verificationNote, verifiedBy: req.user?._id, receivedAt: operationNow() }
       });
 
       await patientStock.save();
@@ -1403,23 +1464,33 @@ exports.receiveExternalPharmacyStock = async (req, res) => {
     medication.pharmacyRequest.requestedToPharmacy = false;
     medication.pharmacyRequest.requestedAt = medication.pharmacyRequest.requestedAt || operationNow();
     medication.pharmacyRequest.requestedBy = medication.pharmacyRequest.requestedBy || req.user?._id;
-    medication.pharmacyRequest.requestedQuantity = quantity;
-    medication.pharmacyRequest.pharmacyStatus = 'Approved';
-    medication.pharmacyRequest.dispensedFromPharmacy = true;
-    medication.pharmacyRequest.dispensedQuantity = quantity;
-    medication.pharmacyRequest.dispensedAt = operationNow();
+    // External/patient-supplied medicine is bedside stock, not a hospital
+    // pharmacy dispense or sale. Keep that distinction explicit so pharmacy
+    // revenue, pending-indent and return workflows do not pick it up.
+    medication.pharmacyRequest.requestedQuantity = 0;
+    medication.pharmacyRequest.pharmacyStatus = 'Delivered';
+    medication.pharmacyRequest.dispensedFromPharmacy = false;
+    medication.pharmacyRequest.dispensedQuantity = 0;
+    medication.pharmacyRequest.saleId = null;
+    medication.pharmacyRequest.dispensedAt = null;
+    medication.pharmacyRequest.pharmacyNotes = `External/patient-supplied stock received from ${String(receivedFrom).trim()}`;
     medication.pharmacyRequest.stockReceivedByNurse = true;
     medication.pharmacyRequest.stockReceivedAt = operationNow();
     medication.pharmacyRequest.stockReceivedBy = req.user?._id;
 
     await medication.save();
 
+    const externalStockActor = await resolveClinicalActor(req.user);
     await NursingNote.create({
+      hospitalId: admission.hospitalId,
       admissionId: medication.admissionId,
       patientId: medication.patientId,
-      nurseId: req.user?._id,
+      ...(externalStockActor.staffModel === 'Nurse' && externalStockActor.staffProfileId ? { nurseId: externalStockActor.staffProfileId } : {}),
+      actorUserId: externalStockActor.userId,
+      actorRole: externalStockActor.role,
+      actorNameSnapshot: externalStockActor.name,
       noteType: 'Medication',
-      note: `Received ${quantity} base unit(s) of ${medicineName} from external pharmacy. ${medicineId ? 'Mapped to medicine ID: ' + medicineId : 'NLEM medicine (not in inventory)'}. Stock is now available for administration.`,
+      note: `Received ${quantity} base unit(s) of ${medicineName} from external/patient-supplied stock (${sourceType}). Source: ${receivedFrom}. ${medicineId ? 'Mapped to medicine ID: ' + medicineId : 'NLEM medicine (not in inventory)'}. Stock is available for administration and is not hospital-pharmacy revenue.`,
       priority: 'Normal',
       createdBy: req.user?._id
     });
@@ -1449,7 +1520,7 @@ exports.getPatientMedicineStock = async (req, res) => {
     if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
     assertAdmissionHospitalAccess(req, admission);
 
-    const stocks = await IPDPatientMedicineStock.find({ admissionId })
+    const stocks = await IPDPatientMedicineStock.find({ hospitalId: admission.hospitalId, admissionId })
       .populate('medicineId', 'name base_unit pack_unit units_per_pack')
       .populate('batchId', 'batch_number expiry_date')
       .sort({ createdAt: -1 });

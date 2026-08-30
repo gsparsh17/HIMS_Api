@@ -26,6 +26,9 @@ const financial = require('../services/ipdFinancial.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { buildAccommodationPrintData } = require('../services/ipdAccommodationPrint.service');
 const { parseHospitalDateTime, hospitalDateKey } = require('../utils/hospitalDateTime');
+const { ensureAdmissionDailyCharges } = require('../services/ipdRecurringCharge.service');
+const { reopenChargeFreeze } = require('../services/ipdLifecycleGuard.service');
+const { resolveClinicalActor } = require('../services/clinicalActor.service');
 
 const CANONICAL_DISCHARGE_TYPES = Object.freeze(['Normal', 'DOR', 'LAMA', 'Referred', 'Death']);
 const FINAL_LAB_STATUSES = new Set(['Verified', 'Completed', 'Reported', 'Released', 'Amended']);
@@ -82,12 +85,78 @@ async function loadDischargePolicy(hospitalId) {
   return loadIPDWorkflowPolicy(hospitalId);
 }
 
+function immutableSummarySnapshot(summary) {
+  const raw = summary?.toObject ? summary.toObject({ depopulate: true }) : JSON.parse(JSON.stringify(summary || {}));
+  // Avoid recursively embedding the whole revision chain inside every revision.
+  delete raw.revisionHistory;
+  return raw;
+}
+
+async function reopenSummaryRevision({ summary, admission, user, reason, session = null }) {
+  const reopenReason = String(reason || '').trim();
+  if (!reopenReason) {
+    const error = new Error('A clinical amendment/reopen reason is required');
+    error.statusCode = 400;
+    error.code = 'DISCHARGE_REVISION_REASON_REQUIRED';
+    throw error;
+  }
+  if (!['Finalized', 'StaffCompleted'].includes(String(summary.status || ''))) return summary;
+  const previousRevision = Number(summary.revisionNumber || 1);
+  summary.revisionHistory = Array.isArray(summary.revisionHistory) ? summary.revisionHistory : [];
+  summary.revisionHistory.push({
+    revisionNumber: previousRevision,
+    reopenedAt: operationNow(),
+    reopenedBy: user?._id,
+    reopenReason,
+    previousStatus: summary.status,
+    snapshot: immutableSummarySnapshot(summary)
+  });
+  summary.revisionNumber = previousRevision + 1;
+  summary.status = 'Draft';
+  summary.finalizedAt = undefined;
+  summary.reviewedAt = undefined;
+  summary.reviewedBy = undefined;
+  summary.updatedBy = user?._id;
+  await summary.save(session ? { session, validateBeforeSave: false } : { validateBeforeSave: false });
+  if (admission) {
+    admission.status = 'Discharge Summary Pending';
+    admission.financialClearanceStatus = 'in_progress';
+    admission.financialClearedAt = undefined;
+    admission.financialClearedBy = undefined;
+    admission.finalSettlementReceiptNumber = undefined;
+    await admission.save(session ? { session, validateBeforeSave: false } : { validateBeforeSave: false });
+  }
+  return summary;
+}
+
 async function buildDischargeReadiness(admission, hospitalId) {
-  const [dischargeSummary, labRows, radiologyRows, pendingMedications, financeClearance, policy] = await Promise.all([
+  const [dischargeSummary, labRows, radiologyRows, procedureRows, otRows, pendingMedications, financeClearance, policy] = await Promise.all([
     DischargeSummary.findOne({ admissionId: admission._id, hospitalId }).lean(),
     LabRequest.find({ admissionId: admission._id, hospitalId, is_active: { $ne: false } }).select('status reportFinalisation requestedDate testName labTestId').lean(),
     RadiologyRequest.find({ admissionId: admission._id, hospitalId, is_active: { $ne: false } }).select('status reportFinalisation requestedDate testName imagingTestId').lean(),
-    IPDMedicationChart.countDocuments({ admissionId: admission._id, hospitalId, status: 'Active', 'timing.status': 'Pending' }),
+    ProcedureRequest.find({ admissionId: admission._id, hospitalId }).select('status procedureName requestedDate').lean(),
+    OTRequest.find({ admissionId: admission._id, hospitalId }).select('status procedureName requestedDate clinicalClosureStatus').lean(),
+    // A Requested order, a dispatched-but-unreceived indent, or any Pending MAR
+    // dose is still clinically open and must not disappear from discharge checks.
+    IPDMedicationChart.countDocuments({
+      admissionId: admission._id,
+      hospitalId,
+      $or: [
+        { status: 'Requested' },
+        { stockReceiptStatus: 'PENDING_RECEIPT' },
+        { status: 'Active', 'timing.status': 'Pending' },
+        {
+          'pharmacyRequest.requestedToPharmacy': true,
+          'pharmacyRequest.pharmacyStatus': { $in: ['Pending', 'PartiallyDispensed', 'Dispatched'] },
+          $expr: {
+            $gt: [
+              { $ifNull: ['$pharmacyRequest.requestedQuantity', 0] },
+              { $ifNull: ['$pharmacyRequest.dispensedQuantity', 0] }
+            ]
+          }
+        }
+      ]
+    }),
     financial.getFinancialClearance(admission._id),
     loadDischargePolicy(hospitalId)
   ]);
@@ -109,12 +178,18 @@ async function buildDischargeReadiness(admission, hospitalId) {
   const labException = exceptionAllowed && exceptionCategories.has('LAB_PENDING');
   const radiologyException = exceptionAllowed && exceptionCategories.has('RADIOLOGY_PENDING');
   const medicationException = exceptionAllowed && exceptionCategories.has('MEDICATION_PENDING');
+  const procedureException = exceptionAllowed && exceptionCategories.has('PROCEDURE_PENDING');
+  const otException = exceptionAllowed && exceptionCategories.has('OT_PENDING');
+  const pendingProcedures = procedureRows.filter((row) => !['Completed', 'Cancelled'].includes(String(row.status || 'Pending')));
+  const pendingOT = otRows.filter((row) => !['Closed', 'Completed', 'Cancelled'].includes(String(row.status || 'Requested')) || String(row.clinicalClosureStatus || 'Open') !== 'Closed');
 
   const checks = {
     doctorDischargeAdvice: ['Discharge Initiated', 'Discharge Summary Pending', 'Billing Pending', 'Payment Pending', 'Ready for Discharge', 'Discharged'].includes(admission.status),
     dischargeSummaryFinalized: !policy.requireSummaryFinalized || (policy.requireStaffCompletedSummary ? dischargeSummary?.status === 'StaffCompleted' : ['Finalized', 'StaffCompleted'].includes(dischargeSummary?.status)),
     labReportsCompleted: !policy.pendingInvestigations.blockLab || lab.pending.length === 0 || labException,
     radiologyReportsCompleted: !policy.pendingInvestigations.blockRadiology || radiology.pending.length === 0 || radiologyException,
+    proceduresCompleted: pendingProcedures.length === 0 || procedureException,
+    otCompleted: pendingOT.length === 0 || otException,
     medicationsAdministered: !policy.requireMedicationCompletion || pendingMedications === 0 || medicationException,
     chargesBilled: financeClearance.checks.unbilledChargesResolved,
     paymentSettled: financeClearance.checks.issuedInvoicesSettled,
@@ -130,8 +205,10 @@ async function buildDischargeReadiness(admission, hospitalId) {
     policy,
     checks,
     ready: Object.values(checks).every(Boolean),
-    investigations: { lab, radiology },
+    investigations: { lab, radiology, procedures: { pending: pendingProcedures }, ot: { pending: pendingOT } },
     pendingMedications,
+    pendingProcedures: pendingProcedures.length,
+    pendingOT: pendingOT.length,
     clinicalException: exceptionApproved ? exception : null
   };
 }
@@ -182,6 +259,12 @@ exports.saveDischargeSummary = async (req, res) => {
     }
 
     let dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId });
+    if (dischargeSummary && ['Finalized', 'StaffCompleted'].includes(dischargeSummary.status)) {
+      return res.status(409).json({
+        error: 'A finalized discharge summary is immutable. Reopen/amend it through an authorised revision workflow before changing clinical content.',
+        code: 'DISCHARGE_SUMMARY_FINALIZED'
+      });
+    }
     
     const normalizedDischargeType = canonicalDischargeType(dischargeType || dischargeSummary?.dischargeType || admission.dischargeType || admission.status);
     const normalizedDeath = normalizedDischargeType === 'Death'
@@ -335,7 +418,7 @@ exports.getDischargeRecords = async (req, res) => {
         .sort({ roundDateTime: 1 }),
       IPDVitals.find({ admissionId, hospitalId }).populate('recordedBy', 'first_name last_name').sort({ recordedAt: 1 }),
       // NursingNote is encounter-scoped through the already tenant-validated admissionId.
-      NursingNote.find({ admissionId }).populate('nurseId', 'first_name last_name').sort({ noteDateTime: 1 }),
+      NursingNote.find({ admissionId, $or: [{ hospitalId }, { hospitalId: { $exists: false } }] }).populate('nurseId', 'first_name last_name').sort({ noteDateTime: 1 }),
       IPDMedicationChart.find({ admissionId, hospitalId }).sort({ createdAt: 1 }),
       LabRequest.find({ admissionId, hospitalId }).populate('doctorId', 'firstName lastName').populate('labTestId', 'name testName code').sort({ requestedDate: 1 }),
       RadiologyRequest.find({ admissionId, hospitalId }).populate('doctorId', 'firstName lastName').populate('imagingTestId', 'name testName code').sort({ requestedDate: 1 }),
@@ -400,50 +483,43 @@ exports.getDischargeRecords = async (req, res) => {
 
     const treatmentLines = [];
     rounds.forEach(r => { if (r.treatmentPlan) treatmentLines.push(`[${new Date(r.roundDateTime).toLocaleDateString()}] ${r.treatmentPlan}`); });
-    const allMeds = [];
-    prescriptions.forEach(rx => { rx.items?.forEach(item => { const medInfo = `${item.medicine_name} ${item.dosage || ''} - ${item.frequency} x ${item.duration}`; if (!allMeds.includes(medInfo)) allMeds.push(medInfo); }); });
-    medications.forEach(med => { const medInfo = `${med.medicineName} ${med.dosage || ''} - ${med.frequency} (${med.route || 'Oral'})`; if (!allMeds.includes(medInfo)) allMeds.push(medInfo); });
-    if (allMeds.length > 0) { treatmentLines.push('\nMedications administered during stay:'); allMeds.forEach(m => treatmentLines.push(`• ${m}`)); }
+    const administeredMeds = [];
+    medications.forEach((med) => {
+      const administeredCount = (med.timing || []).filter((slot) => slot.status === 'Administered').length;
+      if (!administeredCount) return;
+      const medInfo = `${med.medicineName} ${med.dosage || ''} - ${med.frequency} (${med.route || 'Oral'}) × ${administeredCount} administered dose(s)`;
+      if (!administeredMeds.includes(medInfo)) administeredMeds.push(medInfo);
+    });
+    if (administeredMeds.length > 0) { treatmentLines.push('\nMedications actually administered during stay (MAR):'); administeredMeds.forEach(m => treatmentLines.push(`• ${m}`)); }
     autoFill.treatmentGiven = treatmentLines.join('\n');
 
     const procedureLines = [];
-    procedureRequests.forEach(pr => { procedureLines.push(`• ${pr.procedureName} (${pr.status}) - ${new Date(pr.requestedDate).toLocaleDateString()}${pr.findings ? ` - Findings: ${pr.findings}` : ''}`); });
+    procedureRequests.filter((pr) => String(pr.status) === 'Completed').forEach(pr => { procedureLines.push(`• ${pr.procedureName} - ${new Date(pr.requestedDate).toLocaleDateString()}${pr.findings ? ` - Findings: ${pr.findings}` : ''}`); });
     autoFill.proceduresDone = procedureLines.join('\n');
 
     const surgeryLines = [];
-    otRequests.forEach(ot => { const surgeon = ot.primarySurgeonId ? `Dr. ${ot.primarySurgeonId.firstName} ${ot.primarySurgeonId.lastName}` : (ot.doctorId ? `Dr. ${ot.doctorId.firstName} ${ot.doctorId.lastName}` : ''); surgeryLines.push(`• ${ot.procedureName} (${ot.status}) - ${new Date(ot.requestedDate).toLocaleDateString()}\n  Surgeon: ${surgeon}${ot.findings ? `\n  Findings: ${ot.findings}` : ''}${ot.complications ? `\n  Complications: ${ot.complications}` : ''}`); });
+    otRequests.filter((ot) => ['Closed', 'Completed'].includes(String(ot.status))).forEach(ot => { const surgeon = ot.primarySurgeonId ? `Dr. ${ot.primarySurgeonId.firstName} ${ot.primarySurgeonId.lastName}` : (ot.doctorId ? `Dr. ${ot.doctorId.firstName} ${ot.doctorId.lastName}` : ''); surgeryLines.push(`• ${ot.procedureName} - ${new Date(ot.requestedDate).toLocaleDateString()}\n  Surgeon: ${surgeon}${ot.findings ? `\n  Findings: ${ot.findings}` : ''}${ot.complications ? `\n  Complications: ${ot.complications}` : ''}`); });
     autoFill.surgeriesDone = surgeryLines.join('\n');
 
-    const dischargeMeds = [];
-    const seenMedicines = new Set();
-    if (prescriptions.length > 0) {
-      const lastPrescription = prescriptions[prescriptions.length - 1];
-      lastPrescription.items?.forEach((item) => {
-        const name = item.medicine_name || item.medicine_id?.name;
-        if (!name) return;
-        const key = String(item.medicine_id?._id || item.medicine_id || name).toLowerCase();
-        if (seenMedicines.has(key)) return;
-        seenMedicines.add(key);
-        dischargeMeds.push({
-          medicineId: item.medicine_id?._id || item.medicine_id || undefined,
-          medicineName: name,
-          dosage: item.dosage || '',
-          frequency: item.frequency || '',
-          duration: item.duration || '',
-          instructions: item.instructions || item.timing || '',
-          source: 'prescription'
-        });
-      });
-    }
-    medications.filter((med) => String(med.status || '').toLowerCase() !== 'stopped').forEach((med) => {
-      const name = med.medicineName || med.medicine_id?.name;
-      if (!name) return;
-      const key = String(med.medicineId || med.medicine_id || name).toLowerCase();
-      if (seenMedicines.has(key)) return;
-      seenMedicines.add(key);
-      dischargeMeds.push({ medicineId: med.medicineId || med.medicine_id || undefined, medicineName: name, dosage: med.dosage || '', frequency: med.frequency || '', duration: med.duration || '', instructions: med.instructions || '', source: 'mar' });
-    });
-    autoFill.dischargeMedications = dischargeMeds;
+    // Do not silently turn the last inpatient prescription/MAR order into a
+    // discharge prescription. Give the doctor explicit reconciliation candidates;
+    // only a saved/finalized DischargeSummary is authoritative for medicines to
+    // continue after discharge.
+    const dischargeMedicationCandidates = medications
+      .filter((med) => !['Stopped', 'Completed'].includes(String(med.status || '')))
+      .map((med) => ({
+        medicineId: med.medicineId || undefined,
+        medicineName: med.medicineName,
+        dosage: med.dosage || '',
+        frequency: med.frequency || '',
+        duration: med.duration || '',
+        instructions: med.specialInstructions || '',
+        currentStatus: med.status,
+        source: 'inpatient-medication-order'
+      }));
+    autoFill.dischargeMedications = [];
+    autoFill.dischargeMedicationCandidates = dischargeMedicationCandidates;
+    autoFill.requiresMedicationReconciliation = true;
     autoFill.emergencyInstructions = 'BLOOD IN URINE/STOOL/SPUTUM, SWELLING AT SURGICAL SITE, BLEEDING FROM SURGICAL SITE, PUS DISCHARGE FROM SURGICAL SITE';
     autoFill.emergencyContactNumber = hospital?.contact || hospital?.phone || '';
 
@@ -487,20 +563,36 @@ exports.finalizeDischargeSummary = async (req, res) => {
     if (normalizedDeath) dischargeSummary.deathDetails = normalizedDeath;
 
     if (dischargeSummary.status === 'Finalized') {
-      return res.status(400).json({ error: 'Discharge summary already finalized' });
+      return res.status(409).json({ error: 'Discharge summary already finalized' });
+    }
+    if (!['Draft', 'Pending Review'].includes(dischargeSummary.status)) {
+      return res.status(409).json({ error: `Discharge summary cannot be finalized from ${dischargeSummary.status}`, code: 'INVALID_DISCHARGE_SUMMARY_TRANSITION' });
+    }
+    const hasMedicationHistory = await IPDMedicationChart.exists({ admissionId, hospitalId, is_active: { $ne: false } });
+    if (hasMedicationHistory && !dischargeSummary.medicationReconciliation?.completed) {
+      return res.status(409).json({
+        error: 'Complete physician discharge medication reconciliation (Continue / Stop / Changed / New / PRN) before finalizing the summary',
+        code: 'MEDICATION_RECONCILIATION_REQUIRED'
+      });
     }
 
     dischargeSummary.status = 'Finalized';
     
-    let reviewerDoctorId = reviewedBy;
-    if (!reviewerDoctorId && req.user?._id) {
-      const Doctor = require('../models/Doctor');
-      const doc = await Doctor.findOne({ user_id: req.user._id });
-      if (doc) reviewerDoctorId = doc._id;
+    const reviewerActor = await resolveClinicalActor(req.user);
+    if (reviewerActor.staffModel !== 'Doctor' || !reviewerActor.staffProfileId) {
+      return res.status(409).json({
+        error: 'The authenticated doctor account is not linked to a valid Doctor profile for this hospital',
+        code: 'DOCTOR_PROFILE_LINK_REQUIRED'
+      });
     }
-    if (!reviewerDoctorId) reviewerDoctorId = dischargeSummary.preparedBy;
+    if (reviewedBy && String(reviewedBy) !== String(reviewerActor.staffProfileId)) {
+      return res.status(409).json({
+        error: 'reviewedBy must match the authenticated doctor profile; another doctor cannot be supplied as the signer',
+        code: 'DISCHARGE_SIGNER_MISMATCH'
+      });
+    }
 
-    dischargeSummary.reviewedBy = reviewerDoctorId;
+    dischargeSummary.reviewedBy = reviewerActor.staffProfileId;
     dischargeSummary.reviewedAt = operationNow();
     dischargeSummary.finalizedAt = operationNow();
 
@@ -572,8 +664,8 @@ exports.finalizeDischargeSummary = async (req, res) => {
   }
 };
 
-// Staff completes discharge summary (adds medications, follow-up advice, etc.)
-// This sets status to 'StaffCompleted' and admission status to 'Billing Pending'
+// Staff completes the administrative/support portion of the already doctor-finalized summary.
+// This sets status to 'StaffCompleted' and admission status to 'Billing Pending'.
 exports.staffCompleteDischargeSummary = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -599,11 +691,21 @@ exports.staffCompleteDischargeSummary = async (req, res) => {
     }
 
     if (dischargeSummary.status === 'StaffCompleted') {
-      return res.status(400).json({ error: 'Discharge summary already completed by staff' });
+      return res.status(409).json({ error: 'Discharge summary already completed by staff' });
+    }
+    if (dischargeSummary.status !== 'Finalized') {
+      return res.status(409).json({ error: 'Doctor must finalize the discharge summary before staff completion', code: 'DOCTOR_FINALIZATION_REQUIRED' });
     }
 
-    // Update with staff-entered data
-    if (dischargeMedications !== undefined) dischargeSummary.dischargeMedications = dischargeMedications;
+    // Update only administrative/support discharge fields. Doctor-owned clinical
+    // fields (including discharge type/death certification) stay immutable after
+    // finalization.
+    if (dischargeMedications !== undefined) {
+      return res.status(409).json({
+        error: 'Discharge medicines are doctor-owned clinical content and are immutable after finalization. Reopen a versioned amendment if they must change.',
+        code: 'FINALIZED_CLINICAL_FIELD_LOCKED'
+      });
+    }
     if (followUpAdvice !== undefined) dischargeSummary.followUpAdvice = followUpAdvice;
     if (followUpAfterDays !== undefined) dischargeSummary.followUpAfterDays = followUpAfterDays;
     if (followUpDetails !== undefined) dischargeSummary.followUpDetails = followUpDetails;
@@ -615,12 +717,11 @@ exports.staffCompleteDischargeSummary = async (req, res) => {
     if (adviceAtDischarge !== undefined) dischargeSummary.adviceAtDischarge = adviceAtDischarge;
     if (patientAcknowledgement !== undefined) dischargeSummary.patientAcknowledgement = patientAcknowledgement;
     if (conditionAtDischargeText !== undefined) dischargeSummary.conditionAtDischargeText = conditionAtDischargeText;
-    const normalizedDischargeType = canonicalDischargeType(dischargeType || dischargeSummary.dischargeType || 'Normal');
-    dischargeSummary.dischargeType = normalizedDischargeType;
-    const normalizedDeath = normalizedDischargeType === 'Death'
-      ? normalizeDeathDetails(normalizedDischargeType, req.body, dischargeSummary.deathDetails || {})
-      : undefined;
-    if (normalizedDeath) dischargeSummary.deathDetails = normalizedDeath;
+    if (dischargeType && canonicalDischargeType(dischargeType) !== canonicalDischargeType(dischargeSummary.dischargeType || 'Normal')) {
+      return res.status(409).json({ error: 'Staff completion cannot change the doctor-finalized discharge type', code: 'FINALIZED_CLINICAL_FIELD_LOCKED' });
+    }
+    const normalizedDischargeType = canonicalDischargeType(dischargeSummary.dischargeType || 'Normal');
+    const normalizedDeath = dischargeSummary.deathDetails || undefined;
     
     dischargeSummary.status = 'StaffCompleted';
     await dischargeSummary.save();
@@ -639,7 +740,7 @@ exports.staffCompleteDischargeSummary = async (req, res) => {
   }
 };
 
-// NEW: Update only discharge medications (any role can call this)
+// Update doctor-owned discharge medications while the clinical summary is still editable
 exports.updateDischargeMedications = async (req, res) => {
   try {
     const { admissionId } = req.params;
@@ -648,6 +749,18 @@ exports.updateDischargeMedications = async (req, res) => {
     const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) });
     if (!dischargeSummary) {
       return res.status(404).json({ error: 'Discharge summary not found' });
+    }
+    // Discharge medicines are part of the doctor-signed clinical document.
+    // Once finalized, every clinical field is immutable until a versioned
+    // amendment explicitly reopens the summary.
+    if (!['Draft', 'Pending Review'].includes(dischargeSummary.status)) {
+      return res.status(409).json({
+        error: 'Discharge medications are locked after doctor finalization; reopen through an authorised revision workflow',
+        code: 'DISCHARGE_SUMMARY_FINALIZED'
+      });
+    }
+    if (!Array.isArray(dischargeMedications)) {
+      return res.status(400).json({ error: 'dischargeMedications must be an array' });
     }
 
     dischargeSummary.dischargeMedications = dischargeMedications;
@@ -717,6 +830,8 @@ exports.getDischargeChecklist = async (req, res) => {
         pendingLabReports: labPending.length,
         pendingRadiologyReports: radiologyPending.length,
         pendingMedications: readiness.pendingMedications,
+        pendingProcedures: readiness.pendingProcedures,
+        pendingOT: readiness.pendingOT,
         unbilledCharges: readiness.financeClearance.summary.unbilledCharges,
         invoiceOutstanding: readiness.financeClearance.summary.invoiceOutstanding,
         pharmacyDue: readiness.financeClearance.summary.pharmacyDue,
@@ -741,7 +856,7 @@ exports.approveClinicalDischargeException = async (req, res) => {
       return res.status(409).json({ error: 'Clinical discharge exceptions are disabled by hospital policy' });
     }
     const reason = String(req.body.reason || '').trim();
-    const allowed = new Set(['LAB_PENDING', 'RADIOLOGY_PENDING', 'MEDICATION_PENDING', 'OTHER']);
+    const allowed = new Set(['LAB_PENDING', 'RADIOLOGY_PENDING', 'MEDICATION_PENDING', 'PROCEDURE_PENDING', 'OT_PENDING', 'OTHER']);
     const categories = [...new Set((req.body.categories || []).map((value) => String(value).toUpperCase()).filter((value) => allowed.has(value)))];
     if (!reason) return res.status(400).json({ error: 'Exception reason is required' });
     if (!categories.length) return res.status(400).json({ error: 'At least one exception category is required' });
@@ -821,10 +936,20 @@ exports.completeDischarge = async (req, res) => {
       });
     }
 
-    const dischargeType = canonicalDischargeType(req.body.dischargeType || dischargeSummary.dischargeType || admission.dischargeType || (req.body.isLAMA ? 'LAMA' : 'Normal'));
-    const deathDetails = dischargeType === 'Death'
-      ? normalizeDeathDetails(dischargeType, req.body, dischargeSummary.deathDetails || admission.deathDetails || {})
-      : undefined;
+    const dischargeType = canonicalDischargeType(dischargeSummary.dischargeType || admission.dischargeType || 'Normal');
+    if (req.body.dischargeType && canonicalDischargeType(req.body.dischargeType) !== dischargeType) {
+      return res.status(409).json({
+        error: 'Final discharge cannot override the doctor-finalized discharge type. Reopen and re-finalize the clinical summary first.',
+        code: 'FINALIZED_CLINICAL_FIELD_LOCKED'
+      });
+    }
+    if (req.body.deathDetails || req.body.deathDate || req.body.deathTime || req.body.causeOfDeath || req.body.deathSummary) {
+      return res.status(409).json({
+        error: 'Final discharge cannot modify doctor-finalized death certification details. Reopen and re-finalize the clinical summary first.',
+        code: 'FINALIZED_CLINICAL_FIELD_LOCKED'
+      });
+    }
+    const deathDetails = dischargeType === 'Death' ? (dischargeSummary.deathDetails || admission.deathDetails || undefined) : undefined;
 
     // The discharge state change and all occupancy/patient cleanup must commit
     // together. This prevents a clinically discharged admission from remaining
@@ -960,14 +1085,14 @@ exports.getDischargeDocuments = async (req, res) => {
     if (!finalBill) finalBill = invoices.find((invoice) => invoice.is_final_ipd_invoice === true || invoice.invoice_type === 'IPD Final') || null;
 
     const deferredSales = await Sale.find({
-      hospital_id: hospitalId,
+      hospitalId,
       admission_id: admissionId,
       payment_deferred: true,
       status: { $in: ['Pending', 'Partially Paid'] }
     });
     const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
     const financeClearance = await financial.getFinancialClearance(admissionId, req.user);
-    const isCleared = financeClearance.ready;
+    const isCleared = financeClearance.cleared;
 
     const accommodationPrint = await buildAccommodationPrintData({ hospitalId, admissionId, financial: false });
     const dischargeType = canonicalDischargeType(dischargeSummary?.dischargeType || admission.dischargeType || admission.status);
@@ -1013,6 +1138,99 @@ exports.getDischargeDocuments = async (req, res) => {
   }
 };
 
+// Reopen a doctor-finalized summary as a genuine versioned amendment. The exact
+// prior signed document is retained in revisionHistory before any field becomes editable.
+exports.reopenDischargeSummary = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    const hospitalId = requireHospitalId(req);
+    const reason = String(req.body?.reason || '').trim();
+    let result;
+    await session.withTransaction(async () => {
+      const admission = await IPDAdmission.findOne({ _id: req.params.admissionId, hospitalId }).session(session);
+      const summary = await DischargeSummary.findOne({ admissionId: req.params.admissionId, hospitalId }).session(session);
+      if (!admission || !summary) throw Object.assign(new Error('Admission/discharge summary not found'), { statusCode: 404 });
+      if (!['Finalized', 'StaffCompleted'].includes(summary.status)) throw Object.assign(new Error('Only a finalized discharge summary requires a revision reopen'), { statusCode: 409, code: 'DISCHARGE_SUMMARY_NOT_FINALIZED' });
+      await reopenSummaryRevision({ summary, admission, user: req.user, reason, session });
+      if (admission.chargeFreeze?.status === 'frozen') await reopenChargeFreeze({ admission, user: req.user, reason: `Discharge summary amendment: ${reason}`, session });
+      result = summary;
+    });
+    return res.json({ success: true, message: 'Discharge summary reopened as a new audited revision', dischargeSummary: result });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message, code: error.code });
+  } finally {
+    await session.endSession();
+  }
+};
+
+exports.freezeAdmissionCharges = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const admission = await IPDAdmission.findOne({ _id: req.params.admissionId, hospitalId });
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    if (admission.chargeFreeze?.status === 'frozen') return res.json({ success: true, alreadyFrozen: true, chargeFreeze: admission.chargeFreeze });
+    const readiness = await buildDischargeReadiness(admission, hospitalId);
+    const requiredClinicalChecks = ['doctorDischargeAdvice', 'dischargeSummaryFinalized', 'labReportsCompleted', 'radiologyReportsCompleted', 'proceduresCompleted', 'otCompleted', 'medicationsAdministered', 'pharmacyClearance'];
+    const blockers = Object.fromEntries(requiredClinicalChecks.filter((key) => !readiness.checks[key]).map((key) => [key, readiness.checks[key]]));
+    if (Object.keys(blockers).length) {
+      return res.status(409).json({
+        error: 'Clinical/pharmacy closure is incomplete; charges cannot be frozen yet',
+        code: 'IPD_CHARGE_FREEZE_BLOCKED',
+        blockers,
+        investigations: readiness.investigations,
+        pendingMedications: readiness.pendingMedications
+      });
+    }
+    // Catch up all recurring liability through the exact freeze moment before
+    // locking mutations, so the frozen ledger is complete rather than understated.
+    const freezeAt = operationNow();
+    await ensureAdmissionDailyCharges(admission._id, freezeAt, req.user);
+    admission.chargeFreeze = {
+      ...(admission.chargeFreeze?.toObject?.() || admission.chargeFreeze || {}),
+      status: 'frozen',
+      frozenAt: freezeAt,
+      frozenBy: req.user?._id,
+      freezeReason: String(req.body?.reason || 'Clinical/pharmacy closure completed before final billing').trim(),
+      reopenedAt: undefined,
+      reopenedBy: undefined,
+      reopenReason: undefined
+    };
+    admission.financialClearanceStatus = 'in_progress';
+    admission.financialClearedAt = undefined;
+    admission.financialClearedBy = undefined;
+    await admission.save({ validateBeforeSave: false });
+    return res.json({ success: true, message: 'IPD clinical charging frozen; final billing may proceed', chargeFreeze: admission.chargeFreeze });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message, code: error.code, details: error.details });
+  }
+};
+
+exports.reopenAdmissionCharges = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    const hospitalId = requireHospitalId(req);
+    const reason = String(req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'Reopen reason is required', code: 'IPD_CHARGE_REOPEN_REASON_REQUIRED' });
+    let result;
+    await session.withTransaction(async () => {
+      const admission = await IPDAdmission.findOne({ _id: req.params.admissionId, hospitalId }).session(session);
+      if (!admission) throw Object.assign(new Error('Admission not found'), { statusCode: 404 });
+      if (admission.chargeFreeze?.status !== 'frozen') { result = admission; return; }
+      const summary = await DischargeSummary.findOne({ admissionId: admission._id, hospitalId }).session(session);
+      if (summary && ['Finalized', 'StaffCompleted'].includes(summary.status)) {
+        await reopenSummaryRevision({ summary, admission, user: req.user, reason: `Charge freeze reopened: ${reason}`, session });
+      }
+      await reopenChargeFreeze({ admission, user: req.user, reason, session });
+      result = admission;
+    });
+    return res.json({ success: true, message: 'IPD charge freeze reopened; prior financial clearance was invalidated', chargeFreeze: result?.chargeFreeze });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message, code: error.code });
+  } finally {
+    await session.endSession();
+  }
+};
+
 // Restored startup/API handler: the schema and route still support medication
 // reconciliation, but this controller export was accidentally removed by the patch.
 exports.reconcileDischargeMedications = async (req, res) => {
@@ -1021,13 +1239,39 @@ exports.reconcileDischargeMedications = async (req, res) => {
     const admission = await IPDAdmission.findOne({ _id: req.params.admissionId, hospitalId });
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
     let summary = await DischargeSummary.findOne({ admissionId: admission._id, hospitalId });
-    if (!summary) summary = new DischargeSummary({ admissionId: admission._id, patientId: admission.patientId, hospitalId, preparedBy: admission.primaryDoctorId, createdBy: req.user?._id });
+    if (!summary) summary = new DischargeSummary({ admissionId: admission._id, patientId: admission.patientId, hospitalId, preparedBy: admission.primaryDoctorId, admissionDate: admission.admissionDate, dischargeDate: operationNow(), createdBy: req.user?._id });
+    if (['Finalized', 'StaffCompleted'].includes(summary.status)) {
+      return res.status(409).json({ error: 'Medication reconciliation is locked after doctor finalization; reopen the summary through an authorised revision workflow first', code: 'DISCHARGE_SUMMARY_FINALIZED' });
+    }
+    const allowed = new Set(['continue', 'stop', 'change', 'new', 'prn']);
+    const admissionMedicines = Array.isArray(req.body.admissionMedicines) ? req.body.admissionMedicines : [];
+    for (const row of admissionMedicines) {
+      row.action = String(row.action || '').trim().toLowerCase();
+      if (!String(row.name || '').trim() || !allowed.has(row.action)) {
+        return res.status(400).json({ error: 'Every reconciled medicine requires a name and one action: Continue, Stop, Changed, New or PRN', code: 'INVALID_MEDICATION_RECONCILIATION' });
+      }
+    }
+    const dischargeMedications = Array.isArray(req.body.dischargeMedications) ? req.body.dischargeMedications : summary.dischargeMedications;
+    if (Array.isArray(dischargeMedications)) {
+      for (const row of dischargeMedications) {
+        const action = String(row.reconciliationAction || '').trim().toLowerCase();
+        if (!action || action === 'stop' || !allowed.has(action === 'changed' ? 'change' : action)) {
+          return res.status(400).json({ error: 'Every discharge medicine must be explicitly reconciled as Continue, Changed, New or PRN; stopped medicines belong only in the reconciliation record', code: 'INVALID_DISCHARGE_MEDICATION_ACTION' });
+        }
+      }
+      summary.dischargeMedications = dischargeMedications;
+    }
     summary.medicationReconciliation = {
-      performedAt: operationNow(), performedBy: req.user?._id,
-      admissionMedicines: Array.isArray(req.body.admissionMedicines) ? req.body.admissionMedicines : [],
-      discrepancies: Array.isArray(req.body.discrepancies) ? req.body.discrepancies : [], completed: true
+      performedAt: operationNow(),
+      performedBy: req.user?._id,
+      admissionMedicines,
+      discrepancies: Array.isArray(req.body.discrepancies) ? req.body.discrepancies : [],
+      completed: true
     };
-    summary.updatedBy = req.user?._id; await summary.save({ validateBeforeSave: false });
-    return res.json({ success: true, data: summary.medicationReconciliation, summaryId: summary._id });
-  } catch (error) { return res.status(error.statusCode || 400).json({ error: error.message }); }
+    summary.updatedBy = req.user?._id;
+    await summary.save({ validateBeforeSave: false });
+    return res.json({ success: true, data: summary.medicationReconciliation, dischargeMedications: summary.dischargeMedications, summaryId: summary._id });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.message, code: error.code });
+  }
 };

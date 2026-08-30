@@ -14,6 +14,7 @@ const { requireHospitalId } = require('../services/tenantScope.service');
 const { postProviderJson } = require('../utils/functionalDomain');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
 const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
+const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
 
 
 const safeUnlink = (filePath) => {
@@ -195,6 +196,17 @@ exports.createRadiologyRequest = async (req, res) => {
     // If source is IPD, validate admission
     if (sourceType === 'IPD' && !admissionId) {
       return res.status(400).json({ error: 'Admission ID is required for IPD requests' });
+    }
+    if (sourceType === 'IPD') {
+      const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('patientId status chargeFreeze');
+      if (!admission || String(admission.patientId) !== String(patientId)) {
+        return res.status(409).json({ error: 'Admission does not belong to the selected patient' });
+      }
+      try {
+        assertAdmissionOpenForMutation(admission, { action: 'IPD clinical request creation' });
+      } catch (guardError) {
+        return res.status(guardError.statusCode || 409).json({ error: guardError.message, code: guardError.code });
+      }
     }
 
     // Increment usage count

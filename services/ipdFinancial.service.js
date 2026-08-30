@@ -9,6 +9,7 @@ const Bill = require('../models/Bill');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const FinancialTransaction = require('../models/FinancialTransaction');
 const ApprovalRequest = require('../models/ApprovalRequest');
+const DischargeSummary = require('../models/DischargeSummary');
 const Sale = require('../models/Sale');
 const { money, nextFinancialNumber } = require('../utils/financeNumbers');
 const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
@@ -24,6 +25,7 @@ const { syncChargesInvoiced } = require('./sourceBillingSync.service');
 const { ensureAdmissionDailyCharges } = require('./ipdRecurringCharge.service');
 const { loadIPDWorkflowPolicy, stageBefore } = require('./ipdWorkflowPolicy.service');
 const { _hasActionPermission } = require('../middlewares/auth');
+const { assertAdmissionOpenForMutation } = require('./ipdLifecycleGuard.service');
 
 const ACTIVE_CHARGE_FILTER = {
   $or: [
@@ -524,8 +526,12 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
     Math.max(0, Math.max(ipdSponsorLiabilityTotal, ledgerDebits) - ledgerCredits)
   );
 
+  // Collectible patient due is the current invoice balance (which already
+  // reflects settlement discounts/credit notes) plus patient-liability charges
+  // that have not yet been invoiced. Gross liability minus cash payments would
+  // incorrectly resurrect approved non-cash settlement discounts as due.
   const patientReceivable = money(
-    Math.max(0, ipdPatientLiabilityTotal - invoicePaid)
+    Math.max(0, invoiceOutstanding + unbilledPatientLiability)
   );
 
   const overallDue = patientReceivable;
@@ -734,6 +740,8 @@ async function getRunningBill(admissionId, user, options = {}) {
       admissionDate: admission.admissionDate,
       status: admission.status,
       financialClearanceStatus: admission.financialClearanceStatus,
+      chargeFreeze: admission.chargeFreeze || { status: 'open' },
+      financeInitialization: admission.financeInitialization || { status: 'ready' },
       totalBillAmount: snapshot.totalChargeAmount,
       standardAmount: snapshot.totalStandardAmount,
       patientLiability: snapshot.ipdPatientLiabilityTotal,
@@ -804,6 +812,7 @@ async function getRunningBill(admissionId, user, options = {}) {
 
 async function addManualCharge(payload, user) {
   const admission = await findAdmission(payload.admissionId, null, user);
+  assertAdmissionOpenForMutation(admission, { action: 'Manual IPD charge creation' });
   const quantity = Number(payload.quantity || 1);
   const standardRate = assertAmount(payload.rate, 'Rate');
 
@@ -814,6 +823,13 @@ async function addManualCharge(payload, user) {
   }
 
   const chargeDate = payload.chargeDate || operationNow();
+
+  if (payload.chargeType === 'Bed' && quantity !== 1) {
+    const error = new Error('Bed accommodation is billed once per hospital calendar day. Use daily-charge catch-up instead of a multi-day manual quantity.');
+    error.statusCode = 409;
+    error.code = 'BED_MULTI_DAY_MANUAL_CHARGE_BLOCKED';
+    throw error;
+  }
 
   if (payload.chargeType === 'Bed') {
     const existing = await IPDCharge.findOne({
@@ -979,6 +995,16 @@ async function addManualCharge(payload, user) {
     }
   }
 
+  // Any new manual clinical/financial charge invalidates a previously recorded
+  // final financial clearance until the current ledger is settled again.
+  await IPDAdmission.updateOne(
+    { _id: admission._id, hospitalId: admission.hospitalId },
+    {
+      $set: { financialClearanceStatus: 'in_progress' },
+      $unset: { financialClearedAt: 1, financialClearedBy: 1, finalSettlementReceiptNumber: 1 }
+    }
+  );
+
   const coverage = coverageForPolicy;
   await replaceCoverageUtilization({
     coverage,
@@ -1019,6 +1045,7 @@ async function adjustExistingUnbilledCharge(chargeId, payload = {}, user) {
     throw error;
   }
   const admission = await findAdmission(charge.admissionId, null, user);
+  assertAdmissionOpenForMutation(admission, { action: 'IPD charge adjustment' });
   if (String(charge.hospitalId) !== String(admission.hospitalId)) {
     const error = new Error('IPD charge does not belong to this hospital');
     error.statusCode = 403;
@@ -1188,6 +1215,7 @@ async function adjustExistingUnbilledCharge(chargeId, payload = {}, user) {
 
 async function generateBedCharge(admissionId, payload, user) {
   const admission = await findAdmission(admissionId, null, user);
+  assertAdmissionOpenForMutation(admission, { action: 'Manual bed charge generation' });
   await admission.populate('bedId');
 
   if (!admission.bedId) {
@@ -1377,6 +1405,7 @@ async function applyDiscount(admissionId, payload, user) {
 
 async function voidCharge(admissionId, chargeId, payload, user) {
   const admission = await findAdmission(admissionId, null, user);
+  assertAdmissionOpenForMutation(admission, { action: 'IPD charge void' });
 
   const charge = await IPDCharge.findOne({
     _id: chargeId,
@@ -1447,9 +1476,12 @@ async function previewIPDInvoice(admissionId, payload = {}, user) {
 
 async function issueIPDInvoice(admissionId, payload = {}, user) {
   await ensureAdmissionDailyCharges(admissionId, payload.throughDate || operationNow(), user);
-  const invoiceKind = payload.invoiceKind === 'final' ? 'IPD Final' : 'IPD Interim';
+  const requestedInvoiceKind = payload.invoiceKind === 'final' ? 'IPD Final' : 'IPD Interim';
 
   return runFinancialTransaction(async (session) => {
+    // Keep transaction retries deterministic; supplementary handling may change
+    // the document kind for this attempt but must not mutate outer state.
+    let invoiceKind = requestedInvoiceKind;
     const admission = await findAdmission(admissionId, session, user);
 
     if (payload.idempotencyKey) {
@@ -1460,7 +1492,14 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
     }
 
     const requestedChargeIds = Array.isArray(payload.chargeIds) ? payload.chargeIds.filter(Boolean) : [];
+    let existingFinal = null;
     if (invoiceKind === 'IPD Final') {
+      if (admission.chargeFreeze?.status !== 'frozen' || !admission.chargeFreeze?.frozenAt) {
+        const error = new Error('Final IPD invoice is blocked until the admission charge freeze is completed');
+        error.statusCode = 409;
+        error.code = 'IPD_CHARGE_FREEZE_REQUIRED';
+        throw error;
+      }
       const workflowPolicy = await loadIPDWorkflowPolicy(admission.hospitalId);
       if (
         workflowPolicy.requirePharmacyClearance &&
@@ -1472,10 +1511,26 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
         error.code = 'PHARMACY_CLEARANCE_REQUIRED_BEFORE_FINAL_INVOICE';
         throw error;
       }
-      const existingFinal = await Invoice.findOne({ hospital_id: admission.hospitalId, admission_id: admission._id, $or: [{ invoice_type: 'IPD Final' }, { is_final_ipd_invoice: true }], document_stage: { $ne: 'VOID' } }, null, sessionOptions(session)).sort({ issue_date: -1, created_at: -1 });
-      if (existingFinal) return { invoice: existingFinal, bill: await Bill.findById(existingFinal.bill_id, null, sessionOptions(session)), alreadyExists: true };
+
+      // A document labelled "Final" must be issued only after the doctor has
+      // finalized and staff has completed the discharge summary. This creates a
+      // clinical charge-freeze point instead of allowing normal care to continue
+      // after a final invoice has already been printed.
+      const dischargeSummary = await DischargeSummary.findOne(
+        { admissionId: admission._id, hospitalId: admission.hospitalId },
+        null,
+        sessionOptions(session)
+      ).select('status');
+      if (!dischargeSummary || dischargeSummary.status !== 'StaffCompleted') {
+        const error = new Error('Final IPD invoice is available only after the discharge summary is finalized by the doctor and completed by staff');
+        error.statusCode = 409;
+        error.code = 'DISCHARGE_SUMMARY_NOT_COMPLETED';
+        throw error;
+      }
+
+      existingFinal = await Invoice.findOne({ hospital_id: admission.hospitalId, admission_id: admission._id, $or: [{ invoice_type: 'IPD Final' }, { is_final_ipd_invoice: true }], document_stage: { $ne: 'VOID' } }, null, sessionOptions(session)).sort({ issue_date: -1, created_at: -1 });
     }
-    if (payload.invoiceKind === 'final' && requestedChargeIds.length) {
+    if (requestedInvoiceKind === 'IPD Final' && requestedChargeIds.length) {
       const error = new Error('Final invoice cannot be limited to selected charges'); error.statusCode = 400; throw error;
     }
     const chargeFilter = { hospitalId: admission.hospitalId, admissionId, sourceModule: { $ne: 'Pharmacy' }, ...UNBILLED_CHARGE_FILTER };
@@ -1485,6 +1540,17 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
       const error = new Error('One or more selected charges are invalid, already invoiced, voided, or belong to another admission');
       error.statusCode = 409; error.code = 'INVALID_SELECTED_CHARGES'; throw error;
     }
+
+    // A retry with no new charges returns the existing final invoice. If new
+    // charges arrived after finalization (for example a late recurring charge),
+    // issue a supplementary IPD Interim invoice instead of silently returning a
+    // stale final invoice and leaving the new charge permanently unbilled.
+    if (existingFinal && !charges.length) {
+      return { invoice: existingFinal, bill: await Bill.findById(existingFinal.bill_id, null, sessionOptions(session)), alreadyExists: true };
+    }
+    const supplementaryToFinal = existingFinal && charges.length ? existingFinal : null;
+    if (supplementaryToFinal) invoiceKind = 'IPD Interim';
+
     if (!charges.length && invoiceKind !== 'IPD Final') {
       const error = new Error('There are no unbilled active non-pharmacy charges for this admission');
       error.statusCode = 409;
@@ -1578,7 +1644,7 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
         item_type: chargeItemType(line.chargeType),
         admission_id: admission._id
       })),
-      notes: payload.notes || `${invoiceKind} patient-liability bill for ${admission.admissionNumber}`,
+      notes: payload.notes || (supplementaryToFinal ? `Supplementary IPD bill after final invoice ${supplementaryToFinal.invoice_number}` : `${invoiceKind} patient-liability bill for ${admission.admissionNumber}`),
       created_by: user?._id,
       patient_snapshot: snapshots.patientSnapshot,
       admission_snapshot: snapshots.admissionSnapshot,
@@ -1656,12 +1722,12 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
         service_type: serviceTypeForCharge(line.chargeType),
         bill_id: bill._id
       })),
-      notes: payload.notes || `${invoiceKind} patient statement; sponsor liability is handled through claim and sponsor ledger`,
+      notes: payload.notes || (supplementaryToFinal ? `Supplementary IPD invoice after final invoice ${supplementaryToFinal.invoice_number}; sponsor liability is handled through claim and sponsor ledger` : `${invoiceKind} patient statement; sponsor liability is handled through claim and sponsor ledger`),
       created_by: user?._id,
       patient_snapshot: snapshots.patientSnapshot,
       admission_snapshot: snapshots.admissionSnapshot,
       hospital_snapshot: snapshots.hospitalSnapshot,
-      print_snapshot: { templateVersion: 'reference-billing-2026-08', generatedAt: new Date(), chargeIds: charges.map((row) => row._id) }
+      print_snapshot: { templateVersion: 'reference-billing-2026-08', generatedAt: new Date(), chargeIds: charges.map((row) => row._id), supplementaryToFinalInvoiceId: supplementaryToFinal?._id, supplementaryToFinalInvoiceNumber: supplementaryToFinal?.invoice_number }
     });
     await invoice.save(sessionOptions(session));
 
@@ -1721,6 +1787,39 @@ async function issueIPDInvoice(admissionId, payload = {}, user) {
     await calculateAdmissionFinancials(admissionId, { user });
     return result;
   });
+}
+
+async function syncIPDClinicalFinancialClearance(admissionId, user) {
+  // Operational Lab/Radiology/Procedure worklists persist a clearance snapshot.
+  // Recompute it after settlement so a fully paid request cannot remain blocked
+  // as PAYMENT_REQUIRED until somebody manually reopens the billing screen.
+  try {
+    const admission = await IPDAdmission.findById(admissionId).select('hospitalId').lean();
+    if (!admission?.hospitalId) return;
+    const sourceRows = await IPDCharge.find({
+      hospitalId: admission.hospitalId,
+      admissionId,
+      sourceModule: { $in: ['LabRequest', 'RadiologyRequest', 'ProcedureRequest', 'OTRequest'] },
+      sourceId: { $ne: null },
+      status: { $nin: ['VOIDED', 'CANCELLED'] }
+    }).select('sourceModule sourceId').lean();
+    if (!sourceRows.length) return;
+    const { getSourceFinancialStatus } = require('./chargePosting.service');
+    const scopedUser = { ...(user || {}), hospital_id: admission.hospitalId, hospitalId: admission.hospitalId };
+    const seen = new Set();
+    for (const row of sourceRows) {
+      const key = `${row.sourceModule}:${row.sourceId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        await getSourceFinancialStatus({ sourceModule: row.sourceModule, sourceId: row.sourceId, user: scopedUser });
+      } catch (error) {
+        console.warn(`[IPD payment] Unable to refresh ${key} clearance:`, error.message);
+      }
+    }
+  } catch (error) {
+    console.warn('[IPD payment] Clinical clearance synchronization failed:', error.message);
+  }
 }
 
 async function recordIPDPayment(admissionId, payload = {}, user) {
@@ -1991,6 +2090,7 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
     return { receiptNumber, transactions, updatedAdvance, settlementDiscountAmount, taxAdjustmentAmount, alreadyExists: false };
   }).then(async (result) => {
     await calculateAdmissionFinancials(admissionId, { user });
+    await syncIPDClinicalFinancialClearance(admissionId, user);
     return result;
   });
 }
@@ -2523,6 +2623,7 @@ async function getFinancialClearance(admissionId, user, options = {}) {
 
   const pharmacyMustPrecedeFinance = workflowPolicy.requirePharmacyClearance && stageBefore(workflowPolicy, 'PHARMACY_CLEARANCE', 'IPD_FINANCIAL_CLEARANCE');
   const checks = {
+    chargeFreezeActive: admission.chargeFreeze?.status === 'frozen' && Boolean(admission.chargeFreeze?.frozenAt),
     unbilledChargesResolved: nonPharmacyUnbilledTotal === 0,
     issuedInvoicesSettled: snapshot.invoiceOutstanding === 0,
     pharmacyClearance: pharmacyCleared && pharmacyDue === 0,
@@ -2531,7 +2632,8 @@ async function getFinancialClearance(admissionId, user, options = {}) {
     financialExceptionApproved: admission.financialClearanceStatus === 'exception_approved'
   };
 
-  const prerequisitesReady = checks.unbilledChargesResolved &&
+  const prerequisitesReady = checks.chargeFreezeActive &&
+    checks.unbilledChargesResolved &&
     checks.issuedInvoicesSettled &&
     checks.advanceReconciled &&
     checks.finalInvoiceAvailable &&
@@ -2591,6 +2693,12 @@ async function getFinanceWorkspace(admissionId, user) {
 
 async function finaliseFinancialClearance(admissionId, payload = {}, user) {
   let admissionForPolicy = await findAdmission(admissionId, null, user);
+  if (admissionForPolicy.chargeFreeze?.status !== 'frozen' || !admissionForPolicy.chargeFreeze?.frozenAt) {
+    const error = new Error('Freeze clinical charging before final financial clearance');
+    error.statusCode = 409;
+    error.code = 'IPD_CHARGE_FREEZE_REQUIRED';
+    throw error;
+  }
   const workflowPolicy = await loadIPDWorkflowPolicy(admissionForPolicy.hospitalId);
   if (workflowPolicy.autoExemptPharmacyWhenNoTransactions && admissionForPolicy.pharmacyClearanceStatus === 'pending') {
     const [hasSale, pharmacyAdvance] = await Promise.all([
@@ -2695,7 +2803,7 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
       outstandingAccepted: clearance.summary.dueAmount + clearance.summary.pharmacyDue
     };
   }
-  if (issuedInvoice) admission.finalInvoiceId = issuedInvoice._id;
+  if (issuedInvoice && (issuedInvoice.invoice_type === 'IPD Final' || issuedInvoice.is_final_ipd_invoice === true)) admission.finalInvoiceId = issuedInvoice._id;
   if (clearance.ready && ['Billing Pending', 'Payment Pending'].includes(admission.status)) admission.status = 'Ready for Discharge';
   await admission.save();
   return { clearance: await getFinancialClearance(admissionId, user), issuedInvoice, settlement, admission };

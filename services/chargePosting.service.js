@@ -18,6 +18,7 @@ const { syncChargePosted } = require('./sourceBillingSync.service');
 const { BILLING_INTENTS, BILLING_STATES } = require('../utils/billingLifecycle');
 const { resolveFinancialPolicy } = require('./financialPolicy.service');
 const patientFinancial = require('./patientFinancial.service');
+const { assertAdmissionOpenForMutation } = require('./ipdLifecycleGuard.service');
 const ipdFinancial = require('./ipdFinancial.service');
 const { appendBillingLink } = require('./sourceBillingSync.service');
 const { hasFeatureAccess } = require('../middlewares/auth');
@@ -172,6 +173,12 @@ async function postIPDSourceCharge({
     throw e;
   }
 
+  // The source-finance API is an alternate entry point into the same IPD
+  // ledger. Enforce the lifecycle boundary here as well as in the clinical
+  // controllers so an already-existing Lab/Radiology/Procedure/OT request
+  // cannot acquire a new charge after final-billing charge freeze.
+  assertAdmissionOpenForMutation(admission, { action: `${sourceModule} financial charge posting` });
+
   const master = request[config.masterField]
     ? await config.Master.findOne({ _id: request[config.masterField], hospitalId: admission.hospitalId, is_active: { $ne: false } }, null, opts(session)).lean()
     : null;
@@ -279,6 +286,17 @@ async function postIPDSourceCharge({
   });
 
   await charge.save(opts(session));
+
+  // Any newly posted IPD clinical charge invalidates a previously persisted
+  // financial clearance until the current ledger is invoiced/settled again.
+  await IPDAdmission.updateOne(
+    { _id: admission._id, hospitalId: admission.hospitalId },
+    {
+      $set: { financialClearanceStatus: 'in_progress' },
+      $unset: { financialClearedAt: 1, financialClearedBy: 1, finalSettlementReceiptNumber: 1 }
+    },
+    opts(session)
+  );
 
   await replaceCoverageUtilization({
     coverage,

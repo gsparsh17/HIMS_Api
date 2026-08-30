@@ -209,6 +209,12 @@ prescriptionSchema.index({ prescription_number: 1 });
 prescriptionSchema.index({ status: 1 });
 prescriptionSchema.index({ diagnosis_icd11_code: 1 });
 prescriptionSchema.index({ ipd_admission_id: 1, source_type: 1 });
+// One order bundle per IPD ward round. Partial filter keeps OPD/non-round
+// prescriptions unaffected while closing the concurrent-retry duplication race.
+prescriptionSchema.index(
+  { hospitalId: 1, ipd_admission_id: 1, round_id: 1, source_type: 1 },
+  { unique: true, partialFilterExpression: { source_type: 'IPD', round_id: { $type: 'objectId' }, ipd_admission_id: { $type: 'objectId' } } }
+);
 prescriptionSchema.index({ 'lab_test_requests.request_id': 1 });
 prescriptionSchema.index({ 'radiology_test_requests.request_id': 1 });
 prescriptionSchema.index({ 'procedure_requests.request_id': 1 });

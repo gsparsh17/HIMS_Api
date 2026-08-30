@@ -10,6 +10,7 @@ const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const LabReport = require('../models/LabReport');
 const Hospital = require('../models/Hospital');
+const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
 const {
   catalogVersion,
   listTemplates,
@@ -517,13 +518,11 @@ exports.createLabRequest = async (req, res) => {
       if (!admissionId) {
         return res.status(400).json({ error: 'Admission ID is required for IPD requests' });
       }
-      const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('patientId status');
+      const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('patientId status chargeFreeze');
       if (!admission || String(admission.patientId) !== String(patientId)) {
         return res.status(409).json({ error: 'Admission does not belong to the selected patient' });
       }
-      if (['Discharged', 'Cancelled'].includes(admission.status)) {
-        return res.status(409).json({ error: 'Lab request cannot be added to a closed admission' });
-      }
+      assertAdmissionOpenForMutation(admission, { action: 'IPD clinical request creation' });
     }
 
     if (normalizedSource === 'OPD') {

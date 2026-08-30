@@ -24,6 +24,9 @@ const medicationTimingSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Nurse'
   },
+  administeredByUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  administeredByStaffProfile: { type: mongoose.Schema.Types.ObjectId, refPath: 'administeredByStaffModel' },
+  administeredByStaffModel: { type: String, enum: ['Nurse', 'Doctor', 'Staff'] },
   administeredByInitials: { type: String, trim: true },
   remarks: {
     type: String,
@@ -33,6 +36,7 @@ const medicationTimingSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Nurse'
   },
+  witnessedByUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   witnessedByInitials: { type: String, trim: true },
   signOffName: { type: String, trim: true }
 });
@@ -60,6 +64,18 @@ const pharmacyRequestSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Sale'
   },
+  // An indent can be fulfilled across multiple pharmacy sales. Keep the legacy
+  // saleId as the latest dispatch while preserving every fulfilment here.
+  saleIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Sale' }],
+  dispenseHistory: [{
+    saleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
+    medicineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Medicine' },
+    batchId: { type: mongoose.Schema.Types.ObjectId, ref: 'MedicineBatch' },
+    quantityBaseUnits: { type: Number, min: 0 },
+    dispensedAt: Date,
+    receivedAt: Date,
+    receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
   pharmacyId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Pharmacy'
@@ -253,6 +269,8 @@ const ipdMedicationChartSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Doctor'
   },
+  stoppedByUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  stoppedByNameSnapshot: { type: String, trim: true },
   changeHistory: [{
     action: {
       type: String,

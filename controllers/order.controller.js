@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const { operationNow } = require('../utils/operationTimeContext');
 const Invoice = require('../models/Invoice');
 const PurchaseOrder = require('../models/PurchaseOrder');
@@ -852,7 +853,6 @@ exports.createSale = async (req, res) => {
 exports.getSaleById = async (req, res) => {
   try {
     const { id } = req.params;
-    
     const sale = await Sale.findById(id)
       .populate('patient_id', 'first_name last_name patientId uhid phone dob gender')
       .populate('admission_id', 'admissionNumber shipNumber status')
@@ -861,17 +861,13 @@ exports.getSaleById = async (req, res) => {
       .populate('items.batch_id', 'batch_number expiry_date hsn_code gst_rate')
       .populate('created_by', 'name')
       .lean();
-    
-    if (!sale) {
-      return res.status(404).json({ error: 'Sale not found' });
-    }
-    
-    // Get return information if any
-    const returns = sale.return_refs?.length > 0 
-      ? await PharmacyReturn.find({ _id: { $in: sale.return_refs.map(r => r.return_id) } })
+
+    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+
+    const returns = sale.return_refs?.length > 0
+      ? await PharmacyReturn.find({ _id: { $in: sale.return_refs.map((r) => r.return_id) } })
       : [];
-    
-    // Calculate GST summary for display
+
     const gstSummary = {
       subtotal: sale.subtotal || 0,
       total_tax: sale.tax || 0,
@@ -879,125 +875,148 @@ exports.getSaleById = async (req, res) => {
       cgst: (sale.tax || 0) / 2,
       sgst: (sale.tax || 0) / 2
     };
-    
-    res.json({
-      success: true,
-      sale,
-      returns,
-      gst_summary: gstSummary
-    });
+
+    return res.json({ success: true, sale, returns, gst_summary: gstSummary });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 exports.updateSalePayment = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
     const { id } = req.params;
-    const { additional_payment, payment_method, notes } = req.body;
-    
-    const sale = await Sale.findById(id);
-    if (!sale) {
-      return res.status(404).json({ error: 'Sale not found' });
+    const additionalPayment = roundMoney(req.body.additional_payment);
+    const paymentMethod = req.body.payment_method;
+    const notes = req.body.notes;
+
+    if (!(additionalPayment > 0)) {
+      return res.status(400).json({ error: 'A positive additional_payment is required' });
     }
-    
-    if (sale.status === 'Completed' && sale.balance_due === 0) {
-      return res.status(400).json({ error: 'Sale is already fully paid' });
-    }
-    
-    const newPaymentAmount = Math.min(additional_payment, sale.balance_due);
-    const newPaidAmount = sale.amount_paid + newPaymentAmount;
-    const newBalanceDue = sale.total_amount - newPaidAmount;
-    
-    sale.amount_paid = newPaidAmount;
-    sale.balance_due = Math.max(0, newBalanceDue);
-    sale.status = newBalanceDue === 0 ? 'Completed' : 'Pending';
-    
-    // Add payment to payments array
-    sale.payments.push({
-      method: payment_method,
-      amount: newPaymentAmount,
-      reference: req.body.reference,
-      date: operationNow()
-    });
-    
-    await sale.save();
-    
-    // Create ledger entry for payment
-    await PharmacyLedgerEntry.create({
-      hospitalId: req.body.hospitalId || sale.hospitalId,
-      pharmacyId: sale.pharmacy_id,
-      entryType: 'OUTSTANDING_PAYMENT',
-      direction: 'IN',
-      amount: newPaymentAmount,
-      paymentMethod: payment_method,
-      patientId: sale.patient_id,
-      admissionId: sale.admission_id,
-      saleId: sale._id,
-      notes: notes || `Payment received for sale ${sale.sale_number}`,
-      createdBy: req.user?._id
-    });
-    
-    res.json({
-      success: true,
-      message: 'Payment recorded successfully',
-      sale: {
+
+    let responsePayload;
+    await session.withTransaction(async () => {
+      const sale = await Sale.findById(id).session(session);
+      if (!sale) {
+        const error = new Error('Sale not found'); error.statusCode = 404; throw error;
+      }
+
+      // IPD pharmacy money must flow through the authoritative settlement/final
+      // clearance services so bill/invoice/advance/clearance state cannot diverge.
+      if (sale.admission_id) {
+        const error = new Error(
+          'IPD sale payments must be recorded through Pharmacy ledger settlement/final clearance, not the legacy sale-payment endpoint.'
+        );
+        error.statusCode = 409;
+        error.code = 'IPD_SALE_PAYMENT_REQUIRES_PHARMACY_SETTLEMENT';
+        throw error;
+      }
+
+      if (sale.status === 'Cancelled') {
+        const error = new Error('Cancelled sales cannot receive payment'); error.statusCode = 409; throw error;
+      }
+      if (sale.status === 'Completed' && Number(sale.balance_due || 0) <= 0) {
+        const error = new Error('Sale is already fully paid'); error.statusCode = 400; throw error;
+      }
+
+      const newPaymentAmount = Math.min(additionalPayment, Number(sale.balance_due || 0));
+      const newPaidAmount = roundMoney(Number(sale.amount_paid || 0) + newPaymentAmount);
+      const newBalanceDue = roundMoney(Math.max(0, Number(sale.total_amount || 0) - newPaidAmount));
+
+      sale.amount_paid = newPaidAmount;
+      sale.balance_due = newBalanceDue;
+      sale.status = newBalanceDue === 0 ? 'Completed' : 'Pending';
+      sale.payments.push({
+        method: paymentMethod,
+        amount: newPaymentAmount,
+        reference: req.body.reference,
+        date: operationNow()
+      });
+      await sale.save({ session });
+
+      await PharmacyLedgerEntry.create([{
+        hospitalId: sale.hospitalId || userHospitalId(req.user),
+        pharmacyId: sale.pharmacy_id,
+        entryType: 'OUTSTANDING_PAYMENT',
+        direction: 'IN',
+        amount: newPaymentAmount,
+        paymentMethod,
+        patientId: sale.patient_id,
+        admissionId: null,
+        saleId: sale._id,
+        notes: notes || `Payment received for sale ${sale.sale_number}`,
+        createdBy: req.user?._id
+      }], { session });
+
+      responsePayload = {
         _id: sale._id,
         amount_paid: sale.amount_paid,
         balance_due: sale.balance_due,
         status: sale.status
-      }
+      };
     });
+
+    return res.json({ success: true, message: 'Payment recorded successfully', sale: responsePayload });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
+  } finally {
+    await session.endSession();
   }
 };
 
 exports.voidSale = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
     const { id } = req.params;
-    const { reason } = req.body;
-    
-    const sale = await Sale.findById(id);
-    if (!sale) {
-      return res.status(404).json({ error: 'Sale not found' });
-    }
-    
-    if (sale.status === 'Cancelled') {
-      return res.status(400).json({ error: 'Sale is already cancelled' });
-    }
-    
-    // Restore stock for each item
-    for (const item of sale.items) {
-      const batch = await MedicineBatch.findById(item.batch_id);
-      if (batch) {
-        batch.quantity_base_units += item.quantity_base_units;
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'A cancellation reason is required' });
+
+    let result;
+    await session.withTransaction(async () => {
+      const sale = await Sale.findById(id).session(session);
+      if (!sale) {
+        const error = new Error('Sale not found'); error.statusCode = 404; throw error;
+      }
+      if (sale.status === 'Cancelled') {
+        const error = new Error('Sale is already cancelled'); error.statusCode = 400; throw error;
+      }
+
+      // An IPD issue changes bedside stock, MAR dispatch, IPD/pharmacy ledgers,
+      // invoices and clearance. It may only be reversed through the canonical
+      // pharmacy return/credit workflow, which updates those records atomically.
+      if (sale.admission_id) {
+        const error = new Error(
+          'IPD sales cannot be voided through the legacy endpoint. Use the Pharmacy return/credit workflow.'
+        );
+        error.statusCode = 409;
+        error.code = 'IPD_SALE_REVERSAL_REQUIRES_RETURN';
+        throw error;
+      }
+
+      for (const item of sale.items || []) {
+        const batch = await MedicineBatch.findById(item.batch_id).session(session);
+        if (!batch) continue;
+        batch.quantity_base_units = Number(batch.quantity_base_units || 0) + Number(item.quantity_base_units || 0);
         batch.quantity = batch.quantity_base_units;
-        await batch.save();
-        
-        await Medicine.findByIdAndUpdate(item.medicine_id, {
-          $inc: { stock_quantity: item.quantity_base_units }
-        });
+        await batch.save({ session });
+        await Medicine.findByIdAndUpdate(
+          item.medicine_id,
+          { $inc: { stock_quantity: Number(item.quantity_base_units || 0) } },
+          { session }
+        );
       }
-    }
-    
-    sale.status = 'Cancelled';
-    sale.notes = sale.notes + `\n[CANCELLED] ${operationNow().toISOString()}: ${reason || 'No reason provided'}`;
-    await sale.save();
-    
-    console.log(`Sale ${sale.sale_number} cancelled by ${req.user?.name} - Reason: ${reason}`);
-    
-    res.json({
-      success: true,
-      message: 'Sale cancelled successfully',
-      sale: {
-        _id: sale._id,
-        sale_number: sale.sale_number,
-        status: sale.status
-      }
+
+      sale.status = 'Cancelled';
+      sale.notes = `${sale.notes || ''}\n[CANCELLED] ${operationNow().toISOString()}: ${reason}`.trim();
+      await sale.save({ session });
+      result = { _id: sale._id, sale_number: sale.sale_number, status: sale.status };
     });
+
+    return res.json({ success: true, message: 'Sale cancelled successfully', sale: result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
+  } finally {
+    await session.endSession();
   }
 };
 
@@ -1005,146 +1024,116 @@ exports.getSalesByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
     const { limit = 50, page = 1 } = req.query;
-    
-    const patient = await Patient.findById(patientId).select('first_name last_name patientId uhid');
-    if (!patient) {
-      return res.status(404).json({ error: 'Patient not found' });
-    }
-    
-    const sales = await Sale.find({ patient_id: patientId })
+    const patient = await Patient.findById(patientId)
+      .select('first_name last_name patientId uhid');
+    if (!patient) return res.status(404).json({ error: 'Patient not found' });
+
+    const filter = { patient_id: patientId };
+    const sales = await Sale.find(filter)
       .populate('admission_id', 'admissionNumber shipNumber')
       .populate('doctor_id', 'firstName lastName')
       .populate('items.medicine_id', 'name hsn_code gst_rate')
       .populate('items.batch_id', 'batch_number expiry_date')
       .sort({ sale_date: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-    
-    const total = await Sale.countDocuments({ patient_id: patientId });
-    
-    res.json({
-      success: true,
-      patient,
-      sales,
-      total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / limit)
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit));
+    const total = await Sale.countDocuments(filter);
+
+    return res.json({
+      success: true, patient, sales, total,
+      page: Number(page), totalPages: Math.ceil(total / Number(limit))
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 exports.getSalesByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    
     const admission = await IPDAdmission.findById(admissionId)
       .populate('patientId', 'first_name last_name patientId uhid');
-    
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-    
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+
     const sales = await Sale.find({ admission_id: admissionId })
       .populate('doctor_id', 'firstName lastName')
       .populate('items.medicine_id', 'name hsn_code gst_rate')
       .populate('items.batch_id', 'batch_number expiry_date')
       .sort({ sale_date: -1 });
-    
-    // Calculate totals with GST
+
     const totals = sales.reduce((acc, sale) => {
-      acc.totalAmount += sale.total_amount;
-      acc.totalPaid += sale.amount_paid;
-      acc.totalDue += sale.balance_due;
-      acc.totalTax += sale.tax || 0;
+      acc.totalAmount += Number(sale.total_amount || 0);
+      acc.totalPaid += Number(sale.amount_paid || 0);
+      acc.totalDue += Number(sale.balance_due || 0);
+      acc.totalTax += Number(sale.tax || 0);
       return acc;
     }, { totalAmount: 0, totalPaid: 0, totalDue: 0, totalTax: 0 });
-    
-    res.json({
-      success: true,
-      admission,
-      sales,
-      totals,
-      gst_summary: {
-        total_tax: totals.totalTax,
-        cgst: totals.totalTax / 2,
-        sgst: totals.totalTax / 2
-      }
+
+    return res.json({
+      success: true, admission, sales, totals,
+      gst_summary: { total_tax: totals.totalTax, cgst: totals.totalTax / 2, sgst: totals.totalTax / 2 }
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 exports.getPendingPrescriptions = async (req, res) => {
   try {
     const { limit = 20, page = 1 } = req.query;
-    
-    const prescriptions = await Prescription.find({ 
+    const filter = {
       status: 'Active',
       $or: [
         { is_dispensed: false },
         { items: { $elemMatch: { is_dispensed: false } } }
       ]
-    })
+    };
+
+    const prescriptions = await Prescription.find(filter)
       .populate('patient_id', 'first_name last_name patientId uhid phone')
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('items.medicine_id', 'name composition hsn_code gst_rate')
       .sort({ created_at: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-    
-    const total = await Prescription.countDocuments({ 
-      status: 'Active',
-      is_dispensed: false
-    });
-    
-    const prescriptionsWithCount = prescriptions.map(pres => {
-      const undispensedItems = pres.items?.filter(item => !item.is_dispensed).length || 0;
-      return {
-        ...pres.toObject(),
-        undispensedItemsCount: undispensedItems,
-        totalItems: pres.items?.length || 0
-      };
-    });
-    
-    res.json({
-      success: true,
-      prescriptions: prescriptionsWithCount,
-      total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / limit)
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit));
+
+    const total = await Prescription.countDocuments(filter);
+    const prescriptionsWithCount = prescriptions.map((pres) => ({
+      ...pres.toObject(),
+      undispensedItemsCount: pres.items?.filter((item) => !item.is_dispensed).length || 0,
+      totalItems: pres.items?.length || 0
+    }));
+
+    return res.json({
+      success: true, prescriptions: prescriptionsWithCount, total,
+      page: Number(page), totalPages: Math.ceil(total / Number(limit))
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 
 exports.getRecentSales = async (req, res) => {
   try {
     const { limit = 10 } = req.query;
-    
     const recentSales = await Sale.find({})
       .populate('patient_id', 'first_name last_name patientId')
       .populate('admission_id', 'admissionNumber')
       .populate('doctor_id', 'firstName lastName')
       .populate('items.medicine_id', 'name hsn_code gst_rate')
       .sort({ sale_date: -1 })
-      .limit(parseInt(limit))
+      .limit(Number(limit))
       .lean();
-    
+
     const todayStart = operationNow();
     todayStart.setHours(0, 0, 0, 0);
-    
     const todaySales = await Sale.aggregate([
       { $match: { sale_date: { $gte: todayStart } } },
       { $group: { _id: null, total: { $sum: '$total_amount' }, tax: { $sum: '$tax' }, count: { $sum: 1 } } }
     ]);
-    
-    res.json({
-      success: true,
-      recentSales,
+
+    return res.json({
+      success: true, recentSales,
       todayStats: {
         total: todaySales[0]?.total || 0,
         tax: todaySales[0]?.tax || 0,
@@ -1154,11 +1143,9 @@ exports.getRecentSales = async (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
-
-// ========== EXISTING SALE FUNCTIONS ==========
 
 exports.getAllSales = async (req, res) => {
   try {

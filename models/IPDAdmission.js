@@ -131,6 +131,44 @@ const ipdAdmissionSchema = new mongoose.Schema({
     enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION']
   },
   financialPolicySnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Durable post-admission finance bootstrap. A clinically valid admission/bed
+  // remains committed even if initial billing fails; this state makes recovery
+  // visible after refresh/logout and stores only the inputs needed for an
+  // idempotent retry.
+  financeInitialization: {
+    status: { type: String, enum: ['ready', 'pending'], default: 'ready', index: true },
+    requestedCollection: { type: Number, default: 0, min: 0 },
+    requestedDeposit: { type: Number, default: 0, min: 0 },
+    paymentMethod: { type: String, trim: true, default: 'Cash' },
+    selectedMode: { type: String, trim: true },
+    payerCategory: { type: String, trim: true },
+    billingModeOverrideReason: { type: String, trim: true },
+    // Persist the original allocation plan before any payment/advance mutation.
+    // This makes a retry safe even when a prior payment committed but a later
+    // stage failed: current invoice balance must not be reinterpreted as excess.
+    initialInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+    plannedInvoiceCollection: { type: Number, min: 0 },
+    plannedAdvanceAmount: { type: Number, min: 0 },
+    retryCount: { type: Number, default: 0, min: 0 },
+    lastAttemptAt: Date,
+    completedAt: Date,
+    errorCode: { type: String, trim: true },
+    errorMessage: { type: String, trim: true },
+    lastAttemptBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
+  // A real charge freeze is separate from admission/discharge status. Final IPD
+  // billing and final financial clearance require this state. Reopening is
+  // explicit/audited and invalidates prior financial clearance.
+  chargeFreeze: {
+    status: { type: String, enum: ['open', 'frozen'], default: 'open', index: true },
+    frozenAt: Date,
+    frozenBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    freezeReason: { type: String, trim: true },
+    reopenedAt: Date,
+    reopenedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    reopenReason: { type: String, trim: true },
+    reopenCount: { type: Number, default: 0, min: 0 }
+  },
   requiredNowAmount: { type: Number, default: 0, min: 0 },
   paymentType: {
     type: String,
@@ -226,7 +264,7 @@ const ipdAdmissionSchema = new mongoose.Schema({
   plannedDischargeReason: { type: String, trim: true },
   dischargeClinicalException: {
     reason: { type: String, trim: true },
-    categories: [{ type: String, enum: ['LAB_PENDING', 'RADIOLOGY_PENDING', 'MEDICATION_PENDING', 'OTHER'] }],
+    categories: [{ type: String, enum: ['LAB_PENDING', 'RADIOLOGY_PENDING', 'MEDICATION_PENDING', 'PROCEDURE_PENDING', 'OT_PENDING', 'OTHER'] }],
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     approvedAt: Date
   },

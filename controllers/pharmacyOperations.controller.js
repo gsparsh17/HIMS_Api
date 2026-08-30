@@ -66,8 +66,9 @@ function stripCostFields(doc) {
   return clone;
 }
 
-async function getDefaultPharmacyId() {
-  const pharmacy = await Pharmacy.findOne({ status: 'Active' }).select('_id');
+async function getDefaultPharmacyId(hospitalId) {
+  if (!hospitalId) return null;
+  const pharmacy = await Pharmacy.findOne({ hospitalId, status: 'Active' }).select('_id');
   return pharmacy?._id;
 }
 
@@ -75,7 +76,7 @@ async function getDefaultPharmacyId() {
 
 exports.getSettings = asyncHandler(async (req, res) => {
   const hospitalId = getHospitalId(req);
-  const pharmacyId = objectIdOrUndefined(req.query.pharmacyId) || await getDefaultPharmacyId();
+  const pharmacyId = objectIdOrUndefined(req.query.pharmacyId) || await getDefaultPharmacyId(hospitalId);
   let settings = await HospitalPharmacySetting.findOne({ hospitalId, pharmacyId });
 
   if (!settings) {
@@ -87,7 +88,7 @@ exports.getSettings = asyncHandler(async (req, res) => {
 
 exports.updateSettings = asyncHandler(async (req, res) => {
   const hospitalId = getHospitalId(req, req.body.hospitalId);
-  const pharmacyId = objectIdOrUndefined(req.body.pharmacyId || req.query.pharmacyId) || await getDefaultPharmacyId();
+  const pharmacyId = objectIdOrUndefined(req.body.pharmacyId || req.query.pharmacyId) || await getDefaultPharmacyId(hospitalId);
   const allowed = [
     'ipdAdvanceMode',
     'allowNegativeIpdPharmacyBalance',
@@ -285,7 +286,8 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
   const admissionId = objectIdOrUndefined(req.params.admissionId || req.query.admissionId);
   if (!admissionId) return res.status(400).json({ success: false, error: 'admissionId is required' });
 
-  const admission = await IPDAdmission.findById(admissionId)
+  const hospitalId = getHospitalId(req);
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId })
     .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone gender dob age')
     .populate('primaryDoctorId', 'firstName lastName name specialization')
     .populate({
@@ -307,12 +309,12 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
   const patientId = admission.patientId?._id || admission.patientId;
 
   const [sales, returns, ledgers, bills, invoices, deferredSales] = await Promise.all([
-    Sale.find({ admission_id: admissionId }).sort({ sale_date: 1 }).lean(),
-    PharmacyReturn.find({ admissionId }).sort({ createdAt: 1 }).lean(),
-    PharmacyLedgerEntry.find({ admissionId }).sort({ entryDate: 1 }).lean(),
-    Bill.find({ admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: 1 }).lean(),
-    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: 1 }).lean(),
-    Sale.find({ admission_id: admissionId, payment_deferred: true, status: 'Pending' }).lean()
+    Sale.find({ hospitalId, admission_id: admissionId }).sort({ sale_date: 1 }).lean(),
+    PharmacyReturn.find({ hospitalId, admissionId }).sort({ createdAt: 1 }).lean(),
+    PharmacyLedgerEntry.find({ hospitalId, admissionId }).sort({ entryDate: 1 }).lean(),
+    Bill.find({ hospital_id: hospitalId, admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: 1 }).lean(),
+    Invoice.find({ hospital_id: hospitalId, admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: 1 }).lean(),
+    Sale.find({ hospitalId, admission_id: admissionId, payment_deferred: true, status: 'Pending' }).lean()
   ]);
 
   const balances = {
@@ -974,7 +976,7 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
 
 exports.depositAdvance = asyncHandler(async (req, res) => {
   const hospitalId = getHospitalId(req, req.body.hospitalId);
-  const pharmacyId = objectIdOrUndefined(req.body.pharmacyId || req.body.pharmacy_id) || await getDefaultPharmacyId();
+  const pharmacyId = objectIdOrUndefined(req.body.pharmacyId || req.body.pharmacy_id) || await getDefaultPharmacyId(hospitalId);
   const patientId = objectIdOrUndefined(req.body.patientId || req.body.patient_id);
   const admissionId = objectIdOrUndefined(req.body.admissionId || req.body.admission_id);
   const amount = Number(req.body.amount || 0);
@@ -984,7 +986,8 @@ exports.depositAdvance = asyncHandler(async (req, res) => {
 
   const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId });
   if (!admission) return res.status(404).json({ success: false, error: 'Admission not found' });
-  if (admission.status === 'Discharged' || admission.finalDischargedAt) {
+  if (String(admission.patientId) !== String(patientId)) return res.status(409).json({ success: false, error: 'Patient does not match the selected admission' });
+  if (['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'].includes(String(admission.status || '')) || admission.finalDischargedAt) {
     return res.status(400).json({ success: false, error: 'Cannot add advance payment to a patient who has already been discharged' });
   }
 
@@ -1025,8 +1028,11 @@ exports.depositAdvance = asyncHandler(async (req, res) => {
 
 exports.getAdvanceLedger = asyncHandler(async (req, res) => {
   const admissionId = objectIdOrUndefined(req.params.admissionId);
+  const hospitalId = getHospitalId(req);
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('_id patientId');
+  if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found' });
   const walletType = req.query.walletType;
-  const query = { admissionId };
+  const query = { hospitalId, admissionId };
   if (walletType) query.walletType = walletType;
 
   const ledgers = await PatientAdvanceLedger.find(query).sort({ createdAt: -1 }).lean();
@@ -1038,10 +1044,12 @@ exports.getAdvanceLedger = asyncHandler(async (req, res) => {
 
 exports.getIPDQueue = asyncHandler(async (req, res) => {
   const { pharmacyId, search = '', limit = 100 } = req.query;
+  const hospitalId = getHospitalId(req);
   const query = {
+    hospitalId,
     requiresPharmacyDispense: true,
     'pharmacyRequest.requestedToPharmacy': true,
-    'pharmacyRequest.pharmacyStatus': { $in: ['Pending', 'Approved'] }
+    'pharmacyRequest.pharmacyStatus': { $in: ['Pending', 'PartiallyDispensed', 'Dispatched'] }
   };
   if (pharmacyId && mongoose.Types.ObjectId.isValid(pharmacyId)) query['pharmacyRequest.pharmacyId'] = pharmacyId;
 
@@ -1056,6 +1064,7 @@ exports.getIPDQueue = asyncHandler(async (req, res) => {
 
   const queue = [];
   for (const med of meds) {
+    if (!med.admissionId || ['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'].includes(String(med.admissionId.status || ''))) continue;
     const requiredQtyBaseUnits = calculateRequiredBaseUnits({
       dosage: med.dosage,
       frequency: med.frequency,
@@ -1065,7 +1074,7 @@ exports.getIPDQueue = asyncHandler(async (req, res) => {
 
     const currentStock = med.admissionId?._id && med.medicineId?._id
       ? await IPDPatientMedicineStock.aggregate([
-        { $match: { admissionId: med.admissionId._id, medicineId: med.medicineId._id } },
+        { $match: { hospitalId, admissionId: med.admissionId._id, medicineId: med.medicineId._id, receiptAcknowledged: true } },
         { $group: { _id: null, balance: { $sum: '$currentBalanceBaseUnits' } } }
       ])
       : [];
@@ -1102,7 +1111,8 @@ exports.getIPDQueue = asyncHandler(async (req, res) => {
 
 exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
   const admissionId = objectIdOrUndefined(req.params.admissionId);
-  const admission = await IPDAdmission.findById(admissionId)
+  const hospitalId = getHospitalId(req);
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId })
     .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone gender dob age')
     .populate('primaryDoctorId', 'firstName lastName name specialization')
     .populate({
@@ -1122,15 +1132,15 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
   if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found' });
 
   const [medications, medicineStock, sales, returns, advanceLedgers, pharmacyLedgers, bills, invoices, deferredSales] = await Promise.all([
-    IPDMedicationChart.find({ admissionId }).populate('medicineId', 'name base_unit pack_unit units_per_pack').sort({ startDate: -1 }).lean(),
-    IPDPatientMedicineStock.find({ admissionId }).populate('medicineId batchId').sort({ updatedAt: -1 }).lean(),
-    Sale.find({ admission_id: admissionId }).populate('items.medicine_id items.batch_id').sort({ sale_date: -1 }).lean(),
-    PharmacyReturn.find({ admissionId }).sort({ createdAt: -1 }).lean(),
-    PatientAdvanceLedger.find({ admissionId }).sort({ createdAt: -1 }).lean(),
-    PharmacyLedgerEntry.find({ admissionId }).sort({ entryDate: -1 }).lean(),
-    Bill.find({ admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: -1 }).lean(),
-    Invoice.find({ admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: -1 }).lean(),
-    Sale.find({ admission_id: admissionId, payment_deferred: true, status: 'Pending' }).sort({ sale_date: -1 }).lean()
+    IPDMedicationChart.find({ hospitalId, admissionId }).populate('medicineId', 'name base_unit pack_unit units_per_pack').sort({ startDate: -1 }).lean(),
+    IPDPatientMedicineStock.find({ hospitalId, admissionId }).populate('medicineId batchId').sort({ updatedAt: -1 }).lean(),
+    Sale.find({ hospitalId, admission_id: admissionId }).populate('items.medicine_id items.batch_id').sort({ sale_date: -1 }).lean(),
+    PharmacyReturn.find({ hospitalId, admissionId }).sort({ createdAt: -1 }).lean(),
+    PatientAdvanceLedger.find({ hospitalId, admissionId }).sort({ createdAt: -1 }).lean(),
+    PharmacyLedgerEntry.find({ hospitalId, admissionId }).sort({ entryDate: -1 }).lean(),
+    Bill.find({ hospital_id: hospitalId, admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: -1 }).lean(),
+    Invoice.find({ hospital_id: hospitalId, admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: -1 }).lean(),
+    Sale.find({ hospitalId, admission_id: admissionId, payment_deferred: true, status: 'Pending' }).sort({ sale_date: -1 }).lean()
   ]);
 
   const balances = {
@@ -1159,7 +1169,10 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
 
 exports.getAdmissionMedicineStock = asyncHandler(async (req, res) => {
   const admissionId = objectIdOrUndefined(req.params.admissionId);
-  const stock = await IPDPatientMedicineStock.find({ admissionId })
+  const hospitalId = getHospitalId(req);
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('_id');
+  if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found' });
+  const stock = await IPDPatientMedicineStock.find({ hospitalId, admissionId })
     .populate('medicineId', 'name base_unit pack_unit units_per_pack')
     .populate('batchId', 'batch_number expiry_date')
     .sort({ updatedAt: -1 })
@@ -1170,15 +1183,20 @@ exports.getAdmissionMedicineStock = asyncHandler(async (req, res) => {
 exports.dispenseIPDMedication = asyncHandler(async (req, res) => {
   const admissionId = objectIdOrUndefined(req.body.admissionId || req.body.admission_id);
   const patientId = objectIdOrUndefined(req.body.patientId || req.body.patient_id);
+  const hospitalId = getHospitalId(req);
 
   if (!admissionId || !patientId) {
     return res.status(400).json({ success: false, error: 'admissionId and patientId are required' });
   }
 
+  const admission = await IPDAdmission.findOne({ _id: admissionId, patientId, hospitalId }).select('_id status');
+  if (!admission) return res.status(404).json({ success: false, error: 'IPD admission/patient not found for this hospital' });
+  if (['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'].includes(String(admission.status || ''))) return res.status(409).json({ success: false, error: 'Medicine cannot be dispensed after the IPD admission is closed' });
+
   const items = [];
   for (const rawItem of req.body.items || []) {
     const medicationChartId = objectIdOrUndefined(rawItem.medicationChartId || rawItem.ipd_medication_chart_id);
-    const med = medicationChartId ? await IPDMedicationChart.findById(medicationChartId).populate('medicineId') : null;
+    const med = medicationChartId ? await IPDMedicationChart.findOne({ _id: medicationChartId, hospitalId, admissionId, patientId }).populate('medicineId') : null;
     const requested = rawItem.quantity_base_units || rawItem.quantityBaseUnits || rawItem.quantity;
     let requiredQty = requested != null ? Number(requested) : calculateRequiredBaseUnits({
       dosage: med?.dosage || rawItem.dosage,
@@ -1189,7 +1207,7 @@ exports.dispenseIPDMedication = asyncHandler(async (req, res) => {
 
     if (req.body.deductExistingPatientStock !== false && med?.medicineId?._id) {
       const balances = await IPDPatientMedicineStock.aggregate([
-        { $match: { admissionId, medicineId: med.medicineId._id } },
+        { $match: { hospitalId, admissionId, medicineId: med.medicineId._id, receiptAcknowledged: true } },
         { $group: { _id: null, balance: { $sum: '$currentBalanceBaseUnits' } } }
       ]);
       const patientBalance = Number(balances[0]?.balance || 0);
@@ -1756,13 +1774,14 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
 exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
   const { patientId } = req.params;
   const { admissionId, startDate, endDate, limit = 50 } = req.query;
+  const hospitalId = getHospitalId(req);
 
-  const patient = await Patient.findById(patientId).select('first_name last_name patientId phone uhid');
+  const patient = await Patient.findOne({ _id: patientId, hospitalId }).select('first_name last_name patientId phone uhid');
   if (!patient) {
     return res.status(404).json({ error: 'Patient not found' });
   }
 
-  const admissionQuery = { patientId: patient._id };
+  const admissionQuery = { hospitalId, patientId: patient._id };
   if (admissionId) {
     admissionQuery._id = admissionId;
   } else {
@@ -1774,7 +1793,7 @@ exports.getPatientPharmacyLedger = asyncHandler(async (req, res) => {
     .populate('wardId', 'name')
     .sort({ admissionDate: -1 });
 
-  const saleFilter = { patient_id: patient._id };
+  const saleFilter = { hospitalId, patient_id: patient._id };
   if (admissionId) {
     saleFilter.admission_id = admissionId;
   }
@@ -2016,7 +2035,11 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
 
   const pharmacyId =
     objectIdOrUndefined(req.body.pharmacyId || req.body.pharmacy_id) ||
-    await getDefaultPharmacyId();
+    await getDefaultPharmacyId(hospitalId);
+
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('_id patientId');
+  if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found for this hospital' });
+  if (patientId && String(admission.patientId) !== String(patientId)) return res.status(409).json({ success: false, error: 'Patient does not match the selected admission' });
 
   const amount = normalizeMoney(req.body.amount);
   const refundMethod = req.body.refundMethod || req.body.paymentMethod || req.body.payment_method || 'Cash';
@@ -2391,7 +2414,7 @@ exports.getDoseCalculation = asyncHandler(async (req, res) => {
 exports.bulkSettleDeferredPayments = asyncHandler(async (req, res) => {
   const { postLedgerSettlement } = require('../services/pharmacyLedgerSettlement.service');
   const hospitalId = getHospitalId(req, req.body.hospitalId);
-  const pharmacyId = objectIdOrUndefined(req.body.pharmacyId) || await getDefaultPharmacyId();
+  const pharmacyId = objectIdOrUndefined(req.body.pharmacyId) || await getDefaultPharmacyId(getHospitalId(req));
   const createdBy = getCreatedBy(req);
 
   const result = await postLedgerSettlement({

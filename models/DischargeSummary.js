@@ -19,7 +19,9 @@ const dischargeMedicationSchema = new mongoose.Schema({
   unit: { type: String, trim: true },
   medicineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Medicine' },
   source: { type: String, enum: ['formulary', 'prescription', 'mar', 'free_text'], default: 'free_text' },
-  freeTextReason: { type: String, trim: true }
+  freeTextReason: { type: String, trim: true },
+  reconciliationAction: { type: String, enum: ['Continue', 'Stop', 'Changed', 'New', 'PRN'], default: 'Continue' },
+  reconciliationReason: { type: String, trim: true }
 }, { _id: true });
 
 const dischargeSummarySchema = new mongoose.Schema({
@@ -62,7 +64,7 @@ const dischargeSummarySchema = new mongoose.Schema({
   medicationReconciliation: {
     performedAt: Date,
     performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    admissionMedicines: [{ name: String, action: { type: String, enum: ['continue','stop','change'] }, dischargeInstruction: String, reason: String }],
+    admissionMedicines: [{ name: String, medicineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Medicine' }, action: { type: String, enum: ['continue','stop','change','new','prn'] }, dischargeInstruction: String, reason: String }],
     discrepancies: [{ medicine: String, discrepancy: String, resolution: String }],
     completed: { type: Boolean, default: false }
   },
@@ -95,6 +97,17 @@ const dischargeSummarySchema = new mongoose.Schema({
     default: 'Draft'
   },
   finalizedAt: Date,
+  revisionNumber: { type: Number, default: 1, min: 1 },
+  revisionHistory: [{
+    revisionNumber: { type: Number, required: true },
+    reopenedAt: { type: Date, required: true },
+    reopenedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    reopenReason: { type: String, trim: true, required: true },
+    previousStatus: { type: String, trim: true },
+    // Snapshot of the exact previously finalized clinical document. This is
+    // intentionally Mixed so future template fields are retained in history.
+    snapshot: { type: mongoose.Schema.Types.Mixed, required: true }
+  }],
 
   abdmRecordLink: {
     patientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', index: true },

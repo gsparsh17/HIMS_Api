@@ -15,6 +15,7 @@ const { syncHRProfileFromSource } = require('../services/hrProfileSync.service')
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { postSourceCharge, getSourceFinancialStatus } = require('../services/chargePosting.service');
 const ipdFinancial = require('../services/ipdFinancial.service');
+const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
 
 // File uploads use the configured HIMS storage driver.
 
@@ -50,20 +51,29 @@ exports.createOTRequest = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Verify admission exists and is active
-    const admission = await IPDAdmission.findById(admissionId);
-    if (!admission || admission.status === 'Discharged') {
-      return res.status(404).json({ error: 'Active admission not found' });
+    // Verify the IPD encounter belongs to this hospital/patient and is still clinically open.
+    const hospitalId = requireHospitalId(req);
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('patientId status chargeFreeze');
+    if (!admission || String(admission.patientId) !== String(patientId)) {
+      return res.status(404).json({ error: 'Active admission not found for this hospital/patient' });
     }
+      try {
+        assertAdmissionOpenForMutation(admission, { action: 'IPD clinical request creation' });
+      } catch (guardError) {
+        return res.status(guardError.statusCode || 409).json({ error: guardError.message, code: guardError.code });
+      }
 
-    // Get procedure details for estimated cost
+    // Get procedure details for estimated cost from this hospital only.
     let estimated_cost = 0;
-    const procedure = await Procedure.findOne({ code: procedureCode });
+    const procedure = await Procedure.findOne({ code: procedureCode, hospitalId, is_active: { $ne: false } });
     if (procedure) {
       estimated_cost = procedure.base_price || 0;
     }
 
     const request = new OTRequest({
+      hospitalId,
+      encounterType: 'IPD',
+      encounterId: admissionId,
       admissionId,
       patientId,
       doctorId,

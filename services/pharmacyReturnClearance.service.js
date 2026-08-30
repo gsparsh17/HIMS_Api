@@ -22,6 +22,7 @@ const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const IPDAdmission = require('../models/IPDAdmission');
 const MedicineBatch = require('../models/MedicineBatch');
 const InventoryLedger = require('../models/InventoryLedger');
+const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
 const HospitalPharmacySetting = require('../models/HospitalPharmacySetting');
 const { postReturnAdjustment, syncSaleDocuments, markSaleMirrorsExternallySettled, syncPatientPharmacyOutstanding } = require('./pharmacyIpdFinancialSync.service');
 const {
@@ -30,6 +31,7 @@ const {
 } = require('./pharmacyTransaction.service');
 const { MONEY_EPSILON, money, nonNegativeMoney, currentSaleNet, calculateReturnAllocation, calculateFinalClearanceAmounts } = require('./pharmacyReturnClearance.math');
 const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
+const { assertAdmissionOpenForMutation } = require('./ipdLifecycleGuard.service');
 
 const REFUND_METHODS = new Set(['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'IPDAdvance', 'PharmacyAdvance']);
 const CASH_REFUND_METHODS = new Set(['Cash', 'UPI', 'Card', 'Bank', 'Net Banking']);
@@ -217,6 +219,7 @@ async function assertOrdinaryReturnAllowed({ sale, req, session }) {
       throw error;
     }
     assertHospitalScope(req, admission);
+    assertAdmissionOpenForMutation(admission, { action: 'IPD pharmacy medicine return' });
     if (admission.pharmacyClearanceStatus === 'cleared') {
       const error = new Error('Pharmacy clearance is already complete. Use the controlled credit-note/reversal process; an ordinary medicine return is blocked.');
       error.status = 409;
@@ -245,6 +248,64 @@ async function buildReturnPreview({ saleId, items, req, session }) {
   });
 
   return { sale, admission, rows, returnValue: total, allocation, pharmacyPolicy };
+}
+
+async function deductReturnedRowsFromPatientStock({ rows, sale, session }) {
+  if (!sale.admission_id || !sale.patient_id) return;
+
+  for (const row of rows) {
+    const quantityToReturn = Number(row.returnedQtyBaseUnits || 0);
+    if (quantityToReturn <= 0) continue;
+
+    const baseQuery = {
+      hospitalId: sale.hospitalId,
+      admissionId: sale.admission_id,
+      patientId: sale.patient_id,
+      medicineId: row.medicineId,
+      ...(row.batchId ? { batchId: row.batchId } : {}),
+      stockSource: 'INTERNAL_PHARMACY',
+      currentBalanceBaseUnits: { $gt: 0 },
+    };
+
+    // Prefer stock explicitly linked to the original sale. Legacy rows may not
+    // contain sourceSaleIds, so fall back to the same internal medicine/batch.
+    let stockRows = await IPDPatientMedicineStock.find({
+      ...baseQuery,
+      sourceSaleIds: sale._id,
+    }).sort({ lastIssuedAt: 1, createdAt: 1 }).session(session);
+
+    if (!stockRows.length) {
+      stockRows = await IPDPatientMedicineStock.find(baseQuery)
+        .sort({ lastIssuedAt: 1, createdAt: 1 })
+        .session(session);
+    }
+
+    const available = stockRows.reduce(
+      (sum, stock) => sum + Number(stock.currentBalanceBaseUnits || 0),
+      0
+    );
+    if (available + MONEY_EPSILON < quantityToReturn) {
+      const error = new Error(
+        `${row.medicineName} cannot be returned: only ${money(available)} base unit(s) remain in the patient's acknowledged bedside stock.`
+      );
+      error.status = 409;
+      error.code = 'IPD_BEDSIDE_STOCK_INSUFFICIENT_FOR_RETURN';
+      throw error;
+    }
+
+    let remaining = quantityToReturn;
+    for (const stock of stockRows) {
+      if (remaining <= MONEY_EPSILON) break;
+      const balance = Number(stock.currentBalanceBaseUnits || 0);
+      if (balance <= 0) continue;
+      const use = Math.min(balance, remaining);
+      stock.currentBalanceBaseUnits = money(balance - use);
+      stock.returnedQtyBaseUnits = money(Number(stock.returnedQtyBaseUnits || 0) + use);
+      stock.lastReturnedAt = operationNow();
+      await stock.save({ session });
+      remaining = money(remaining - use);
+    }
+  }
 }
 
 async function restockAcceptedRows({ rows, sale, returnRecord, createdBy, session }) {
@@ -427,6 +488,9 @@ async function applyCompletedReturn({
   idempotencyKey,
   session,
 }) {
+  // Patient bedside stock and central pharmacy stock must move in the same
+  // transaction; otherwise a returned medicine could exist in both places.
+  await deductReturnedRowsFromPatientStock({ rows, sale, session });
   await restockAcceptedRows({ rows, sale, returnRecord, createdBy, session });
   setSaleAfterReturn({ sale, returnRecord, total: returnValue, allocation });
   await sale.save({ session });

@@ -190,6 +190,19 @@ router.get('/admissions/today-schedule', admissions.getAdmissionTodaySchedule);
 
 router.get('/reports/bed-occupancy', admissions.getBedOccupancyReport);
 
+// Persistent post-admission finance recovery queue. Keep these concrete routes
+// before /admissions/:id so "finance-pending" cannot be parsed as an ObjectId.
+router.get(
+  '/admissions/finance-pending',
+  requireAnyActionPermission(['ipd_admission_manage', 'billing_edit', 'settlement']),
+  admissions.getPendingFinanceInitializations
+);
+router.post(
+  '/admissions/:id/finance/retry',
+  requireAnyActionPermission(['ipd_admission_manage', 'billing_edit', 'settlement']),
+  admissions.retryFinanceInitialization
+);
+
 router.get(
   '/admissions/:id',
   // ...read,
@@ -328,6 +341,12 @@ router.post('/clinical-templates/:id/use', requireAnyActionPermission(['ipd_clin
 
 // ============== ROUNDS ==============
 router.get('/rounds/tariff', rounds.getDoctorTariff);
+
+router.post(
+  '/rounds/complete',
+  requireActionPermission('ipd_round_write'),
+  rounds.completeIPDRound
+);
 
 router.post(
   '/rounds',
@@ -471,7 +490,7 @@ router.patch(
 
 router.patch(
   '/medications/:id/stop',
-  requireAnyActionPermission(['ipd_clinical_write', 'ipd_medication_write']),
+  requireActionPermission('ipd_clinical_write'),
   meds.stopMedication
 );
 
@@ -690,7 +709,7 @@ router.post(
   discharge.saveDischargeSummary
 );
 
-router.post('/discharge/:admissionId/medication-reconciliation', requireAnyActionPermission(['ipd_discharge_write', 'ipd_discharge_support']), discharge.reconcileDischargeMedications);
+router.post('/discharge/:admissionId/medication-reconciliation', requireActionPermission('ipd_discharge_write'), discharge.reconcileDischargeMedications);
 
 router.get(
   '/discharge/:admissionId/summary',
@@ -713,9 +732,33 @@ router.post(
 );
 
 router.post(
+  '/discharge/:admissionId/summary/reopen',
+  requireActionPermission('ipd_discharge_override'),
+  discharge.reopenDischargeSummary
+);
+
+router.post(
   '/discharge/:admissionId/staff-complete',
   requireActionPermission('ipd_discharge_support'),
   discharge.staffCompleteDischargeSummary
+);
+
+router.patch(
+  '/discharge/:admissionId/summary/medications',
+  requireActionPermission('ipd_discharge_write'),
+  discharge.updateDischargeMedications
+);
+
+router.post(
+  '/discharge/:admissionId/charge-freeze',
+  requireAnyActionPermission(['ipd_discharge_write', 'ipd_discharge_override', 'billing_finalize', 'final_clearance']),
+  discharge.freezeAdmissionCharges
+);
+
+router.post(
+  '/discharge/:admissionId/charge-reopen',
+  requireActionPermission('ipd_discharge_override'),
+  discharge.reopenAdmissionCharges
 );
 
 router.get(

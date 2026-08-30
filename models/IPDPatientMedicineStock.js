@@ -33,7 +33,20 @@ const ipdPatientMedicineStockSchema = new mongoose.Schema({
     default: false
   },
   receiptAcknowledgedAt: { type: Date },
-  receiptAcknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  receiptAcknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // Patient-supplied/external pharmacy stock must retain provenance; it must
+  // never be indistinguishable from hospital-dispensed inventory.
+  externalProvenance: {
+    sourceType: { type: String, enum: ['PATIENT_SUPPLIED', 'EXTERNAL_PHARMACY', 'TRANSFER_IN'], default: 'PATIENT_SUPPLIED' },
+    receivedFrom: { type: String, trim: true },
+    batchNumber: { type: String, trim: true },
+    expiryDate: Date,
+    manufacturer: { type: String, trim: true },
+    referenceNumber: { type: String, trim: true },
+    verificationNote: { type: String, trim: true },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    receivedAt: Date
+  }
 }, { timestamps: true });
 
 ipdPatientMedicineStockSchema.index({ admissionId: 1, medicineId: 1, batchId: 1 }, { unique: false });

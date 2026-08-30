@@ -980,8 +980,45 @@ async function previewOPDPayment(patientId, payload, user) {
   };
 }
 
+async function syncOPDClinicalFinancialClearance({ patientId, appointmentId, user }) {
+  const hospitalId = assertUserHospital(user);
+  const LabRequest = require('../models/LabRequest');
+  const RadiologyRequest = require('../models/RadiologyRequest');
+  const ProcedureRequest = require('../models/ProcedureRequest');
+  // Lazy-load to avoid the existing chargePosting -> patientFinancial import cycle.
+  const { getSourceFinancialStatus } = require('./chargePosting.service');
+  const financialUser = user?.hospital_id ? user : { ...user, hospital_id: hospitalId };
+
+  const encounterFilter = {
+    hospitalId,
+    patientId,
+    sourceType: 'OPD',
+    ...(appointmentId ? { appointmentId } : {})
+  };
+  const sources = [
+    ['LabRequest', LabRequest],
+    ['RadiologyRequest', RadiologyRequest],
+    ['ProcedureRequest', ProcedureRequest]
+  ];
+
+  const failures = [];
+  for (const [sourceModule, Model] of sources) {
+    const requests = await Model.find(encounterFilter).select('_id').lean();
+    for (const request of requests) {
+      try {
+        await getSourceFinancialStatus({ sourceModule, sourceId: request._id, user: financialUser });
+      } catch (error) {
+        // Payment itself is already committed. Keep the source synchronisation
+        // retryable rather than falsely reporting that money collection failed.
+        failures.push({ sourceModule, sourceId: request._id, message: error.message });
+      }
+    }
+  }
+  return failures;
+}
+
 async function recordOPDPayment(patientId, payload, user) {
-  return runTransaction(async (session) => {
+  const settlement = await runTransaction(async (session) => {
     const { patient, hospitalId } = await findPatient(patientId, user, session);
     const settlementPreview = await previewOPDPayment(patientId, payload, user);
     const requestedAmount = amount(payload.amountApplied ?? payload.amount);
@@ -1283,6 +1320,14 @@ async function recordOPDPayment(patientId, payload, user) {
       alreadyExists: false
     };
   });
+
+  const clearanceSyncFailures = await syncOPDClinicalFinancialClearance({
+    patientId,
+    appointmentId: payload.appointmentId,
+    user
+  });
+  if (clearanceSyncFailures.length) settlement.clearanceSyncPending = clearanceSyncFailures;
+  return settlement;
 }
 
 async function recordOPDAdvance(patientId, payload, user) {

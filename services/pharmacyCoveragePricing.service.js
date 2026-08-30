@@ -146,7 +146,7 @@ async function recordUtilizationForBill({ pricedItems, bill, coverage, sourceTyp
   }
 }
 
-async function recognizeSponsorReceivable({ coverage, allocation, invoice, bill, patientId, admissionId, appointmentId, createdBy }) {
+async function recognizeSponsorReceivable({ coverage, allocation, invoice, bill, patientId, admissionId, appointmentId, createdBy, session }) {
   if (!coverage || Number(allocation.sponsor_liability || 0) <= 0) return null;
   const recognition = coverage.payerId?.pricingPolicy?.receivableRecognition || 'invoice_issue';
   if (recognition !== 'invoice_issue') return null;
@@ -166,7 +166,8 @@ async function recognizeSponsorReceivable({ coverage, allocation, invoice, bill,
     sourceType: 'invoice',
     sourceId: invoice?._id || bill?._id,
     idempotencyKey: `invoice:${invoice?._id || bill?._id}:sponsor-receivable`,
-    createdBy
+    createdBy,
+    session
   });
 }
 

@@ -6,6 +6,33 @@ const IPDVitals = require('../models/IPDVitals');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const Patient = require('../models/Patient');
+const { requireHospitalId } = require('../services/tenantScope.service');
+const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
+const { resolveClinicalActor } = require('../services/clinicalActor.service');
+
+
+async function scopedAdmission(req, admissionId, { allowClosed = true } = {}) {
+  const hospitalId = requireHospitalId(req);
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId });
+  if (!admission) {
+    const error = new Error('Admission not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (!allowClosed) assertAdmissionOpenForMutation(admission, { action: 'Nursing documentation' });
+  return admission;
+}
+
+async function scopedNursingNote(req, noteId, { allowClosed = true } = {}) {
+  const note = await NursingNote.findOne({ _id: noteId, is_active: { $ne: false } });
+  if (!note) {
+    const error = new Error('Nursing note not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  await scopedAdmission(req, note.admissionId, { allowClosed });
+  return note;
+}
 
 // ========== NURSING NOTES ==========
 
@@ -14,8 +41,6 @@ exports.createNursingNote = async (req, res) => {
   try {
     const {
       admissionId,
-      patientId,
-      nurseId,
       noteDateTime,
       noteType,
       note,
@@ -27,16 +52,16 @@ exports.createNursingNote = async (req, res) => {
       copiedFromNoteId
     } = req.body;
 
-    // Verify admission exists
-    const admission = await IPDAdmission.findById(admissionId);
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-
+    const admission = await scopedAdmission(req, admissionId, { allowClosed: false });
+    const actor = await resolveClinicalActor(req.user);
     const nursingNote = new NursingNote({
-      admissionId,
-      patientId,
-      nurseId: nurseId || req.user?._id,
+      hospitalId: admission.hospitalId,
+      admissionId: admission._id,
+      patientId: admission.patientId,
+      ...(actor.staffModel === 'Nurse' && actor.staffProfileId ? { nurseId: actor.staffProfileId } : {}),
+      actorUserId: actor.userId,
+      actorRole: actor.role,
+      actorNameSnapshot: actor.name,
       noteDateTime: noteDateTime || operationNow(),
       noteType,
       note,
@@ -50,15 +75,10 @@ exports.createNursingNote = async (req, res) => {
     });
 
     await nursingNote.save();
-
-    res.status(201).json({
-      success: true,
-      message: 'Nursing note added successfully',
-      nursingNote
-    });
+    res.status(201).json({ success: true, message: 'Nursing note added successfully', nursingNote });
   } catch (err) {
     console.error('Error creating nursing note:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
   }
 };
 
@@ -67,6 +87,7 @@ exports.getNursingNotesByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
     const { limit = 50, noteType } = req.query;
+    await scopedAdmission(req, admissionId, { allowClosed: true });
 
     const filter = { admissionId, is_active: { $ne: false } };
     if (noteType) filter.noteType = noteType;
@@ -91,14 +112,11 @@ exports.getNursingNoteById = async (req, res) => {
   try {
     const { id } = req.params;
 
+    await scopedNursingNote(req, id, { allowClosed: true });
     const nursingNote = await NursingNote.findOne({ _id: id, is_active: { $ne: false } })
       .populate('nurseId', 'first_name last_name')
       .populate('shiftHandoverFrom', 'first_name last_name')
       .populate('shiftHandoverTo', 'first_name last_name');
-
-    if (!nursingNote) {
-      return res.status(404).json({ error: 'Nursing note not found' });
-    }
 
     res.json({ success: true, nursingNote });
   } catch (err) {
@@ -111,21 +129,14 @@ exports.getNursingNoteById = async (req, res) => {
 exports.updateNursingNote = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
-
-    const nursingNote = await NursingNote.findByIdAndUpdate(id, updates, { new: true });
-    if (!nursingNote) {
-      return res.status(404).json({ error: 'Nursing note not found' });
-    }
-
-    res.json({
-      success: true,
-      message: 'Nursing note updated successfully',
-      nursingNote
-    });
+    const nursingNote = await scopedNursingNote(req, id, { allowClosed: false });
+    const allowed = ['noteDateTime', 'noteType', 'note', 'priority', 'shift', 'shiftHandoverFrom', 'shiftHandoverTo', 'attachments'];
+    for (const key of allowed) if (req.body[key] !== undefined) nursingNote[key] = req.body[key];
+    await nursingNote.save();
+    res.json({ success: true, message: 'Nursing note updated successfully', nursingNote });
   } catch (err) {
     console.error('Error updating nursing note:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
   }
 };
 
@@ -133,19 +144,16 @@ exports.updateNursingNote = async (req, res) => {
 exports.deleteNursingNote = async (req, res) => {
   try {
     const { id } = req.params;
-
-    const nursingNote = await NursingNote.findOneAndUpdate({ _id: id, is_active: { $ne: false } }, { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Nursing note archived by user').trim() } }, { new: true });
-    if (!nursingNote) {
-      return res.status(404).json({ error: 'Nursing note not found' });
-    }
-
-    res.json({
-      success: true,
-      message: 'Nursing note archived successfully'
-    });
+    const nursingNote = await scopedNursingNote(req, id, { allowClosed: false });
+    nursingNote.is_active = false;
+    nursingNote.deleted_at = operationNow();
+    nursingNote.deleted_by = req.user?._id || null;
+    nursingNote.deletion_reason = String(req.body?.reason || 'Nursing note archived by user').trim();
+    await nursingNote.save({ validateBeforeSave: false });
+    res.json({ success: true, message: 'Nursing note archived successfully' });
   } catch (err) {
     console.error('Error deleting nursing note:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
   }
 };
 
@@ -155,20 +163,20 @@ exports.deleteNursingNote = async (req, res) => {
 exports.createVitals = async (req, res) => {
   try {
     const { admissionId } = req.body;
-    const admission = await IPDAdmission.findById(admissionId);
-    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    const admission = await scopedAdmission(req, admissionId, { allowClosed: false });
+    const actor = await resolveClinicalActor(req.user);
     const payload = {
       ...req.body,
-      patientId: req.body.patientId || admission.patientId,
-      hospitalId: req.body.hospitalId || admission.hospitalId || admission.hospital_id || req.user?.hospital_id,
-      recordedBy: req.body.recordedBy || req.user?._id,
-      recordedByName: req.body.recordedByName || req.user?.name,
+      patientId: admission.patientId,
+      hospitalId: admission.hospitalId,
+      recordedBy: req.user?._id,
+      recordedByName: actor.name || req.user?.name,
       recordedAt: req.body.recordedAt || operationNow()
     };
     const vitals = new IPDVitals(payload);
     await vitals.save();
     if (vitals.isAbnormal) {
-      await NursingNote.create({ admissionId, patientId: vitals.patientId, nurseId: req.user?._id, noteType: 'Critical Alert', note: `Abnormal/EWS trigger vitals recorded. EWS ${vitals.ewsTotal || 0}`, priority: 'Critical', createdBy: req.user?._id });
+      await NursingNote.create({ hospitalId: admission.hospitalId, admissionId, patientId: vitals.patientId, ...(actor.staffModel === 'Nurse' && actor.staffProfileId ? { nurseId: actor.staffProfileId } : {}), actorUserId: actor.userId, actorRole: actor.role, actorNameSnapshot: actor.name, noteType: 'Critical Alert', note: `Abnormal/EWS trigger vitals recorded. EWS ${vitals.ewsTotal || 0}`, priority: 'Critical', createdBy: req.user?._id });
     }
     res.status(201).json({ success: true, message: 'Vitals recorded successfully', vitals });
   } catch (err) {
@@ -213,6 +221,7 @@ exports.getVitalsChartData = async (req, res) => {
   try {
     const { admissionId } = req.params;
     const { days = 7 } = req.query;
+    await scopedAdmission(req, admissionId, { allowClosed: true });
 
     const startDate = operationNow();
     startDate.setDate(startDate.getDate() - parseInt(days));
@@ -256,6 +265,7 @@ exports.getVitalsChartData = async (req, res) => {
 exports.getLatestVitals = async (req, res) => {
   try {
     const { admissionId } = req.params;
+    await scopedAdmission(req, admissionId, { allowClosed: true });
 
     const latestVitals = await IPDVitals.findOne({ admissionId })
       .sort({ recordedAt: -1 })

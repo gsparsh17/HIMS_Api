@@ -60,20 +60,23 @@ function generateTimingSlots(frequency, durationDays, startDate = operationNow()
   return slots;
 }
 
-async function findActivePharmacy(preferredPharmacyId) {
+async function findActivePharmacy(hospitalId, preferredPharmacyId, session = null) {
+  if (!hospitalId) throw new Error('Hospital context is required before selecting a pharmacy.');
   if (preferredPharmacyId) {
-    const pharmacy = await Pharmacy.findOne({ _id: preferredPharmacyId, status: 'Active' });
+    const pharmacy = await Pharmacy.findOne({ _id: preferredPharmacyId, hospitalId, status: 'Active' }).session(session || null);
     if (pharmacy) return pharmacy;
   }
-  return Pharmacy.findOne({ status: 'Active' }).sort({ registeredAt: 1 });
+  return Pharmacy.findOne({ hospitalId, status: 'Active' }).sort({ registeredAt: 1 }).session(session || null);
 }
 
-async function createOrUpdatePharmacyRequest({ medication, requestedQuantity, requestedBy, pharmacyId, notePrefix = 'Pharmacy request' }) {
+async function createOrUpdatePharmacyRequest({ medication, requestedQuantity, requestedBy, pharmacyId, notePrefix = 'Pharmacy request', session = null }) {
   const quantity = Number(requestedQuantity);
   if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('Requested quantity must be greater than zero.');
-  if (medication.pharmacyRequest?.dispensedFromPharmacy) throw new Error('Medication has already been dispensed. Create a new medication order for an additional issue.');
+  if (medication.pharmacyRequest?.dispensedFromPharmacy && Number(medication.pharmacyRequest?.dispensedQuantity || 0) >= Number(medication.pharmacyRequest?.requestedQuantity || 0)) {
+    throw new Error('Medication has already been fully dispensed. Create a new medication order for an additional issue.');
+  }
 
-  const pharmacy = await findActivePharmacy(pharmacyId || medication.pharmacyRequest?.pharmacyId);
+  const pharmacy = await findActivePharmacy(medication.hospitalId, pharmacyId || medication.pharmacyRequest?.pharmacyId, session);
   if (!pharmacy) throw new Error('No active pharmacy is configured for this hospital.');
 
   const existingNumber = medication.pharmacyRequest?.pharmacyRequestNumber;
@@ -85,28 +88,33 @@ async function createOrUpdatePharmacyRequest({ medication, requestedQuantity, re
     requestedQuantity: Math.ceil(quantity),
     pharmacyId: pharmacy._id,
     pharmacyRequestNumber: existingNumber || `PHARM-REQ-${Date.now()}-${String(medication._id).slice(-6)}`,
-    pharmacyStatus: 'Pending',
-    dispensedFromPharmacy: false,
-    dispensedQuantity: 0,
-    dispensedBatchId: null,
-    dispensedAt: null,
-    stockReceivedByNurse: false,
-    stockReceivedAt: null,
-    stockReceivedBy: null,
-    saleId: null
+    pharmacyStatus: Number(medication.pharmacyRequest?.dispensedQuantity || 0) > 0 ? 'PartiallyDispensed' : 'Pending',
+    dispensedFromPharmacy: Boolean(medication.pharmacyRequest?.dispensedFromPharmacy),
+    dispensedQuantity: Number(medication.pharmacyRequest?.dispensedQuantity || 0),
+    dispensedBatchId: medication.pharmacyRequest?.dispensedBatchId || null,
+    dispensedAt: medication.pharmacyRequest?.dispensedAt || null,
+    stockReceivedByNurse: Boolean(medication.pharmacyRequest?.stockReceivedByNurse),
+    stockReceivedAt: medication.pharmacyRequest?.stockReceivedAt || null,
+    stockReceivedBy: medication.pharmacyRequest?.stockReceivedBy || null,
+    saleId: medication.pharmacyRequest?.saleId || null,
+    saleIds: medication.pharmacyRequest?.saleIds || [],
+    dispenseHistory: medication.pharmacyRequest?.dispenseHistory || []
   };
   medication.status = 'Requested';
   medication.stockReceiptStatus = 'PENDING_RECEIPT';
-  await medication.save();
+  await medication.save(session ? { session } : undefined);
 
-  await NursingNote.create({
+  const nursingNote = {
+    hospitalId: medication.hospitalId,
     admissionId: medication.admissionId,
     patientId: medication.patientId,
     noteType: 'Medication',
     note: `${notePrefix} for ${medication.medicineName}: ${Math.ceil(quantity)} ${medication.medicineId ? 'base unit(s)' : 'unit(s)'}.`,
     priority: medication.isHighRisk ? 'Important' : 'Normal',
     createdBy: requestedBy || medication.createdBy || medication.prescribedBy
-  });
+  };
+  if (session) await NursingNote.create([nursingNote], { session });
+  else await NursingNote.create(nursingNote);
   return medication;
 }
 

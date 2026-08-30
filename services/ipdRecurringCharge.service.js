@@ -77,18 +77,18 @@ function dateKeysBetween(fromDate, throughDate, timeZone = DEFAULT_TIME_ZONE) {
 // ============================================
 
 function segmentForDate(segments, key, timeZone = DEFAULT_TIME_ZONE) {
-  return segments.find((segment) => {
-    if (!segment?.startedAt || segment.status === 'voided') {
-      return false;
-    }
-
+  // A transfer closes the old segment and opens the new segment on the same
+  // hospital calendar date. More than one segment can therefore match `key`.
+  // Always use the latest-started matching segment so transfer-day billing
+  // follows the patient's current accommodation instead of the old bed.
+  const matches = (segments || []).filter((segment) => {
+    if (!segment?.startedAt || segment.status === 'voided') return false;
     const startKey = dateKeyInTimeZone(segment.startedAt, timeZone);
-    const endKey = segment.endedAt
-      ? dateKeyInTimeZone(segment.endedAt, timeZone)
-      : null;
-
+    const endKey = segment.endedAt ? dateKeyInTimeZone(segment.endedAt, timeZone) : null;
     return startKey <= key && (!endKey || endKey >= key);
-  }) || null;
+  });
+
+  return matches.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))[0] || null;
 }
 
 // ============================================
@@ -252,6 +252,15 @@ async function createDailyCharge({
       notes: `Automatic IPD daily charge (${externalCode})`
     });
 
+    // A new billable daily charge makes any previous financial clearance stale.
+    await IPDAdmission.updateOne(
+      { _id: admission._id, hospitalId: admission.hospitalId },
+      {
+        $set: { financialClearanceStatus: 'in_progress' },
+        $unset: { financialClearedAt: 1, financialClearedBy: 1, finalSettlementReceiptNumber: 1 }
+      }
+    );
+
     await replaceCoverageUtilization({
       coverage,
       quote,
@@ -341,10 +350,17 @@ async function ensureAdmissionDailyCharges(
     throw error;
   }
 
-  const effectiveThrough = admission.dischargeDate &&
+  const requestedThrough = admission.dischargeDate &&
     new Date(admission.dischargeDate) < new Date(throughDate)
       ? new Date(admission.dischargeDate)
       : new Date(throughDate);
+  // A frozen admission has reached the audited charge boundary. Recurring
+  // catch-up may fill dates up to the freeze timestamp, but never generate a
+  // new accommodation/nursing/RMO charge after that boundary.
+  const effectiveThrough = admission.chargeFreeze?.status === 'frozen' && admission.chargeFreeze?.frozenAt &&
+    new Date(admission.chargeFreeze.frozenAt) < requestedThrough
+      ? new Date(admission.chargeFreeze.frozenAt)
+      : requestedThrough;
 
   const requestedFrom = options?.fromDate
     ? new Date(options.fromDate)

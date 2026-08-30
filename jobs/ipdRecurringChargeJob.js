@@ -12,21 +12,22 @@ function lookbackStart(days) {
 
 async function execute({ startup = false } = {}) {
   try {
-    // A server restart must not silently create months of historical nursing/RMO
-    // charges. Scheduled runs operate on the current hospital day. Startup
-    // catch-up looks back a small configurable window (default: today+yesterday).
-    // Full historical catch-up remains available through the explicit API/script.
-    const lookbackDays = startup
-      ? Number(process.env.IPD_DAILY_CHARGE_STARTUP_LOOKBACK_DAYS || 2)
-      : Number(process.env.IPD_DAILY_CHARGE_SCHEDULE_LOOKBACK_DAYS || 1);
-    const fromDate = lookbackStart(lookbackDays);
+    // Startup must repair every missing recurring day for active admissions.
+    // A fixed two-day lookback left long-running admissions under-billed after a
+    // prolonged outage. Operators can still cap startup history explicitly with
+    // IPD_DAILY_CHARGE_STARTUP_LOOKBACK_DAYS when required.
+    const configuredStartupLookback = Number(process.env.IPD_DAILY_CHARGE_STARTUP_LOOKBACK_DAYS || 0);
+    const scheduledLookbackDays = Number(process.env.IPD_DAILY_CHARGE_SCHEDULE_LOOKBACK_DAYS || 1);
+    const fromDate = startup
+      ? (configuredStartupLookback > 0 ? lookbackStart(configuredStartupLookback) : null)
+      : lookbackStart(scheduledLookbackDays);
     const summary = await runDailyChargeCatchup({
       throughDate: new Date(),
       fromDate,
       limit: Number(process.env.IPD_DAILY_CHARGE_BATCH_LIMIT || 1000)
     });
     console.log(`[IPD Daily Charges] ${startup ? 'startup ' : ''}catch-up complete`, {
-      lookbackDays,
+      lookbackDays: startup ? (configuredStartupLookback || 'full-active-admission') : scheduledLookbackDays,
       ...summary
     });
   } catch (error) {

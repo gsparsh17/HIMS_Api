@@ -10,6 +10,7 @@ const Bill = require('../models/Bill');
 const IPDCharge = require('../models/IPDCharge');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDAdmission = require('../models/IPDAdmission');
+const { assertAdmissionOpenForMutation } = require('./ipdLifecycleGuard.service');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const InventoryLedger = require('../models/InventoryLedger');
@@ -58,6 +59,12 @@ function normalizeMoney(value) {
   const n = Number(value || 0);
   if (!Number.isFinite(n)) return 0;
   return Number(n.toFixed(2));
+}
+
+async function createOne(Model, payload, session = null) {
+  if (!session) return Model.create(payload);
+  const [document] = await Model.create([payload], { session });
+  return document;
 }
 
 function normalizeText(value) {
@@ -136,12 +143,18 @@ async function getAdvanceBalance({ admissionId, patientId, walletType = 'PHARMAC
   return 0;
 }
 
-async function createAdvanceLedgerEntry({ patientId, admissionId, walletType = 'PHARMACY_IPD', transactionType, direction, amount, paymentMethod, referenceNumber, sourceModule = 'Pharmacy', sourceId, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType, session } = {}) {
+async function createAdvanceLedgerEntry({ hospitalId, patientId, admissionId, walletType = 'PHARMACY_IPD', transactionType, direction, amount, paymentMethod, referenceNumber, sourceModule = 'Pharmacy', sourceId, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType, session } = {}) {
   const current = await getAdvanceBalance({ admissionId, patientId, walletType, session });
   const normalizedAmount = normalizeMoney(amount);
   const balanceAfter = normalizeMoney(direction === 'CREDIT' ? current + normalizedAmount : current - normalizedAmount);
   if (direction === 'DEBIT' && balanceAfter < -0.009) throw new Error('Wallet balance cannot fall below zero');
+  let scopedHospitalId = hospitalId;
+  if (!scopedHospitalId && admissionId) {
+    const admission = await IPDAdmission.findById(admissionId).select('hospitalId').session(session || null);
+    scopedHospitalId = admission?.hospitalId;
+  }
   const payload = {
+    hospitalId: scopedHospitalId,
     patientId, admissionId, walletType, transactionType, direction, amount: normalizedAmount, paymentMethod, referenceNumber, sourceModule, sourceId, balanceAfter, notes, createdBy, transactionGroupId, parentGroupId, idempotencyKey, presentationType
   };
   const created = await PatientAdvanceLedger.create([payload], session ? { session } : undefined);
@@ -505,35 +518,37 @@ function calculateTotals(items, { discount = 0, discount_type = 'percentage', ta
   };
 }
 
-async function getPatientOutstanding({ patientId, admissionId, excludeSaleId } = {}) {
+async function getPatientOutstanding({ patientId, admissionId, excludeSaleId, session } = {}) {
   if (!patientId && !admissionId) return 0;
   const match = { balance_due: { $gt: 0 }, status: { $nin: ['Cancelled', 'Refunded'] } };
   if (admissionId) match.admission_id = admissionId;
   else match.patient_id = patientId;
   if (excludeSaleId) match._id = { $ne: excludeSaleId };
-  const rows = await Sale.aggregate([{ $match: match }, { $group: { _id: null, amount: { $sum: '$balance_due' } } }]);
+  const rows = await Sale.aggregate([{ $match: match }, { $group: { _id: null, amount: { $sum: '$balance_due' } } }]).session(session || null);
   return normalizeMoney(rows[0]?.amount || 0);
 }
 
-async function getPatientPharmacySummary({ patientId, admissionId } = {}) {
+async function getPatientPharmacySummary({ patientId, admissionId, session } = {}) {
   const [outstanding, pharmacyAdvance, ipdAdvance] = await Promise.all([
-    getPatientOutstanding({ patientId, admissionId }),
-    getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD' }),
-    getAdvanceBalance({ patientId, admissionId, walletType: 'IPD_SHARED' })
+    getPatientOutstanding({ patientId, admissionId, session }),
+    getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD', session }),
+    getAdvanceBalance({ patientId, admissionId, walletType: 'IPD_SHARED', session })
   ]);
   return { outstanding, pharmacyAdvance, ipdAdvance };
 }
 
-async function deductStockAndCreateLedger({ items, saleId, createdBy }) {
+async function deductStockAndCreateLedger({ items, saleId, createdBy, hospitalId, pharmacyId, session = null }) {
   for (const item of items) {
-    const batch = await MedicineBatch.findById(item.batch_id);
+    const batch = await MedicineBatch.findById(item.batch_id).session(session || null);
     const current = Number(batch.quantity_base_units ?? batch.quantity ?? 0);
     const nextQty = current - Number(item.quantity_base_units || item.quantity || 0);
     if (nextQty < 0) throw new Error(`Insufficient stock for batch ${batch.batch_number}`);
     batch.quantity_base_units = nextQty;
     batch.quantity = nextQty;
-    await batch.save();
-    await InventoryLedger.create({
+    await batch.save(session ? { session } : undefined);
+    await createOne(InventoryLedger, {
+      hospitalId,
+      pharmacyId,
       medicineId: item.medicine_id,
       batchId: item.batch_id,
       movementType: 'SALE_OUT',
@@ -544,7 +559,7 @@ async function deductStockAndCreateLedger({ items, saleId, createdBy }) {
       sourceId: saleId,
       notes: `Sale ${saleId}`,
       createdBy
-    });
+    }, session);
   }
 }
 
@@ -573,16 +588,20 @@ async function restockAndCreateLedger({ items, returnId, createdBy }) {
   }
 }
 
-async function applyIpdMedicineStock({ items, sale, admissionId, patientId }) {
+async function applyIpdMedicineStock({ items, sale, admissionId, patientId, session = null }) {
   if (!admissionId || !patientId) return [];
   const updates = [];
   for (const item of items) {
     // ✅ Skip if this is a return/credit note item
     if (item.is_return || item.item_type === 'Medicine Return') continue;
 
-    const query = { admissionId, patientId, medicineId: item.medicine_id, batchId: item.batch_id };
+    // Keep each physical pharmacy dispatch in its own bedside-stock row. Receipt
+    // acknowledgement is per dispatch; merging a second partial issue into an
+    // already acknowledged row would make unreceived stock administrable.
+    const query = { hospitalId: sale.hospitalId, admissionId, patientId, medicineId: item.medicine_id, batchId: item.batch_id, sourceSaleIds: sale._id };
     const update = {
       $setOnInsert: {
+        hospitalId: sale.hospitalId,
         admissionId,
         patientId,
         medicineId: item.medicine_id,
@@ -590,7 +609,9 @@ async function applyIpdMedicineStock({ items, sale, admissionId, patientId }) {
         medicineName: item.medicine_name,
         baseUnit: item.base_unit,
         packUnit: item.pack_unit,
-        unitsPerPack: item.units_per_pack
+        unitsPerPack: item.units_per_pack,
+        receiptAcknowledged: false,
+        stockSource: 'INTERNAL_PHARMACY'
       },
       $inc: { 
         issuedQtyBaseUnits: item.quantity_base_units, 
@@ -602,13 +623,13 @@ async function applyIpdMedicineStock({ items, sale, admissionId, patientId }) {
       },
       $set: { lastIssuedAt: operationNow() }
     };
-    const doc = await IPDPatientMedicineStock.findOneAndUpdate(query, update, { new: true, upsert: true });
+    const doc = await IPDPatientMedicineStock.findOneAndUpdate(query, update, { new: true, upsert: true, ...(session ? { session } : {}) });
     updates.push(doc);
   }
   return updates;
 }
 
-async function createSaleInvoice({ sale, items, customerName, customerPhone, totals, paymentEntries, createdBy, isDeferred = false, appointmentId, pharmacyPricing }) {
+async function createSaleInvoice({ sale, items, customerName, customerPhone, totals, paymentEntries, createdBy, isDeferred = false, appointmentId, pharmacyPricing, session = null }) {
   const customerType = sale.customer_type === 'WalkIn' || sale.customer_type === 'walkin' ? 'Walk-in' : 'Patient';
   const amountPaid = normalizeMoney(Math.min(sale.amount_paid || 0, sale.net_amount_after_returns || sale.total_amount || 0));
 
@@ -635,7 +656,7 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
   const finalDiscount = sale.discount_amount > 0 ? sale.discount_amount : invoiceDiscount;
   const finalTotal = sale.total_amount || invoiceTotal;
 
-  const invoice = await Invoice.create({
+  const invoice = await createOne(Invoice, {
     hospital_id: sale.hospitalId,
     invoice_type: 'Pharmacy',
     document_stage: 'ISSUED',
@@ -699,17 +720,17 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
     dispensed_by: createdBy,
     created_by: createdBy,
     notes: `${sale.notes || ''}${sale.selected_billing_mode ? ` | Mode: ${sale.selected_billing_mode}` : ''}`.trim()
-  });
+  }, session);
 
   sale.invoice_id = invoice._id;
   sale.invoice_number = invoice.invoice_number;
-  await sale.save();
+  await sale.save(session ? { session } : undefined);
   return invoice;
 }
 
 // In createPharmacyBill function, around line ~700-750
 
-async function createPharmacyBill({ sale, items, totals, paymentEntries, patientId, admissionId, createdBy, isDeferred = false, appointmentId, pharmacyPricing }) {
+async function createPharmacyBill({ sale, items, totals, paymentEntries, patientId, admissionId, createdBy, isDeferred = false, appointmentId, pharmacyPricing, session = null }) {
   const billItems = items.map(item => ({
     description: item.medicine_name,
     amount: item.contracted_amount ?? item.net_amount ?? item.total_price,
@@ -751,7 +772,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
   let pharmacyAdvanceBefore = 0;
 
   if (patientId) {
-    const patient = await Patient.findById(patientId);
+    const patient = await Patient.findById(patientId).session(session || null);
     if (patient) {
       pharmacyOutstandingBefore = patient.pharmacy_outstanding_balance || 0;
       pharmacyAdvanceBefore = patient.pharmacy_advance_balance || 0;
@@ -817,7 +838,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
     ? 'Pending'
     : (sale.payment_method || 'Pending');
 
-  const bill = await Bill.create({
+  const bill = await createOne(Bill, {
     hospital_id: sale.hospitalId,
     document_stage: sale.invoice_id ? 'INVOICED' : 'GENERATED',
     invoice_ids: sale.invoice_id ? [sale.invoice_id] : [],
@@ -859,16 +880,16 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
     pharmacy_advance_used: pharmacyAdvanceUsed,
     pharmacy_advance_created: pharmacyAdvanceCreated,
     advance_balance_after: pharmacyAdvanceAfter
-  });
+  }, session);
 
   sale.bill_id = bill._id;
-  await sale.save();
+  await sale.save(session ? { session } : undefined);
 
   // Keep legacy patient balance fields aligned with the authoritative Sale.
   // A wallet debit reduces the wallet, while every unpaid remainder increases
   // pharmacy outstanding exactly once.
   if (patientId) {
-    await Patient.findByIdAndUpdate(patientId, {
+    let patientUpdate = Patient.findByIdAndUpdate(patientId, {
       $inc: {
         pharmacy_outstanding_balance: billBalanceDue,
         pharmacy_advance_balance: normalizeMoney(
@@ -877,12 +898,14 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
       },
       last_pharmacy_transaction: operationNow()
     });
+    if (session) patientUpdate = patientUpdate.session(session);
+    await patientUpdate;
   }
 
   return bill;
 }
 
-async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage, isDeferred = false }) {
+async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage, isDeferred = false, session = null }) {
   if (!sale.admission_id || !sale.patient_id) return [];
   const charges = [];
   for (let index = 0; index < (pricedItems || []).length; index += 1) {
@@ -892,7 +915,7 @@ async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage,
       internalServiceModel: 'Medicine',
       internalServiceId: item.medicine_id
     });
-    const charge = await IPDCharge.create({
+    const charge = await createOne(IPDCharge, {
       hospitalId: sale.hospitalId,
       admissionId: sale.admission_id,
       patientId: sale.patient_id,
@@ -918,7 +941,7 @@ async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage,
       addedBy: createdBy,
       pricingSnapshot: snapshot,
       notes: isDeferred ? 'Deferred pharmacy charge; clinical stock was issued' : 'Auto-created from pharmacy sale'
-    });
+    }, session);
     await replaceCoverageUtilization({
       coverage,
       quote,
@@ -930,7 +953,8 @@ async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage,
       sourceId: charge._id,
       internalServiceModel: 'Medicine',
       internalServiceId: item.medicine_id,
-      userId: createdBy
+      userId: createdBy,
+      session
     });
     if (quote?.packageAdjudication) {
       await recordPackageUtilization({
@@ -945,7 +969,8 @@ async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage,
         },
         quote,
         sourceType: 'IPDCharge',
-        sourceId: charge._id
+        sourceId: charge._id,
+        session
       });
     }
     charges.push(charge);
@@ -953,10 +978,10 @@ async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage,
   return charges;
 }
 
-async function finalizePharmacyCoverageArtifacts({ pharmacyPricing, invoice, bill, sale, createdBy, admissionId, appointmentId, patientId, pricedItems }) {
+async function finalizePharmacyCoverageArtifacts({ pharmacyPricing, invoice, bill, sale, createdBy, admissionId, appointmentId, patientId, pricedItems, session = null }) {
   if (!pharmacyPricing) return;
   if (!admissionId && bill) {
-    await pharmacyCoveragePricing.recordUtilizationForBill({ pricedItems, bill, coverage: pharmacyPricing.coverage, userId: createdBy });
+    await pharmacyCoveragePricing.recordUtilizationForBill({ pricedItems, bill, coverage: pharmacyPricing.coverage, userId: createdBy, session });
   }
   await pharmacyCoveragePricing.recognizeSponsorReceivable({
     coverage: pharmacyPricing.coverage,
@@ -966,15 +991,16 @@ async function finalizePharmacyCoverageArtifacts({ pharmacyPricing, invoice, bil
     patientId,
     admissionId,
     appointmentId,
-    createdBy
+    createdBy,
+    session
   });
 }
 
-async function validateAdvancePayment({ p, patientId, admissionId }) {
+async function validateAdvancePayment({ p, patientId, admissionId, session = null }) {
   if (!['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) return;
   if (!admissionId || !patientId) throw new Error(`${p.method} can only be used for admitted IPD patients.`);
   const walletType = p.walletType || (p.method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED');
-  const balance = await getAdvanceBalance({ admissionId, patientId, walletType });
+  const balance = await getAdvanceBalance({ admissionId, patientId, walletType, session });
   if (balance + 0.01 < p.amount) throw new Error(`Insufficient ${walletType} balance. Available ₹${balance}, needed ₹${p.amount}.`);
 }
 
@@ -991,11 +1017,11 @@ function allocatePaymentsForAmount(payments, amount) {
   return allocated;
 }
 
-async function consumeAdvancePayment({ p, sale, patientId, admissionId, createdBy }) {
+async function consumeAdvancePayment({ p, sale, patientId, admissionId, createdBy, session = null }) {
   if (!['IPDAdvance', 'PharmacyAdvance'].includes(p.method)) return;
   if (!admissionId || !patientId) throw new Error(`${p.method} can only be used for admitted IPD patients.`);
   const walletType = p.walletType || (p.method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED');
-  const balance = await getAdvanceBalance({ admissionId, patientId, walletType });
+  const balance = await getAdvanceBalance({ admissionId, patientId, walletType, session });
   if (balance + 0.01 < p.amount) throw new Error(`Insufficient ${walletType} balance. Available ₹${balance}, needed ₹${p.amount}.`);
   await createAdvanceLedgerEntry({
     patientId,
@@ -1009,14 +1035,17 @@ async function consumeAdvancePayment({ p, sale, patientId, admissionId, createdB
     sourceModule: 'Pharmacy',
     sourceId: sale._id,
     notes: `Pharmacy sale/payment ${sale.sale_number}`,
-    createdBy
+    createdBy,
+    session
   });
 }
 
-async function createPharmacyLedgerForPayments({ payments, sale, createdBy, entryType = 'SALE' }) {
+async function createPharmacyLedgerForPayments({ payments, sale, createdBy, entryType = 'SALE', session = null }) {
   for (const p of payments) {
     if (!p.amount) continue;
-    await PharmacyLedgerEntry.create({
+    await createOne(PharmacyLedgerEntry, {
+      hospitalId: sale.hospitalId,
+      pharmacyId: sale.pharmacy_id,
       entryType: ['IPDAdvance', 'PharmacyAdvance'].includes(p.method) ? 'ADVANCE_USED' : entryType,
       direction: ['IPDAdvance', 'PharmacyAdvance'].includes(p.method) ? 'NON_CASH' : paymentCashDirection(p.method),
       amount: normalizeMoney(p.amount),
@@ -1027,11 +1056,11 @@ async function createPharmacyLedgerForPayments({ payments, sale, createdBy, entr
       invoiceId: sale.invoice_id,
       notes: p.notes || `Payment for ${sale.sale_number}`,
       createdBy
-    });
+    }, session);
   }
 }
 
-async function allocatePaymentToOutstanding({ patientId, admissionId, createdBy, sale, amount, payments }) {
+async function allocatePaymentToOutstanding({ patientId, admissionId, createdBy, sale, amount, payments, session = null }) {
   let remaining = normalizeMoney(amount);
   const allocations = [];
   if (!remaining || (!patientId && !admissionId)) return { allocated: 0, remaining, allocations };
@@ -1039,7 +1068,7 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, createdBy,
   if (admissionId) query.admission_id = admissionId;
   else query.patient_id = patientId;
   if (sale?._id) query._id = { $ne: sale._id };
-  const pendingSales = await Sale.find(query).sort({ sale_date: 1 });
+  const pendingSales = await Sale.find(query).sort({ sale_date: 1 }).session(session || null);
   for (const pending of pendingSales) {
     if (remaining <= 0) break;
     const pay = normalizeMoney(Math.min(remaining, pending.balance_due || 0));
@@ -1049,8 +1078,10 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, createdBy,
     pending.status = pending.balance_due <= 0 ? 'Completed' : 'Pending';
     pending.settlement_refs = pending.settlement_refs || [];
     pending.settlement_refs.push({ sale_id: sale?._id, amount: pay, settled_at: operationNow() });
-    await pending.save();
-    await PharmacyLedgerEntry.create({
+    await pending.save(session ? { session } : undefined);
+    await createOne(PharmacyLedgerEntry, {
+      hospitalId: pending.hospitalId || sale?.hospitalId,
+      pharmacyId: pending.pharmacy_id || sale?.pharmacy_id,
       entryType: 'OUTSTANDING_PAYMENT',
       direction: 'IN',
       amount: pay,
@@ -1061,7 +1092,7 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, createdBy,
       invoiceId: pending.invoice_id,
       notes: `Outstanding cleared via ${sale?.sale_number || 'payment'}`,
       createdBy
-    });
+    }, session);
     allocations.push({ saleId: pending._id, saleNumber: pending.sale_number, amount: pay });
     remaining = normalizeMoney(remaining - pay);
   }
@@ -1070,7 +1101,7 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, createdBy,
 
 // ========== UPDATED: validateAndPrepareIpdMedicationSale ==========
 // FIX: Direct IPD sales without medication charts skip chart validation
-async function validateAndPrepareIpdMedicationSale({ items, patientId, admissionId }) {
+async function validateAndPrepareIpdMedicationSale({ items, patientId, admissionId, hospitalId, session = null }) {
   // ✅ Only validate items that have ipd_medication_chart_id
   const linkedItems = items.filter((item) => item.ipd_medication_chart_id);
   
@@ -1083,52 +1114,67 @@ async function validateAndPrepareIpdMedicationSale({ items, patientId, admission
 
   const prepared = [];
   for (const item of linkedItems) {
-    const medication = await IPDMedicationChart.findById(item.ipd_medication_chart_id);
+    const medication = await IPDMedicationChart.findOne({ _id: item.ipd_medication_chart_id, hospitalId }).session(session || null);
     if (!medication) throw new Error('The linked IPD medication chart was not found.');
     if (String(medication.patientId) !== String(patientId) || String(medication.admissionId) !== String(admissionId)) {
       throw new Error('The IPD medication indent does not belong to the selected patient/admission.');
     }
-    if (!medication.pharmacyRequest?.requestedToPharmacy || medication.pharmacyRequest?.pharmacyStatus !== 'Pending') {
-      throw new Error(`${medication.medicineName} is not a pending pharmacy indent.`);
-    }
-    if (medication.pharmacyRequest?.saleId || medication.pharmacyRequest?.dispensedFromPharmacy) {
-      throw new Error(`${medication.medicineName} has already been dispensed against this indent.`);
+    const pharmacyStatus = String(medication.pharmacyRequest?.pharmacyStatus || 'Pending');
+    if (!medication.pharmacyRequest?.requestedToPharmacy || !['Pending', 'PartiallyDispensed', 'Delivered'].includes(pharmacyStatus)) {
+      throw new Error(`${medication.medicineName} is not an open pharmacy indent.`);
     }
 
     const requestedQuantity = Number(medication.pharmacyRequest?.requestedQuantity || 0);
-    const saleQuantity = Number(item.quantity_base_units || item.quantity || 0);
-    if (!Number.isFinite(saleQuantity) || saleQuantity <= 0 || saleQuantity > requestedQuantity) {
-      throw new Error(`${medication.medicineName} must be dispensed between 1 and ${requestedQuantity} base units for this indent.`);
+    const previouslyDispensed = Number(medication.pharmacyRequest?.dispensedQuantity || 0);
+    const remainingQuantity = Math.max(0, requestedQuantity - previouslyDispensed);
+    if (remainingQuantity <= 0) throw new Error(`${medication.medicineName} has already been fully dispensed against this indent.`);
+    // Do not mix two unacknowledged dispatches. The next partial issue can be
+    // processed after nursing has acknowledged the previous physical handover.
+    if (previouslyDispensed > 0 && medication.stockReceiptStatus === 'PENDING_RECEIPT') {
+      throw new Error(`${medication.medicineName} has a previous pharmacy dispatch awaiting nurse receipt acknowledgement.`);
     }
-    prepared.push({ medication, item });
+
+    const saleQuantity = Number(item.quantity_base_units || item.quantity || 0);
+    if (!Number.isFinite(saleQuantity) || saleQuantity <= 0 || saleQuantity > remainingQuantity) {
+      throw new Error(`${medication.medicineName} must be dispensed between 1 and ${remainingQuantity} remaining base units for this indent.`);
+    }
+    prepared.push({ medication, item, requestedQuantity, previouslyDispensed, remainingQuantity, newDispensedQuantity: previouslyDispensed + saleQuantity });
   }
   return prepared;
 }
 
-async function markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy }) {
-  for (const { medication, item } of preparedIpdItems) {
+async function markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy, session = null }) {
+  for (const { medication, item, requestedQuantity, newDispensedQuantity } of preparedIpdItems) {
+    const complete = Number(newDispensedQuantity) >= Number(requestedQuantity);
     medication.status = 'Active';
     medication.stockReceiptStatus = 'PENDING_RECEIPT';
-    medication.pharmacyRequest.pharmacyStatus = 'Approved';
+    medication.pharmacyRequest.pharmacyStatus = complete ? 'Dispatched' : 'PartiallyDispensed';
     medication.pharmacyRequest.dispensedFromPharmacy = true;
-    medication.pharmacyRequest.dispensedQuantity = item.quantity_base_units;
+    medication.pharmacyRequest.dispensedQuantity = newDispensedQuantity;
     medication.pharmacyRequest.dispensedBatchId = item.batch_id;
     medication.pharmacyRequest.dispensedMedicineId = item.medicine_id;
     medication.pharmacyRequest.dispensedMedicineName = item.medicine_name || '';
     medication.pharmacyRequest.substitutionReason = item.substitution_reason || item.substitutionReason || '';
     medication.pharmacyRequest.dispensedAt = operationNow();
     medication.pharmacyRequest.saleId = sale._id;
+    if (!Array.isArray(medication.pharmacyRequest.saleIds)) medication.pharmacyRequest.saleIds = [];
+    if (!medication.pharmacyRequest.saleIds.some((id) => String(id) === String(sale._id))) medication.pharmacyRequest.saleIds.push(sale._id);
+    medication.pharmacyRequest.dispenseHistory.push({ saleId: sale._id, medicineId: item.medicine_id, batchId: item.batch_id, quantityBaseUnits: item.quantity_base_units, dispensedAt: operationNow() });
     medication.pharmacyRequest.stockReceivedByNurse = false;
-    await medication.save();
+    medication.pharmacyRequest.stockReceivedAt = undefined;
+    medication.pharmacyRequest.stockReceivedBy = undefined;
+    await medication.save(session ? { session } : undefined);
 
-    await NursingNote.create({
+    const note = {
+      hospitalId: medication.hospitalId,
       admissionId: medication.admissionId,
       patientId: medication.patientId,
       noteType: 'Medication',
-      note: `Pharmacy sale ${sale.sale_number || sale._id}: ${item.quantity_base_units} base unit(s) of ${medication.medicineName} dispatched. Nurse receipt acknowledgement is pending.`,
+      note: `Pharmacy sale ${sale.sale_number || sale._id}: ${item.quantity_base_units} base unit(s) of ${medication.medicineName} dispatched (${newDispensedQuantity}/${requestedQuantity} fulfilled). Nurse receipt acknowledgement is pending.`,
       priority: medication.isHighRisk ? 'Important' : 'Normal',
       createdBy
-    });
+    };
+    if (session) await NursingNote.create([note], { session }); else await NursingNote.create(note);
   }
 }
 
@@ -1178,6 +1224,9 @@ async function prepareSaleFinancialQuote(payload, req = {}, resolved = {}) {
   const context = resolved.context || await resolvePatientContext({ hospitalId, patientId, admissionId, prescriptionId, explicit: payload });
   if (patientId && !context.patient) { const err = new Error('Patient not found for this hospital'); err.statusCode = 404; throw err; }
   if (admissionId && !context.admission) { const err = new Error('IPD admission not found for this hospital'); err.statusCode = 404; throw err; }
+  if (admissionId && context.admission) {
+    assertAdmissionOpenForMutation(context.admission, { action: 'IPD pharmacy sale/dispensing' });
+  }
   const appointmentId = resolved.appointmentId || objectIdOrUndefined(payload.appointment_id || payload.appointmentId || context.prescription?.appointment_id);
   const defaultDoctor = { doctorId: context.doctorId, doctorName: context.doctorName };
 
@@ -1298,7 +1347,7 @@ async function prepareSaleFinancialQuote(payload, req = {}, resolved = {}) {
   return { hospitalId, patientId, admissionId, prescriptionId, appointmentId, context, items, totals, pharmacyPricing, financialPolicy: policy };
 }
 
-async function createUnifiedSale(payload, req = {}) {
+async function createUnifiedSaleCore(payload, req = {}, session = null) {
 
   const createdBy = getCreatedBy(req);
   const hospitalId = getHospitalId(req, payload.hospitalId || payload.hospital_id);
@@ -1313,6 +1362,12 @@ async function createUnifiedSale(payload, req = {}) {
   const context = await resolvePatientContext({ hospitalId, patientId, admissionId, prescriptionId, explicit: payload });
   if (patientId && !context.patient) { const error = new Error('Patient not found for this hospital'); error.statusCode = 404; error.code = 'PHARMACY_PATIENT_NOT_FOUND'; throw error; }
   if (admissionId && !context.admission) { const error = new Error('IPD admission not found for this hospital'); error.statusCode = 404; error.code = 'PHARMACY_ADMISSION_NOT_FOUND'; throw error; }
+  if (context.admission && ['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'].includes(String(context.admission.status || ''))) {
+    const error = new Error('Pharmacy dispensing is blocked because this IPD admission is clinically closed. Reopen through an authorised correction workflow first.');
+    error.statusCode = 409;
+    error.code = 'IPD_ADMISSION_CLOSED';
+    throw error;
+  }
   if (prescriptionId && !context.prescription) { const error = new Error('Prescription not found for this hospital'); error.statusCode = 404; error.code = 'PHARMACY_PRESCRIPTION_NOT_FOUND'; throw error; }
   const appointmentId = objectIdOrUndefined(payload.appointment_id || payload.appointmentId || context.prescription?.appointment_id);
 
@@ -1342,10 +1397,10 @@ async function createUnifiedSale(payload, req = {}) {
   if (customerPhone) {
     try {
       const Customer = mongoose.model('Customer');
-      let customer = await Customer.findOne({ phone: customerPhone });
+      let customer = await Customer.findOne({ phone: customerPhone }).session(session || null);
 
       if (!customer) {
-        customer = await Customer.create({
+        customer = await createOne(Customer, {
           name: customerName || (mappedCustomerType === 'Patient' ? 'Patient' : `${mappedCustomerType} Customer`),
           phone: customerPhone,
           email: customerEmail,
@@ -1356,7 +1411,7 @@ async function createUnifiedSale(payload, req = {}) {
           loyalty_points: 0,
           is_active: true,
           created_by: createdBy
-        });
+        }, session);
         console.log(`Created new customer: ${customer.name} (${customer.phone}) - Type: ${mappedCustomerType}`);
       } else {
         let needsUpdate = false;
@@ -1381,7 +1436,7 @@ async function createUnifiedSale(payload, req = {}) {
           needsUpdate = true;
         }
         if (needsUpdate) {
-          await customer.save();
+          await customer.save(session ? { session } : undefined);
           console.log(`Updated existing customer: ${customer.name} (${customer.phone})`);
         }
       }
@@ -1425,14 +1480,28 @@ async function createUnifiedSale(payload, req = {}) {
   }
   const saleRequiresPrescription = prescriptionControlledItems.length > 0;
 
-  // ✅ Validate IPD medication items (only if they have chart IDs)
+  const requestedSourceType = payload.source_type || payload.sourceType || (admissionId ? 'IPD_MEDICATION' : prescriptionId ? 'OPD_PRESCRIPTION' : 'DIRECT');
+  if (admissionId) {
+    // Any medicine financially attached to an IPD admission must originate from
+    // a doctor medication/MAR order. A retail/direct sale can still be made as a
+    // walk-in sale, but it must not be silently attached to the inpatient ledger.
+    const unlinkedMedicationItems = items.filter((item) => !item.ipd_medication_chart_id);
+    if (unlinkedMedicationItems.length > 0) {
+      const error = new Error(`IPD medicine dispensing requires a linked doctor medication order/MAR item: ${unlinkedMedicationItems.map((item) => item.medicine_name).join(', ')}`);
+      error.statusCode = 422;
+      error.code = 'IPD_MEDICATION_ORDER_REQUIRED';
+      throw error;
+    }
+  }
+
+  // Validate IPD medication items against the current open indent.
   const preparedIpdItems = await validateAndPrepareIpdMedicationSale({
-    items, patientId, admissionId
+    items, patientId, admissionId, hospitalId, session
   });
 
   const collectionTarget = normalizeMoney(totals.patientPayable);
-  const previousOutstanding = await getPatientOutstanding({ patientId, admissionId });
-  const previousPharmacyAdvance = await getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD' });
+  const previousOutstanding = await getPatientOutstanding({ patientId, admissionId, session });
+  const previousPharmacyAdvance = await getAdvanceBalance({ patientId, admissionId, walletType: 'PHARMACY_IPD', session });
   const noPayment = payload.noPayment === true || payload.pay_nothing === true;
   const selectedFinancialMode = financialPolicy.selectedMode;
   const policyAllowsOutstanding = ['PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'].includes(selectedFinancialMode);
@@ -1542,14 +1611,14 @@ async function createUnifiedSale(payload, req = {}) {
       totalCollected = advanceDepositTotal;
     }
 
-    const sale = await Sale.create({
+    const sale = await createOne(Sale, {
       hospitalId,
       transactionGroupId: payload.transactionGroupId,
       parentGroupId: payload.parentGroupId || payload.transactionGroupId,
       idempotencyKey: payload.idempotencyKey,
       presentationType: payload.presentationType || 'PHARMACY_SALE',
       customer_type: payload.customer_type || payload.customerType || (admissionId ? 'IPD' : patientId ? 'OPD' : 'WalkIn'),
-      source_type: payload.source_type || payload.sourceType || (admissionId ? 'IPD_MEDICATION' : prescriptionId ? 'OPD_PRESCRIPTION' : 'DIRECT'),
+      source_type: requestedSourceType,
       patient_id: patientId,
       admission_id: admissionId,
       appointment_id: appointmentId,
@@ -1615,40 +1684,35 @@ async function createUnifiedSale(payload, req = {}) {
       advance_deposit_total: advanceDepositTotal,
       advance_deposit_wallet_type: advanceDepositTotal > 0 ? advanceDepositWalletType : null,
       advance_deposit_payments: advanceDepositEntries,
-    });
+    }, session);
 
-    // ========== DEDUCT STOCK FOR DEFERRED PAYMENTS ==========
-    if (items && items.length > 0) {
-      console.log(`📦 Deducting stock for deferred sale ${sale.sale_number}`);
-      for (const item of items) {
-        const batch = await MedicineBatch.findById(item.batch_id);
-        if (batch) {
-          const current = Number(batch.quantity_base_units ?? batch.quantity ?? 0);
-          const nextQty = current - Number(item.quantity_base_units || item.quantity || 0);
-          if (nextQty < 0) {
-            throw new Error(`Insufficient stock for batch ${batch.batch_number}`);
+    if (admissionId) {
+      await IPDAdmission.updateOne(
+        { _id: admissionId, hospitalId },
+        {
+          $set: { pharmacyClearanceStatus: 'pending', financialClearanceStatus: 'in_progress' },
+          $unset: {
+            pharmacyClearanceDate: 1,
+            pharmacyClearanceBy: 1,
+            financialClearedAt: 1,
+            financialClearedBy: 1,
+            finalSettlementReceiptNumber: 1
           }
-          batch.quantity_base_units = nextQty;
-          batch.quantity = nextQty;
-          await batch.save();
-
-          await InventoryLedger.create({
-            medicineId: item.medicine_id,
-            batchId: item.batch_id,
-            movementType: 'SALE_OUT',
-            direction: 'OUT',
-            quantityBaseUnits: item.quantity_base_units,
-            balanceAfterBaseUnits: nextQty,
-            sourceModule: 'PharmacySale',
-            sourceId: sale._id,
-            notes: `Deferred sale ${sale.sale_number}`,
-            createdBy
-          });
-
-          console.log(`✅ Deducted ${item.quantity_base_units} from batch ${batch.batch_number}, remaining: ${nextQty}`);
-        }
-      }
+        },
+        session ? { session } : undefined
+      );
     }
+
+    // Deduct stock and write the inventory ledger in the same transaction as
+    // the sale, invoice, bill and patient bedside-stock mutation.
+    await deductStockAndCreateLedger({
+      items,
+      saleId: sale._id,
+      createdBy,
+      hospitalId,
+      pharmacyId: sale.pharmacy_id,
+      session
+    });
 
     // Process every tender applied to this sale. For a deferred split this
     // creates one ledger row per tender and debits an advance wallet only for
@@ -1661,7 +1725,8 @@ async function createUnifiedSale(payload, req = {}) {
             sale,
             patientId,
             admissionId,
-            createdBy
+            createdBy,
+            session
           });
         }
       }
@@ -1670,7 +1735,8 @@ async function createUnifiedSale(payload, req = {}) {
         payments: deferredPaymentEntries,
         sale,
         createdBy,
-        entryType: 'SALE'
+        entryType: 'SALE',
+        session
       });
     }
 
@@ -1684,7 +1750,8 @@ async function createUnifiedSale(payload, req = {}) {
       createdBy,
       isDeferred: true,
       appointmentId,
-      pharmacyPricing
+      pharmacyPricing,
+      session
     });
 
     const bill = await createPharmacyBill({
@@ -1697,10 +1764,11 @@ async function createUnifiedSale(payload, req = {}) {
       createdBy,
       isDeferred: true,
       appointmentId,
-      pharmacyPricing
+      pharmacyPricing,
+      session
     });
 
-    await finalizePharmacyCoverageArtifacts({ pharmacyPricing, invoice, bill, sale, createdBy, admissionId, appointmentId, patientId, pricedItems: items });
+    await finalizePharmacyCoverageArtifacts({ pharmacyPricing, invoice, bill, sale, createdBy, admissionId, appointmentId, patientId, pricedItems: items, session });
 
     // Credit each external deposit to the patient wallet only after the bill
     // has been created. This keeps Bill.paid_amount at zero and the entire
@@ -1708,6 +1776,7 @@ async function createUnifiedSale(payload, req = {}) {
     if (advanceDepositEntries.length > 0) {
       for (const deposit of advanceDepositEntries) {
         await createAdvanceLedgerEntry({
+          hospitalId,
           patientId,
           admissionId,
           walletType: 'PHARMACY_IPD',
@@ -1723,10 +1792,13 @@ async function createUnifiedSale(payload, req = {}) {
           transactionGroupId: payload.transactionGroupId,
           parentGroupId: payload.parentGroupId || payload.transactionGroupId,
           idempotencyKey: payload.idempotencyKey,
-          presentationType: 'ADVANCE_DEPOSIT'
+          presentationType: 'ADVANCE_DEPOSIT',
+          session
         });
 
-        await PharmacyLedgerEntry.create({
+        await createOne(PharmacyLedgerEntry, {
+          hospitalId,
+          pharmacyId: sale.pharmacy_id,
           transactionGroupId: payload.transactionGroupId,
           parentGroupId: payload.parentGroupId || payload.transactionGroupId,
           idempotencyKey: payload.idempotencyKey,
@@ -1741,24 +1813,25 @@ async function createUnifiedSale(payload, req = {}) {
           invoiceId: sale.invoice_id,
           notes: `Pharmacy Advance deposit for deferred sale ${sale.sale_number}`,
           createdBy
-        });
+        }, session);
       }
 
       await Patient.findByIdAndUpdate(patientId, {
         $inc: { pharmacy_advance_balance: advanceDepositTotal },
         last_pharmacy_transaction: operationNow()
-      });
+      }).session(session || null);
 
       if (bill) {
         const walletAfterDeposit = await getAdvanceBalance({
           patientId,
           admissionId,
-          walletType: 'PHARMACY_IPD'
+          walletType: 'PHARMACY_IPD',
+          session
         });
         bill.pharmacy_advance_created = advanceDepositTotal;
         bill.advance_balance_after = walletAfterDeposit;
         bill.notes = `${bill.notes || ''} | Pharmacy Advance deposit: ₹${advanceDepositTotal}`.trim();
-        await bill.save();
+        await bill.save(session ? { session } : undefined);
       }
     }
 
@@ -1773,20 +1846,22 @@ async function createUnifiedSale(payload, req = {}) {
       sale.current_bill_amount = bill.total_amount || totals.total;
       sale.closing_outstanding = bill.balance_due || balanceDue;
 
-      await sale.save();
+      await sale.save(session ? { session } : undefined);
       console.log(`✅ Synced Sale ${sale.sale_number} balance_due to ${sale.balance_due}`);
     }
 
     if (sale.admission_id && sale.patient_id) {
-      await createIpdChargesForSale({ sale, pricedItems: items, createdBy, coverage: pharmacyPricing?.coverage, isDeferred: true });
+      await createIpdChargesForSale({ sale, pricedItems: items, createdBy, coverage: pharmacyPricing?.coverage, isDeferred: true, session });
     }
 
     // ✅ Apply IPD medicine stock - this handles both chart-linked and direct IPD sales
-    await applyIpdMedicineStock({ items, sale, admissionId, patientId });
+    await applyIpdMedicineStock({ items, sale, admissionId, patientId, session });
 
     // Create due ledger entry for the deferred amount
     if (sale.balance_due > 0) {
-      await PharmacyLedgerEntry.create({
+      await createOne(PharmacyLedgerEntry, {
+        hospitalId,
+        pharmacyId: sale.pharmacy_id,
         entryType: 'DUE_CREATED',
         direction: 'OUT',
         amount: sale.balance_due,
@@ -1797,7 +1872,7 @@ async function createUnifiedSale(payload, req = {}) {
         invoiceId: sale.invoice_id,
         notes: `Deferred payment: ${deferralReason} | ${sale.sale_number}`,
         createdBy
-      });
+      }, session);
     }
 
     if (customerId) {
@@ -1805,36 +1880,38 @@ async function createUnifiedSale(payload, req = {}) {
       await Customer.findByIdAndUpdate(customerId, {
         $inc: { total_spent: totals.total },
         $set: { last_purchase_date: operationNow() }
-      });
+      }).session(session || null);
     }
 
     if (prescriptionId) {
-      const prescription = await Prescription.findById(prescriptionId);
+      const prescription = await Prescription.findById(prescriptionId).session(session || null);
       if (prescription) {
         prescription.items.forEach((rxItem) => {
           const matched = items.find(item => String(item.prescription_item_id || '') === String(rxItem._id) || item.medicine_name === rxItem.medicine_name);
           if (matched) {
-            rxItem.is_dispensed = true;
-            rxItem.dispensed_quantity = matched.quantity_base_units;
+            const nextDispensed = Number(rxItem.dispensed_quantity || 0) + Number(matched.quantity_base_units || 0);
+            rxItem.dispensed_quantity = nextDispensed;
+            rxItem.is_dispensed = nextDispensed >= Number(rxItem.quantity || 1);
             rxItem.dispensed_date = operationNow();
           }
         });
         if (prescription.items.every(item => item.is_dispensed)) prescription.status = 'Completed';
-        await prescription.save();
+        await prescription.save(session ? { session } : undefined);
       }
     }
 
     // ✅ Only mark IPD medication as dispatched if it has a chart ID
     if (preparedIpdItems.length > 0) {
-      await markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy });
+      await markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy, session });
     }
 
-    const finalSummary = await getPatientPharmacySummary({ patientId, admissionId });
+    const finalSummary = await getPatientPharmacySummary({ patientId, admissionId, session });
     sale.closing_outstanding = finalSummary.outstanding;
     sale.pharmacy_advance_after = finalSummary.pharmacyAdvance;
-    await sale.save();
+    await sale.save(session ? { session } : undefined);
 
     const populatedSale = await Sale.findById(sale._id)
+      .session(session || null)
       .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
       .populate({
         path: 'admission_id',
@@ -1924,7 +2001,7 @@ async function createUnifiedSale(payload, req = {}) {
   }
 
   for (const p of payments) {
-    await validateAdvancePayment({ p, patientId, admissionId });
+    await validateAdvancePayment({ p, patientId, admissionId, session });
   }
 
   const totalCollectedAmount = frontendTotalCollected > 0 ? frontendTotalCollected : normalizeMoney(totalReceived);
@@ -1935,14 +2012,14 @@ async function createUnifiedSale(payload, req = {}) {
 
   console.log(`💵 TOTAL COLLECTED: ${totalCollectedAmount} | Used for bill: ${amountPaidForBill} | Overpayment to advance: ${overpaymentAmount} | Balance due: ${balanceDue}`);
 
-  const sale = await Sale.create({
+  const sale = await createOne(Sale, {
     hospitalId,
     transactionGroupId: payload.transactionGroupId,
     parentGroupId: payload.parentGroupId || payload.transactionGroupId,
     idempotencyKey: payload.idempotencyKey,
     presentationType: payload.presentationType || 'PHARMACY_SALE',
     customer_type: payload.customer_type || payload.customerType || (admissionId ? 'IPD' : patientId ? 'OPD' : 'WalkIn'),
-    source_type: payload.source_type || payload.sourceType || (admissionId ? 'IPD_MEDICATION' : prescriptionId ? 'OPD_PRESCRIPTION' : 'DIRECT'),
+    source_type: requestedSourceType,
     patient_id: patientId,
     admission_id: admissionId,
     appointment_id: appointmentId,
@@ -2001,14 +2078,31 @@ async function createUnifiedSale(payload, req = {}) {
     created_by: createdBy,
     bill_date: payload.bill_date || operationNow(),
     created_by_name: payload.created_by_name,
-  });
+  }, session);
+
+  if (admissionId) {
+      await IPDAdmission.updateOne(
+        { _id: admissionId, hospitalId },
+        {
+          $set: { pharmacyClearanceStatus: 'pending', financialClearanceStatus: 'in_progress' },
+          $unset: {
+            pharmacyClearanceDate: 1,
+            pharmacyClearanceBy: 1,
+            financialClearedAt: 1,
+            financialClearedBy: 1,
+            finalSettlementReceiptNumber: 1
+          }
+        },
+        session ? { session } : undefined
+      );
+    }
 
   // ========== DEDUCT STOCK FOR NON-DEFERRED SALE ==========
-  await deductStockAndCreateLedger({ items, saleId: sale._id, createdBy });
+  await deductStockAndCreateLedger({ items, saleId: sale._id, createdBy, hospitalId, pharmacyId: sale.pharmacy_id, session });
 
-  const invoice = await createSaleInvoice({ sale, items, customerName: sale.customer_name, customerPhone: sale.customer_phone, totals, paymentEntries: payments, createdBy, isDeferred: false, appointmentId, pharmacyPricing });
-  const bill = await createPharmacyBill({ sale, items, totals, paymentEntries: payments, patientId, admissionId, createdBy, isDeferred: false, appointmentId, pharmacyPricing });
-  await finalizePharmacyCoverageArtifacts({ pharmacyPricing, invoice, bill, sale, createdBy, admissionId, appointmentId, patientId, pricedItems: items });
+  const invoice = await createSaleInvoice({ sale, items, customerName: sale.customer_name, customerPhone: sale.customer_phone, totals, paymentEntries: payments, createdBy, isDeferred: false, appointmentId, pharmacyPricing, session });
+  const bill = await createPharmacyBill({ sale, items, totals, paymentEntries: payments, patientId, admissionId, createdBy, isDeferred: false, appointmentId, pharmacyPricing, session });
+  await finalizePharmacyCoverageArtifacts({ pharmacyPricing, invoice, bill, sale, createdBy, admissionId, appointmentId, patientId, pricedItems: items, session });
 
   // ========== SYNC SALE BALANCE WITH BILL FOR NON-DEFERRED PAYMENTS ==========
   if (bill) {
@@ -2021,23 +2115,25 @@ async function createUnifiedSale(payload, req = {}) {
     sale.current_bill_amount = bill.total_amount || totals.total;
     sale.closing_outstanding = bill.balance_due || balanceDue;
 
-    await sale.save();
+    await sale.save(session ? { session } : undefined);
     console.log(`✅ Synced Sale ${sale.sale_number} balance_due to ${sale.balance_due}`);
   }
 
-  await createIpdChargesForSale({ sale, pricedItems: items, createdBy, coverage: pharmacyPricing?.coverage, isDeferred: false });
+  await createIpdChargesForSale({ sale, pricedItems: items, createdBy, coverage: pharmacyPricing?.coverage, isDeferred: false, session });
   
   // ✅ Apply IPD medicine stock - this handles both chart-linked and direct IPD sales
-  await applyIpdMedicineStock({ items, sale, admissionId, patientId });
+  await applyIpdMedicineStock({ items, sale, admissionId, patientId, session });
 
   const currentPaymentBreakup = allocatePaymentsForAmount(payments, amountPaidForBill);
   for (const p of currentPaymentBreakup) {
-    await consumeAdvancePayment({ p, sale, patientId, admissionId, createdBy });
+    await consumeAdvancePayment({ p, sale, patientId, admissionId, createdBy, session });
   }
-  await createPharmacyLedgerForPayments({ payments: currentPaymentBreakup, sale, createdBy, entryType: 'SALE' });
+  await createPharmacyLedgerForPayments({ payments: currentPaymentBreakup, sale, createdBy, entryType: 'SALE', session });
 
   if (sale.balance_due > 0) {
-    await PharmacyLedgerEntry.create({
+    await createOne(PharmacyLedgerEntry, {
+      hospitalId,
+      pharmacyId: sale.pharmacy_id,
       entryType: 'DUE_CREATED',
       direction: 'NON_CASH',
       amount: sale.balance_due,
@@ -2048,12 +2144,12 @@ async function createUnifiedSale(payload, req = {}) {
       invoiceId: sale.invoice_id,
       notes: `Outstanding created for ${sale.sale_number}`,
       createdBy
-    });
+    }, session);
   }
 
   let outstandingAllocation = { allocated: 0, remaining: 0, allocations: [] };
   if (outstandingPaymentAmount > 0) {
-    outstandingAllocation = await allocatePaymentToOutstanding({ patientId, admissionId, createdBy, sale, amount: outstandingPaymentAmount, payments });
+    outstandingAllocation = await allocatePaymentToOutstanding({ patientId, admissionId, createdBy, sale, amount: outstandingPaymentAmount, payments, session });
   }
 
   if (overpaymentAmount > 0 && patientId) {
@@ -2061,6 +2157,7 @@ async function createUnifiedSale(payload, req = {}) {
     const overpaymentSourcePayment = payments.find(p => p.amount > 0) || { method: 'Cash', reference: null };
 
     await createAdvanceLedgerEntry({
+      hospitalId,
       patientId,
       admissionId,
       walletType: 'PHARMACY_IPD',
@@ -2072,10 +2169,13 @@ async function createUnifiedSale(payload, req = {}) {
       sourceModule: 'Pharmacy',
       sourceId: sale._id,
       notes: `Extra payment credited to pharmacy advance from ${sale.sale_number}`,
-      createdBy
+      createdBy,
+      session
     });
 
-    await PharmacyLedgerEntry.create({
+    await createOne(PharmacyLedgerEntry, {
+      hospitalId,
+      pharmacyId: sale.pharmacy_id,
       entryType: 'ADVANCE_RECEIVED',
       direction: 'NON_CASH',
       amount: overpaymentAmount,
@@ -2086,7 +2186,7 @@ async function createUnifiedSale(payload, req = {}) {
       invoiceId: sale.invoice_id,
       notes: `Extra payment (₹${overpaymentAmount}) credited to pharmacy advance for ${sale.sale_number}`,
       createdBy
-    });
+    }, session);
 
     console.log(`✅ Successfully created advance entry for ₹${overpaymentAmount}`);
   }
@@ -2096,11 +2196,11 @@ async function createUnifiedSale(payload, req = {}) {
     await Customer.findByIdAndUpdate(customerId, {
       $inc: { total_spent: totals.total },
       $set: { last_purchase_date: operationNow() }
-    });
+    }).session(session || null);
   }
 
   if (prescriptionId) {
-    const prescription = await Prescription.findById(prescriptionId);
+    const prescription = await Prescription.findById(prescriptionId).session(session || null);
     if (prescription) {
       prescription.items.forEach((rxItem) => {
         const matched = items.find(item => String(item.prescription_item_id || '') === String(rxItem._id) || item.medicine_name === rxItem.medicine_name);
@@ -2111,21 +2211,22 @@ async function createUnifiedSale(payload, req = {}) {
         }
       });
       if (prescription.items.every(item => item.is_dispensed)) prescription.status = 'Completed';
-      await prescription.save();
+      await prescription.save(session ? { session } : undefined);
     }
   }
 
   // ✅ Only mark IPD medication as dispatched if it has a chart ID
   if (preparedIpdItems.length > 0) {
-    await markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy });
+    await markIpdMedicationSaleDispatched({ preparedIpdItems, sale, createdBy, session });
   }
 
-  const finalSummary = await getPatientPharmacySummary({ patientId, admissionId });
+  const finalSummary = await getPatientPharmacySummary({ patientId, admissionId, session });
   sale.closing_outstanding = finalSummary.outstanding;
   sale.pharmacy_advance_after = finalSummary.pharmacyAdvance;
-  await sale.save();
+  await sale.save(session ? { session } : undefined);
 
   const populatedSale = await Sale.findById(sale._id)
+    .session(session || null)
     .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
     .populate({
       path: 'admission_id',
@@ -2157,6 +2258,26 @@ async function createUnifiedSale(payload, req = {}) {
     total_collected_amount: totalCollectedAmount,
     stock_deducted: true
   };
+}
+
+async function createUnifiedSale(payload, req = {}) {
+  const admissionId = objectIdOrUndefined(payload?.admission_id || payload?.admissionId);
+
+  // Keep ordinary OPD/walk-in POS behavior unchanged. IPD dispensing changes
+  // inventory, bedside stock, MAR/indent state and multiple finance ledgers, so
+  // all of those mutations must commit or roll back together.
+  if (!admissionId) return createUnifiedSaleCore(payload, req, null);
+
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      result = await createUnifiedSaleCore(payload, req, session);
+    });
+    return result;
+  } finally {
+    await session.endSession();
+  }
 }
 
 // ... (rest of the file - createReturn, createOutstandingSettlement, bulkSettleDeferredPayments, settleSingleDeferredPayment, and exports remain the same)

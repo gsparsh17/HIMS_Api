@@ -25,6 +25,8 @@ const { checkModuleAccess, _hasActionPermission } = require('../middlewares/auth
 
 // Consolidated implementation support
 const { requireHospitalId: requireAdmissionHospitalId } = require('../services/tenantScope.service');
+const { processInitialFinance } = require('../services/ipdAdmissionFinanceInitialization.service');
+const { resolveClinicalActor } = require('../services/clinicalActor.service');
 const Payer2026 = require('../models/Payer');
 const AdmissionCoverage2026 = require('../models/AdmissionCoverage');
 const IPDBedTransfer2026 = require('../models/IPDBedTransfer');
@@ -412,7 +414,19 @@ exports.createAdmission = async (req, res) => {
         status: 'Admitted',
         createdBy: req.user?._id,
         updatedBy: req.user?._id,
-        pharmacyClearanceStatus: 'pending'
+        pharmacyClearanceStatus: 'pending',
+        financeInitialization: {
+          status: 'pending',
+          requestedCollection: requestedCollectionAtAdmission,
+          requestedDeposit: Math.max(0, Number(payload.requestedDeposit || 0)),
+          paymentMethod: payload.paymentMethod || 'Cash',
+          selectedMode: payload.selectedMode || payload.billingMode || undefined,
+          payerCategory: payload.coverage?.payerCategory || undefined,
+          billingModeOverrideReason: payload.billingModeOverrideReason || undefined,
+          retryCount: 0,
+          lastAttemptAt: operationNow(),
+          lastAttemptBy: req.user?._id
+        }
       }], { session });
 
       if (bed) {
@@ -677,133 +691,30 @@ exports.createAdmission = async (req, res) => {
       );
     });
 
-    // Post the recurring accommodation-day charge set immediately after commit.
-    // The idempotency keys reuse the admission-day bed charge above, so this adds
-    // Nursing and RMO/Duty Doctor (and any missed back-dated days) without double billing.
-    try {
-      const dailyCatchup = await ensureAdmissionDailyCharges(admission._id, operationNow(), req.user);
-      const createdDaily = dailyCatchup.charges.filter((charge) =>
-        charge?.sourceModule === 'RecurringDaily' && !charges.some((existing) => String(existing?._id) === String(charge?._id))
-      );
-      charges.push(...createdDaily);
+    // The admission and bed transaction is intentionally authoritative even if
+    // finance bootstrap later fails. Persist that finance state on the admission
+    // and reuse idempotency keys on every retry instead of recreating admission/bed.
+    const financeStage = await processInitialFinance(admission._id, req.user, {
+      requestedCollection: requestedCollectionAtAdmission,
+      requestedDeposit: Math.max(0, Number(payload.requestedDeposit || 0)),
+      paymentMethod: payload.paymentMethod || 'Cash',
+      selectedMode: admission.selectedBillingMode || payload.selectedMode || payload.billingMode,
+      payerCategory: coverage?.payerCategory || payload.coverage?.payerCategory || 'SELF',
+      billingModeOverrideReason: payload.billingModeOverrideReason
+    });
 
-      if (createdDaily.length) {
-        const activeCharges = await IPDCharge.find({
-          hospitalId: admission.hospitalId,
-          admissionId: admission._id,
-          status: { $nin: ['VOIDED', 'CANCELLED'] }
-        }).lean();
-        admission.totalBillAmount = activeCharges.reduce((sum, charge) => sum + Number(charge.netAmount ?? charge.amount ?? 0), 0);
-        admission.patientReceivable = Math.max(0, activeCharges.reduce((sum, charge) => sum + Number(charge.patientLiability || 0), 0) - Number(admission.paidAmount || 0));
-        admission.sponsorReceivable = activeCharges.reduce((sum, charge) => sum + Number(charge.sponsorLiability || 0), 0);
-        admission.dueAmount = admission.patientReceivable;
-        admission.nonAdmissibleAmount = activeCharges.reduce((sum, charge) => sum + Number(charge.nonAdmissibleAmount || 0), 0);
-        await admission.save();
-      }
-    } catch (dailyChargeError) {
-      console.error('IPD recurring charge catch-up after admission failed:', dailyChargeError);
-      // Admission remains valid; running-bill/discharge catch-up will retry idempotently.
-    }
-
-    // F08: canonical finance stage. The selected policy decides what is due now;
-    // one payment method is accepted and payment never defines the tariff.
-    let financeStage = null;
+    // Refresh the daily-charge list after the resumable bootstrap so the response
+    // reflects any idempotent recurring charges posted by that stage.
     try {
-      const financials = await ipdFinancial2026.calculateAdmissionFinancials(admission._id, { user: req.user });
-      const aggregatePolicy = await resolveAdmissionFinancialPolicy2026({
+      const refreshedCharges = await IPDCharge.find({
         hospitalId: admission.hospitalId,
-        user: req.user,
-        encounterType: 'IPD',
-        serviceType: 'ADMISSION',
-        serviceCode: 'IPD-ADM',
-        payerCategory: coverage?.payerCategory || 'SELF',
-        departmentId: admission.departmentId,
-        selectedMode: admission.selectedBillingMode,
-        requestedDeposit: req.body.requestedDeposit,
-        patientLiability: financials.patientLiabilityTotal,
-        sponsorLiability: financials.sponsorLiabilityTotal,
-        contractedAmount: financials.totalChargeAmount,
-        adjustments: {},
-        overrideReason: req.body.billingModeOverrideReason
-      });
-      admission.requiredNowAmount = Number(aggregatePolicy.requiredNow || 0);
-      admission.financialPolicySnapshot = aggregatePolicy.policySnapshot;
-      await admission.save();
-
-      const requestedCollection = Math.max(0, Number(req.body.amountPaid ?? req.body.paymentAmount ?? 0));
-      const canonicalPaymentMethod = req.body.paymentMethod || 'Cash';
-      let issuedInvoice = null;
-      let payment = null;
-      let advanceReceipt = null;
-
-      if (aggregatePolicy.requiredNow > 0 || requestedCollection > 0) {
-        const invoiceResult = await ipdFinancial2026.issueIPDInvoice(admission._id, {
-          invoiceKind: 'interim',
-          idempotencyKey: `admission:${admission._id}:initial-invoice`,
-          notes: `Initial IPD liability for ${admission.admissionNumber}`
-        }, req.user);
-        issuedInvoice = invoiceResult.invoice;
-
-        const invoiceOutstanding = Number(issuedInvoice?.balance_due || 0);
-        const applyToInvoice = Math.min(requestedCollection, invoiceOutstanding);
-        if (applyToInvoice > 0) {
-          payment = await ipdFinancial2026.recordIPDPayment(admission._id, {
-            invoiceId: issuedInvoice._id,
-            amount: applyToInvoice,
-            paymentMethod: canonicalPaymentMethod,
-            idempotencyKey: `admission:${admission._id}:initial-payment`,
-            sourceModule: 'Admission',
-            sourceId: admission._id
-          }, req.user);
-        }
-        const excess = Math.max(0, requestedCollection - applyToInvoice);
-        if (excess > 0) {
-          advanceReceipt = await ipdFinancial2026.recordAdvance(admission._id, {
-            amount: excess,
-            paymentMethod: canonicalPaymentMethod,
-            idempotencyKey: `admission:${admission._id}:initial-advance`,
-            notes: `Excess collection retained as IPD advance - ${admission.admissionNumber}`
-          }, req.user);
-        }
-      }
-
-      const refreshed = await ipdFinancial2026.calculateAdmissionFinancials(admission._id, { user: req.user });
-      const paidTowardLiability = Number(refreshed.invoicePaid || 0);
-      const advanceAvailable = Number(refreshed.advanceAvailable || 0);
-      const satisfiedNow = paidTowardLiability + advanceAvailable;
-      const clearanceState = aggregatePolicy.selectedMode === 'TPA_SPONSOR'
-        ? aggregatePolicy.clearanceState
-        : aggregatePolicy.selectedMode === 'POSTPAID' || aggregatePolicy.selectedMode === 'AUTHORIZED_EXCEPTION'
-          ? aggregatePolicy.clearanceState
-          : satisfiedNow + 0.01 >= Number(aggregatePolicy.requiredNow || 0)
-            ? 'CLEARED'
-            : 'PAYMENT_REQUIRED';
-
-      financeStage = {
-        policy: aggregatePolicy,
-        issuedInvoice,
-        payment,
-        advanceReceipt,
-        requestedCollection,
-        satisfiedNow,
-        clearanceState,
-        financials: {
-          patientLiability: refreshed.patientLiabilityTotal,
-          sponsorLiability: refreshed.sponsorLiabilityTotal,
-          paid: refreshed.invoicePaid,
-          advanceAvailable: refreshed.advanceAvailable,
-          outstanding: refreshed.patientReceivable
-        }
-      };
-    } catch (financialError) {
-      // Admission/bed assignment is already committed. Return a resumable finance
-      // state rather than fabricating a Paid bill or recreating the admission.
-      console.error('Initial IPD finance stage failed after admission commit:', financialError);
-      financeStage = {
-        pending: true,
-        code: financialError.code || 'INITIAL_FINANCE_PENDING',
-        message: financialError.message
-      };
+        admissionId: admission._id,
+        status: { $nin: ['VOIDED', 'CANCELLED'] },
+        is_active: { $ne: false }
+      }).sort({ chargeDate: 1, createdAt: 1 });
+      charges.splice(0, charges.length, ...refreshedCharges);
+    } catch (refreshChargeError) {
+      console.error('Unable to refresh admission charges after finance bootstrap:', refreshChargeError);
     }
 
     const populated = await IPDAdmission
@@ -843,6 +754,54 @@ exports.createAdmission = async (req, res) => {
     return res.status(statusCode).json({ error: error.message });
   } finally {
     await session.endSession();
+  }
+};
+
+// Durable recovery queue for admissions whose clinically valid admission/bed
+// commit succeeded but the resumable finance bootstrap did not complete.
+exports.getPendingFinanceInitializations = async (req, res) => {
+  try {
+    const hospitalId = requireAdmissionHospitalId(req);
+    const admissions = await IPDAdmission.find({
+      hospitalId,
+      'financeInitialization.status': 'pending',
+      is_active: { $ne: false },
+      status: { $nin: ['Cancelled'] }
+    })
+      .populate('patientId', 'first_name last_name patientId uhid phone')
+      .populate('primaryDoctorId', 'firstName lastName')
+      .populate('wardId', 'name wardName')
+      .populate('bedId', 'bedNumber bedName name')
+      .sort({ 'financeInitialization.lastAttemptAt': 1, createdAt: 1 });
+    return res.json({ success: true, count: admissions.length, admissions });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message, code: error.code });
+  }
+};
+
+exports.retryFinanceInitialization = async (req, res) => {
+  try {
+    const hospitalId = requireAdmissionHospitalId(req);
+    const admission = await IPDAdmission.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
+    if (admission.financeInitialization?.status === 'ready') {
+      return res.json({ success: true, alreadyReady: true, financeStage: { pending: false }, admission });
+    }
+    const financeStage = await processInitialFinance(admission._id, req.user, {}, { isRetry: true });
+    const refreshed = await IPDAdmission.findOne({ _id: admission._id, hospitalId })
+      .populate('patientId primaryDoctorId departmentId bedId wardId roomId');
+    if (financeStage.pending) {
+      return res.status(409).json({
+        success: false,
+        error: financeStage.message || 'Admission finance initialization remains pending',
+        code: financeStage.code || 'INITIAL_FINANCE_PENDING',
+        financeStage,
+        admission: refreshed
+      });
+    }
+    return res.json({ success: true, message: 'Admission finance initialization completed', financeStage, admission: refreshed });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message, code: error.code });
   }
 };
 
@@ -1352,10 +1311,15 @@ exports.completeClinicalAssessment = async (req, res) => {
       });
     }
 
+    const assessmentActor = await resolveClinicalActor(req.user);
     await NursingNote.create({
+      hospitalId: admission.hospitalId,
       admissionId: admission._id,
       patientId: admission.patientId,
-      nurseId: req.user?._id,
+      ...(assessmentActor.staffModel === 'Nurse' && assessmentActor.staffProfileId ? { nurseId: assessmentActor.staffProfileId } : {}),
+      actorUserId: assessmentActor.userId,
+      actorRole: assessmentActor.role,
+      actorNameSnapshot: assessmentActor.name,
       noteType: 'Assessment',
       note: `Initial clinical assessment completed.${req.body.chiefComplaints ? ` Chief complaints: ${req.body.chiefComplaints}` : ''}`,
       priority: 'Normal',

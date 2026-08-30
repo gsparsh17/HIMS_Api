@@ -3,6 +3,11 @@ const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 
 const nursingNoteSchema = new mongoose.Schema({
+  hospitalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    index: true
+  },
   admissionId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'IPDAdmission',
@@ -18,6 +23,11 @@ const nursingNoteSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Nurse'
   },
+  // Authentication/audit identity is always a User. nurseId remains an
+  // optional professional-profile reference for legacy reports/population.
+  actorUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+  actorRole: { type: String, trim: true },
+  actorNameSnapshot: { type: String, trim: true },
   noteDateTime: {
     type: Date,
     default: operationNow

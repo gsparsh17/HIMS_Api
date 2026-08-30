@@ -1,10 +1,12 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const mongoose = require('mongoose');
 // controllers/prescription.controller.js
 const Prescription = require('../models/Prescription');
 const Vital = require('../models/Vital');
 const Medicine = require('../models/Medicine');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDAdmission = require('../models/IPDAdmission');
+const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
 const IPDRound = require('../models/IPDRound');
 const Patient = require('../models/Patient');
 const LabRequest = require('../models/LabRequest');
@@ -64,13 +66,13 @@ async function attachAdmissionDetailsToPrescriptions(prescriptions, hospitalId, 
 // ============== HELPER FUNCTIONS ==============
 
 // Create Lab Requests from prescription
-async function createLabRequests(prescription, labTestRequests, userId, sourceType, admissionId = null, hospitalId = null) {
+async function createLabRequests(prescription, labTestRequests, userId, sourceType, admissionId = null, hospitalId = null, session = null) {
   const createdRequests = [];
 
   for (const labReq of labTestRequests) {
     let labTest = null;
-    if (labReq.lab_test_id) labTest = await LabTest.findOne({ _id: labReq.lab_test_id, hospitalId });
-    else if (labReq.lab_test_code) labTest = await LabTest.findOne({ hospitalId, code: labReq.lab_test_code });
+    if (labReq.lab_test_id) labTest = await LabTest.findOne({ _id: labReq.lab_test_id, hospitalId }).session(session || null);
+    else if (labReq.lab_test_code) labTest = await LabTest.findOne({ hospitalId, code: labReq.lab_test_code }).session(session || null);
 
     if (!labTest) continue;
 
@@ -99,7 +101,7 @@ async function createLabRequests(prescription, labTestRequests, userId, sourceTy
       createdBy: userId
     });
 
-    await labRequest.save();
+    await labRequest.save(session ? { session } : undefined);
     createdRequests.push({
       request_id: labRequest._id,
       lab_test_id: labTest._id,
@@ -118,13 +120,13 @@ async function createLabRequests(prescription, labTestRequests, userId, sourceTy
 }
 
 // Create Radiology Requests from prescription
-async function createRadiologyRequests(prescription, radiologyRequests, userId, sourceType, admissionId = null, hospitalId = null) {
+async function createRadiologyRequests(prescription, radiologyRequests, userId, sourceType, admissionId = null, hospitalId = null, session = null) {
   const createdRequests = [];
 
   for (const radReq of radiologyRequests) {
     let imagingTest = null;
-    if (radReq.imaging_test_id) imagingTest = await ImagingTest.findOne({ _id: radReq.imaging_test_id, hospitalId });
-    else if (radReq.imaging_test_code) imagingTest = await ImagingTest.findOne({ hospitalId, code: radReq.imaging_test_code });
+    if (radReq.imaging_test_id) imagingTest = await ImagingTest.findOne({ _id: radReq.imaging_test_id, hospitalId }).session(session || null);
+    else if (radReq.imaging_test_code) imagingTest = await ImagingTest.findOne({ hospitalId, code: radReq.imaging_test_code }).session(session || null);
 
     if (!imagingTest) continue;
 
@@ -149,7 +151,7 @@ async function createRadiologyRequests(prescription, radiologyRequests, userId, 
       createdBy: userId
     });
 
-    await radiologyRequest.save();
+    await radiologyRequest.save(session ? { session } : undefined);
     createdRequests.push({
       request_id: radiologyRequest._id,
       imaging_test_id: imagingTest._id,
@@ -168,13 +170,13 @@ async function createRadiologyRequests(prescription, radiologyRequests, userId, 
 }
 
 // Create Procedure Requests from prescription
-async function createProcedureRequests(prescription, procedureRequests, userId, sourceType, admissionId = null, hospitalId = null) {
+async function createProcedureRequests(prescription, procedureRequests, userId, sourceType, admissionId = null, hospitalId = null, session = null) {
   const createdRequests = [];
 
   for (const procReq of procedureRequests) {
     let procedure = null;
-    if (procReq.procedure_id) procedure = await Procedure.findOne({ _id: procReq.procedure_id, hospitalId });
-    else if (procReq.procedure_code) procedure = await Procedure.findOne({ hospitalId, code: procReq.procedure_code });
+    if (procReq.procedure_id) procedure = await Procedure.findOne({ _id: procReq.procedure_id, hospitalId }).session(session || null);
+    else if (procReq.procedure_code) procedure = await Procedure.findOne({ hospitalId, code: procReq.procedure_code }).session(session || null);
 
     if (!procedure) continue;
 
@@ -203,7 +205,7 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
       createdBy: userId
     });
 
-    await procedureRequest.save();
+    await procedureRequest.save(session ? { session } : undefined);
     createdRequests.push({
       request_id: procedureRequest._id,
       procedure_id: procedure._id,
@@ -351,6 +353,8 @@ async function validatePrescriptionActors(req, { hospitalId, patientId, doctorId
 }
 
 exports.createPrescription = async (req, res) => {
+  let writeSession = req.transactionSession || null;
+  let ownsWriteSession = false;
   try {
     const {
       patient_id,
@@ -485,8 +489,60 @@ exports.createPrescription = async (req, res) => {
       ipdAdmission = await IPDAdmission.findById(ipd_admission_id);
       if (!ipdAdmission) return res.status(404).json({ success: false, error: 'IPD admission not found.' });
       assertAdmissionHospitalAccess(req, ipdAdmission);
+      try {
+        assertAdmissionOpenForMutation(ipdAdmission, { action: 'Prescription/order creation' });
+      } catch (guardError) {
+        return res.status(guardError.statusCode || 409).json({ success: false, error: guardError.message, code: guardError.code });
+      }
       if (String(ipdAdmission.patientId) !== String(patient_id)) {
         return res.status(400).json({ success: false, error: 'The selected patient does not belong to this IPD admission.' });
+      }
+
+      // The round identifier itself is tenant/admission scoped; an arbitrary
+      // ObjectId must never be enough to link orders to another patient/round.
+      if (round_id) {
+        let linkedRoundQuery = IPDRound.findOne({
+          _id: round_id,
+          hospitalId: prescriptionHospitalId,
+          admissionId: ipd_admission_id,
+          is_active: { $ne: false }
+        });
+        if (writeSession) linkedRoundQuery = linkedRoundQuery.session(writeSession);
+        const linkedRound = await linkedRoundQuery;
+        if (!linkedRound) {
+          return res.status(409).json({ success: false, error: 'Ward round does not belong to this hospital/admission', code: 'IPD_ROUND_SCOPE_MISMATCH' });
+        }
+      }
+
+      // One prescription/order bundle belongs to one ward round. If the client
+      // retries after a lost response, return the previously committed bundle
+      // instead of duplicating investigations, MAR orders and pharmacy indents.
+      if (round_id) {
+        const existingRoundPrescription = await Prescription.findOne({
+          hospitalId: prescriptionHospitalId,
+          ipd_admission_id,
+          round_id,
+          source_type: 'IPD'
+        })
+          .populate('patient_id', 'first_name last_name patientId phone')
+          .populate('doctor_id', 'firstName lastName specialization')
+          .populate('lab_test_requests.request_id', 'requestNumber status')
+          .populate('radiology_test_requests.request_id', 'requestNumber status')
+          .populate('procedure_requests.request_id', 'requestNumber status');
+        if (existingRoundPrescription) {
+          return res.status(200).json({
+            success: true,
+            alreadyExists: true,
+            message: 'Round prescription/orders already saved',
+            prescription: existingRoundPrescription,
+            lab_requests: existingRoundPrescription.lab_test_requests || [],
+            radiology_requests: existingRoundPrescription.radiology_test_requests || [],
+            procedure_requests: existingRoundPrescription.procedure_requests || [],
+            ipd_medications_count: (existingRoundPrescription.ipd_medication_ids || []).length,
+            pharmacy_requests_created: 0,
+            medication_safety_alerts: medicationSafetyAlerts
+          });
+        }
       }
     }
 
@@ -501,7 +557,7 @@ exports.createPrescription = async (req, res) => {
 
     let resolvedPainScore = pain_score;
     if ((resolvedPainScore === undefined || resolvedPainScore === null || resolvedPainScore === '') && round_id) {
-      const linkedRound = await IPDRound.findById(round_id).select('painScore').lean();
+      const linkedRound = await IPDRound.findOne({ _id: round_id, hospitalId: prescriptionHospitalId, admissionId: ipd_admission_id, is_active: { $ne: false } }).select('painScore').session(writeSession || null).lean();
       resolvedPainScore = linkedRound?.painScore;
     }
     if (resolvedPainScore !== undefined && resolvedPainScore !== null && resolvedPainScore !== '') {
@@ -543,24 +599,30 @@ exports.createPrescription = async (req, res) => {
       created_by: req.user?._id
     });
 
-    await prescription.save();
+    if (String(source_type || '').toUpperCase() === 'IPD' && !writeSession) {
+      writeSession = await mongoose.startSession();
+      writeSession.startTransaction();
+      ownsWriteSession = true;
+    }
+
+    await prescription.save(writeSession ? { session: writeSession } : undefined);
 
     // Create Lab Requests
     const createdLabRequests = await createLabRequests(
       prescription, lab_test_requests, req.user?._id,
-      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId
+      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId, writeSession
     );
 
     // Create Radiology Requests
     const createdRadiologyRequests = await createRadiologyRequests(
       prescription, radiology_test_requests, req.user?._id,
-      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId
+      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId, writeSession
     );
 
     // Create Procedure Requests
     const createdProcedureRequests = await createProcedureRequests(
       prescription, procedure_requests, req.user?._id,
-      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId
+      source_type || 'OPD', ipd_admission_id || null, prescriptionHospitalId, writeSession
     );
 
     // Update prescription with request IDs
@@ -613,7 +675,7 @@ exports.createPrescription = async (req, res) => {
       }));
     }
 
-    await prescription.save();
+    await prescription.save(writeSession ? { session: writeSession } : undefined);
 
     let convertedMedications = [];
 
@@ -628,7 +690,7 @@ exports.createPrescription = async (req, res) => {
         let costPerUnit = 0;
 
         if (item.medicine_id) {
-          medicineDetails = await Medicine.findById(item.medicine_id);
+          medicineDetails = await Medicine.findOne({ _id: item.medicine_id, hospitalId: prescriptionHospitalId }).session(writeSession || null);
           if (medicineDetails) {
             baseUnit = medicineDetails.base_unit || 'unit';
             packUnit = medicineDetails.pack_unit || 'pack';
@@ -684,7 +746,7 @@ exports.createPrescription = async (req, res) => {
           createdBy: req.user?._id
         });
 
-        await medicationOrder.save();
+        await medicationOrder.save(writeSession ? { session: writeSession } : undefined);
         convertedMedications.push(medicationOrder._id);
 
         // Pharmacy dispense means a real pharmacy issue is required. The request is
@@ -693,20 +755,23 @@ exports.createPrescription = async (req, res) => {
           await createOrUpdatePharmacyRequest({
             medication: medicationOrder,
             requestedQuantity: requiredQtyBaseUnits,
-            requestedBy: req.user?._id
+            requestedBy: req.user?._id,
+            session: writeSession
           });
         }
       }
 
       prescription.is_converted_to_ipd = true;
       prescription.ipd_medication_ids = convertedMedications;
-      await prescription.save();
+      await prescription.save(writeSession ? { session: writeSession } : undefined);
     }
 
     // Update IPDRound with this prescription
     if (source_type === 'IPD' && round_id) {
-      await IPDRound.findByIdAndUpdate(round_id, { prescriptionId: prescription._id });
+      await IPDRound.findOneAndUpdate({ _id: round_id, hospitalId: prescriptionHospitalId, admissionId: ipd_admission_id, is_active: { $ne: false } }, { prescriptionId: prescription._id }, writeSession ? { session: writeSession } : undefined);
     }
+
+    if (ownsWriteSession && writeSession?.inTransaction()) await writeSession.commitTransaction();
 
     // Populate response
     const populatedPrescription = await Prescription.findById(prescription._id)
@@ -714,7 +779,8 @@ exports.createPrescription = async (req, res) => {
       .populate('doctor_id', 'firstName lastName specialization')
       .populate('lab_test_requests.request_id', 'requestNumber status')
       .populate('radiology_test_requests.request_id', 'requestNumber status')
-      .populate('procedure_requests.request_id', 'requestNumber status');
+      .populate('procedure_requests.request_id', 'requestNumber status')
+      .session(writeSession || null);
 
     res.status(201).json({
       success: true,
@@ -728,8 +794,13 @@ exports.createPrescription = async (req, res) => {
 ,
       medication_safety_alerts: medicationSafetyAlerts    });
   } catch (err) {
+    if (ownsWriteSession && writeSession?.inTransaction()) {
+      try { await writeSession.abortTransaction(); } catch (abortError) { console.error('Prescription transaction rollback failed:', abortError); }
+    }
     console.error('Error creating prescription:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
+  } finally {
+    if (ownsWriteSession && writeSession) await writeSession.endSession();
   }
 };
 

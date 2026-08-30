@@ -49,6 +49,7 @@ router.get('/returns', pharmacyFinanceView, operations.getReturns);
 // ========== CLEARANCE ==========
 router.get(
   '/clearance/:admissionId/preview',
+  pharmacyFinanceView,
   financial.clearancePreview
 );
 
@@ -73,40 +74,46 @@ router.get('/dose-calculation', operations.getDoseCalculation);
 
 // ========== IPD PHARMACY ==========
 router.get('/ipd/search-admissions', pharmacyFinanceView, operations.searchIPDAdmissions);
-router.get('/ipd/queue', operations.getIPDQueue);
+router.get('/ipd/queue', pharmacyFinanceView, operations.getIPDQueue);
 
-router.post('/ipd/dispense', operations.dispenseIPDMedication);
+router.post('/ipd/dispense', pharmacyFinanceManage, operations.dispenseIPDMedication);
 router.post('/ipd/advance', pharmacyFinanceManage, operations.depositAdvance);
 
 router.post(
   '/ipd/admissions/:admissionId/refund-advance',
+  pharmacyFinanceManage,
   operations.refundPharmacyAdvance
 );
 
-router.get('/ipd/patients', operations.getIPDPatients);
+router.get('/ipd/patients', pharmacyFinanceView, operations.getIPDPatients);
 
 router.get(
   '/ipd/patient-ledger/:patientId',
+  pharmacyFinanceView,
   operations.getPatientPharmacyLedger
 );
 
 router.get(
   '/ipd/admissions/:admissionId/file',
+  pharmacyFinanceView,
   operations.getAdmissionPharmacyFile
 );
 
 router.get(
   '/ipd/admissions/:admissionId/medicine-stock',
+  pharmacyFinanceView,
   operations.getAdmissionMedicineStock
 );
 
 router.get(
   '/ipd/admissions/:admissionId/advance-ledger',
+  pharmacyFinanceView,
   operations.getAdvanceLedger
 );
 
 router.get(
   '/ipd/admissions/:admissionId/final-clearance',
+  pharmacyFinanceView,
   operations.getAdmissionFinalClearance
 );
 

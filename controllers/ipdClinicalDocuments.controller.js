@@ -10,6 +10,7 @@ const Prescription = require('../models/Prescription');
 const { clinicalDayBounds, formatClinicalTime, dateKey } = require('../utils/clinicalDate');
 const { DEFAULT_TIMEZONE, EWS_CONFIG } = require('../config/clinicalScoring');
 const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
+const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
 
 const id = v => v?._id || v;
 const safeText = v => String(v || '').trim();
@@ -620,6 +621,7 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
     }
 
     const admission = await admissionForRequest(req, req.params.admissionId);
+    assertAdmissionOpenForMutation(admission, { action: 'Doctor initial assessment mutation' });
     const hospitalId = admission.hospitalId || admission.hospital_id || req.user.hospital_id;
     let existing = await IPDInitialAssessment.findOne({ admissionId: admission._id });
 
@@ -834,6 +836,7 @@ exports.saveNursingAdmissionAssessment = async (req, res) => {
     }
 
     const admission = await admissionForRequest(req, req.params.admissionId);
+    assertAdmissionOpenForMutation(admission, { action: 'Nursing admission assessment mutation' });
     const hospitalId = admission.hospitalId || admission.hospital_id || req.user.hospital_id;
     let existing = await IPDNursingAdmissionAssessment.findOne({ admissionId: admission._id });
 
@@ -932,6 +935,7 @@ exports.createVitals = async (req, res) => {
     }
 
     const admission = await admissionForRequest(req, req.body.admissionId);
+    assertAdmissionOpenForMutation(admission, { action: 'Vitals creation' });
     const hospitalId = admission.hospitalId || admission.hospital_id || req.user.hospital_id;
     const body = bodyForUpdate(req.body);
     body.recordedTimezone = DEFAULT_TIMEZONE;
@@ -975,7 +979,8 @@ exports.updateVitals = async (req, res) => {
       throw statusError(404, 'Vitals record not found');
     }
 
-    await admissionForRequest(req, record.admissionId);
+    const admission = await admissionForRequest(req, record.admissionId);
+    assertAdmissionOpenForMutation(admission, { action: 'Vitals mutation' });
 
     if (record.status === 'Signed' && req.body.amend !== true) {
       throw statusError(409, 'Signed vital record must be amended with a reason');
@@ -1228,7 +1233,10 @@ exports.printMedicationChart = async (req, res) => {
       .sort({ emergencyDrug: -1, isHighRisk: -1, startDate: 1 })
       .populate('prescribedBy', 'name firstName lastName')
       .populate('timing.administeredBy', 'name firstName lastName')
+      .populate('timing.administeredByUser', 'name firstName lastName email initials')
       .populate('timing.witnessedBy', 'name firstName lastName')
+      .populate('timing.witnessedByUser', 'name firstName lastName email initials')
+      .populate('stoppedByUser', 'name firstName lastName email')
       .lean();
 
     console.log(`✅ Found ${medications.length} medications for admission ${admission._id}`);
