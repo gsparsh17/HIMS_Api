@@ -350,6 +350,26 @@ async function ensureAdmissionDailyCharges(
     throw error;
   }
 
+  // A completed charge freeze is an immutable financial boundary. The normal
+  // freeze workflow performs recurring-charge catch-up immediately BEFORE the
+  // admission is marked frozen. Read endpoints (running bill, finance workspace,
+  // clearance checks, print views) must therefore never create new daily charges
+  // on an already-frozen admission. Maintenance/migration code can opt in
+  // explicitly with { allowFrozenCatchup: true } when repairing legacy data.
+  if (admission.chargeFreeze?.status === 'frozen' && !options?.allowFrozenCatchup) {
+    return {
+      admissionId: admission._id,
+      processedDays: 0,
+      created: 0,
+      existing: 0,
+      skipped: [{
+        reason: 'Admission charge freeze is immutable; recurring catch-up skipped'
+      }],
+      charges: [],
+      frozen: true
+    };
+  }
+
   const requestedThrough = admission.dischargeDate &&
     new Date(admission.dischargeDate) < new Date(throughDate)
       ? new Date(admission.dischargeDate)

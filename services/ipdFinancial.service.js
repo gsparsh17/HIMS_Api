@@ -507,6 +507,9 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   const pharmacyInvoiceOutstanding = money(
     pharmacyInvoices.reduce((sum, invoice) => sum + Number(invoice.balance_due || 0), 0)
   );
+  const pharmacyInvoicePaid = money(
+    pharmacyInvoices.reduce((sum, invoice) => sum + Number(invoice.amount_paid || 0), 0)
+  );
 
   const ledgerDebits = money(
     sponsorLedger.reduce((sum, row) => sum + Number(row.debit || 0), 0)
@@ -535,6 +538,8 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   );
 
   const overallDue = patientReceivable;
+  const totalEncounterPaid = money(invoicePaid + pharmacyInvoicePaid);
+  const totalEncounterOutstanding = money(patientReceivable + pharmacyInvoiceOutstanding);
 
   if (persist) {
     admission.totalBillAmount = totalChargeAmount;
@@ -575,7 +580,10 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
     creditNotes,
     invoicePaid,
     invoiceOutstanding,
+    pharmacyInvoicePaid,
     pharmacyInvoiceOutstanding,
+    totalEncounterPaid,
+    totalEncounterOutstanding,
     patientReceivable,
     sponsorReceivable,
     sponsorPaid,
@@ -799,12 +807,22 @@ async function getRunningBill(admissionId, user, options = {}) {
       totalSponsorLiabilityIncludingPharmacy: snapshot.sponsorLiabilityTotal,
       nonAdmissibleAmount: snapshot.nonAdmissibleAmount,
       patientReceivable: snapshot.patientReceivable,
+      // Backward-compatible alias used by older IPD screens. Both fields are
+      // intentionally the same canonical IPD patient receivable and exclude
+      // the separately-settled pharmacy ledger.
+      overallDue: snapshot.patientReceivable,
       sponsorReceivable: snapshot.sponsorReceivable,
       sponsorPaidAmount: snapshot.sponsorPaid,
       paidAmount: snapshot.invoicePaid,
       invoiceOutstanding: snapshot.invoiceOutstanding,
       unbilledTotal: snapshot.unbilledTotal,
+      pharmacyInvoicePaid: snapshot.pharmacyInvoicePaid,
       pharmacyInvoiceOutstanding: snapshot.pharmacyInvoiceOutstanding,
+      // Complete-bill/packet totals span both the IPD-controlled invoice ledger
+      // and the separately-owned Pharmacy invoice ledger. These fields are for
+      // display/reconciliation only; collection permissions remain separated.
+      totalPaidAmountIncludingPharmacy: snapshot.totalEncounterPaid,
+      totalOutstandingIncludingPharmacy: snapshot.totalEncounterOutstanding,
       advanceAvailable: snapshot.advanceAvailable
     }
   };
