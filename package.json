@@ -78,7 +78,7 @@
     "nodemon": "^2.0.22"
   },
   "description": "Hospital/HIMS backend with ABDM M1, M2 HIP and M3 HIU integration through MediQliq Master.",
-  "engines": {
-    "node": ">=20.0.0"
-  }
+"engines": {
+  "node": "22.x"
+}
 }
