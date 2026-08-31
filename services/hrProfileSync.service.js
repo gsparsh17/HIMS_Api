@@ -139,15 +139,30 @@ async function syncHRProfileFromSource(sourceModel, sourceDoc, options = {}) {
   const user = await getUser(firstDefined(sourceDoc.user_id, sourceDoc.userId), email);
   const hospitalId = firstDefined(options.hospital_id, user?.hospital_id, await defaultHospitalId());
   const payload = sourceToProfilePayload(sourceModel, sourceDoc, user, hospitalId);
-  if (!payload.email && !payload.user_id) return null;
+  if (!payload.email && !payload.user_id && !payload.source_id) return null;
 
-  const query = {
-    $or: [
-      { source_model: sourceModel, source_id: sourceDoc._id },
-      ...(payload.email ? [{ email: payload.email, hospital_id: payload.hospital_id }] : []),
-      ...(payload.user_id ? [{ user_id: payload.user_id, hospital_id: payload.hospital_id }] : [])
-    ]
-  };
+  if (!payload.email) delete payload.email;
+  if (!payload.user_id) delete payload.user_id;
+
+  const orQueries = [
+    { source_model: sourceModel, source_id: sourceDoc._id }
+  ];
+  if (payload.email) {
+    if (payload.hospital_id) {
+      orQueries.push({ email: payload.email, hospital_id: payload.hospital_id });
+    } else {
+      orQueries.push({ email: payload.email });
+    }
+  }
+  if (payload.user_id) {
+    if (payload.hospital_id) {
+      orQueries.push({ user_id: payload.user_id, hospital_id: payload.hospital_id });
+    } else {
+      orQueries.push({ user_id: payload.user_id });
+    }
+  }
+
+  const query = { $or: orQueries };
 
   const profile = await HRStaffProfile.findOne(query);
   if (profile) {
@@ -157,7 +172,20 @@ async function syncHRProfileFromSource(sourceModel, sourceDoc, options = {}) {
     return profile.save();
   }
 
-  return HRStaffProfile.create(payload);
+  try {
+    return await HRStaffProfile.create(payload);
+  } catch (err) {
+    if (err.code === 11000 && payload.email) {
+      const existing = await HRStaffProfile.findOne({ email: payload.email });
+      if (existing) {
+        Object.entries(payload).forEach(([key, value]) => {
+          if (value !== undefined && value !== null && value !== '') existing[key] = value;
+        });
+        return existing.save();
+      }
+    }
+    throw err;
+  }
 }
 
 async function syncAllExistingHRProfiles(options = {}) {

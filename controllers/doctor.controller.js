@@ -31,6 +31,26 @@ exports.createDoctor = async (req, res) => {
       }
     }
 
+    if (req.body.email) {
+      const email = String(req.body.email).trim().toLowerCase();
+      const existing = await Doctor.exists({ hospitalId, email });
+      if (existing) {
+        return res.status(409).json({
+          error: 'A doctor with this email address already exists in this hospital'
+        });
+      }
+    }
+
+    if (req.body.licenseNumber) {
+      const licenseNumber = String(req.body.licenseNumber).trim();
+      const existing = await Doctor.exists({ hospitalId, licenseNumber });
+      if (existing) {
+        return res.status(409).json({
+          error: 'A doctor with this license number already exists in this hospital'
+        });
+      }
+    }
+
     const data = {
       ...req.body,
       hospitalId,
@@ -41,7 +61,11 @@ exports.createDoctor = async (req, res) => {
     };
 
     const doctor = await Doctor.create(data);
-    await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+    try {
+      await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+    } catch (hrErr) {
+      console.warn('HR Profile auto-sync note on createDoctor:', hrErr.message);
+    }
 
     try {
       await addDoctorToCalendar(hospitalId, doctor);
@@ -55,7 +79,19 @@ exports.createDoctor = async (req, res) => {
     });
   } catch (error) {
     const statusCode = error.code === 11000 ? 409 : 400;
-    return res.status(statusCode).json({ error: error.message });
+    let errorMessage = error.message;
+    if (error.code === 11000) {
+      if (error.message.includes('email')) {
+        errorMessage = 'A doctor or staff member with this email address already exists in this hospital';
+      } else if (error.message.includes('licenseNumber')) {
+        errorMessage = 'A doctor with this license number already exists';
+      } else if (error.message.includes('doctorId') || error.message.includes('employee_code')) {
+        errorMessage = 'Duplicate doctor code generated. Please try again.';
+      } else {
+        errorMessage = 'A duplicate record already exists in the system';
+      }
+    }
+    return res.status(statusCode).json({ error: errorMessage, message: errorMessage });
   }
 };
 

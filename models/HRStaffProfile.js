@@ -25,9 +25,9 @@ const hrStaffProfileSchema = new mongoose.Schema({
   full_name: { type: String, required: true, trim: true },
   first_name: { type: String, trim: true },
   last_name: { type: String, trim: true },
-  email: { type: String, required: true, lowercase: true, trim: true },
+  email: { type: String, required: false, lowercase: true, trim: true, default: undefined },
   phone: { type: String, trim: true },
-  gender: { type: String, enum: ['male', 'female', 'other', 'prefer_not_to_say'] },
+  gender: { type: String, enum: ['male', 'female', 'other', 'prefer_not_to_say', '', null], default: undefined, set: (v) => v || undefined },
   date_of_birth: { type: Date },
   address: { type: String, trim: true },
   staff_type: {
@@ -132,12 +132,30 @@ hrStaffProfileSchema.pre('save', function(next) {
   next();
 });
 
-hrStaffProfileSchema.index({ hospital_id: 1, employee_code: 1 }, { unique: true });
-hrStaffProfileSchema.index({ hospital_id: 1, email: 1 }, { unique: true });
+hrStaffProfileSchema.index(
+  { hospital_id: 1, employee_code: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { employee_code: { $type: 'string', $gt: '' } }
+  }
+);
+hrStaffProfileSchema.index(
+  { hospital_id: 1, email: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { email: { $type: 'string', $gt: '' } }
+  }
+);
 hrStaffProfileSchema.index({ staff_type: 1, employment_status: 1 });
 hrStaffProfileSchema.index({ department: 1 });
 hrStaffProfileSchema.index({ user_id: 1 });
-hrStaffProfileSchema.index({ source_model: 1, source_id: 1 }, { unique: true, sparse: true });
+hrStaffProfileSchema.index(
+  { source_model: 1, source_id: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { source_id: { $type: 'objectId' } }
+  }
+);
 hrStaffProfileSchema.index({ payroll_enabled: 1, employment_status: 1 });
 
 addSoftDeleteFields(hrStaffProfileSchema);
