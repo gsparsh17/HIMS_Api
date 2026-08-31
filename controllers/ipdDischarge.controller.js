@@ -10,6 +10,7 @@ const Patient = require('../models/Patient');
 const Hospital = require('../models/Hospital');
 const LabReport = require('../models/LabReport');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
+const Medicine = require('../models/Medicine');
 const IPDRound = require('../models/IPDRound');
 const IPDVitals = require('../models/IPDVitals');
 const NursingNote = require('../models/NursingNote');
@@ -90,6 +91,30 @@ function immutableSummarySnapshot(summary) {
   // Avoid recursively embedding the whole revision chain inside every revision.
   delete raw.revisionHistory;
   return raw;
+}
+
+async function snapshotDischargeMedicationDetails(rows, hospitalId) {
+  if (!Array.isArray(rows)) return rows;
+  const ids = [...new Set(rows
+    .map((row) => row?.medicineId?._id || row?.medicineId)
+    .filter(Boolean)
+    .map((value) => String(value)))];
+  const medicines = ids.length
+    ? await Medicine.find({ _id: { $in: ids }, hospitalId }).select('name strength dosage_form base_unit compositions').lean()
+    : [];
+  const byId = new Map(medicines.map((medicine) => [String(medicine._id), medicine]));
+  return rows.map((row) => {
+    const raw = row?.toObject ? row.toObject({ depopulate: true }) : { ...(row || {}) };
+    const medicineId = raw.medicineId?._id || raw.medicineId;
+    const master = medicineId ? byId.get(String(medicineId)) : null;
+    return {
+      ...raw,
+      medicineId: medicineId || undefined,
+      medicineName: raw.medicineName || master?.name || '',
+      dosageForm: raw.dosageForm || raw.dosage_form || master?.dosage_form || master?.base_unit || '',
+      strength: raw.strength || master?.strength || '',
+    };
+  });
 }
 
 async function reopenSummaryRevision({ summary, admission, user, reason, session = null }) {
@@ -258,6 +283,10 @@ exports.saveDischargeSummary = async (req, res) => {
       return res.status(404).json({ error: 'Admission not found' });
     }
 
+    const normalizedDischargeMedications = dischargeMedications === undefined
+      ? undefined
+      : await snapshotDischargeMedicationDetails(dischargeMedications, hospitalId);
+
     let dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId });
     if (dischargeSummary && ['Finalized', 'StaffCompleted'].includes(dischargeSummary.status)) {
       return res.status(409).json({
@@ -291,7 +320,7 @@ exports.saveDischargeSummary = async (req, res) => {
         operativeNotes,
         dischargeType: normalizedDischargeType,
         deathDetails: normalizedDeath,
-        dischargeMedications,
+        dischargeMedications: normalizedDischargeMedications,
         followUpAdvice,
         followUpAfterDays,
         followUpDate,
@@ -328,7 +357,7 @@ exports.saveDischargeSummary = async (req, res) => {
         operativeNotes,
         dischargeType: normalizedDischargeType,
         deathDetails: normalizedDeath,
-        dischargeMedications,
+        dischargeMedications: normalizedDischargeMedications,
         followUpAdvice,
         followUpAfterDays,
         followUpDate,
@@ -369,7 +398,8 @@ exports.getDischargeSummary = async (req, res) => {
 
     const dischargeSummary = await DischargeSummary.findOne({ admissionId, hospitalId: requireHospitalId(req) })
       .populate('preparedBy', 'firstName lastName')
-      .populate('reviewedBy', 'firstName lastName');
+      .populate('reviewedBy', 'firstName lastName')
+      .populate('dischargeMedications.medicineId', 'name strength dosage_form base_unit compositions');
 
     if (!dischargeSummary) {
       return res.status(404).json({ error: 'Discharge summary not found' });
@@ -419,7 +449,7 @@ exports.getDischargeRecords = async (req, res) => {
       IPDVitals.find({ admissionId, hospitalId }).populate('recordedBy', 'first_name last_name').sort({ recordedAt: 1 }),
       // NursingNote is encounter-scoped through the already tenant-validated admissionId.
       NursingNote.find({ admissionId, $or: [{ hospitalId }, { hospitalId: { $exists: false } }] }).populate('nurseId', 'first_name last_name').sort({ noteDateTime: 1 }),
-      IPDMedicationChart.find({ admissionId, hospitalId }).sort({ createdAt: 1 }),
+      IPDMedicationChart.find({ admissionId, hospitalId }).populate('medicineId', 'name strength dosage_form base_unit compositions').sort({ createdAt: 1 }),
       LabRequest.find({ admissionId, hospitalId }).populate('doctorId', 'firstName lastName').populate('labTestId', 'name testName code').sort({ requestedDate: 1 }),
       RadiologyRequest.find({ admissionId, hospitalId }).populate('doctorId', 'firstName lastName').populate('imagingTestId', 'name testName code').sort({ requestedDate: 1 }),
       ProcedureRequest.find({ admissionId, hospitalId }).populate('doctorId', 'firstName lastName').sort({ requestedDate: 1 }),
@@ -508,9 +538,11 @@ exports.getDischargeRecords = async (req, res) => {
     const dischargeMedicationCandidates = medications
       .filter((med) => !['Stopped', 'Completed'].includes(String(med.status || '')))
       .map((med) => ({
-        medicineId: med.medicineId || undefined,
-        medicineName: med.medicineName,
+        medicineId: med.medicineId?._id || med.medicineId || undefined,
+        medicineName: med.medicineName || med.medicineId?.name,
         dosage: med.dosage || '',
+        dosageForm: med.dosageForm || med.dosage_form || med.medicineId?.dosage_form || med.medicineId?.base_unit || '',
+        strength: med.strength || med.medicineId?.strength || '',
         frequency: med.frequency || '',
         duration: med.duration || '',
         instructions: med.specialInstructions || '',
@@ -1072,7 +1104,10 @@ exports.getDischargeDocuments = async (req, res) => {
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
     const [dischargeSummary, invoices] = await Promise.all([
-      DischargeSummary.findOne({ admissionId, hospitalId }).populate('preparedBy', 'firstName lastName').populate('reviewedBy', 'firstName lastName'),
+      DischargeSummary.findOne({ admissionId, hospitalId })
+        .populate('preparedBy', 'firstName lastName')
+        .populate('reviewedBy', 'firstName lastName')
+        .populate('dischargeMedications.medicineId', 'name strength dosage_form base_unit compositions'),
       Invoice.find({ hospital_id: hospitalId, admission_id: admissionId }).sort({ issue_date: 1, createdAt: 1 })
     ]);
 
@@ -1252,14 +1287,17 @@ exports.reconcileDischargeMedications = async (req, res) => {
       }
     }
     const dischargeMedications = Array.isArray(req.body.dischargeMedications) ? req.body.dischargeMedications : summary.dischargeMedications;
-    if (Array.isArray(dischargeMedications)) {
-      for (const row of dischargeMedications) {
+    const normalizedDischargeMedications = Array.isArray(dischargeMedications)
+      ? await snapshotDischargeMedicationDetails(dischargeMedications, hospitalId)
+      : dischargeMedications;
+    if (Array.isArray(normalizedDischargeMedications)) {
+      for (const row of normalizedDischargeMedications) {
         const action = String(row.reconciliationAction || '').trim().toLowerCase();
         if (!action || action === 'stop' || !allowed.has(action === 'changed' ? 'change' : action)) {
           return res.status(400).json({ error: 'Every discharge medicine must be explicitly reconciled as Continue, Changed, New or PRN; stopped medicines belong only in the reconciliation record', code: 'INVALID_DISCHARGE_MEDICATION_ACTION' });
         }
       }
-      summary.dischargeMedications = dischargeMedications;
+      summary.dischargeMedications = normalizedDischargeMedications;
     }
     summary.medicationReconciliation = {
       performedAt: operationNow(),

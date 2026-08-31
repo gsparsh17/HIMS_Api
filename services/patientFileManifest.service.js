@@ -6,6 +6,7 @@ const IPDInitialAssessment = require('../models/IPDInitialAssessment');
 const IPDNursingAdmissionAssessment = require('../models/IPDNursingAdmissionAssessment');
 const IPDVitals = require('../models/IPDVitals');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
+require('../models/Medicine'); // Register Medicine for nested discharge-medication population.
 const IPDRound = require('../models/IPDRound');
 const NursingNote = require('../models/NursingNote');
 const IPDConsent = require('../models/IPDConsent');
@@ -293,7 +294,7 @@ async function buildManifest(req, admissionId, options = {}) {
     RadiologyRequest.find({ admissionId, hospitalId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
     ProcedureRequest.find({ admissionId, hospitalId, sourceType: 'IPD' }).sort({ requestedDate: 1 }).lean(),
     OTRequest.find(caseFilter).sort({ requestedDate: 1 }).lean(),
-    DischargeSummary.findOne({ admissionId, hospitalId }).lean(),
+    DischargeSummary.findOne({ admissionId, hospitalId }).populate('dischargeMedications.medicineId', 'name strength dosage_form base_unit compositions').lean(),
     ClinicalDocument.find({ patientId, hospitalId, status: 'current' }).sort({ documentDate: 1 }).lean(),
     EncounterDocument.find({ hospitalId, admissionId, sourceModel: { $ne: 'PatientFileBundle' }, rendererKey: { $ne: 'rendered-patient-file' }, documentType: { $not: /_patient_file$/ } }).sort({ documentDate: 1 }).lean(),
     DocumentSignature.find({ hospitalId, admissionId, status: 'signed' }).sort({ signedAt: -1 }).lean(),

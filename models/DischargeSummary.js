@@ -4,6 +4,10 @@ const dischargeMedicationSchema = new mongoose.Schema({
   medicineName: { type: String, trim: true },
   saltName: { type: String, trim: true },
   dosage: { type: String, trim: true },
+  // Patient-facing print fields. These may be copied from the Medicine master
+  // or entered explicitly for a free-text discharge prescription.
+  dosageForm: { type: String, trim: true },
+  strength: { type: String, trim: true },
   frequency: { type: String, trim: true },
   duration: { type: String, trim: true },
   instructions: { type: String, trim: true },
