@@ -842,24 +842,45 @@ exports.getLowStockMedicines = async (req, res) => {
       {
         $addFields: {
           total_stock: {
-            $sum: '$batches.quantity'
+            $sum: {
+              $map: {
+                input: '$batches',
+                as: 'b',
+                in: { $ifNull: ['$$b.quantity_base_units', { $ifNull: ['$$b.quantity', 0] }] }
+              }
+            }
+          },
+          avg_purchase_price: {
+            $avg: '$batches.purchase_price'
+          },
+          avg_selling_price: {
+            $avg: '$batches.selling_price'
           }
         }
       },
       {
         $match: {
           total_stock: { $lt: threshold },
-          is_active: true
+          is_active: { $ne: false }
         }
       },
       {
         $project: {
           name: 1,
           generic_name: 1,
+          brand: 1,
+          category: 1,
           hsn_code: 1,
           gst_rate: 1,
+          base_unit: 1,
+          pack_unit: 1,
+          units_per_pack: 1,
           total_stock: 1,
-          min_stock_level: 1
+          stock_quantity: '$total_stock',
+          price_per_unit: { $ifNull: ['$price_per_unit', { $ifNull: ['$avg_selling_price', 0] }] },
+          purchase_price: { $ifNull: ['$purchase_price', { $ifNull: ['$avg_purchase_price', 0] }] },
+          min_stock_level: { $ifNull: ['$min_stock_level_base_units', { $ifNull: ['$min_stock_level', 10] }] },
+          min_stock_level_base_units: 1
         }
       }
     ]);
