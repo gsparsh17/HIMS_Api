@@ -221,6 +221,9 @@ exports.searchPharmacyPatients = asyncHandler(async (req, res) => {
 });
 
 exports.getSaleBill = asyncHandler(async (req, res) => {
+  if (!req.params.saleId || !mongoose.isValidObjectId(req.params.saleId)) {
+    return res.status(400).json({ success: false, error: 'Invalid or missing sale ID' });
+  }
   const withCosts = canViewPharmacyCost(req);
   let query = Sale.findById(req.params.saleId)
     .populate('patient_id', 'salutation first_name middle_name last_name patientId uhid phone gender dob')
