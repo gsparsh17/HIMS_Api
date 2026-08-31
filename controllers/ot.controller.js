@@ -900,49 +900,7 @@ exports.deleteOTStaff = async (req, res) => {
   }
 };
 
-// ============== OT ROOM UTILITIES (using existing Room model) ==============
-
-// Get OT Rooms (rooms with type 'Operation Theater')
-exports.getOTRooms = async (req, res) => {
-  try {
-    const rooms = await Room.find({
-      $or: [
-        { type: 'Operation Theater' },
-        { type: { $regex: 'Operation', $options: 'i' } }
-      ]
-    }).populate('wardId', 'name').populate('Department', 'name');
-
-    res.json({
-      success: true,
-      data: rooms,
-      count: rooms.length
-    });
-  } catch (error) {
-    console.error('Error fetching OT rooms:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
-// Get Available OT Rooms
-exports.getAvailableOTRooms = async (req, res) => {
-  try {
-    const rooms = await Room.find({
-      $or: [
-        { type: 'Operation Theater' },
-        { type: { $regex: 'Operation', $options: 'i' } }
-      ],
-      status: 'Available'
-    }).populate('wardId', 'name');
-
-    res.json({
-      success: true,
-      data: rooms
-    });
-  } catch (error) {
-    console.error('Error fetching available OT rooms:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
+// OT Room functions are defined below with hospitalId tenant scoping
 
 // ============== SPECIALIZED QUERIES ==============
 
