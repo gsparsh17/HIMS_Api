@@ -8,7 +8,7 @@ const pathologyStaffSchema = new mongoose.Schema({
   staffId: { type: String, trim: true },
   first_name: { type: String, required: true },
   last_name: { type: String },
-  email: { type: String, required: true, lowercase: true, trim: true },
+  email: { type: String, required: false, lowercase: true, trim: true, default: undefined },
   phone: { type: String, required: true },
   qualification: { type: String }, // e.g., MD Pathology, DMLT, etc.
   specialization: { type: String }, // e.g., Hematology, Microbiology, etc.
@@ -18,7 +18,7 @@ const pathologyStaffSchema = new mongoose.Schema({
     required: true 
   },
   department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
-  gender: { type: String, enum: ['male', 'female', 'other'] },
+  gender: { type: String, enum: ['male', 'female', 'other', '', null], default: undefined, set: (v) => v || undefined },
   date_of_birth: { type: Date },
   address: {
     street: String,
@@ -88,10 +88,21 @@ pathologyStaffSchema.virtual('active_assigned_tests_count').get(function() {
   return this.assigned_lab_tests?.filter(t => t.can_perform).length || 0;
 });
 
-// Indexes for better query performance
 pathologyStaffSchema.index({ hospitalId: 1, staffId: 1 }, { unique: true });
-pathologyStaffSchema.index({ hospitalId: 1, email: 1 }, { unique: true });
-pathologyStaffSchema.index({ hospitalId: 1, user_id: 1 }, { unique: true, sparse: true });
+pathologyStaffSchema.index(
+  { hospitalId: 1, email: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { email: { $type: 'string', $gt: '' } }
+  }
+);
+pathologyStaffSchema.index(
+  { hospitalId: 1, user_id: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { user_id: { $type: 'objectId' } }
+  }
+);
 pathologyStaffSchema.index({ hospitalId: 1, role: 1 });
 pathologyStaffSchema.index({ hospitalId: 1, status: 1 });
 pathologyStaffSchema.index({ department: 1 });

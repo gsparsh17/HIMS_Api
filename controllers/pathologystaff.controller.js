@@ -11,10 +11,10 @@ const { syncHRProfileFromSource } = require('../services/hrProfileSync.service')
 const { requireHospitalId } = require('../services/tenantScope.service');
 
 function sendError(res, error, fallback = 'Pathology staff operation failed') {
-  const status = error.statusCode || (error.code === 11000 ? 409 : 500);
+  const status = error.statusCode || (error.code === 11000 ? 409 : (error.name === 'ValidationError' ? 422 : 500));
   return res.status(status).json({
     success: false,
-    message: status === 500 ? fallback : error.message,
+    message: error.message || fallback,
     error: error.message
   });
 }
@@ -75,14 +75,16 @@ exports.createPathologyStaff = async (req, res) => {
       assigned_lab_tests = []
     } = req.body;
 
-    if (!first_name || !email || !phone || !role) {
+    if (!first_name || !phone || !role) {
       return res.status(400).json({
         success: false,
-        message: 'First name, email, phone and role are required'
+        message: 'First name, phone and role are required'
       });
     }
 
-    if (await PathologyStaff.exists({ hospitalId, email: String(email).toLowerCase() })) {
+    const trimmedEmail = email && String(email).trim() ? String(email).trim().toLowerCase() : undefined;
+
+    if (trimmedEmail && await PathologyStaff.exists({ hospitalId, email: trimmedEmail })) {
       return res.status(409).json({
         success: false,
         message: 'Staff member with this email already exists in this hospital'
@@ -122,17 +124,17 @@ exports.createPathologyStaff = async (req, res) => {
 
     const staff = await PathologyStaff.create({
       hospitalId,
-      user_id,
-      first_name,
-      last_name,
-      email: String(email).toLowerCase(),
-      phone,
+      user_id: user_id && mongoose.isValidObjectId(user_id) ? user_id : undefined,
+      first_name: String(first_name).trim(),
+      last_name: last_name ? String(last_name).trim() : '',
+      email: trimmedEmail,
+      phone: String(phone).trim(),
       qualification,
       specialization,
       role,
-      department,
-      gender,
-      date_of_birth,
+      department: department && mongoose.isValidObjectId(department) ? department : undefined,
+      gender: gender && ['male', 'female', 'other'].includes(String(gender).toLowerCase()) ? String(gender).toLowerCase() : undefined,
+      date_of_birth: date_of_birth || undefined,
       address,
       aadharNumber,
       panNumber,
@@ -385,8 +387,11 @@ exports.updatePathologyStaff = async (req, res) => {
       Object.entries(req.body).filter(([key]) => !blocked.has(key))
     );
 
-    if (updates.email) {
-      updates.email = String(updates.email).toLowerCase();
+    if (updates.email !== undefined) {
+      updates.email = updates.email && String(updates.email).trim() ? String(updates.email).trim().toLowerCase() : undefined;
+    }
+    if (updates.gender !== undefined) {
+      updates.gender = updates.gender && ['male', 'female', 'other'].includes(String(updates.gender).toLowerCase()) ? String(updates.gender).toLowerCase() : undefined;
     }
 
     if (updates.accessible_test_ids?.length) {

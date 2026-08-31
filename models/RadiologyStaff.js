@@ -66,7 +66,13 @@ const radiologyStaffSchema = new mongoose.Schema({
 
 // Indexes
 radiologyStaffSchema.index({ hospitalId: 1, employeeId: 1 }, { unique: true });
-radiologyStaffSchema.index({ hospitalId: 1, userId: 1 }, { unique: true, sparse: true });
+radiologyStaffSchema.index(
+  { hospitalId: 1, userId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { userId: { $type: 'objectId' } }
+  }
+);
 radiologyStaffSchema.index({ hospitalId: 1, designation: 1 });
 radiologyStaffSchema.index({ hospitalId: 1, is_active: 1, availabilityStatus: 1 });
 
