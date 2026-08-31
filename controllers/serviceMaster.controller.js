@@ -42,14 +42,41 @@ const MASTER = {
   }
 };
 
+const BROAD_SPECIMEN_TYPES = new Set([
+  'Blood', 'Urine', 'Stool', 'CSF', 'Sputum', 'Tissue', 'Swab',
+  'Body Fluid', 'Semen', 'Other', 'Not Applicable'
+]);
+
+function normalizeSpecimen(value) {
+  const detail = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!detail) return { specimen_type: 'Other', specimen_detail: '' };
+  if (BROAD_SPECIMEN_TYPES.has(detail)) return { specimen_type: detail, specimen_detail: detail };
+  const lower = detail.toLowerCase();
+  let broad = 'Other';
+  if (/not applicable|\bn\/a\b|none/.test(lower)) broad = 'Not Applicable';
+  else if (/cerebrospinal|\bcsf\b/.test(lower)) broad = 'CSF';
+  else if (/urine/.test(lower)) broad = 'Urine';
+  else if (/stool|faec|fecal/.test(lower)) broad = 'Stool';
+  else if (/sputum/.test(lower)) broad = 'Sputum';
+  else if (/semen|seminal/.test(lower)) broad = 'Semen';
+  else if (/swab/.test(lower)) broad = 'Swab';
+  else if (/tissue|biopsy|bone marrow|aspirat|smear|cytology/.test(lower)) broad = 'Tissue';
+  else if (/pleural|ascitic|synovial|peritoneal|pericardial|body fluid|fluid/.test(lower)) broad = 'Body Fluid';
+  else if (/blood|serum|plasma|edta|citrate|capillary|dbs/.test(lower)) broad = 'Blood';
+  return { specimen_type: broad, specimen_detail: detail };
+}
+
 function fail(res, error) {
   const status = error.statusCode || (error.name === 'ValidationError' ? 422 : 400);
+  const details = error.name === 'ValidationError'
+    ? Object.values(error.errors || {}).map((row) => row.message)
+    : undefined;
+  const message = details && details.length > 0 ? details.join(', ') : error.message;
   return res.status(status).json({
     success: false,
-    error: error.message,
-    details: error.name === 'ValidationError'
-      ? Object.values(error.errors || {}).map((row) => row.message)
-      : undefined
+    error: message,
+    message,
+    details
   });
 }
 
@@ -86,6 +113,14 @@ function normalizeBody(entity, body) {
       value.specimen_detail = value.specimenDetail;
     }
     delete value.specimenDetail;
+
+    if (value.specimen_type || value.specimen_detail) {
+      const normalized = normalizeSpecimen(value.specimen_detail || value.specimen_type);
+      value.specimen_type = normalized.specimen_type;
+      if (!value.specimen_detail && normalized.specimen_detail) {
+        value.specimen_detail = normalized.specimen_detail;
+      }
+    }
   }
   if (entity === 'imaging-tests' && value.template_only === true) {
     value.is_billable = false;
@@ -121,7 +156,7 @@ exports.list = async (req, res) => {
     const hospitalId = requireHospitalId(req);
     const entry = config(req.params.entity);
     const page = Math.max(1, Number(req.query.page || 1));
-    const limit = Math.min(500, Math.max(1, Number(req.query.limit || 100)));
+    const limit = Math.min(10000, Math.max(1, Number(req.query.limit || 100)));
     const filter = { hospitalId };
 
     const includeInactive = req.query.includeInactive === 'true' || req.query.status === 'all';
@@ -141,8 +176,19 @@ exports.list = async (req, res) => {
       filter.$or = entry.searchable.map((field) => ({ [field]: expression }));
     }
 
+    let sortOrder = entry.defaultSort;
+    if (req.query.sortBy === 'recent' || req.query.sort === 'recent' || req.query.sortBy === 'createdAt') {
+      sortOrder = { createdAt: -1 };
+    } else if (req.query.sortBy === 'name') {
+      sortOrder = { name: 1 };
+    } else if (req.query.sortBy === 'code') {
+      sortOrder = { code: 1 };
+    } else if (req.query.sortBy === 'category') {
+      sortOrder = { category: 1, name: 1 };
+    }
+
     const [data, total] = await Promise.all([
-      entry.model.find(filter).sort(entry.defaultSort).skip((page - 1) * limit).limit(limit).lean(),
+      entry.model.find(filter).sort(sortOrder).skip((page - 1) * limit).limit(limit).lean(),
       entry.model.countDocuments(filter)
     ]);
     return res.json({
