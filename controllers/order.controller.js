@@ -238,7 +238,7 @@ exports.createPurchaseOrder = async (req, res) => {
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index] || {};
       const medicineId = item.medicine_id || null;
-      const medicine = medicineId ? await Medicine.findById(medicineId).select('name generic_name brand strength category base_unit pack_unit units_per_pack hsn_code gst_rate') : null;
+      const medicine = medicineId ? await Medicine.findById(medicineId).select('name generic_name brand strength category dosage_form base_unit pack_unit units_per_pack hsn_code gst_rate') : null;
       if (medicineId && !medicine) {
         return res.status(400).json({ error: `Medicine master was not found for line ${index + 1}. Select it again or use a manual/non-NLEM line.` });
       }
@@ -253,12 +253,12 @@ exports.createPurchaseOrder = async (req, res) => {
       if (unitCost < 0) return res.status(400).json({ error: `Unit cost cannot be negative for "${medicineName}".` });
 
       const hsnCode = String(item.hsn_code || medicine?.hsn_code || '').trim();
-      const gstRate = item.gst_rate !== undefined && item.gst_rate !== null ? toNumber(item.gst_rate, -1) : medicine?.gst_rate;
+      const gstRate = item.gst_rate !== undefined && item.gst_rate !== null ? toNumber(item.gst_rate, -1) : (medicine?.gst_rate ?? 0);
       if (!validateHSNCode(hsnCode)) {
         return res.status(400).json({ error: `A valid 4–8 digit HSN code is required for "${medicineName}".` });
       }
-      if (!validateGSTRate(gstRate)) {
-        return res.status(400).json({ error: `A valid GST rate is required for "${medicineName}". Allowed rates: ${VALID_GST_RATES.join(', ')}.` });
+      if (isNaN(Number(gstRate)) || Number(gstRate) < 0 || Number(gstRate) > 100) {
+        return res.status(400).json({ error: `A valid GST rate is required for "${medicineName}".` });
       }
 
       const unitsPerPack = Math.max(1, toNumber(item.units_per_pack ?? medicine?.units_per_pack, 1));
@@ -266,6 +266,9 @@ exports.createPurchaseOrder = async (req, res) => {
       const itemTax = roundMoney((itemSubtotal * toNumber(gstRate)) / 100);
       subtotal += itemSubtotal;
       totalTax += itemTax;
+
+      const cgstRate = item.cgst_rate !== undefined ? toNumber(item.cgst_rate) : toNumber(gstRate) / 2;
+      const sgstRate = item.sgst_rate !== undefined ? toNumber(item.sgst_rate) : toNumber(gstRate) / 2;
 
       validatedItems.push({
         medicine_id: medicine?._id || null,
@@ -275,12 +278,15 @@ exports.createPurchaseOrder = async (req, res) => {
         generic_name: String(item.generic_name || medicine?.generic_name || '').trim(),
         brand: String(item.brand || medicine?.brand || '').trim(),
         strength: String(item.strength || medicine?.strength || '').trim(),
+        dosage_form: String(item.dosage_form || medicine?.dosage_form || '').trim(),
         category: String(item.category || medicine?.category || (manualLine ? 'Other' : '')).trim(),
         base_unit: normaliseMedicineUnit(item.base_unit || medicine?.base_unit, 'tablet', VALID_BASE_UNITS),
         pack_unit: normaliseMedicineUnit(item.pack_unit || medicine?.pack_unit, 'strip', VALID_PACK_UNITS),
         units_per_pack: unitsPerPack,
         hsn_code: hsnCode,
         gst_rate: toNumber(gstRate),
+        cgst_rate: cgstRate,
+        sgst_rate: sgstRate,
         quantity,
         received: 0,
         quantity_base_units: quantity * unitsPerPack,
