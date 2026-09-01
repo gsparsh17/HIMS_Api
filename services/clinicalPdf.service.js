@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
 const { getTemplate, matchTemplate, normalizeLabTestName } = require('./labReportTemplate.service');
+const { formatMedication } = require('../utils/medicationDisplay');
+const { formatDoctorName } = require('../utils/documentFormatters');
 
 const mm = (value) => value * 2.834645669;
 const PAGE = { width: mm(210), height: mm(297), margin: mm(10) };
@@ -841,7 +843,7 @@ function drawPrescriptionInfoGrid(doc, prescription) {
   const colWidth = width / 3;
   const rowGap = mm(6.1);
   const patientName = fullName(patient);
-  const consultant = fullName(doctor, 'Dr. ');
+  const consultant = formatDoctorName(doctor) || fullName(doctor);
   const department = doctor.department?.name || doctor.specialization;
   const patientAddress = [patient.address, patient.city, patient.state, patient.zipCode || patient.pinCode].filter(Boolean).join(', ');
   const rows = [
@@ -1099,10 +1101,11 @@ function drawMedicationTable(doc, items) {
   const rowHeight = mm(8.3);
   for (let index = 0; index < rowCount; index += 1) {
     const item = items?.[index] || {};
-    const medicineName = [item.medicine_name, item.generic_name ? `(${item.generic_name})` : ''].filter(Boolean).join(' ');
+    const medication = formatMedication(item);
+    const medicineName = medication.label || medication.name;
     const values = [
-      String(index + 1), medicineName, item.route_of_administration,
-      item.dosage, item.duration, item.frequency || item.timing, item.instructions
+      String(index + 1), medicineName, medication.route,
+      medication.dosage, item.duration, medication.frequency, item.instructions
     ];
     const y = doc.y;
     x = left;
@@ -1167,7 +1170,7 @@ function drawPrescriptionPageTwo(doc, prescription, hospital) {
   });
 
   const signatureY = bottomY + mm(28);
-  const doctorName = fullName(prescription.doctor_id, 'Dr. ') || 'Consultant';
+  const doctorName = formatDoctorName(prescription.doctor_id) || 'Consultant';
   doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(8).text('SIGNATURE', left + mm(10), signatureY, {
     width: mm(62)
   });
@@ -1193,6 +1196,18 @@ function generatePrescriptionPdf({ res, prescription, hospital, vitals }) {
   doc.pipe(res);
   drawPrescriptionPageOne(doc, prescription, hospital, vitals);
   doc.addPage();
+  drawPrescriptionPageTwo(doc, prescription, hospital);
+  addPageFooters(doc, 'Computer-generated clinical document', { blueRule: true });
+  doc.end();
+}
+
+function generateBlankPrescriptionOnePagePdf({ res, prescription, hospital }) {
+  const filename = `${prescription.prescription_number || 'blank-prescription'}-one-page.pdf`;
+  configureResponse(res, filename);
+  const doc = createDocument();
+  doc.pipe(res);
+  // The one-page option deliberately reuses page two of the canonical existing
+  // two-page prescription. It is not a competing prescription template.
   drawPrescriptionPageTwo(doc, prescription, hospital);
   addPageFooters(doc, 'Computer-generated clinical document', { blueRule: true });
   doc.end();
@@ -1243,8 +1258,9 @@ function drawOpdMedicationTable(doc, prescription, y) {
   }
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index] || {};
-    const medicine = [item.medicine_name, item.generic_name && item.generic_name !== item.medicine_name ? `(${item.generic_name})` : ''].filter(Boolean).join(' ');
-    const values = [index + 1, medicine, item.dosage || '-', item.frequency || '-', item.duration || '-', item.instructions || '-'];
+    const medication = formatMedication(item);
+    const medicine = medication.label || medication.name || '-';
+    const values = [index + 1, medicine, medication.dosage || '-', medication.frequency || '-', item.duration || '-', item.instructions || '-'];
     const height = Math.max(mm(9), Math.min(mm(18), Math.max(...values.map((value, col) => doc.heightOfString(String(value), { width: widths[col] - 5 }))) + mm(3)));
     if (y + height > CONTENT_BOTTOM - mm(10)) {
       doc.addPage();
@@ -1297,7 +1313,7 @@ function generateOpdSlipPdf({ res, prescription, hospital, vitals, receipt, prin
   let y = doc.y;
   drawOpdField(doc, 'Patient Name', fullName(patient), left, y, mm(29), half - mm(3));
   drawOpdField(doc, 'Age / Sex', `${calculateAge(patient.dob)} / ${text(patient.gender, '-')}`, left + half, y, mm(24), half); y += mm(7);
-  drawOpdField(doc, 'Consultant', fullName(doctor, 'Dr. '), left, y, mm(29), half - mm(3));
+  drawOpdField(doc, 'Consultant', formatDoctorName(doctor) || '-', left, y, mm(29), half - mm(3));
   drawOpdField(doc, 'Mobile No.', patient.phone, left + half, y, mm(24), half); y += mm(7);
   drawOpdField(doc, 'Department', doctor.department?.name || doctor.specialization, left, y, mm(29), half - mm(3));
   drawOpdField(doc, 'Token No.', appointment.token || appointment.serial_number, left + half, y, mm(24), half); y += mm(7);
@@ -1514,4 +1530,4 @@ async function renderStructuredReportPdf({
   return done;
 }
 
-module.exports = { generateLabReportPdf, generatePrescriptionPdf, generateOpdSlipPdf, renderStructuredReportPdf };
+module.exports = { generateLabReportPdf, generatePrescriptionPdf, generateBlankPrescriptionOnePagePdf, generateOpdSlipPdf, renderStructuredReportPdf };

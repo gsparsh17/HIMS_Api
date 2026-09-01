@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const patientController = require('../controllers/patientTenant.controller');
+const preventiveCareController = require('../controllers/preventiveCare.controller');
 const { protect, authorize } = require('../middlewares/auth');
 const multer = require('multer');
 const path = require('path');
@@ -52,6 +53,10 @@ router.get('/registration-trend', canReadPatient, patientController.getPatientRe
 
 router.post('/', canManagePatient, patientController.createPatient);
 router.get('/', canReadPatient, patientController.getAllPatients);
+router.get('/:id/preventive-care', canReadPatient, preventiveCareController.getPatientPreventiveCare);
+router.post('/:id/immunizations', canManagePatient, preventiveCareController.createPatientImmunization);
+router.put('/:id/immunizations/:immunizationId', canManagePatient, preventiveCareController.updatePatientImmunization);
+router.delete('/:id/immunizations/:immunizationId', canManagePatient, preventiveCareController.deletePatientImmunization);
 router.get('/:id/visits', canReadPatient, patientController.getPatientVisitHistory);
 router.get('/:id/coverage-preference', canReadPatient, patientController.getCoveragePreference);
 router.get('/:id/longitudinal-record', canReadPatient, patientController.getLongitudinalRecord);

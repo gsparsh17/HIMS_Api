@@ -7,6 +7,7 @@ const LabReport = require('../models/LabReport');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const DischargeSummary = require('../models/DischargeSummary');
 const EHRBundle = require('../models/EHRBundle');
+const { formatMedicationFrequency, formatMedicationRoute } = require('../utils/medicationDisplay');
 
 function normalizeGender(gender) {
   const value = String(gender || '').toLowerCase();
@@ -128,8 +129,8 @@ function prescriptionEntries(prescriptions, patient) {
         authoredOn: iso(rx.issue_date),
         medicationCodeableConcept: { text: item.medicine_name },
         dosageInstruction: [{
-          text: [item.dosage, item.frequency, item.duration, item.instructions, item.timing].filter(Boolean).join(' | '),
-          route: item.route_of_administration ? { text: item.route_of_administration } : undefined
+          text: [item.dosage, formatMedicationFrequency(item.frequency), item.duration, item.instructions, item.timing].filter(Boolean).join(' | '),
+          route: item.route_of_administration ? { text: formatMedicationRoute(item) } : undefined
         }],
         note: rx.notes ? [{ text: rx.notes }] : undefined
       }));

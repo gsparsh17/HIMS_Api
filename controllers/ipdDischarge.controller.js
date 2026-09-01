@@ -30,6 +30,8 @@ const { parseHospitalDateTime, hospitalDateKey } = require('../utils/hospitalDat
 const { ensureAdmissionDailyCharges } = require('../services/ipdRecurringCharge.service');
 const { reopenChargeFreeze } = require('../services/ipdLifecycleGuard.service');
 const { resolveClinicalActor } = require('../services/clinicalActor.service');
+const { formatMedication } = require('../utils/medicationDisplay');
+const { formatDoctorName } = require('../utils/documentFormatters');
 
 const CANONICAL_DISCHARGE_TYPES = Object.freeze(['Normal', 'DOR', 'LAMA', 'Referred', 'Death']);
 const FINAL_LAB_STATUSES = new Set(['Verified', 'Completed', 'Reported', 'Released', 'Amended']);
@@ -517,7 +519,8 @@ exports.getDischargeRecords = async (req, res) => {
     medications.forEach((med) => {
       const administeredCount = (med.timing || []).filter((slot) => slot.status === 'Administered').length;
       if (!administeredCount) return;
-      const medInfo = `${med.medicineName} ${med.dosage || ''} - ${med.frequency} (${med.route || 'Oral'}) × ${administeredCount} administered dose(s)`;
+      const medication = formatMedication({ ...med, medicineName: med.medicineName || med.medicine_name });
+      const medInfo = `${medication.label || medication.name} - ${medication.frequency || 'Frequency not recorded'} (${medication.route || 'Route not recorded'}) × ${administeredCount} administered dose(s)`;
       if (!administeredMeds.includes(medInfo)) administeredMeds.push(medInfo);
     });
     if (administeredMeds.length > 0) { treatmentLines.push('\nMedications actually administered during stay (MAR):'); administeredMeds.forEach(m => treatmentLines.push(`• ${m}`)); }
@@ -528,7 +531,7 @@ exports.getDischargeRecords = async (req, res) => {
     autoFill.proceduresDone = procedureLines.join('\n');
 
     const surgeryLines = [];
-    otRequests.filter((ot) => ['Closed', 'Completed'].includes(String(ot.status))).forEach(ot => { const surgeon = ot.primarySurgeonId ? `Dr. ${ot.primarySurgeonId.firstName} ${ot.primarySurgeonId.lastName}` : (ot.doctorId ? `Dr. ${ot.doctorId.firstName} ${ot.doctorId.lastName}` : ''); surgeryLines.push(`• ${ot.procedureName} - ${new Date(ot.requestedDate).toLocaleDateString()}\n  Surgeon: ${surgeon}${ot.findings ? `\n  Findings: ${ot.findings}` : ''}${ot.complications ? `\n  Complications: ${ot.complications}` : ''}`); });
+    otRequests.filter((ot) => ['Closed', 'Completed'].includes(String(ot.status))).forEach(ot => { const surgeon = ot.primarySurgeonId ? formatDoctorName(ot.primarySurgeonId) : (ot.doctorId ? formatDoctorName(ot.doctorId) : ''); surgeryLines.push(`• ${ot.procedureName} - ${new Date(ot.requestedDate).toLocaleDateString()}\n  Surgeon: ${surgeon}${ot.findings ? `\n  Findings: ${ot.findings}` : ''}${ot.complications ? `\n  Complications: ${ot.complications}` : ''}`); });
     autoFill.surgeriesDone = surgeryLines.join('\n');
 
     // Do not silently turn the last inpatient prescription/MAR order into a

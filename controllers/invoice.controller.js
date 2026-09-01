@@ -18,6 +18,14 @@ const ImagingTest = require('../models/ImagingTest');
 const PDFDocument = require('pdfkit');
 const { default: mongoose } = require('mongoose');
 const { requestHospitalId } = require('../utils/hospitalScope');
+const {
+  COMPUTER_GENERATED_BILL_EN,
+  COMPUTER_GENERATED_BILL_HI,
+  formatDoctorName,
+  resolveDepartmentName,
+  registerDocumentFonts,
+  useHindiFont
+} = require('../utils/documentFormatters');
 
 function invoiceScope(req, extra = {}) {
   const rawHospitalId = requestHospitalId(req);
@@ -2041,7 +2049,22 @@ exports.downloadInvoicePDF = async (req, res) => {
     const invoice = await Invoice.findOne(invoiceScope(req, { _id: id }))
       .populate('patient_id', 'first_name last_name phone address patientId uhid')
       .populate('hospital_id', 'hospitalName name address city state pinCode contact phone email gst gst_number gstNumber licenseNumber license_number')
-      .populate('appointment_id', 'appointment_date type')
+      .populate({
+        path: 'appointment_id',
+        select: 'appointment_date type doctor_id department_id',
+        populate: [
+          { path: 'doctor_id', select: 'salutation firstName lastName first_name last_name name department_id' },
+          { path: 'department_id', select: 'name departmentName department_name' }
+        ]
+      })
+      .populate({
+        path: 'admission_id',
+        select: 'primaryDoctorId departmentId admissionNumber admissionDate',
+        populate: [
+          { path: 'primaryDoctorId', select: 'salutation firstName lastName first_name last_name name department_id' },
+          { path: 'departmentId', select: 'name departmentName department_name' }
+        ]
+      })
       .populate('prescription_id', 'prescription_number diagnosis')
       .populate('procedure_items.performed_by', 'firstName lastName')
       .populate('lab_test_items.performed_by', 'firstName lastName')
@@ -2055,6 +2078,7 @@ exports.downloadInvoicePDF = async (req, res) => {
     }
 
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
+    registerDocumentFonts(doc);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoice.invoice_number}.pdf"`);
@@ -2143,11 +2167,20 @@ function addCustomerDetails(doc, invoice) {
 
   if (invoice.patient_id) {
     doc.text(`Name: ${invoice.patient_id.first_name} ${invoice.patient_id.last_name}`, 50, 260);
-    doc.text(`Phone: ${invoice.patient_id.phone || 'N/A'}`, 50, 275);
-    doc.text(`Address: ${invoice.patient_id.address || 'N/A'}`, 50, 290, { width: 300 });
+    doc.text(`Patient ID / UHID: ${invoice.patient_id.patientId || invoice.patient_id.uhid || 'N/A'}`, 50, 275);
+    doc.text(`Phone: ${invoice.patient_id.phone || 'N/A'}`, 50, 290);
+    doc.text(`Address: ${invoice.patient_id.address || 'N/A'}`, 50, 305, { width: 270 });
   } else {
     doc.text(`Name: ${invoice.customer_name || 'N/A'}`, 50, 260);
     doc.text(`Phone: ${invoice.customer_phone || 'N/A'}`, 50, 275);
+  }
+
+  const doctor = invoice.appointment_id?.doctor_id || invoice.admission_id?.primaryDoctorId;
+  const department = invoice.appointment_id?.department_id || invoice.admission_id?.departmentId;
+  doc.text(`Doctor / Consultant: ${formatDoctorName(doctor) || 'N/A'}`, 335, 260, { width: 210 });
+  doc.text(`Department: ${resolveDepartmentName(department, doctor?.department_id) || 'N/A'}`, 335, 275, { width: 210 });
+  if (invoice.admission_id?.admissionNumber) {
+    doc.text(`Admission No: ${invoice.admission_id.admissionNumber}`, 335, 290, { width: 210 });
   }
   doc.moveDown(3);
 }
@@ -2426,5 +2459,9 @@ function addFooter(doc, invoice) {
   doc.fillColor(statusColors[invoice.status] || '#6B7280');
   doc.fontSize(9).font('Helvetica-Bold').text(`Status: ${invoice.status || 'Issued'}`, 50, Math.min(y + 5, 760));
   doc.fillColor('#000000');
-  doc.fontSize(8).font('Helvetica').text('This is a computer-generated financial document. Please retain it with payment / settlement receipts for the complete transaction trail.', 50, Math.min(y + 30, 790), { width: 495, align: 'center' });
+  const footerY = Math.min(y + 30, 765);
+  doc.fontSize(8).font('Helvetica').text(COMPUTER_GENERATED_BILL_EN, 50, footerY, { width: 495, align: 'center' });
+  useHindiFont(doc);
+  doc.fontSize(8).text(COMPUTER_GENERATED_BILL_HI, 50, footerY + 12, { width: 495, align: 'center' });
+  doc.font('Helvetica');
 }

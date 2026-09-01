@@ -1,4 +1,5 @@
 const PDFDocument = require('pdfkit');
+const { formatMedication, formatMedicationFrequency, formatMedicationRoute, formatMedicationDosage } = require('../utils/medicationDisplay');
 
 const PAGE = { width: 595.28, height: 841.89, margin: 22 };
 const CONTENT_WIDTH = PAGE.width - PAGE.margin * 2;
@@ -298,9 +299,10 @@ function vitalsChart(doc, record, context) {
 function medicationChart(doc, record, context) {
   sectionTitle(doc, 'Medication Prescription and Administration Chart', context);
   const administrations = record.administrations || record.administrationRecords || record.doses || [];
+  const medication = formatMedication({ ...record, medicineName: record.medicineName || record.medicationName || record.drugName });
   drawGrid(doc, [
-    ['Medicine', record.medicineName || record.medicationName || record.drugName], ['Dose / Strength', record.dose || record.dosage || record.strength],
-    ['Route', record.route], ['Frequency', record.frequency], ['Start date', formatDate(record.startDate, false)], ['Stop date', formatDate(record.stopDate || record.endDate, false)],
+    ['Medicine', medication.label || medication.name], ['Dose / Strength', medication.dosage || record.strength],
+    ['Route', medication.route], ['Frequency', medication.frequency], ['Start date', formatDate(record.startDate, false)], ['Stop date', formatDate(record.stopDate || record.endDate, false)],
     ['Instructions', record.instructions], ['Status', record.status],
   ], context);
   drawTable(doc, ['Scheduled', 'Administered', 'Dose', 'Status', 'Given by', 'Remarks'], administrations.map((row) => [formatDate(row.scheduledAt || row.scheduledTime), formatDate(row.administeredAt || row.givenAt), row.dose || record.dose, row.status, row.administeredByName || row.givenByName, row.remarks || row.reason]), context, { widths: [0.17, 0.17, 0.12, 0.12, 0.18, 0.24] });
@@ -338,7 +340,7 @@ function dischargeSummary(doc, record, context) {
   drawNarrative(doc, 'Procedures / surgery performed', record.proceduresPerformed || record.surgeryDetails || record.operationDetails, context);
   drawNarrative(doc, 'Condition at discharge', record.conditionAtDischarge, context);
   const medicines = record.dischargeMedications || record.medications || record.prescription || [];
-  if (Array.isArray(medicines)) drawTable(doc, ['Medicine', 'Dose', 'Route', 'Frequency', 'Duration', 'Instructions'], medicines.map((row) => [row.medicineName || row.medicine_name || row.drugName, row.dose || row.dosage, row.route, row.frequency, row.duration, row.instructions]), context, { widths: [0.22, 0.12, 0.1, 0.13, 0.13, 0.3] });
+  if (Array.isArray(medicines)) drawTable(doc, ['Medicine', 'Dose', 'Route', 'Frequency', 'Duration', 'Instructions'], medicines.map((row) => { const medication = formatMedication({ ...row, medicineName: row.medicineName || row.medicine_name || row.drugName }); return [medication.label || medication.name, medication.dosage, medication.route, medication.frequency, row.duration, row.instructions]; }), context, { widths: [0.22, 0.12, 0.1, 0.13, 0.13, 0.3] });
   else drawNarrative(doc, 'Discharge medication', medicines, context);
   drawNarrative(doc, 'Advice, diet, activity and warning signs', [clean(record.advice, ''), clean(record.dietAdvice, ''), clean(record.activityAdvice, ''), clean(record.warningSigns, '')].filter(Boolean).join('\n'), context);
   drawGrid(doc, [['Follow-up date', formatDate(record.followUpDate, false)], ['Follow-up instructions', record.followUpInstructions]], context);

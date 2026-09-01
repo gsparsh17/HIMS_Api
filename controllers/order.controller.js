@@ -46,6 +46,26 @@ const validateGSTRate = (rate) => {
   return VALID_GST_RATES.includes(gstRate);
 };
 
+const resolvePurchaseTaxRates = (item = {}, fallbackGstRate = 0) => {
+  const hasCgst = item.cgst_rate !== undefined && item.cgst_rate !== null && item.cgst_rate !== '';
+  const hasSgst = item.sgst_rate !== undefined && item.sgst_rate !== null && item.sgst_rate !== '';
+  let cgstRate;
+  let sgstRate;
+  if (hasCgst || hasSgst) {
+    cgstRate = Math.max(0, toNumber(item.cgst_rate, 0));
+    sgstRate = Math.max(0, toNumber(item.sgst_rate, 0));
+  } else {
+    const gst = Math.max(0, toNumber(item.gst_rate ?? fallbackGstRate, 0));
+    cgstRate = gst / 2;
+    sgstRate = gst / 2;
+  }
+  const gstRate = Number((cgstRate + sgstRate).toFixed(4));
+  if (!validateGSTRate(gstRate)) {
+    throw new Error(`CGST + SGST must equal an allowed GST rate (${VALID_GST_RATES.join(', ')}%).`);
+  }
+  return { gstRate, cgstRate, sgstRate };
+};
+
 // Helper function to generate timing slots for IPD medications
 function generateTimingSlots(frequency, durationDays) {
   const timingSlots = [];
@@ -233,6 +253,8 @@ exports.createPurchaseOrder = async (req, res) => {
 
     let subtotal = 0;
     let totalTax = 0;
+    let totalCgst = 0;
+    let totalSgst = 0;
     const validatedItems = [];
 
     for (let index = 0; index < items.length; index += 1) {
@@ -253,22 +275,26 @@ exports.createPurchaseOrder = async (req, res) => {
       if (unitCost < 0) return res.status(400).json({ error: `Unit cost cannot be negative for "${medicineName}".` });
 
       const hsnCode = String(item.hsn_code || medicine?.hsn_code || '').trim();
-      const gstRate = item.gst_rate !== undefined && item.gst_rate !== null ? toNumber(item.gst_rate, -1) : (medicine?.gst_rate ?? 0);
       if (!validateHSNCode(hsnCode)) {
         return res.status(400).json({ error: `A valid 4–8 digit HSN code is required for "${medicineName}".` });
       }
-      if (isNaN(Number(gstRate)) || Number(gstRate) < 0 || Number(gstRate) > 100) {
-        return res.status(400).json({ error: `A valid GST rate is required for "${medicineName}".` });
+      let taxRates;
+      try {
+        taxRates = resolvePurchaseTaxRates(item, medicine?.gst_rate ?? 0);
+      } catch (taxError) {
+        return res.status(400).json({ error: `${taxError.message} Medicine: "${medicineName}".` });
       }
+      const { gstRate, cgstRate, sgstRate } = taxRates;
 
       const unitsPerPack = Math.max(1, toNumber(item.units_per_pack ?? medicine?.units_per_pack, 1));
       const itemSubtotal = roundMoney(quantity * unitCost);
-      const itemTax = roundMoney((itemSubtotal * toNumber(gstRate)) / 100);
+      const cgstAmount = roundMoney((itemSubtotal * cgstRate) / 100);
+      const sgstAmount = roundMoney((itemSubtotal * sgstRate) / 100);
+      const itemTax = roundMoney(cgstAmount + sgstAmount);
       subtotal += itemSubtotal;
+      totalCgst += cgstAmount;
+      totalSgst += sgstAmount;
       totalTax += itemTax;
-
-      const cgstRate = item.cgst_rate !== undefined ? toNumber(item.cgst_rate) : toNumber(gstRate) / 2;
-      const sgstRate = item.sgst_rate !== undefined ? toNumber(item.sgst_rate) : toNumber(gstRate) / 2;
 
       validatedItems.push({
         medicine_id: medicine?._id || null,
@@ -294,6 +320,8 @@ exports.createPurchaseOrder = async (req, res) => {
         unit_cost: unitCost,
         total_cost: itemSubtotal,
         tax_amount: itemTax,
+        cgst_amount: cgstAmount,
+        sgst_amount: sgstAmount,
         batch_number: item.batch_number || '',
         expiry_date: item.expiry_date || null,
         selling_price: Math.max(0, toNumber(item.selling_price, 0)),
@@ -306,6 +334,8 @@ exports.createPurchaseOrder = async (req, res) => {
       items: validatedItems,
       subtotal: roundMoney(subtotal),
       tax: roundMoney(totalTax),
+      cgst: roundMoney(totalCgst),
+      sgst: roundMoney(totalSgst),
       total_amount: roundMoney(subtotal + totalTax),
       notes: String(notes || '').trim(),
       expected_delivery: expected_delivery ? new Date(expected_delivery) : null,
@@ -323,7 +353,7 @@ exports.createPurchaseOrder = async (req, res) => {
       issue_date: operationNow(),
       due_date: new Date(operationNow().getTime() + 30 * 24 * 60 * 60 * 1000),
       service_items: validatedItems.map((item) => ({
-        description: `Purchase - ${item.medicine_name} (HSN: ${item.hsn_code}, GST: ${item.gst_rate}%)`,
+        description: `Purchase - ${item.medicine_name} (HSN: ${item.hsn_code}, CGST: ${item.cgst_rate}% + SGST: ${item.sgst_rate}%)`,
         quantity: item.quantity,
         unit_price: item.unit_cost,
         total_price: item.total_cost,
@@ -357,8 +387,8 @@ exports.createPurchaseOrder = async (req, res) => {
         subtotal: purchaseOrder.subtotal,
         total_tax: purchaseOrder.tax,
         total_amount: purchaseOrder.total_amount,
-        cgst: roundMoney(purchaseOrder.tax / 2),
-        sgst: roundMoney(purchaseOrder.tax / 2),
+        cgst: roundMoney(purchaseOrder.cgst),
+        sgst: roundMoney(purchaseOrder.sgst),
       },
       manual_non_nlem_lines: validatedItems.filter((item) => item.catalog_source === 'MANUAL_NON_NLEM').map((item) => item.medicine_name),
     });
@@ -538,6 +568,12 @@ exports.receivePurchaseOrder = async (req, res) => {
       // manual medicine snapshot stay on the order line for audit consistency.
       if (receivedItem.hsn_code) orderItem.hsn_code = String(receivedItem.hsn_code).trim();
       if (receivedItem.gst_rate !== undefined) orderItem.gst_rate = toNumber(receivedItem.gst_rate, -1);
+      if (receivedItem.cgst_rate !== undefined) orderItem.cgst_rate = toNumber(receivedItem.cgst_rate, -1);
+      if (receivedItem.sgst_rate !== undefined) orderItem.sgst_rate = toNumber(receivedItem.sgst_rate, -1);
+      const receiptTaxRates = resolvePurchaseTaxRates(orderItem.toObject ? orderItem.toObject() : orderItem, orderItem.gst_rate);
+      orderItem.gst_rate = receiptTaxRates.gstRate;
+      orderItem.cgst_rate = receiptTaxRates.cgstRate;
+      orderItem.sgst_rate = receiptTaxRates.sgstRate;
       if (receivedItem.units_per_pack !== undefined) orderItem.units_per_pack = Math.max(1, toNumber(receivedItem.units_per_pack, 1));
       if (receivedItem.base_unit) orderItem.base_unit = normaliseMedicineUnit(receivedItem.base_unit, orderItem.base_unit || 'tablet', VALID_BASE_UNITS);
       if (receivedItem.pack_unit) orderItem.pack_unit = normaliseMedicineUnit(receivedItem.pack_unit, orderItem.pack_unit || 'strip', VALID_PACK_UNITS);

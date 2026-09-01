@@ -1222,23 +1222,30 @@ async function recordOPDPayment(patientId, payload, user) {
               netPayable: amount(payload.receiptSummary.netPayable)
             }
           : null;
+        const usesAdvance = paymentMethod === 'OPDAdvance';
+        const externalReceived = usesAdvance ? 0 : paymentPart;
         const transaction = new FinancialTransaction({
           hospitalId, patientId: patient._id,
           billId: row.type === 'bill' ? document._id : document.bill_id,
           invoiceId: row.type === 'invoice' ? document._id : undefined,
           transactionNumber: receiptNumber,
-          transactionType: paymentMethod === 'OPDAdvance' ? 'ADVANCE_UTILISATION' : 'RECEIPT',
+          transactionType: usesAdvance ? 'ADVANCE_UTILISATION' : 'RECEIPT',
           direction: 'CREDIT', amount: paymentPart, paymentMethod, paymentReference: payload.reference,
           receiptType: payload.receiptType || 'Payment', amountBeforeSettlement: outstandingBefore,
           settlementDiscountAmount: discountPart, settlementDiscountReason: payload.settlementDiscountReason,
           settlementDiscountApprovedBy: discountPart ? (payload.discountApprovedBy || user?._id) : undefined,
-          advanceApplied: paymentMethod === 'OPDAdvance' ? paymentPart : 0,
-          amountReceived: paymentPart, balanceAfter: amount(availableAfterDiscount - paymentPart),
+          advanceApplied: usesAdvance ? paymentPart : 0,
+          amountReceived: externalReceived,
+          amountTendered: externalReceived,
+          amountApplied: paymentPart,
+          externalMoneyMovement: !usesAdvance,
+          cashFlowClass: usesAdvance ? 'WALLET_UTILISATION' : 'EXTERNAL_COLLECTION',
+          balanceAfter: amount(availableAfterDiscount - paymentPart),
           paymentBreakdown: [{ method: paymentMethod, amount: paymentPart, reference: payload.reference }],
           sourceModule: 'OPD', sourceId: patient._id, status: 'POSTED', remarks: payload.notes,
           createdBy: user?._id,
           idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:${row.type}:${document._id}` : undefined,
-          metadata: receiptSummary ? { receiptSummary } : undefined
+          metadata: receiptSummary ? { receiptSummary, externalReceived } : { externalReceived }
         });
         await transaction.save(sessionOptions(session));
         transactions.push(transaction);
@@ -1301,6 +1308,8 @@ async function recordOPDPayment(patientId, payload, user) {
         hospitalId, patientId: patient._id, transactionNumber: receiptNumber,
         transactionType: 'ADVANCE_DEPOSIT', direction: 'CREDIT', amount: advanceCreated,
         paymentMethod, paymentReference: payload.reference, receiptType: 'Advance', amountReceived: advanceCreated,
+        amountTendered: advanceCreated, amountApplied: 0,
+        externalMoneyMovement: true, cashFlowClass: 'ADVANCE_RECEIPT',
         balanceAfter: balanceAfterAdvance, sourceModule: 'OPD', sourceId: patient._id, status: 'POSTED',
         remarks: 'Excess settlement amount credited to OPD advance', createdBy: user?._id,
         idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:excess-advance` : undefined,
@@ -1353,7 +1362,9 @@ async function recordOPDAdvance(patientId, payload, user) {
     const transaction = new FinancialTransaction({
       hospitalId, patientId: patient._id, transactionNumber: receiptNumber, transactionType: 'ADVANCE_DEPOSIT',
       direction: 'CREDIT', amount: deposit, paymentMethod, paymentReference: payload.reference,
-      receiptType: 'Advance', amountReceived: deposit, balanceAfter, sourceModule: 'OPD', sourceId: patient._id,
+      receiptType: 'Advance', amountReceived: deposit, amountTendered: deposit, amountApplied: 0,
+      externalMoneyMovement: true, cashFlowClass: 'ADVANCE_RECEIPT',
+      balanceAfter, sourceModule: 'OPD', sourceId: patient._id,
       status: 'POSTED', remarks: payload.notes, createdBy: user?._id, idempotencyKey: payload.idempotencyKey,
       metadata: { walletType: 'OPD_SHARED' }
     });

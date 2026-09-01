@@ -116,6 +116,17 @@ function optionalMoney(value, fallback = 0) {
   return Number.isFinite(parsed) ? money(parsed) : money(fallback);
 }
 
+function externalReceiptAmount(transaction = {}) {
+  if (String(transaction.transactionType || '').toUpperCase() !== 'RECEIPT') return 0;
+  if (transaction.externalMoneyMovement === false) return 0;
+  const settled = money(transaction.amount || 0);
+  const advanceApplied = money(transaction.advanceApplied || 0);
+  // Legacy mixed receipts stored amountReceived as the full settled amount.
+  if (advanceApplied > 0) return money(Math.max(0, settled - advanceApplied));
+  const recorded = money(transaction.amountReceived || 0);
+  return recorded > 0 ? money(Math.min(recorded, settled || recorded)) : settled;
+}
+
 function normalizePaymentBreakdown(payload = {}, amount = 0) {
   const rows = Array.isArray(payload.paymentBreakdown)
     ? payload.paymentBreakdown
@@ -449,11 +460,35 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   const pharmacyMirrorCharges = charges.filter((charge) => String(charge.sourceModule || '') === 'Pharmacy');
   const ipdUnbilledCharges = unbilledCharges.filter((charge) => String(charge.sourceModule || '') !== 'Pharmacy');
 
-  const sponsorLedger = await SponsorLedgerEntry.find(
-    { hospitalId, admissionId },
-    null,
-    sessionOptions(session)
-  ).sort({ occurredAt: 1 });
+  const [sponsorLedger, patientAdvanceLedger] = await Promise.all([
+    SponsorLedgerEntry.find(
+      { hospitalId, admissionId },
+      null,
+      sessionOptions(session)
+    ).sort({ occurredAt: 1 }),
+    PatientAdvanceLedger.find(
+      { hospitalId, admissionId, walletType: 'IPD_SHARED', status: 'POSTED' },
+      null,
+      sessionOptions(session)
+    ).sort({ postedAt: 1, createdAt: 1 })
+  ]);
+
+  // The append-only advance ledger is the authoritative patient-credit source.
+  // Admission advance* fields are projections only and can become stale after
+  // pharmacy settlement/refund workflows, so always rebuild them from the IPD
+  // shared wallet before exposing or persisting a financial snapshot.
+  const advanceStats = patientAdvanceLedger.reduce((totals, row) => {
+    const type = String(row.transactionType || '').toUpperCase();
+    const amount = money(row.amount || 0);
+    if (row.direction === 'CREDIT' && ['ADVANCE_DEPOSIT', 'OPENING_BALANCE'].includes(type)) totals.received += amount;
+    if (row.direction === 'DEBIT' && ['IPD_INVOICE_DEBIT', 'OUTSTANDING_SETTLEMENT_DEBIT'].includes(type)) totals.utilized += amount;
+    if (row.direction === 'DEBIT' && ['REFUND_PAID', 'ADVANCE_REFUND', 'PHARMACY_ADVANCE_REFUND'].includes(type)) totals.refunded += amount;
+    return totals;
+  }, { received: 0, utilized: 0, refunded: 0 });
+  const advanceAvailable = money(patientAdvanceLedger.length ? patientAdvanceLedger[patientAdvanceLedger.length - 1].balanceAfter : 0);
+  const advanceReceived = money(advanceStats.received);
+  const advanceUtilized = money(advanceStats.utilized);
+  const advanceRefunded = money(advanceStats.refunded);
 
   const totalChargeAmount = sumCharges(charges);
   const totalStandardAmount = money(
@@ -550,6 +585,10 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
     admission.sponsorPaidAmount = sponsorPaid;
     admission.nonAdmissibleAmount = nonAdmissibleAmount;
     admission.dueAmount = patientReceivable; // patient liability only; sponsor receivable is separate
+    admission.advanceAmount = advanceAvailable;
+    admission.advanceReceivedAmount = advanceReceived;
+    admission.advanceUtilizedAmount = advanceUtilized;
+    admission.advanceRefundedAmount = advanceRefunded;
     await admission.save(sessionOptions(session));
   }
 
@@ -564,6 +603,7 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
     ipdInvoices,
     pharmacyInvoices,
     sponsorLedger,
+    patientAdvanceLedger,
     totalChargeAmount,
     ipdChargeAmount,
     totalStandardAmount,
@@ -588,10 +628,10 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
     sponsorReceivable,
     sponsorPaid,
     overallDue,
-    advanceAvailable: money(admission.advanceAmount || 0),
-    advanceReceived: money(admission.advanceReceivedAmount || 0),
-    advanceUtilized: money(admission.advanceUtilizedAmount || 0),
-    advanceRefunded: money(admission.advanceRefundedAmount || 0)
+    advanceAvailable,
+    advanceReceived,
+    advanceUtilized,
+    advanceRefunded
   };
 }
 
@@ -723,6 +763,31 @@ async function getRunningBill(admissionId, user, options = {}) {
         .limit(100)
         .lean();
 
+  const ipdInvoiceIdsForReceipts = new Set((snapshot.ipdInvoices || []).map((row) => String(row._id)));
+  const isIpdControlledTransaction = (transaction = {}) => {
+    const source = String(transaction.sourceModule || '').toUpperCase();
+    if (source === 'PHARMACY') return false;
+    const invoiceId = transaction.invoiceId?._id || transaction.invoiceId;
+    if (invoiceId && ipdInvoiceIdsForReceipts.size && !ipdInvoiceIdsForReceipts.has(String(invoiceId))) return false;
+    return true;
+  };
+  const ipdExternalPaidAmount = money(receipts.reduce((sum, transaction) => (
+    isIpdControlledTransaction(transaction) ? sum + externalReceiptAmount(transaction) : sum
+  ), 0));
+  const ipdPaymentRefunds = money(receipts.reduce((sum, transaction) => {
+    if (!isIpdControlledTransaction(transaction)) return sum;
+    return String(transaction.transactionType || '').toUpperCase() === 'REFUND'
+      ? sum + money(transaction.amount || 0)
+      : sum;
+  }, 0));
+  // Actual money collected is external invoice receipts plus advance deposits.
+  // Advance utilisation is NOT new money and must never be counted again.
+  const ipdTotalCollectedAmount = money(ipdExternalPaidAmount + snapshot.advanceReceived);
+  const ipdNetCollectedAmount = money(Math.max(
+    0,
+    ipdTotalCollectedAmount - ipdPaymentRefunds - snapshot.advanceRefunded
+  ));
+
   const pendingDiscountApprovals = await ApprovalRequest.find({
     hospitalId: admission.hospitalId,
     admissionId,
@@ -759,6 +824,11 @@ async function getRunningBill(admissionId, user, options = {}) {
       patientReceivable: snapshot.patientReceivable,
       sponsorReceivable: snapshot.sponsorReceivable,
       paidAmount: snapshot.invoicePaid,
+      totalSettledAmount: snapshot.invoicePaid,
+      externalPaidAmount: ipdExternalPaidAmount,
+      totalCollectedAmount: ipdTotalCollectedAmount,
+      netCollectedAmount: ipdNetCollectedAmount,
+      paymentRefundAmount: ipdPaymentRefunds,
       dueAmount: snapshot.patientReceivable,
       invoicedAmount: snapshot.invoicedGross,
       invoiceOutstanding: snapshot.invoiceOutstanding,
@@ -813,7 +883,15 @@ async function getRunningBill(admissionId, user, options = {}) {
       overallDue: snapshot.patientReceivable,
       sponsorReceivable: snapshot.sponsorReceivable,
       sponsorPaidAmount: snapshot.sponsorPaid,
+      // paidAmount is retained as total invoice settlement for compatibility.
+      // External collections and advance utilisation are exposed separately.
       paidAmount: snapshot.invoicePaid,
+      totalSettledAmount: snapshot.invoicePaid,
+      externalPaidAmount: ipdExternalPaidAmount,
+      paymentsApplied: ipdExternalPaidAmount,
+      totalCollectedAmount: ipdTotalCollectedAmount,
+      netCollectedAmount: ipdNetCollectedAmount,
+      paymentRefundAmount: ipdPaymentRefunds,
       invoiceOutstanding: snapshot.invoiceOutstanding,
       unbilledTotal: snapshot.unbilledTotal,
       pharmacyInvoicePaid: snapshot.pharmacyInvoicePaid,
@@ -823,6 +901,9 @@ async function getRunningBill(admissionId, user, options = {}) {
       // display/reconciliation only; collection permissions remain separated.
       totalPaidAmountIncludingPharmacy: snapshot.totalEncounterPaid,
       totalOutstandingIncludingPharmacy: snapshot.totalEncounterOutstanding,
+      advanceReceived: snapshot.advanceReceived,
+      advanceApplied: snapshot.advanceUtilized,
+      advanceRefunded: snapshot.advanceRefunded,
       advanceAvailable: snapshot.advanceAvailable
     }
   };
@@ -2072,6 +2153,12 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
       await invoice.save(sessionOptions(session));
       await syncLinkedBillFromInvoice(invoice, paymentMethod, session);
 
+      // `entry.amount` is the amount settled against this invoice. It may contain
+      // both new external money and reuse of the patient's existing IPD advance.
+      // Keep those two concepts separate so reports/receipts never count an
+      // advance utilisation as another collection.
+      const externalReceived = money(Math.max(0, entry.amount - invoiceAdvanceApplied));
+      const isPureAdvanceUtilisation = invoiceAdvanceApplied > 0 && externalReceived <= 0.001;
       const transaction = new FinancialTransaction({
         hospitalId,
         patientId: admission.patientId,
@@ -2079,7 +2166,7 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
         billId: invoice.bill_id,
         invoiceId: invoice._id,
         transactionNumber: receiptNumber,
-        transactionType: advanceApplied > 0 && requestedAmount === advanceApplied ? 'ADVANCE_UTILISATION' : 'RECEIPT',
+        transactionType: isPureAdvanceUtilisation ? 'ADVANCE_UTILISATION' : 'RECEIPT',
         direction: 'CREDIT',
         amount: entry.amount,
         paymentMethod,
@@ -2090,7 +2177,11 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
         settlementDiscountReason: invoiceSettlementDiscount > 0 ? payload.settlementDiscountReason : undefined,
         settlementDiscountApprovedBy: invoiceSettlementDiscount > 0 ? (payload.discountApprovedBy || user?._id) : undefined,
         advanceApplied: invoiceAdvanceApplied,
-        amountReceived: entry.amount,
+        amountReceived: externalReceived,
+        amountTendered: externalReceived,
+        amountApplied: entry.amount,
+        externalMoneyMovement: externalReceived > 0,
+        cashFlowClass: externalReceived > 0 ? 'EXTERNAL_COLLECTION' : 'WALLET_UTILISATION',
         balanceAfter: projectedBalance,
         paymentBreakdown: breakdown,
         sourceModule: payload.sourceModule || 'IPD',
@@ -2099,7 +2190,11 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
         remarks: payload.notes,
         createdBy: user?._id,
         idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:${invoice._id}` : undefined,
-        metadata: { allocatedInvoiceNumber: invoice.invoice_number }
+        metadata: {
+          allocatedInvoiceNumber: invoice.invoice_number,
+          externalReceived,
+          advanceApplied: invoiceAdvanceApplied
+        }
       });
       await transaction.save(sessionOptions(session));
       transactions.push(transaction);
@@ -2196,6 +2291,13 @@ async function recordAdvance(admissionId, payload, user) {
       amount,
       paymentMethod,
       paymentReference: payload.reference,
+      receiptType: 'Advance',
+      amountReceived: amount,
+      amountTendered: amount,
+      amountApplied: 0,
+      externalMoneyMovement: true,
+      cashFlowClass: 'ADVANCE_RECEIPT',
+      balanceAfter: money(updated.advanceAmount),
       sourceModule: 'IPD',
       sourceId: updated._id,
       remarks: payload.notes || 'IPD advance received',
@@ -2547,41 +2649,158 @@ async function getFinancialLedger(admissionId, user, options = {}) {
           hospitalId: snapshot.admission.hospitalId,
           admissionId,
           status: 'POSTED'
-        }).sort({ createdAt: 1 }).lean()
+        }).sort({ postedAt: 1, createdAt: 1 }).lean()
   ]);
 
-  const entries = [
-    ...snapshot.ipdInvoices.map((invoice) => ({
-      date: invoice.issue_date || invoice.created_at,
+  const ipdInvoiceIds = new Set((snapshot.ipdInvoices || []).map((row) => String(row._id)));
+  const isIpdControlledTransaction = (transaction = {}) => {
+    if (String(transaction.sourceModule || '').toUpperCase() === 'PHARMACY') return false;
+    const invoiceId = transaction.invoiceId?._id || transaction.invoiceId;
+    return !invoiceId || !ipdInvoiceIds.size || ipdInvoiceIds.has(String(invoiceId));
+  };
+  const ipdTransactions = transactions.filter(isIpdControlledTransaction);
+  const externalPaidAmount = money(ipdTransactions.reduce((sum, row) => sum + externalReceiptAmount(row), 0));
+  const paymentRefundAmount = money(ipdTransactions
+    .filter((row) => String(row.transactionType || '').toUpperCase() === 'REFUND')
+    .reduce((sum, row) => sum + money(row.amount || 0), 0));
+  const totalCollectedAmount = money(externalPaidAmount + snapshot.advanceReceived);
+  const netCollectedAmount = money(Math.max(0, totalCollectedAmount - paymentRefundAmount - snapshot.advanceRefunded));
+
+  // A patient-advance event may be mirrored by FinancialTransaction. The current
+  // production path/fixture stores the wallet reference as paymentReference for the
+  // deposit and as transactionNumber for utilisation. Match both identities before
+  // exposing wallet-only rows, otherwise the same advance appears twice in Ledger.
+  const financialEventReferences = new Set();
+  transactions.forEach((transaction) => {
+    [transaction.transactionNumber, transaction.paymentReference]
+      .filter(Boolean)
+      .forEach((reference) => financialEventReferences.add(String(reference)));
+  });
+  const unmatchedAdvanceLedger = advanceLedger.filter((entry) =>
+    !entry.referenceNumber || !financialEventReferences.has(String(entry.referenceNumber))
+  );
+
+  const advanceByReference = new Map();
+  advanceLedger.forEach((entry) => {
+    if (entry.referenceNumber) advanceByReference.set(String(entry.referenceNumber), entry);
+  });
+
+  const invoiceEntries = [...(snapshot.ipdInvoices || []), ...(snapshot.pharmacyInvoices || [])]
+    .filter((invoice) => invoice.document_stage !== 'VOID' && invoice.status !== 'Cancelled')
+    .map((invoice) => ({
+      date: invoice.issue_date || invoice.created_at || invoice.createdAt,
       kind: 'INVOICE',
       number: invoice.invoice_number,
-      debit: money(invoice.total),
-      credit: 0,
-      balance: money(invoice.balance_due),
-      description: `${invoice.invoice_type} — ${invoice.status}`,
+      patientDebit: money(invoice.total),
+      patientCredit: 0,
+      walletCredit: 0,
+      walletDebit: 0,
+      walletBalance: null,
+      description: `${invoice.invoice_type || 'Patient'} — ${invoice.status || 'Issued'}`,
       invoiceId: invoice._id
-    })),
-    ...transactions.map((transaction) => ({
-      date: transaction.createdAt,
-      kind: transaction.transactionType,
-      number: transaction.transactionNumber,
-      debit: transaction.direction === 'DEBIT' ? money(transaction.amount) : 0,
-      credit: transaction.direction === 'CREDIT' ? money(transaction.amount) : 0,
+    }));
+
+  const transactionEntry = (transaction) => {
+    const type = String(transaction.transactionType || '').toUpperCase();
+    const amount = money(transaction.amount || 0);
+    const advanceApplied = money(transaction.advanceApplied || 0);
+    let patientDebit = 0;
+    let patientCredit = 0;
+    let walletCredit = 0;
+    let walletDebit = 0;
+
+    if (type === 'ADVANCE_DEPOSIT') {
+      walletCredit = amount;
+    } else if (type === 'ADVANCE_UTILISATION') {
+      patientCredit = money(transaction.amountApplied || amount);
+      walletDebit = money(transaction.advanceApplied || amount);
+    } else if (type === 'ADVANCE_REFUND') {
+      walletDebit = amount;
+    } else if (type === 'REFUND') {
+      patientDebit = amount;
+    } else if (['RECEIPT', 'SETTLEMENT', 'CREDIT_NOTE'].includes(type)) {
+      // A legacy mixed settlement may embed advanceApplied in the receipt amount.
+      // The whole settlement reduces patient liability once; only the advance part
+      // moves the wallet. New records normally have a separate ADVANCE_UTILISATION.
+      patientCredit = amount;
+      if (advanceApplied > 0) walletDebit = advanceApplied;
+    } else if (String(transaction.direction || '').toUpperCase() === 'DEBIT') {
+      patientDebit = amount;
+    } else {
+      patientCredit = amount;
+    }
+
+    const referenceCandidates = [transaction.transactionNumber, transaction.paymentReference].filter(Boolean).map(String);
+    const matchingAdvance = referenceCandidates.map((ref) => advanceByReference.get(ref)).find(Boolean);
+    return {
+      date: transaction.postedAt || transaction.createdAt,
+      kind: type || transaction.transactionType || 'TRANSACTION',
+      number: transaction.transactionNumber || transaction.paymentReference,
+      patientDebit: money(patientDebit),
+      patientCredit: money(patientCredit),
+      walletCredit: money(walletCredit),
+      walletDebit: money(walletDebit),
+      walletBalance: matchingAdvance ? money(matchingAdvance.balanceAfter) : null,
+      walletType: matchingAdvance?.walletType || transaction.metadata?.walletType || (walletCredit || walletDebit ? 'IPD_SHARED' : undefined),
+      paymentMethod: transaction.paymentMethod,
       description: transaction.remarks || transaction.transactionType,
       invoiceId: transaction.invoiceId,
       transactionId: transaction._id
-    })),
-    ...advanceLedger.map((entry) => ({
-      date: entry.createdAt,
-      kind: `ADVANCE_${entry.transactionType}`,
+    };
+  };
+
+  const unmatchedWalletEntries = unmatchedAdvanceLedger.map((entry) => {
+    const type = String(entry.transactionType || '').toUpperCase();
+    const amount = money(entry.amount || 0);
+    const isCredit = String(entry.direction || '').toUpperCase() === 'CREDIT';
+    const isUtilisation = ['IPD_INVOICE_DEBIT', 'OUTSTANDING_SETTLEMENT_DEBIT'].includes(type);
+    return {
+      date: entry.postedAt || entry.createdAt,
+      kind: `WALLET_${type}`,
       number: entry.referenceNumber,
-      debit: entry.direction === 'DEBIT' ? money(entry.amount) : 0,
-      credit: entry.direction === 'CREDIT' ? money(entry.amount) : 0,
-      balance: money(entry.balanceAfter),
+      patientDebit: 0,
+      // For legacy wallet-only utilisation, reflect the settlement once in the
+      // patient-liability columns as well as the wallet movement.
+      patientCredit: isUtilisation ? amount : 0,
+      walletCredit: isCredit ? amount : 0,
+      walletDebit: !isCredit ? amount : 0,
+      walletBalance: money(entry.balanceAfter),
+      walletType: entry.walletType,
+      paymentMethod: entry.paymentMethod,
       description: entry.notes || entry.transactionType,
       advanceEntryId: entry._id
-    }))
-  ].sort((left, right) => new Date(left.date) - new Date(right.date));
+    };
+  });
+
+  let patientBalance = 0;
+  const entries = [
+    ...invoiceEntries,
+    ...transactions.map(transactionEntry),
+    ...unmatchedWalletEntries
+  ]
+    .sort((left, right) => new Date(left.date || 0) - new Date(right.date || 0))
+    .map((entry) => {
+      patientBalance = money(patientBalance + money(entry.patientDebit) - money(entry.patientCredit));
+      return {
+        ...entry,
+        patientBalance,
+        // Backward-compatible aliases used by the financial print mapper.
+        debit: money(entry.patientDebit),
+        credit: money(entry.patientCredit),
+        balance: patientBalance
+      };
+    });
+
+  const encounterInvoiced = money(
+    [...(snapshot.ipdInvoices || []), ...(snapshot.pharmacyInvoices || [])]
+      .filter((invoice) => invoice.document_stage !== 'VOID' && invoice.status !== 'Cancelled')
+      .reduce((sum, invoice) => sum + Number(invoice.total || 0), 0)
+  );
+  const encounterSettled = money(
+    [...(snapshot.ipdInvoices || []), ...(snapshot.pharmacyInvoices || [])]
+      .filter((invoice) => invoice.document_stage !== 'VOID' && invoice.status !== 'Cancelled')
+      .reduce((sum, invoice) => sum + Number(invoice.amount_paid || 0), 0)
+  );
 
   return {
     success: true,
@@ -2591,8 +2810,19 @@ async function getFinancialLedger(admissionId, user, options = {}) {
       totalEncounterCharged: snapshot.totalChargeAmount,
       pharmacyMirrorCharged: sumCharges(snapshot.pharmacyMirrorCharges),
       invoiced: snapshot.invoicedGross,
+      encounterInvoiced,
+      // `paid` remains IPD-controlled invoice settlement for compatibility.
       paid: snapshot.invoicePaid,
+      totalSettledAmount: snapshot.invoicePaid,
+      encounterSettledAmount: encounterSettled,
+      externalPaidAmount,
+      totalCollectedAmount,
+      netCollectedAmount,
+      paymentRefundAmount,
       due: snapshot.overallDue,
+      advanceReceived: snapshot.advanceReceived,
+      advanceApplied: snapshot.advanceUtilized,
+      advanceRefunded: snapshot.advanceRefunded,
       advanceAvailable: snapshot.advanceAvailable
     },
     invoices: snapshot.ipdInvoices,

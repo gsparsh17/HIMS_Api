@@ -50,6 +50,7 @@ router.get('/patient/:patientId', prescriptionController.getPrescriptionsByPatie
 router.get('/doctor/:doctorId', prescriptionController.getPrescriptionsByDoctorId);
 router.get('/appointment/:appointmentId', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff'), prescriptionController.getPrescriptionByAppointmentId);
 router.get('/appointment/:appointmentId/blank-print', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist'), prescriptionController.downloadBlankPrescriptionPdfByAppointment);
+router.get('/appointment/:appointmentId/blank-print-one-page', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist'), prescriptionController.downloadBlankPrescriptionOnePagePdfByAppointment);
 router.get('/:id/opd-slip.pdf', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist'), prescriptionController.downloadOpdSlipPdf);
 router.get('/:id/print', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff'), prescriptionController.downloadPrescriptionPdf);
 router.get('/:id', prescriptionController.getPrescriptionById);

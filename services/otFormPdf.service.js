@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const Hospital = require('../models/Hospital');
+const { formatMedication } = require('../utils/medicationDisplay');
 
 const A4 = { width: 595.28, height: 841.89, margin: 16 };
 const DOC_MARGIN = A4.margin;
@@ -292,7 +293,7 @@ function renderPac(doc,ctx,template,data,signatures){
   addPage(doc);y=header(doc,ctx,template.title,'Page 2 - Airway, investigations, advice and fitness');
   y=sectionTitle(doc,'Airway and Spine',x,y,w);const airway=[['ASA Grade',data.asaGrade],['Difficult Airway',data.difficultAirway],['Mouth Opening',data.mouthOpening],['Neck Movement',data.neckMovement],['Denture',data.denture],['Mallampati Grade',data.mallampatiGrade],['Spine History',data.spineHistory]];airway.forEach(([l,v],i)=>{const cx=x+(i%2)*w/2,cy=y+Math.floor(i/2)*24;kv(doc,l,v,cx,cy,w/2);});y+=100;
   y=sectionTitle(doc,'Investigations',x,y,w);const labs=(data.laboratoryInvestigations||[]).slice(0,10).map(r=>[r.test,r.result,formatDate(r.date),r.acceptable?'Yes':'']);table(doc,x,y,[130,160,100,80],['Laboratory test','Result','Date','Acceptable'],labs.length?labs:[['','','','']],20);const imgs=(data.imagingInvestigations||[]).slice(0,6).map(r=>[r.test,r.result,formatDate(r.date)]);table(doc,x+480,y,[75,120,65],['Imaging','Result','Date'],imgs.length?imgs:[['','','']],20,{size:5.5});y+=230;
-  y=sectionTitle(doc,'Premedication / Pre-Op Advice / Fitness',x,y,w);const pre=(data.premedication||[]).slice(0,5).map(r=>[r.medicine,r.dose,r.route,r.time]);table(doc,x,y,[120,60,60,70],['Medicine','Dose','Route','Time'],pre.length?pre:[['','','','']],20);text(doc,'Advice / instructions:',x+325,y,100,{size:6.5,bold:true});let ay=y+16;(data.preOpAdvice||[]).forEach(item=>{checkbox(doc,x+325,ay,true,item,w-335,{size:6.2});ay+=17;});
+  y=sectionTitle(doc,'Premedication / Pre-Op Advice / Fitness',x,y,w);const pre=(data.premedication||[]).slice(0,5).map(r=>{const m=formatMedication({...r,medicineName:r.medicine,dosage:r.dose});return[m.label||m.name,m.dosage,m.route,r.time];});table(doc,x,y,[120,60,60,70],['Medicine','Dose','Route','Time'],pre.length?pre:[['','','','']],20);text(doc,'Advice / instructions:',x+325,y,100,{size:6.5,bold:true});let ay=y+16;(data.preOpAdvice||[]).forEach(item=>{checkbox(doc,x+325,ay,true,item,w-335,{size:6.2});ay+=17;});
   text(doc,'Risk summary / optimization:',x,y+125,130,{size:6.5,bold:true});text(doc,data.riskSummary,x+130,y+125,w-130,{size:6.5,height:45});kv(doc,'Fitness Status',data.fitnessStatus,x,y+175,w);
   signatureBlock(doc,x+w-200,doc.page.height-100,200,'Signature Anaesthetist',sigFor(signatures,'anaesthetist'));footer(doc,template,signatures,2,2);
 }
@@ -300,7 +301,7 @@ function renderPostAnaesthesia(doc,ctx,template,data,signatures){
   addPage(doc);let y=header(doc,ctx,template.title,template.sourceReference);const x=DOC_MARGIN,w=doc.page.width-DOC_MARGIN*2;const left=w*0.52,right=w-left;
   y=sectionTitle(doc,'Post Operative Anaesthesia Instructions',x,y,w);
   kv(doc,'Transfer to',data.transferTo,x,y,left);kv(doc,'Monitoring',value(data.monitoring),x+left,y,right);y+=24;kv(doc,'NBM for',data.nbmHours,x,y,left);kv(doc,'Position',data.position,x+left,y,right);y+=24;kv(doc,'IVF / O2',`${value(data.ivFluids)} / O2: ${data.oxygenInhalation?'Yes':'No'}`,x,y,left);kv(doc,'Antibiotics / Orders',data.antibiotics,x+left,y,right,48);y+=52;
-  text(doc,'Analgesics',x,y,80,{size:7,bold:true});const meds=(data.analgesics||[]).slice(0,6).map(r=>[r.medicine,r.dose,r.route,r.frequency]);table(doc,x,y+14,[100,55,55,75],['Medicine','Dose mg','Route','Frequency'],meds.length?meds:[['','','','']],20);
+  text(doc,'Analgesics',x,y,80,{size:7,bold:true});const meds=(data.analgesics||[]).slice(0,6).map(r=>{const m=formatMedication({...r,medicineName:r.medicine,dosage:r.dose});return[m.label||m.name,m.dosage,m.route,m.frequency];});table(doc,x,y+14,[100,55,55,75],['Medicine','Dose mg','Route','Frequency'],meds.length?meds:[['','','','']],20);
   text(doc,'Special Instructions',x,y+155,100,{size:7,bold:true});rect(doc,x,y+170,left,170);text(doc,data.specialInstructions,x+6,y+176,left-12,{size:7,height:75});text(doc,'Critical Events',x+6,y+260,80,{size:7,bold:true});text(doc,data.criticalEvents,x+6,y+275,left-12,{size:7,height:55});
   const ald=(data.aldrete||[]).map(r=>[r.criterion,r.assessment,r.points]);table(doc,x+left+8,y+14,[80,130,45],['Criterion','Selected characteristic','Points'],ald.length?ald:[['Activity','',''],['Respiration','',''],['Circulation','',''],['Consciousness','',''],['Oxygen saturation','','']],35,{size:5.8});kv(doc,'Total /10',data.aldreteTotal,x+left+8,y+205,255);
   const vitals=(data.shiftingVitals||[]).slice(0,7).map(r=>[r.time,r.bp,r.pulse,r.rr,r.spo2]);table(doc,x,y+350,[60,80,70,65,70],['Time','BP','Pulse','RR','SpO2'],vitals.length?vitals:Array.from({length:5},()=>['','','','','']),20);

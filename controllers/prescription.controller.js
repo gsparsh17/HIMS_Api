@@ -17,11 +17,10 @@ const ProcedureRequest = require('../models/ProcedureRequest');
 const Pharmacy = require('../models/Pharmacy');
 const Procedure = require('../models/Procedure');
 const Hospital = require('../models/Hospital');
-const FinancialTransaction = require('../models/FinancialTransaction');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const SafetyPolicy = require('../models/SafetyPolicy');
-const { generatePrescriptionPdf, generateOpdSlipPdf } = require('../services/clinicalPdf.service');
+const { generatePrescriptionPdf, generateBlankPrescriptionOnePagePdf } = require('../services/clinicalPdf.service');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requestHospitalId } = require('../utils/hospitalScope');
@@ -777,6 +776,7 @@ exports.createPrescription = async (req, res) => {
     const populatedPrescription = await Prescription.findById(prescription._id)
       .populate('patient_id', 'first_name last_name patientId phone')
       .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('lab_test_requests.request_id', 'requestNumber status')
       .populate('radiology_test_requests.request_id', 'requestNumber status')
       .populate('procedure_requests.request_id', 'requestNumber status')
@@ -807,7 +807,7 @@ exports.createPrescription = async (req, res) => {
 
 // Generate a blank standard clinical prescription for a scheduled appointment.
 // The PDF is not persisted as a prescription record; it is intended for walk-in/manual prescribing.
-exports.downloadBlankPrescriptionPdfByAppointment = async (req, res) => {
+const downloadBlankPrescriptionPdfByAppointment = async (req, res, { onePage = false } = {}) => {
   try {
     const appointment = await Appointment.findById(req.params.appointmentId)
       .populate(
@@ -887,7 +887,8 @@ exports.downloadBlankPrescriptionPdfByAppointment = async (req, res) => {
       items: []
     };
 
-    return generatePrescriptionPdf({
+    const generator = onePage ? generateBlankPrescriptionOnePagePdf : generatePrescriptionPdf;
+    return generator({
       res,
       prescription: blankPrescription,
       hospital: appointment.hospital_id || null,
@@ -904,6 +905,11 @@ exports.downloadBlankPrescriptionPdfByAppointment = async (req, res) => {
   }
 };
 
+exports.downloadBlankPrescriptionPdfByAppointment = (req, res) =>
+  downloadBlankPrescriptionPdfByAppointment(req, res, { onePage: false });
+exports.downloadBlankPrescriptionOnePagePdfByAppointment = (req, res) =>
+  downloadBlankPrescriptionPdfByAppointment(req, res, { onePage: true });
+
 // Generate the supplied OPD slip / prescription format through the shared
 // clinical PDF renderer. Data loading stays in the controller; visual rendering
 // stays in clinicalPdf.service.js so prescription documents share one PDF stack.
@@ -917,48 +923,26 @@ exports.downloadOpdSlipPdf = async (req, res) => {
         select: 'firstName lastName specialization department hospitalId',
         populate: { path: 'department', select: 'name' }
       })
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('appointment_id', 'hospital_id token serial_number appointment_date created_at department_id')
       .populate('created_by', 'firstName lastName name email')
       .lean();
 
     if (!prescription) return res.status(404).json({ success: false, error: 'OPD prescription/slip not found for this hospital' });
 
-    const date = prescription.appointment_id?.appointment_date || prescription.createdAt || prescription.issue_date;
-    const receiptQuery = {
-      hospitalId,
-      patientId: prescription.patient_id?._id,
-      sourceModule: 'OPD',
-      transactionType: 'RECEIPT',
-      status: 'POSTED'
-    };
-    if (date) {
-      const d = new Date(date);
-      const from = new Date(d); from.setHours(0, 0, 0, 0);
-      const to = new Date(d); to.setHours(23, 59, 59, 999);
-      receiptQuery.postedAt = { $gte: from, $lte: to };
-    }
-
-    const [hospital, vitals, receipt] = await Promise.all([
+    const [hospital, vitals] = await Promise.all([
       Hospital.findById(hospitalId).lean(),
       Vital.findOne({
         $or: [
           { prescription_id: prescription._id },
           ...(prescription.appointment_id?._id ? [{ appointment_id: prescription.appointment_id._id }] : [])
         ]
-      }).sort({ recorded_at: -1, createdAt: -1 }).lean(),
-      prescription.patient_id?._id
-        ? FinancialTransaction.findOne(receiptQuery).sort({ postedAt: -1 }).select('transactionNumber').lean()
-        : null
+      }).sort({ recorded_at: -1, createdAt: -1 }).lean()
     ]);
 
-    return generateOpdSlipPdf({
-      res,
-      prescription,
-      hospital,
-      vitals,
-      receipt,
-      printedBy: req.user
-    });
+    // Backward-compatible endpoint: use the same canonical two-page prescription
+    // renderer as every other prescription Preview/Print action.
+    return generatePrescriptionPdf({ res, prescription, hospital, vitals });
   } catch (err) {
     console.error('Error generating OPD slip PDF:', err);
     if (!res.headersSent) return res.status(err.statusCode || 500).json({ success: false, error: err.message });
@@ -975,6 +959,7 @@ exports.downloadPrescriptionPdf = async (req, res) => {
         select: 'firstName lastName specialization department',
         populate: { path: 'department', select: 'name' }
       })
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('appointment_id', 'token appointment_date');
 
     if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
@@ -1002,6 +987,7 @@ exports.getPrescriptionByAppointmentId = async (req, res) => {
     const prescription = await Prescription.findOne({ appointment_id: req.params.appointmentId, hospitalId: requestHospitalId(req) })
       .populate('patient_id', 'first_name last_name patientId phone dob gender allergies')
       .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
       .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
       .populate('procedure_requests.request_id', 'requestNumber status priority scheduledDate clinical_history clinical_indication pre_procedure_instructions is_billed')
@@ -1035,6 +1021,7 @@ exports.getPrescriptionById = async (req, res) => {
     const prescription = await Prescription.findOne({ _id: req.params.id, hospitalId: requestHospitalId(req) })
       .populate('patient_id', 'first_name last_name patientId phone dob gender')
       .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('ipd_medication_ids', 'medicineName dosage frequency status')
       .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
       .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
@@ -1114,6 +1101,7 @@ exports.getAllPrescriptions = async (req, res) => {
     const prescriptions = await Prescription.find(filter)
       .populate('patient_id', 'first_name last_name patientId phone')
       .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('lab_test_requests.request_id', 'requestNumber status')
       .populate('radiology_test_requests.request_id', 'requestNumber status')
       .populate('procedure_requests.request_id', 'requestNumber status')
@@ -1158,6 +1146,7 @@ exports.getPrescriptionsByPatientId = async (req, res) => {
 
     const prescriptions = await Prescription.find(filter)
       .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('lab_test_requests.request_id', 'requestNumber status')
       .populate('radiology_test_requests.request_id', 'requestNumber status')
       .populate('procedure_requests.request_id', 'requestNumber status')
@@ -1196,6 +1185,7 @@ exports.getIPDPrescriptions = async (req, res) => {
       source_type: 'IPD'
     })
       .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('ipd_medication_ids', 'medicineName dosage frequency status')
       .populate('lab_test_requests.request_id', 'requestNumber status')
       .populate('radiology_test_requests.request_id', 'requestNumber status')
@@ -1692,6 +1682,7 @@ exports.updatePrescription = async (req, res) => {
     const populatedPrescription = await Prescription.findById(prescription._id)
       .populate('patient_id', 'first_name last_name patientId phone allergies')
       .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('lab_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
       .populate('radiology_test_requests.request_id', 'requestNumber status priority scheduledDate clinical_history patient_notes is_billed')
       .populate('procedure_requests.request_id', 'requestNumber status priority scheduledDate clinical_history clinical_indication pre_procedure_instructions is_billed');
@@ -1925,6 +1916,7 @@ exports.getOPDPrescriptionsForIPD = async (req, res) => {
 
     const prescriptions = await Prescription.find(filter)
       .populate('doctor_id', 'firstName lastName specialization')
+      .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('lab_test_requests.request_id', 'requestNumber status')
       .populate('radiology_test_requests.request_id', 'requestNumber status')
       .populate('procedure_requests.request_id', 'requestNumber status')

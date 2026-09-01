@@ -9,6 +9,7 @@ const Patient = require('../models/Patient');
 const FinancialTransaction = require('../models/FinancialTransaction');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const Hospital = require('../models/Hospital');
+const { normalizeFinancialLine } = require('../utils/financialLine');
 
 const asNumber = (value) => {
   const parsed = Number(value);
@@ -228,20 +229,18 @@ async function aggregateIpdBillingRows({ hospitalObjectId, search, startDate = '
         },
         ward: { $ifNull: ['$_ward.name', { $ifNull: ['$_ward.wardName', ''] }] },
         bed: { $ifNull: ['$_bed.bedNumber', { $ifNull: ['$_bed.bed_number', { $ifNull: ['$_bed.name', ''] }] }] },
+        // Invoice/charge documents are authoritative for the billing worklist.
+        // Admission.totalBillAmount/dueAmount are cached projections and can lag
+        // after settlement, advance utilisation, credit notes or refunds. Reusing
+        // those caches here was one source of /billing vs IPD summary mismatches.
         totalBill: {
           $cond: [
-            { $ne: [{ $type: '$totalBillAmount' }, 'missing'] },
-            { $ifNull: ['$totalBillAmount', 0] },
-            { $cond: [{ $gt: ['$_chargeTotal', 0] }, '$_chargeTotal', { $add: ['$_issuedTotal', '$_unbilledTotal'] }] }
+            { $gt: ['$_issuedTotal', 0] },
+            { $add: ['$_issuedTotal', '$_unbilledTotal'] },
+            '$_chargeTotal'
           ]
         },
-        outstandingAmount: {
-          $cond: [
-            { $ne: [{ $type: '$dueAmount' }, 'missing'] },
-            { $ifNull: ['$dueAmount', 0] },
-            { $add: ['$_invoiceOutstanding', '$_unbilledTotal'] }
-          ]
-        },
+        outstandingAmount: { $add: ['$_invoiceOutstanding', '$_unbilledTotal'] },
         invoiceCount: { $size: '$_invoices' }, chargeCount: { $size: '$_charges' },
         lastUpdated: { $max: { $concatArrays: [[{ $ifNull: ['$updatedAt', '$admissionDate'] }], '$_invoiceDates', '$_chargeDates'] } }
       }
@@ -757,6 +756,10 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   if (admissionId) {
     transactionFilter.admissionId = admissionId;
     advanceFilter.admissionId = admissionId;
+    // IPD billing must reconcile only the shared IPD patient-advance wallet.
+    // Pharmacy maintains a separate PHARMACY_IPD wallet and including it here
+    // makes the same credit appear twice across IPD/pharmacy documents.
+    advanceFilter.walletType = 'IPD_SHARED';
   } else {
     transactionFilter.$or = [{ admissionId: { $exists: false } }, { admissionId: null }];
     advanceFilter.$or = [{ admissionId: { $exists: false } }, { admissionId: null }];
@@ -873,36 +876,43 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   // registration/consultation/service by date without a separate UI path.
   const displayCharges = admissionId
     ? charges
-    : bills.flatMap((bill) => (bill.items || []).map((item, index) => ({
-        _id: item._id || `${bill._id}:${index}`,
-        patientId,
-        appointmentId: bill.appointment_id || (appointmentId || null),
-        billId: bill._id,
-        invoiceId: bill.invoice_id,
-        chargeType: item.item_type || 'Miscellaneous',
-        description: item.description || 'OPD billing item',
-        quantity: Number(item.quantity || 1),
-        rate: Number(item.unit_price ?? ((Number(item.amount || 0)) / Math.max(1, Number(item.quantity || 1)))),
-        grossAmount: Number(item.gross_amount ?? (item.unit_price !== undefined ? Number(item.unit_price || 0) * Math.max(1, Number(item.quantity || 1)) : item.amount) ?? 0),
-        discountType: item.discount_type || 'fixed',
-        discountRate: Number(item.discount_rate || 0),
-        discountAmount: Number(item.discount_amount || 0),
-        discountReason: item.discount_reason || bill.discount_reason || '',
-        taxableAmount: Number(item.taxable_amount ?? Math.max(0, Number(item.gross_amount || item.amount || 0) - Number(item.discount_amount || 0))),
-        taxMode: item.tax_mode || 'exclusive',
-        taxName: item.tax_name || '',
-        taxCode: item.tax_code || '',
-        taxRate: Number(item.tax_rate || 0),
-        taxAmount: Number(item.tax_amount || 0),
-        amount: Number(item.amount || 0),
-        netAmount: Number(item.net_amount ?? item.amount ?? 0),
-        discount: Number(item.discount_amount || 0),
-        tax: Number(item.tax_amount || 0),
-        chargeDate: bill.generated_at || bill.createdAt,
-        createdAt: bill.createdAt,
-        status: bill.invoice_id ? 'INVOICED' : (bill.document_stage || 'GENERATED'),
-        isBilled: Boolean(bill.invoice_id || (bill.invoice_ids || []).length)
-      })));
+    : bills.flatMap((bill) => (bill.items || []).map((item, index) => {
+        const canonical = normalizeFinancialLine(item);
+        const rawTaxable = Number(item.taxable_amount ?? item.taxableAmount);
+        const taxableAmount = Number.isFinite(rawTaxable) && (Math.abs(rawTaxable) > 0.000001 || canonical.grossAmount === 0)
+          ? rawTaxable
+          : Math.max(0, canonical.grossAmount - canonical.discountAmount);
+        return {
+          _id: item._id || `${bill._id}:${index}`,
+          patientId,
+          appointmentId: bill.appointment_id || (appointmentId || null),
+          billId: bill._id,
+          invoiceId: bill.invoice_id,
+          chargeType: item.item_type || 'Miscellaneous',
+          description: item.description || 'OPD billing item',
+          quantity: canonical.quantity,
+          rate: canonical.unitRate,
+          grossAmount: canonical.grossAmount,
+          discountType: item.discount_type || 'fixed',
+          discountRate: Number(item.discount_rate || 0),
+          discountAmount: canonical.discountAmount,
+          discountReason: item.discount_reason || bill.discount_reason || '',
+          taxableAmount,
+          taxMode: item.tax_mode || 'exclusive',
+          taxName: item.tax_name || '',
+          taxCode: item.tax_code || '',
+          taxRate: Number(item.tax_rate || 0),
+          taxAmount: canonical.taxAmount,
+          amount: canonical.netAmount,
+          netAmount: canonical.netAmount,
+          discount: canonical.discountAmount,
+          tax: canonical.taxAmount,
+          chargeDate: bill.generated_at || bill.createdAt,
+          createdAt: bill.createdAt,
+          status: bill.invoice_id ? 'INVOICED' : (bill.document_stage || 'GENERATED'),
+          isBilled: Boolean(bill.invoice_id || (bill.invoice_ids || []).length)
+        };
+      }));
 
   const unbilledCharges = displayCharges.filter((charge) => !charge.isBilled && charge.status !== 'INVOICED');
   const activeInvoices = invoices.filter((invoice) =>
@@ -938,16 +948,17 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   const calculatedOutstanding = admissionId
     ? activeInvoices.reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) + unbilledTotal
     : opdOutstanding;
-  const outstanding = admissionId && admission?.dueAmount !== undefined
-    ? asNumber(admission.dueAmount)
-    : calculatedOutstanding;
+  // Documents and active ledger rows are authoritative. Cached admission totals are
+  // projections and may lag after settlement/credit/refund operations, so they must
+  // never override the values used by billing UI and generated documents.
+  const outstanding = calculatedOutstanding;
   const totalBill = admissionId
-    ? (admission?.totalBillAmount !== undefined ? asNumber(admission.totalBillAmount) : (chargeTotal || invoiceTotal + unbilledTotal))
+    ? asNumber(chargeTotal || invoiceTotal + unbilledTotal)
     : appointmentId
       ? billTotal
       : asNumber(billTotal + orphanInvoiceTotal);
   const paidAmount = admissionId
-    ? (admission?.paidAmount !== undefined ? asNumber(admission.paidAmount) : activeInvoices.reduce((sum, invoice) => sum + asNumber(invoice.amount_paid), 0))
+    ? activeInvoices.reduce((sum, invoice) => sum + asNumber(invoice.amount_paid), 0)
     : opdPaid;
 
   const billEntries = bills
@@ -980,14 +991,23 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   const transactionEffect = (transaction) => {
     const transactionType = String(transaction.transactionType || '').toUpperCase();
     const value = asNumber(transaction.amount);
-    // A unified patient ledger recognises an advance when it is deposited.
-    // Utilisation only reallocates that already-recognised credit to an invoice,
-    // so treating it as another credit would reduce the balance twice.
-    if (transactionType === 'ADVANCE_UTILISATION') return { debit: 0, credit: 0 };
-    if (['RECEIPT', 'ADVANCE_DEPOSIT', 'SETTLEMENT', 'CREDIT_NOTE'].includes(transactionType)) {
+
+    // This running balance represents BILL LIABILITY, while patient advance is a
+    // separate wallet. Receiving an advance therefore does not reduce a bill until
+    // that credit is explicitly utilised. Likewise, refunding unused advance changes
+    // the wallet but not the bill liability. This keeps Outstanding and Available
+    // Advance independent and prevents the same money from being silently counted
+    // twice.
+    if (['ADVANCE_DEPOSIT', 'ADVANCE_REFUND'].includes(transactionType)) {
+      return { debit: 0, credit: 0 };
+    }
+    if (transactionType === 'ADVANCE_UTILISATION') {
       return { debit: 0, credit: value };
     }
-    if (['REFUND', 'ADVANCE_REFUND'].includes(transactionType)) {
+    if (['RECEIPT', 'SETTLEMENT', 'CREDIT_NOTE'].includes(transactionType)) {
+      return { debit: 0, credit: value };
+    }
+    if (transactionType === 'REFUND') {
       return { debit: value, credit: 0 };
     }
     return transaction.direction === 'DEBIT'
@@ -1048,27 +1068,34 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   }));
 
   // Older records can have an advance-wallet entry without a matching
-  // FinancialTransaction. Include only those missing rows, and keep utilisation
-  // as a zero-value informational line to prevent double credit.
-  const transactionNumbers = new Set(transactions.map((transaction) => String(transaction.transactionNumber || '')).filter(Boolean));
+  // FinancialTransaction. Keep those wallet events visible in the unified history,
+  // but do not let a deposit/refund alter the bill-liability running balance. Actual
+  // utilisation is represented by its invoice/payment transaction (or by the
+  // invoice's amount_paid projection for legacy data).
+  // FinancialTransaction may carry the patient-advance reference either as the
+  // canonical transaction number or as paymentReference (the current fixture and
+  // production advance-deposit path use the latter). Treat both as the same event
+  // so the unified ledger never shows the same advance twice.
+  const financialEventReferences = new Set();
+  transactions.forEach((transaction) => {
+    [transaction.transactionNumber, transaction.paymentReference]
+      .filter(Boolean)
+      .forEach((reference) => financialEventReferences.add(String(reference)));
+  });
   const legacyAdvanceEntries = advanceLedger
-    .filter((entry) => !entry.referenceNumber || !transactionNumbers.has(String(entry.referenceNumber)))
-    .map((entry) => {
-      const type = String(entry.transactionType || '').toUpperCase();
-      const value = asNumber(entry.amount);
-      const isDeposit = type === 'ADVANCE_DEPOSIT';
-      const isRefund = ['REFUND_PAID', 'ADVANCE_REFUND'].includes(type);
-      return {
-        date: entry.createdAt,
-        kind: `ADVANCE_${entry.transactionType}`,
-        number: entry.referenceNumber || '—',
-        description: entry.notes || entry.transactionType,
-        debit: isRefund ? value : 0,
-        credit: isDeposit ? value : 0,
-        advanceBalance: asNumber(entry.balanceAfter),
-        advanceEntryId: entry._id
-      };
-    });
+    .filter((entry) => !entry.referenceNumber || !financialEventReferences.has(String(entry.referenceNumber)))
+    .map((entry) => ({
+      date: entry.createdAt,
+      kind: `ADVANCE_${entry.transactionType}`,
+      number: entry.referenceNumber || '—',
+      description: entry.notes || entry.transactionType,
+      debit: 0,
+      credit: 0,
+      walletAmount: asNumber(entry.amount),
+      advanceDirection: entry.direction,
+      advanceBalance: asNumber(entry.balanceAfter),
+      advanceEntryId: entry._id
+    }));
 
   let runningBalance = 0;
   const ledgerEntries = [...billEntries, ...orphanInvoiceEntries, ...transactionEntries, ...legacyPaymentEntries, ...legacyAdvanceEntries]
@@ -1078,21 +1105,76 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
       return { ...entry, balance: runningBalance };
     });
   const advanceAvailable = advanceLedger.length ? asNumber(advanceLedger[advanceLedger.length - 1].balanceAfter) : 0;
+  const advanceTotals = advanceLedger.reduce((totals, entry) => {
+    const type = String(entry.transactionType || '').toUpperCase();
+    const amount = asNumber(entry.amount);
+    if (entry.direction === 'CREDIT' && ['ADVANCE_DEPOSIT', 'OPENING_BALANCE'].includes(type)) {
+      totals.received += amount;
+    }
+    if (entry.direction === 'DEBIT' && ['IPD_INVOICE_DEBIT', 'OUTSTANDING_SETTLEMENT_DEBIT'].includes(type)) {
+      totals.applied += amount;
+    }
+    if (entry.direction === 'DEBIT' && ['REFUND_PAID', 'ADVANCE_REFUND', 'PHARMACY_ADVANCE_REFUND'].includes(type)) {
+      totals.refunded += amount;
+    }
+    return totals;
+  }, { received: 0, applied: 0, refunded: 0 });
+  advanceTotals.received = asNumber(advanceTotals.received);
+  advanceTotals.applied = asNumber(advanceTotals.applied);
+  advanceTotals.refunded = asNumber(advanceTotals.refunded);
+
+  // Unapplied advance is patient credit, not an invoice settlement. Outstanding
+  // already reflects only posted allocations/payments/refunds, so never silently
+  // net an available wallet balance against it. The UI/document can show both
+  // values side by side and the advance becomes settlement only when explicitly
+  // applied through the finance service.
+  const patientBalance = asNumber(outstanding);
   const transactionAmount = (types) => transactions
     .filter((transaction) => types.includes(String(transaction.transactionType || '').toUpperCase()))
     .reduce((sum, transaction) => sum + asNumber(transaction.amount), 0);
+
+  // New external money and reused patient advance are deliberately different.
+  // Older mixed-payment rows recorded amountReceived=amount, so when advanceApplied
+  // exists infer external collection from settlement minus advance rather than
+  // trusting the legacy amountReceived field.
+  const externalReceiptAmount = (transaction) => {
+    if (String(transaction.transactionType || '').toUpperCase() !== 'RECEIPT') return 0;
+    if (transaction.externalMoneyMovement === false) return 0;
+    const settled = asNumber(transaction.amount);
+    const appliedAdvance = asNumber(transaction.advanceApplied);
+    if (appliedAdvance > 0) return asNumber(Math.max(0, settled - appliedAdvance));
+    const recorded = asNumber(transaction.amountReceived);
+    return recorded > 0 ? asNumber(Math.min(recorded, settled || recorded)) : settled;
+  };
   const legacyPaymentsTotal = legacyPaymentEntries.reduce((sum, row) => sum + asNumber(row.credit), 0);
+  const externalPaidAmount = asNumber(
+    transactions.reduce((sum, transaction) => sum + externalReceiptAmount(transaction), 0) + legacyPaymentsTotal
+  );
+  const paymentRefunds = asNumber(transactionAmount(['REFUND']));
+  const settlementDiscounts = asNumber(transactionAmount(['SETTLEMENT']));
+  const creditNotes = asNumber(transactionAmount(['CREDIT_NOTE']));
+  const totalCollectedAmount = asNumber(externalPaidAmount + advanceTotals.received);
+  const netCollectedAmount = asNumber(Math.max(0, totalCollectedAmount - paymentRefunds - advanceTotals.refunded));
   const ledgerTotals = {
     totalCharged: billEntries.reduce((sum, row) => sum + asNumber(row.debit), 0) + orphanInvoiceEntries.reduce((sum, row) => sum + asNumber(row.debit), 0),
-    paymentsReceived: asNumber(transactionAmount(['RECEIPT', 'ADVANCE_DEPOSIT']) + legacyPaymentsTotal),
-    settlementDiscounts: transactionAmount(['SETTLEMENT']),
-    creditNotes: transactionAmount(['CREDIT_NOTE']),
-    refunds: transactionAmount(['REFUND', 'ADVANCE_REFUND']),
+    paymentsReceived: externalPaidAmount,
+    externalPaidAmount,
+    totalCollectedAmount,
+    netCollectedAmount,
+    totalSettledAmount: asNumber(paidAmount),
+    settlementDiscounts,
+    creditNotes,
+    refunds: paymentRefunds,
     due: outstanding,
+    patientBalance,
+    advanceReceived: advanceTotals.received,
+    advanceApplied: advanceTotals.applied,
+    advanceRefunded: advanceTotals.refunded,
     advanceAvailable
   };
-  // Backward-compatible alias for print components that previously expected paid.
-  ledgerTotals.paid = ledgerTotals.paymentsReceived;
+  // Backward-compatible alias: "paid" means external collections, while
+  // totalSettledAmount includes both external payment and advance utilisation.
+  ledgerTotals.paid = ledgerTotals.externalPaidAmount;
 
   return {
     scope: {
@@ -1118,8 +1200,23 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
       billTotal,
       unbilledTotal,
       outstandingAmount: outstanding,
+      // paidAmount is retained for compatibility and represents total invoice
+      // settlement (external money + applied advance). New consumers should use
+      // explicit fields below rather than guessing from this aggregate.
       paidAmount,
+      totalSettledAmount: asNumber(paidAmount),
+      externalPaidAmount,
+      paymentsApplied: externalPaidAmount,
+      totalCollectedAmount,
+      netCollectedAmount,
+      settlementDiscounts,
+      creditNotes,
+      refunds: paymentRefunds,
+      advanceReceived: advanceTotals.received,
+      advanceApplied: advanceTotals.applied,
+      advanceRefunded: advanceTotals.refunded,
       advanceAvailable,
+      patientBalance,
       billCount: bills.length,
       invoiceCount: activeInvoices.length,
       chargeCount: displayCharges.length

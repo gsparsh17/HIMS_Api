@@ -16,6 +16,7 @@ const abdmConfig = require('../../config/abdm.config');
 const { assertValidBundle } = require('../abdmFhirValidation.service');
 const { normalizeInternalHiTypes } = require('../../utils/abdmHiTypes');
 const { canonicalJson, sha256 } = require('../../utils/abdmCanonical');
+const { formatMedicationFrequency, formatMedicationRoute } = require('../../utils/medicationDisplay');
 const {
   PROFILE_NAMES,
   COMPOSITION_TYPES,
@@ -376,8 +377,8 @@ function medicationResources(prescriptions, patient) {
           text: item.medicine_name
         },
         dosageInstruction: [{
-          text: [item.dosage, item.frequency, item.duration, item.instructions, item.timing].filter(Boolean).join(' | '),
-          route: item.route_of_administration ? { text: item.route_of_administration } : undefined
+          text: [item.dosage, formatMedicationFrequency(item.frequency), item.duration, item.instructions, item.timing].filter(Boolean).join(' | '),
+          route: item.route_of_administration ? { text: formatMedicationRoute(item) } : undefined
         }],
         note: prescription.notes ? [{ text: prescription.notes }] : undefined
       }));
@@ -526,7 +527,7 @@ function dischargeResources(summaries, patient) {
         authoredOn: iso(summary.dischargeDate),
         medicationCodeableConcept: { text: medication.medicineName },
         dosageInstruction: [{
-          text: [medication.dosage, medication.frequency, medication.duration, medication.instructions]
+          text: [medication.dosage, formatMedicationFrequency(medication.frequency), medication.duration, medication.instructions]
             .filter(Boolean)
             .join(' | ')
         }]
