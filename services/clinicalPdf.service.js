@@ -1069,6 +1069,69 @@ function drawCompactPrescriptionHeader(doc, prescription, hospital) {
   doc.y = y + mm(14);
 }
 
+function drawSinglePagePrescriptionPatientHeader(doc, prescription) {
+  const patient = prescription.patient_id || {};
+  const doctor = prescription.doctor_id || {};
+  const appointment = prescription.appointment_id || {};
+  const left = PAGE.margin;
+  const width = PAGE.width - PAGE.margin * 2;
+  const y = doc.y;
+  const height = mm(27);
+  const colWidth = width / 3;
+  const rowGap = mm(5.4);
+  const patientName = fullName(patient);
+  const patientId = patient.uhid || patient.patientId || patient._id;
+  const ageGender = `${calculateAge(patient.dob)} / ${text(patient.gender, '-').toUpperCase()}`;
+  const consultant = formatDoctorName(doctor) || fullName(doctor) || '-';
+  const department = doctor.department?.name || doctor.specialization || '-';
+  const mobile = patient.phone || patient.mobile || '-';
+  const encounterNo = appointment.token || appointment.serial_number || '-';
+  const encounterDate = appointment.appointment_date || prescription.issue_date;
+  const patientType = text(patient.patient_type, prescription.source_type).toUpperCase() || '-';
+  const patientAddress = [
+    text(patient.address), patient.city, patient.state, patient.zipCode || patient.pinCode
+  ].filter(Boolean).join(', ');
+
+  doc.rect(left, y, width, height).lineWidth(0.45).strokeColor(COLORS.ink).stroke();
+
+  const rows = [
+    [
+      ['Patient Name', patientName],
+      ['UHID / Patient ID', patientId],
+      ['Age / Gender', ageGender]
+    ],
+    [
+      ['Consultant', consultant],
+      ['Department', department],
+      ['Mobile No.', mobile]
+    ],
+    [
+      ['OP/IP No.', encounterNo],
+      ['Visit Date', formatDate(encounterDate, true)],
+      ['Patient Type', patientType]
+    ]
+  ];
+
+  rows.forEach((row, rowIndex) => {
+    row.forEach(([label, value], colIndex) => {
+      const x = left + colIndex * colWidth + 4;
+      const rowY = y + 4 + rowIndex * rowGap;
+      drawLabelValue(doc, label, value, x, rowY, mm(25), colWidth - mm(27), {
+        fontSize: 6.5, valueSize: 6.8, height: mm(4.5)
+      });
+    });
+  });
+
+  const addressY = y + mm(18.2);
+  doc.moveTo(left, addressY).lineTo(left + width, addressY)
+    .lineWidth(0.3).strokeColor(COLORS.border).stroke();
+  drawLabelValue(doc, 'Address', patientAddress, left + 4, addressY + mm(2), mm(25), width - mm(29), {
+    fontSize: 6.5, valueSize: 6.8, height: mm(5)
+  });
+
+  doc.y = y + height;
+}
+
 function drawCompactField(doc, label, value, height = mm(10)) {
   const left = PAGE.margin;
   const width = PAGE.width - PAGE.margin * 2;
@@ -1206,9 +1269,47 @@ function generateBlankPrescriptionOnePagePdf({ res, prescription, hospital }) {
   configureResponse(res, filename);
   const doc = createDocument();
   doc.pipe(res);
-  // The one-page option deliberately reuses page two of the canonical existing
-  // two-page prescription. It is not a competing prescription template.
-  drawPrescriptionPageTwo(doc, prescription, hospital);
+  // The one-page option keeps the canonical page-two treatment/medication layout,
+  // but must also carry the patient/encounter header that normally lives on page one.
+  // This keeps it a true single-page prescription without losing identification details.
+  drawCompactPrescriptionHeader(doc, prescription, hospital);
+  drawSinglePagePrescriptionPatientHeader(doc, prescription);
+
+  const primaryDiagnosis = text(prescription.diagnosis);
+  const differentialDiagnosis = text(prescription.provisional_diagnosis);
+  const diagnoses = [
+    primaryDiagnosis ? `Primary: ${primaryDiagnosis}` : '',
+    differentialDiagnosis && differentialDiagnosis.toLowerCase() !== primaryDiagnosis.toLowerCase()
+      ? `Differential / additional: ${differentialDiagnosis}`
+      : ''
+  ].filter(Boolean).join('\n');
+  drawCompactField(doc, 'DIAGNOSIS', diagnoses, mm(11));
+  drawCompactField(doc, 'TREATMENT PLAN', prescription.treatment_plan || prescription.notes, mm(9));
+
+  const left = PAGE.margin;
+  const width = PAGE.width - PAGE.margin * 2;
+  const titleY = doc.y;
+  doc.rect(left, titleY, width, mm(7)).fillAndStroke(COLORS.panel, COLORS.ink);
+  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(8).text(
+    'MEDICATION ADVISED:', left + 4, titleY + mm(1.8), { width: width - 8, lineBreak: false }
+  );
+  doc.y += mm(7);
+  drawMedicationTable(doc, prescription.items || []);
+
+  const signatureY = Math.min(doc.y + mm(5), CONTENT_BOTTOM - mm(18));
+  const doctorName = formatDoctorName(prescription.doctor_id) || 'Consultant';
+  doc.moveTo(left + mm(7), signatureY + mm(6)).lineTo(left + mm(70), signatureY + mm(6))
+    .lineWidth(0.5).strokeColor(COLORS.ink).stroke();
+  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(7.5).text(doctorName, left + mm(7), signatureY + mm(8), {
+    width: mm(65), align: 'center', height: mm(5), ellipsis: true
+  });
+  doc.font('Helvetica').fontSize(6.5).text('CONSULTANT', left + mm(7), signatureY + mm(13), {
+    width: mm(65), align: 'center'
+  });
+  doc.font('Helvetica-Bold').fontSize(7).text(
+    `DATE & TIME: ${formatDate(prescription.issue_date, true)}`,
+    left + width - mm(82), signatureY + mm(8), { width: mm(82), align: 'right' }
+  );
   addPageFooters(doc, 'Computer-generated clinical document', { blueRule: true });
   doc.end();
 }
