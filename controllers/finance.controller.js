@@ -181,8 +181,13 @@ exports.getFinancialClearance = async (req, res) => {
 
 exports.addIPDCharge = async (req, res) => {
   try {
-    const charge = await financial.addManualCharge({ ...req.body, admissionId: req.params.admissionId || req.body.admissionId }, req.user);
-    res.status(201).json({ success: true, message: 'Charge added successfully', charge });
+    const admissionId = req.params.admissionId || req.body.admissionId;
+    const charge = await financial.addManualCharge({ ...req.body, admissionId }, req.user);
+    // Return the refreshed canonical running bill together with the new line.
+    // This lets every finance UI prove that the manual service was committed to
+    // the same IPD ledger used by /billing instead of relying on a local total.
+    const runningBill = await financial.getRunningBill(admissionId, req.user);
+    res.status(201).json({ success: true, message: 'Charge added successfully', charge, runningBill });
   } catch (error) { sendError(res, error); }
 };
 
@@ -210,7 +215,24 @@ exports.applyIPDDiscount = async (req, res) => {
 exports.issueIPDInvoice = async (req, res) => {
   try {
     const result = await financial.issueIPDInvoice(req.params.admissionId, req.body, req.user);
-    res.status(result.alreadyExists ? 200 : 201).json({ success: true, message: result.alreadyExists ? 'Existing invoice returned' : 'IPD invoice issued successfully', ...result });
+    let advanceSettlement = null;
+    const shouldAutoApplyAdvance = String(req.body?.invoiceKind || '').toLowerCase() === 'final' && req.body?.autoApplyAdvance !== false;
+    if (shouldAutoApplyAdvance && result.invoice?._id) {
+      advanceSettlement = await financial.applyAvailableIPDAdvance(req.params.admissionId, {
+        invoiceId: result.invoice._id,
+        sourceModule: 'IPD',
+        receiptType: 'Advance Utilisation',
+        notes: 'Available IPD advance automatically applied to final invoice',
+        idempotencyKey: req.body?.idempotencyKey ? `${req.body.idempotencyKey}:advance-auto` : undefined
+      }, req.user);
+      if (advanceSettlement?.invoice) result.invoice = advanceSettlement.invoice;
+    }
+    res.status(result.alreadyExists ? 200 : 201).json({
+      success: true,
+      message: result.alreadyExists ? 'Existing invoice returned' : 'IPD invoice issued successfully',
+      ...result,
+      advanceSettlement
+    });
   } catch (error) { sendError(res, error); }
 };
 

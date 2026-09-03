@@ -571,6 +571,10 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   const patientReceivable = money(
     Math.max(0, invoiceOutstanding + unbilledPatientLiability)
   );
+  // Advance remains a separate wallet until it is actually applied to an
+  // issued invoice. Expose the projected net payable so billing screens can
+  // show what the patient will owe after available IPD advance is consumed.
+  const netPatientPayableAfterAdvance = money(Math.max(0, patientReceivable - advanceAvailable));
 
   const overallDue = patientReceivable;
   const totalEncounterPaid = money(invoicePaid + pharmacyInvoicePaid);
@@ -625,6 +629,7 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
     totalEncounterPaid,
     totalEncounterOutstanding,
     patientReceivable,
+    netPatientPayableAfterAdvance,
     sponsorReceivable,
     sponsorPaid,
     overallDue,
@@ -822,6 +827,7 @@ async function getRunningBill(admissionId, user, options = {}) {
       totalPatientLiabilityIncludingPharmacy: snapshot.patientLiabilityTotal,
       totalSponsorLiabilityIncludingPharmacy: snapshot.sponsorLiabilityTotal,
       patientReceivable: snapshot.patientReceivable,
+      netPayableAfterAdvance: snapshot.netPatientPayableAfterAdvance,
       sponsorReceivable: snapshot.sponsorReceivable,
       paidAmount: snapshot.invoicePaid,
       totalSettledAmount: snapshot.invoicePaid,
@@ -877,6 +883,7 @@ async function getRunningBill(admissionId, user, options = {}) {
       totalSponsorLiabilityIncludingPharmacy: snapshot.sponsorLiabilityTotal,
       nonAdmissibleAmount: snapshot.nonAdmissibleAmount,
       patientReceivable: snapshot.patientReceivable,
+      netPayableAfterAdvance: snapshot.netPatientPayableAfterAdvance,
       // Backward-compatible alias used by older IPD screens. Both fields are
       // intentionally the same canonical IPD patient receivable and exclude
       // the separately-settled pharmacy ledger.
@@ -2208,6 +2215,57 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
   });
 }
 
+async function applyAvailableIPDAdvance(admissionId, options = {}, user) {
+  const snapshot = await calculateAdmissionFinancials(admissionId, { user });
+  const requestedInvoiceId = options.invoiceId ? String(options.invoiceId) : '';
+  const targetInvoice = requestedInvoiceId
+    ? snapshot.ipdInvoices.find((invoice) => String(invoice._id) === requestedInvoiceId)
+    : null;
+  const due = money(targetInvoice ? Number(targetInvoice.balance_due || 0) : snapshot.invoiceOutstanding);
+  const available = money(snapshot.advanceAvailable || 0);
+  const amount = money(Math.min(due, available));
+
+  if (amount <= 0) {
+    return {
+      appliedAmount: 0,
+      invoiceOutstandingBefore: due,
+      advanceAvailableBefore: available,
+      skipped: true,
+      reason: due <= 0 ? 'NO_INVOICE_DUE' : 'NO_AVAILABLE_ADVANCE'
+    };
+  }
+
+  const settlement = await recordIPDPayment(admissionId, {
+    amount,
+    invoiceId: targetInvoice?._id,
+    paymentMethod: 'IPDAdvance',
+    payments: [{ method: 'IPDAdvance', amount }],
+    sourceModule: options.sourceModule || 'IPD',
+    receiptType: options.receiptType || 'Advance Utilisation',
+    reference: options.reference,
+    notes: options.notes || 'Available IPD advance applied automatically against issued invoice(s)',
+    idempotencyKey: options.idempotencyKey
+  }, user);
+
+  const after = await calculateAdmissionFinancials(admissionId, { user });
+  const refreshedTarget = targetInvoice
+    ? after.ipdInvoices.find((invoice) => String(invoice._id) === requestedInvoiceId)
+    : null;
+
+  return {
+    ...settlement,
+    appliedAmount: amount,
+    invoiceOutstandingBefore: due,
+    advanceAvailableBefore: available,
+    invoiceOutstandingAfter: refreshedTarget
+      ? money(refreshedTarget.balance_due || 0)
+      : money(after.invoiceOutstanding),
+    advanceAvailableAfter: money(after.advanceAvailable || 0),
+    invoice: refreshedTarget || null,
+    skipped: false
+  };
+}
+
 async function recordAdvance(admissionId, payload, user) {
   const amount = assertAmount(payload.amount, 'Advance amount');
   const paymentMethod = payload.paymentMethod || 'Cash';
@@ -2976,6 +3034,7 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
   }
   let clearance = await getFinancialClearance(admissionId, user);
   let issuedInvoice = null;
+  let advanceSettlement = null;
   let settlement = null;
 
   if (
@@ -3013,7 +3072,38 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
   const settlementAmount = optionalMoney(payload.paymentAmount ?? payload.amount);
   const settlementDiscount = optionalMoney(payload.settlementDiscountAmount ?? payload.finalDiscountAmount);
   const taxAdjustment = optionalMoney(payload.taxAdjustmentAmount);
-  if (settlementAmount > 0 || settlementDiscount > 0 || taxAdjustment !== 0) {
+
+  // Apply authorised invoice adjustments before consuming wallet money. If an
+  // adjustment lowers the due, the patient keeps the corresponding unused
+  // advance instead of over-utilising the advance account.
+  if (settlementDiscount > 0 || taxAdjustment !== 0) {
+    settlement = await recordIPDPayment(admissionId, {
+      ...payload,
+      invoiceId: payload.invoiceId || undefined,
+      amount: 0,
+      paymentAmount: 0,
+      settlementDiscountAmount: settlementDiscount,
+      taxAdjustmentAmount: taxAdjustment,
+      sourceModule: 'Discharge',
+      receiptType: payload.receiptType || 'Final Settlement',
+      idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:adjustments` : undefined
+    }, user);
+    clearance = await getFinancialClearance(admissionId, user);
+  }
+
+  if (payload.autoApplyAdvance !== false && clearance.summary?.dueAmount > 0 && clearance.summary?.advanceAvailable > 0) {
+    advanceSettlement = await applyAvailableIPDAdvance(admissionId, {
+      sourceModule: 'Discharge',
+      receiptType: 'Final Settlement',
+      notes: 'Available IPD advance automatically applied during final financial clearance',
+      idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:advance-auto` : undefined
+    }, user);
+    clearance = await getFinancialClearance(admissionId, user);
+  }
+
+  const remainingDueAfterAdvance = money(clearance.summary?.dueAmount || 0);
+  const effectiveSettlementAmount = money(Math.min(settlementAmount, remainingDueAfterAdvance));
+  if (effectiveSettlementAmount > 0) {
     // With no explicit invoice selection, allocate oldest-first across every
     // outstanding invoice. This prevents a final payment from being rejected
     // merely because an interim invoice remains due alongside the final bill.
@@ -3021,12 +3111,13 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
     settlement = await recordIPDPayment(admissionId, {
       ...payload,
       invoiceId: targetInvoice,
-      amount: settlementAmount,
-      settlementDiscountAmount: settlementDiscount,
-      taxAdjustmentAmount: taxAdjustment,
+      amount: effectiveSettlementAmount,
+      paymentAmount: effectiveSettlementAmount,
+      settlementDiscountAmount: 0,
+      taxAdjustmentAmount: 0,
       sourceModule: 'Discharge',
-      receiptType: 'Final Settlement',
-      idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:settlement` : undefined
+      receiptType: payload.receiptType || 'Final Settlement',
+      idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:external-payment` : undefined
     }, user);
     clearance = await getFinancialClearance(admissionId, user);
   }
@@ -3054,7 +3145,7 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
   if (issuedInvoice && (issuedInvoice.invoice_type === 'IPD Final' || issuedInvoice.is_final_ipd_invoice === true)) admission.finalInvoiceId = issuedInvoice._id;
   if (clearance.ready && ['Billing Pending', 'Payment Pending'].includes(admission.status)) admission.status = 'Ready for Discharge';
   await admission.save();
-  return { clearance: await getFinancialClearance(admissionId, user), issuedInvoice, settlement, admission };
+  return { clearance: await getFinancialClearance(admissionId, user), issuedInvoice, advanceSettlement, settlement, admission };
 }
 
 module.exports = {
@@ -3070,6 +3161,7 @@ module.exports = {
   previewIPDInvoice,
   issueIPDInvoice,
   recordIPDPayment,
+  applyAvailableIPDAdvance,
   recordAdvance,
   refundAdvance,
   createCreditNote,

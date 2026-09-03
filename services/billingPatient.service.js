@@ -1129,6 +1129,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   // values side by side and the advance becomes settlement only when explicitly
   // applied through the finance service.
   const patientBalance = asNumber(outstanding);
+  const netPayableAfterAdvance = asNumber(Math.max(0, outstanding - advanceAvailable));
   const transactionAmount = (types) => transactions
     .filter((transaction) => types.includes(String(transaction.transactionType || '').toUpperCase()))
     .reduce((sum, transaction) => sum + asNumber(transaction.amount), 0);
@@ -1170,7 +1171,8 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     advanceReceived: advanceTotals.received,
     advanceApplied: advanceTotals.applied,
     advanceRefunded: advanceTotals.refunded,
-    advanceAvailable
+    advanceAvailable,
+    netPayableAfterAdvance
   };
   // Backward-compatible alias: "paid" means external collections, while
   // totalSettledAmount includes both external payment and advance utilisation.
@@ -1217,6 +1219,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
       advanceRefunded: advanceTotals.refunded,
       advanceAvailable,
       patientBalance,
+      netPayableAfterAdvance,
       billCount: bills.length,
       invoiceCount: activeInvoices.length,
       chargeCount: displayCharges.length
@@ -1336,6 +1339,11 @@ async function getPatientIPDHistory({ hospitalId, patientId }) {
       discountAmount: admissionDiscounts,
       refundAmount: admissionTransactions.filter((row) => ['REFUND', 'ADVANCE_REFUND'].includes(String(row.transactionType || '').toUpperCase())).reduce((sum, row) => sum + asNumber(row.amount), 0),
       advanceAvailable: asNumber(latestAdvanceByAdmission.get(admissionId)?.balanceAfter),
+      netPayableAfterAdvance: asNumber(Math.max(
+        0,
+        (admission.dueAmount !== undefined ? asNumber(admission.dueAmount) : calculatedOutstanding)
+          - asNumber(latestAdvanceByAdmission.get(admissionId)?.balanceAfter)
+      )),
       invoiceCount: admissionInvoices.length,
       chargeCount: admissionCharges.length
     };
