@@ -24,7 +24,7 @@ app.use(
   cors({
     origin(origin, callback) {
       // Server-to-server and same-origin requests may not include Origin.
-      if (!origin) return callback(null, true);
+      if (!origin || origin === 'null' || origin.startsWith('file://')) return callback(null, true);
       if (origins.includes(origin)) return callback(null, true);
 
       // Local development may run without an explicit allow-list.
@@ -200,6 +200,7 @@ function mountHospitalRoutes() {
   app.use('/api/patient-portal', require('./routes/patientPortal.routes.js'));
   // Master control-plane callbacks use independent platform HMAC authentication and never browser auth.
   app.use('/internal/platform', require('./routes/platform.routes.js'));
+  app.use('/api/local-enrollment', require('./routes/localEnrollment.routes.js'));
   const authMiddleware = require('./middlewares/auth');
   app.use('/api', authMiddleware.protect);
   app.use('/api', (req, res, next) => {

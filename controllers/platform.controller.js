@@ -9,7 +9,7 @@ const { parseOptionalDate, parseDateOrNow } = require('../utils/platformDates');
 
 exports.health = async (_req, res) => {
   const hospital = await Hospital.findOne({ is_active: { $ne: false } }).select('hospitalID tenantCode hospitalName deployment');
-  res.json({ success: true, status: 'ok', hospital: hospital ? { hospitalID: hospital.hospitalID, tenantCode: hospital.tenantCode, hospitalName: hospital.hospitalName } : null, timestamp: new Date().toISOString() });
+  res.json({ success: true, status: 'ok', service: 'mediqliq-hospital', appRole: 'HOSPITAL', hospital: hospital ? { hospitalID: hospital.hospitalID, tenantCode: hospital.tenantCode, hospitalName: hospital.hospitalName } : null, timestamp: new Date().toISOString() });
 };
 
 exports.provision = async (req, res) => {

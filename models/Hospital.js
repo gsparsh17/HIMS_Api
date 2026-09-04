@@ -83,6 +83,7 @@ const hospitalSchema = new mongoose.Schema(
     },
 
     deployment: {
+      type: { type: String, enum: ['CLOUD', 'LOCAL_ELECTRON'], default: 'CLOUD' },
       frontendUrl: String,
       backendUrl: String,
       databaseName: String,

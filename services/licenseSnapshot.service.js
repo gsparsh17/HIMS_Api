@@ -44,8 +44,9 @@ async function hospitalForContext(hospitalId) {
     const hospital = await Hospital.findById(hospitalId);
     if (hospital) return hospital;
   }
-  if (platformConfig.tenantCode) {
-    const hospital = await Hospital.findOne({ tenantCode: platformConfig.tenantCode });
+  const runtimeConfig = await platformConfig.runtime();
+  if (runtimeConfig.tenantCode) {
+    const hospital = await Hospital.findOne({ tenantCode: runtimeConfig.tenantCode });
     if (hospital) return hospital;
   }
   return Hospital.findOne({ is_active: { $ne: false } });
@@ -60,7 +61,7 @@ async function getSnapshot(hospitalId) {
 function applyRemotePayload(snapshot, hospital, payload, source) {
   const incomingVersion = Number(payload.licenseVersion || 1);
   if (snapshot && Number(snapshot.licenseVersion || 0) > incomingVersion) return snapshot;
-  const target = snapshot || new LicenseSnapshot({ hospitalId: hospital._id, tenantCode: hospital.tenantCode || platformConfig.tenantCode });
+  const target = snapshot || new LicenseSnapshot({ hospitalId: hospital._id, tenantCode: hospital.tenantCode });
   target.masterLicenseId = String(payload.masterLicenseId);
   target.key = payload.key;
   target.status = payload.status;
@@ -94,7 +95,7 @@ async function refreshLicense(options = {}) {
   if (!hospital) throw new Error('Hospital is not provisioned');
   try {
     const response = await platformRequest('/internal/platform/license/validate', {
-      tenantCode: hospital.tenantCode || platformConfig.tenantCode,
+      tenantCode: hospital.tenantCode,
       knownVersion: snapshot?.licenseVersion || 0
     });
     return upsertFromRemotePayload(response.license, 'PULLED');
