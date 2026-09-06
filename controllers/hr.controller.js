@@ -18,6 +18,7 @@ const Invoice = require('../models/Invoice');
 const Appointment = require('../models/Appointment');
 const { syncAllExistingHRProfiles } = require('../services/hrProfileSync.service');
 const { requestHospitalId: resolveHospitalId } = require('../utils/hospitalScope');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 const {
   normalizeFeaturePermissions,
   defaultFeaturePermissions,
@@ -2509,11 +2510,26 @@ exports.downloadMyPayslip = async (req, res) => {
       status: { $in: ['approved', 'paid'] }
     });
     if (!payroll) return res.status(404).json({ success: false, error: 'Published payslip not found' });
+    const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="payslip-${payroll.payroll_code || payroll._id}.pdf"`);
     const doc = new PDFDocument({ margin: 48 });
     doc.pipe(res);
-    doc.fontSize(18).text('Employee Payslip', { align: 'center' }).moveDown();
+
+    const logoBuffer = hospital._logoBuffer || hospital.logoBuffer;
+    const top = doc.y;
+    if (logoBuffer) {
+      try { doc.image(logoBuffer, 48, top, { fit: [46, 46], align: 'center', valign: 'center' }); } catch (_) { /* validated upstream */ }
+    }
+    const headerX = logoBuffer ? 102 : 48;
+    const headerWidth = logoBuffer ? 445 : 499;
+    doc.font('Helvetica-Bold').fontSize(17).text(hospital.hospitalName, headerX, top, { width: headerWidth, align: 'center' });
+    doc.font('Helvetica').fontSize(8).text(hospital.hospitalAddress, headerX, doc.y + 2, { width: headerWidth, align: 'center' });
+    if (hospital.hospitalContact) doc.text(hospital.hospitalContact, headerX, doc.y + 2, { width: headerWidth, align: 'center' });
+    doc.y = Math.max(doc.y + 8, top + 50);
+    doc.moveTo(48, doc.y).lineTo(547, doc.y).stroke();
+    doc.moveDown(0.8);
+    doc.font('Helvetica-Bold').fontSize(18).text('Employee Payslip', { align: 'center' }).moveDown();
     doc.fontSize(10).text(`Employee: ${employee.full_name}`).text(`Employee code: ${employee.employee_code}`).text(`Designation: ${employee.designation}`).text(`Period: ${payroll.period_start ? new Date(payroll.period_start).toLocaleDateString('en-IN') : `${payroll.month}/${payroll.year}`} - ${payroll.period_end ? new Date(payroll.period_end).toLocaleDateString('en-IN') : ''}`).moveDown();
     doc.fontSize(12).text(`Gross earnings: INR ${Number(payroll.gross_salary || payroll.gross_amount || 0).toFixed(2)}`);
     doc.text(`Deductions: INR ${Number(payroll.total_deductions || payroll.deduction_amount || 0).toFixed(2)}`);

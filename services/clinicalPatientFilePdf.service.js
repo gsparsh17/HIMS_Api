@@ -1,5 +1,6 @@
 const PDFDocument = require('pdfkit');
 const { formatMedication, formatMedicationFrequency, formatMedicationRoute, formatMedicationDosage } = require('../utils/medicationDisplay');
+const { getHospitalPrintIdentity } = require('./hospitalPrintIdentity.service');
 
 const PAGE = { width: 595.28, height: 841.89, margin: 22 };
 const CONTENT_WIDTH = PAGE.width - PAGE.margin * 2;
@@ -78,7 +79,13 @@ function drawHeader(doc, { manifest, item, hospital, continued = false }) {
   doc.lineWidth(0.8).strokeColor(COLORS.ink).rect(left, top, CONTENT_WIDTH, headerHeight).stroke();
   doc.moveTo(left + 36, top).lineTo(left + 36, top + 42).stroke();
   doc.moveTo(PAGE.width - PAGE.margin - titleWidth, top).lineTo(PAGE.width - PAGE.margin - titleWidth, top + 42).stroke();
-  doc.font('Helvetica-Bold').fontSize(17).fillColor(COLORS.accent).text('+', left + 7, top + 10, { width: 22, align: 'center' });
+  const logoBuffer = hospital?._logoBuffer || hospital?.logoBuffer;
+  if (logoBuffer) {
+    try { doc.image(logoBuffer, left + 3, top + 3, { fit: [30, 34], align: 'center', valign: 'center' }); }
+    catch (_) { doc.font('Helvetica-Bold').fontSize(17).fillColor(COLORS.accent).text('+', left + 7, top + 10, { width: 22, align: 'center' }); }
+  } else {
+    doc.font('Helvetica-Bold').fontSize(17).fillColor(COLORS.accent).text('+', left + 7, top + 10, { width: 22, align: 'center' });
+  }
   doc.font('Helvetica-Bold').fontSize(11).fillColor(COLORS.ink).text(String(hospitalName).toUpperCase(), left + 42, top + 7, { width: CONTENT_WIDTH - titleWidth - 50, height: 16, ellipsis: true });
   const hospitalAddress = [hospital?.address, hospital?.city, hospital?.state, hospital?.pinCode].filter(Boolean).join(', ');
   doc.font('Helvetica').fontSize(6.8).fillColor(COLORS.muted).text(hospitalAddress || 'Electronic Hospital Information Management System', left + 42, top + 23, { width: CONTENT_WIDTH - titleWidth - 50, height: 13, ellipsis: true });
@@ -398,8 +405,9 @@ const renderers = {
 async function renderClinicalPatientFileDocument({ manifest, item, hospital }) {
   const renderer = renderers[item?.rendererKey];
   if (!renderer) return null;
+  const printHospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
   return collect(async (doc) => {
-    const context = { manifest, item, hospital };
+    const context = { manifest, item, hospital: printHospital };
     drawHeader(doc, context);
     renderer(doc, item.content || item.metadata || {}, context);
   });

@@ -1,9 +1,9 @@
 'use strict';
 
 const PDFDocument = require('pdfkit');
-const Hospital = require('../models/Hospital');
 const MRDBirthDeathRecord = require('../models/MRDBirthDeathRecord');
 const MRDMedicalCertificate = require('../models/MRDMedicalCertificate');
+const { getHospitalPrintIdentity } = require('./hospitalPrintIdentity.service');
 
 // ============================================
 // Helper Functions
@@ -56,22 +56,29 @@ function createDocument(res, filename) {
 }
 
 function renderHeader(doc, hospital, title) {
+  const logoBuffer = hospital?._logoBuffer || hospital?.logoBuffer;
+  const top = doc.y;
+  if (logoBuffer) {
+    try { doc.image(logoBuffer, 42, top, { fit: [48, 48], align: 'center', valign: 'center' }); } catch (_) { /* validated upstream */ }
+  }
+  const textX = logoBuffer ? 98 : 42;
+  const textWidth = logoBuffer ? 455 : 510;
+
   doc
     .font('Helvetica-Bold')
     .fontSize(16)
-    .text(hospital?.hospitalName || hospital?.name || 'HOSPITAL', { align: 'center' });
+    .text(hospital.hospitalName, textX, top, { width: textWidth, align: 'center' });
 
   doc
     .font('Helvetica')
     .fontSize(8)
-    .text(
-      [hospital?.address, hospital?.city, hospital?.state, hospital?.pinCode]
-        .filter(Boolean)
-        .join(', '),
-      { align: 'center' }
-    );
+    .text(hospital.hospitalAddress, textX, doc.y + 2, { width: textWidth, align: 'center' });
 
-  doc.moveDown(0.7);
+  if (hospital.hospitalContact) {
+    doc.text(hospital.hospitalContact, textX, doc.y + 2, { width: textWidth, align: 'center' });
+  }
+  doc.y = Math.max(doc.y + 8, top + 52);
+  doc.moveDown(0.3);
 
   doc
     .font('Helvetica-Bold')
@@ -130,7 +137,7 @@ function renderFooter(doc) {
 
 async function birthDeathPdf({ res, hospitalId, id }) {
   const [hospital, row] = await Promise.all([
-    Hospital.findById(hospitalId).lean(),
+    getHospitalPrintIdentity({ includeLogoBuffer: true }),
     MRDBirthDeathRecord.findOne({ _id: id, hospitalId })
       .populate('patientId motherPatientId babyPatientId attendingDoctorId departmentId wardId bedId')
       .lean(),
@@ -183,7 +190,7 @@ async function birthDeathPdf({ res, hospitalId, id }) {
 
 async function certificatePdf({ res, hospitalId, id }) {
   const [hospital, row] = await Promise.all([
-    Hospital.findById(hospitalId).lean(),
+    getHospitalPrintIdentity({ includeLogoBuffer: true }),
     MRDMedicalCertificate.findOne({ _id: id, hospitalId })
       .populate('patientId admissionId appointmentId authorizedByDoctorId')
       .lean(),

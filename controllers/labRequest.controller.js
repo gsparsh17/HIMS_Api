@@ -9,7 +9,6 @@ const Prescription = require('../models/Prescription');
 const Patient = require('../models/Patient');
 const Doctor = require('../models/Doctor');
 const LabReport = require('../models/LabReport');
-const Hospital = require('../models/Hospital');
 const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
 const {
   catalogVersion,
@@ -27,6 +26,7 @@ const { assertPatientReadyForContext } = require('../services/patientRegistratio
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
 const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 
 // File uploads use the configured HIMS storage driver.
 
@@ -470,7 +470,7 @@ exports.downloadGeneratedReport = async (req, res) => {
     if (!request) return res.status(404).json({ error: 'Lab request not found' });
 
     if ((request.report_mode === 'manual' && request.manual_report) || request.manual_report || request.result_value) {
-      const hospital = req.user?.hospital_id ? await Hospital.findById(req.user.hospital_id) : null;
+      const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
       return generateLabReportPdf({ res, request, hospital });
     }
     if (request.report_url) return res.redirect(request.report_url);
@@ -896,7 +896,7 @@ exports.downloadReport = async (req, res) => {
     
     if (!request) return res.status(404).json({ error: 'Report not found' });
     if ((request.report_mode === 'manual' && request.manual_report) || request.manual_report || request.result_value) {
-      const hospital = req.user?.hospital_id ? await Hospital.findById(req.user.hospital_id) : null;
+      const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
       return generateLabReportPdf({ res, request, hospital });
     }
     if (!request.report_url) return res.status(404).json({ error: 'Report not found' });

@@ -1,4 +1,5 @@
 const PDFDocument = require('pdfkit');
+const { getHospitalPrintIdentity } = require('./hospitalPrintIdentity.service');
 
 const mm = (value) => value * 2.834645669;
 const PAGE = { width: mm(210), height: mm(297), margin: mm(12) };
@@ -48,9 +49,14 @@ function ensureSpace(doc, height, redrawHeader) {
 function drawHeader(doc, hospital, request, report) {
   const width = PAGE.width - PAGE.margin * 2;
   const hospitalName = clean(hospital?.hospitalName || hospital?.name, 'HOSPITAL');
-  const address = [hospital?.address, hospital?.city, hospital?.state, hospital?.pinCode].filter(Boolean).join(', ');
-  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(16).text(hospitalName.toUpperCase(), PAGE.margin, PAGE.margin, { width: width - mm(60) });
-  doc.fillColor(COLORS.muted).font('Helvetica').fontSize(7).text(address, PAGE.margin, PAGE.margin + mm(7), { width: width - mm(60) });
+  const address = hospital?.hospitalAddress || [hospital?.address, hospital?.city, hospital?.state, hospital?.pinCode].filter(Boolean).join(', ');
+  const logoBuffer = hospital?._logoBuffer || hospital?.logoBuffer;
+  const logoWidth = logoBuffer ? mm(18) : 0;
+  if (logoBuffer) {
+    try { doc.image(logoBuffer, PAGE.margin, PAGE.margin, { fit: [mm(15), mm(15)], align: 'center', valign: 'center' }); } catch (_) { /* validated upstream */ }
+  }
+  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(16).text(hospitalName.toUpperCase(), PAGE.margin + logoWidth, PAGE.margin, { width: width - mm(60) - logoWidth });
+  doc.fillColor(COLORS.muted).font('Helvetica').fontSize(7).text(address, PAGE.margin + logoWidth, PAGE.margin + mm(7), { width: width - mm(60) - logoWidth });
   doc.roundedRect(PAGE.width - PAGE.margin - mm(54), PAGE.margin, mm(54), mm(14), 2)
     .fillAndStroke(COLORS.pale, COLORS.blue);
   doc.fillColor(COLORS.blue).font('Helvetica-Bold').fontSize(11).text('RADIOLOGY REPORT', PAGE.width - PAGE.margin - mm(54), PAGE.margin + mm(4), { width: mm(54), align: 'center' });
@@ -200,7 +206,9 @@ function addFooters(doc) {
   }
 }
 
-async function generateRadiologyReportPdf({ request, hospital, res }) {
+async function generateRadiologyReportPdf({ request, hospital: _suppliedHospital, res }) {
+  // Branding is installation-level configuration; never trust a request/admission snapshot.
+  const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
   const report = request.manual_report?.toObject?.() || request.manual_report || {};
   const doc = new PDFDocument({ size: 'A4', margins: { top: PAGE.margin, right: PAGE.margin, bottom: PAGE.margin, left: PAGE.margin }, bufferPages: true, info: { Creator: 'MediQliq HIMS' } });
   const filename = `${clean(request.requestNumber, 'radiology-report')}.pdf`.replace(/[^a-zA-Z0-9._-]/g, '_');

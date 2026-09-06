@@ -4,6 +4,7 @@ const PDFDocument = require('pdfkit');
 const { getTemplate, matchTemplate, normalizeLabTestName } = require('./labReportTemplate.service');
 const { formatMedication } = require('../utils/medicationDisplay');
 const { formatDoctorName } = require('../utils/documentFormatters');
+const { getHospitalPrintIdentity } = require('./hospitalPrintIdentity.service');
 
 const mm = (value) => value * 2.834645669;
 const PAGE = { width: mm(210), height: mm(297), margin: mm(10) };
@@ -134,13 +135,24 @@ function drawFallbackLogo(doc, x, y, size) {
 }
 
 function drawHospitalLogo(doc, hospital, x, y, size) {
+  const logoBuffer = hospital?._logoBuffer || hospital?.logoBuffer;
+  if (logoBuffer) {
+    try {
+      doc.image(logoBuffer, x, y, { fit: [size, size], align: 'center', valign: 'center' });
+      return;
+    } catch (_) {
+      // Continue to legacy path resolution below.
+    }
+  }
+
   const logoPath = resolveLocalLogo(hospital?.logo);
   if (logoPath) {
     try {
       doc.image(logoPath, x, y, { fit: [size, size], align: 'center', valign: 'center' });
       return;
     } catch (_) {
-      // Fall back to a vector mark if the configured image is unreadable.
+      // The caller validates the configured logo; this fallback only protects
+      // older direct service calls that have not hydrated the logo buffer.
     }
   }
   drawFallbackLogo(doc, x, y, size);
@@ -1481,6 +1493,8 @@ async function renderStructuredReportPdf({
   footerLabel = 'Computer-generated hospital report',
   preparedBy = 'MIS / MRD Desk'
 }) {
+  // MIS/MRD exports also follow the single-hospital print contract.
+  hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
   const discoveredColumns = [...new Set(rows.flatMap((row) => Object.keys(row || {})))];
   const resolvedColumns = (columns.length ? columns : discoveredColumns).map((column) => (
     typeof column === 'string' ? { key: column, label: column } : column

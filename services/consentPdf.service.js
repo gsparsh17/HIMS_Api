@@ -7,6 +7,7 @@ const PDFDocument = require('pdfkit');
 const StoredFile = require('../models/StoredFile');
 const PrintIdentityAsset = require('../models/PrintIdentityAsset');
 const fileStorage = require('./fileStorage.service');
+const { getHospitalPrintIdentity } = require('./hospitalPrintIdentity.service');
 
 const mm = (value) => value * 2.834645669;
 const PAGE = { width: mm(210), height: mm(297), margin: mm(5.5) };
@@ -168,11 +169,11 @@ function buildContext(consent, admission, hospital) {
       consultant: admissionSnapshot.consultantName || doctorName(doctor)
     },
     hospital: {
-      name: hospitalSnapshot.hospitalName || hospital?.hospitalName || hospital?.name || 'HOSPITAL',
-      address: [hospitalSnapshot.address || hospital?.address, hospitalSnapshot.city || hospital?.city, hospitalSnapshot.state || hospital?.state, hospitalSnapshot.pincode || hospital?.pincode].filter(Boolean).join(', '),
-      phone: hospitalSnapshot.phone || hospital?.phone || hospital?.contact,
-      email: hospitalSnapshot.email || hospital?.email,
-      logo: hospitalSnapshot.logo || hospital?.logo || null
+      name: hospital?.hospitalName || hospital?.name || hospitalSnapshot.hospitalName || 'HOSPITAL',
+      address: hospital?.hospitalAddress || [hospital?.address, hospital?.city, hospital?.state, hospital?.pinCode || hospital?.pincode].filter(Boolean).join(', '),
+      phone: hospital?.contact || hospital?.phone || hospitalSnapshot.phone,
+      email: hospital?.email || hospitalSnapshot.email,
+      logo: hospital?.logo || hospitalSnapshot.logo || null
     }
   };
 }
@@ -595,6 +596,7 @@ async function loadHospitalLogoBuffer(hospital) {
 }
 
 async function generateConsentPdf({ consent, template, admission, hospital, documentSignature = null, res }) {
+  const printHospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
   const doc = new PDFDocument({ size: 'A4', margin: 0, bufferPages: true, autoFirstPage: false, info: { Creator: 'MediQliq HIMS', Title: template.name } });
   setupFonts(doc);
   const filename = `${admission.admissionNumber || admission.shipNumber || 'IPD'}-${template.id}.pdf`.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -603,8 +605,8 @@ async function generateConsentPdf({ consent, template, admission, hospital, docu
   res.setHeader('Cache-Control', 'private, no-store');
   doc.pipe(res);
 
-  const context = buildContext(consent, admission, hospital);
-  context.hospital.logoBuffer = await loadHospitalLogoBuffer(hospital);
+  const context = buildContext(consent, admission, printHospital);
+  context.hospital.logoBuffer = printHospital.logoBuffer || printHospital._logoBuffer || await loadHospitalLogoBuffer(printHospital);
   const pages = Array.isArray(template.contentPages) && template.contentPages.length ? template.contentPages : [{ sections: template.printSections || [] }];
   const state = { y: 0, currentPage: 0, profile: layoutProfile(template) };
   pages.forEach((page, pageIndex) => {
@@ -613,7 +615,7 @@ async function generateConsentPdf({ consent, template, admission, hospital, docu
   });
 
   const range = doc.bufferedPageRange();
-  const buffers = await placementImageBuffers(documentSignature, { hospitalId: hospital?._id || admission?.hospitalId });
+  const buffers = await placementImageBuffers(documentSignature, { hospitalId: printHospital._id });
   drawPlacementOverlays(doc, documentSignature, buffers, range);
   doc.end();
 }

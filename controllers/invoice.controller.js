@@ -5,7 +5,6 @@ const Prescription = require('../models/Prescription');
 const Appointment = require('../models/Appointment');
 const Patient = require('../models/Patient');
 const Supplier = require('../models/Supplier');
-const Hospital = require('../models/Hospital');
 const Pharmacy = require('../models/Pharmacy');
 const Bill = require('../models/Bill');
 const Sale = require('../models/Sale');
@@ -18,6 +17,7 @@ const ImagingTest = require('../models/ImagingTest');
 const PDFDocument = require('pdfkit');
 const { default: mongoose } = require('mongoose');
 const { requestHospitalId } = require('../utils/hospitalScope');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 const {
   COMPUTER_GENERATED_BILL_EN,
   COMPUTER_GENERATED_BILL_HI,
@@ -2077,6 +2077,7 @@ exports.downloadInvoicePDF = async (req, res) => {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
+    const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
     registerDocumentFonts(doc);
 
@@ -2085,7 +2086,7 @@ exports.downloadInvoicePDF = async (req, res) => {
 
     doc.pipe(res);
 
-    addHeader(doc, invoice);
+    addHeader(doc, invoice, hospital);
     addInvoiceDetails(doc, invoice);
     addCustomerDetails(doc, invoice);
 
@@ -2112,24 +2113,28 @@ exports.downloadInvoicePDF = async (req, res) => {
 };
 
 // PDF Helper Functions
-function addHeader(doc, invoice) {
-  const snapshot = invoice?.hospital_snapshot || {};
-  const hospital = invoice?.hospital_id && typeof invoice.hospital_id === 'object' ? invoice.hospital_id : {};
-  const hospitalName = snapshot.hospitalName || snapshot.name || hospital.hospitalName || hospital.name || 'Hospital';
-  const address = [snapshot.address || hospital.address, snapshot.city || hospital.city, snapshot.state || hospital.state, snapshot.pinCode || hospital.pinCode].filter(Boolean).join(', ');
-  const contact = [snapshot.phone || snapshot.contact || hospital.phone || hospital.contact, snapshot.email || hospital.email].filter(Boolean).join(' | ');
+function addHeader(doc, invoice, hospital) {
+  const hospitalName = hospital.hospitalName;
+  const address = hospital.hospitalAddress;
+  const contact = hospital.hospitalContact;
   const registrations = [
-    snapshot.gstNumber || snapshot.gst || snapshot.gstin || hospital.gstNumber || hospital.gst_number || hospital.gst ? `GSTIN: ${snapshot.gstNumber || snapshot.gst || snapshot.gstin || hospital.gstNumber || hospital.gst_number || hospital.gst}` : null,
-    snapshot.licenseNumber || snapshot.license_number || hospital.licenseNumber || hospital.license_number ? `License No: ${snapshot.licenseNumber || snapshot.license_number || hospital.licenseNumber || hospital.license_number}` : null
+    hospital.gstNumber || hospital.gst_number || hospital.gst ? `GSTIN: ${hospital.gstNumber || hospital.gst_number || hospital.gst}` : null,
+    hospital.licenseNumber || hospital.license_number ? `License No: ${hospital.licenseNumber || hospital.license_number}` : null
   ].filter(Boolean).join(' | ');
+  const logoBuffer = hospital._logoBuffer || hospital.logoBuffer;
 
-  doc.fontSize(20).font('Helvetica-Bold').text(hospitalName, { align: 'center' });
-  doc.fontSize(12).font('Helvetica').text('Tax Invoice / Bill of Supply', { align: 'center' });
-  doc.moveDown(0.4);
-  if (address) doc.fontSize(9).text(address, { align: 'center' });
-  if (contact) doc.fontSize(9).text(contact, { align: 'center' });
-  if (registrations) doc.fontSize(9).text(registrations, { align: 'center' });
-  doc.moveDown(0.5);
+  if (logoBuffer) {
+    try { doc.image(logoBuffer, 50, 50, { fit: [48, 48], align: 'center', valign: 'center' }); } catch (_) { /* validated before rendering */ }
+  }
+
+  const textX = logoBuffer ? 105 : 50;
+  const textWidth = logoBuffer ? 390 : 495;
+  doc.fontSize(20).font('Helvetica-Bold').text(hospitalName, textX, 50, { width: textWidth, align: 'center' });
+  doc.fontSize(12).font('Helvetica').text('Tax Invoice / Bill of Supply', textX, doc.y + 2, { width: textWidth, align: 'center' });
+  if (address) doc.fontSize(9).text(address, textX, doc.y + 4, { width: textWidth, align: 'center' });
+  if (contact) doc.fontSize(9).text(contact, textX, doc.y + 2, { width: textWidth, align: 'center' });
+  if (registrations) doc.fontSize(9).text(registrations, textX, doc.y + 2, { width: textWidth, align: 'center' });
+  doc.y = Math.max(doc.y + 8, 120);
   doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
   doc.moveDown(1);
 }

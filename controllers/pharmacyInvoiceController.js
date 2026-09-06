@@ -3,6 +3,7 @@ const Medicine = require('../models/Medicine');
 const mongoose = require('mongoose');
 const PDFDocument = require('pdfkit'); // ADD: Import pdfkit
 const Prescription = require('../models/Prescription');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 
 const createInvoiceAndHandleStock = async (req, res) => {
   // ADDED: Receive the prescription_id
@@ -52,6 +53,7 @@ const downloadInvoicePDF = async (req, res) => {
       return res.status(404).json({ message: 'Invoice not found.' });
     }
 
+    const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
     const doc = new PDFDocument({ margin: 50 });
 
     // Set response headers to trigger download
@@ -62,8 +64,18 @@ const downloadInvoicePDF = async (req, res) => {
     doc.pipe(res);
 
     // --- Add Content to the PDF ---
-    // Header
-    doc.fontSize(20).font('Helvetica-Bold').text('Pharmacy Invoice', { align: 'center' });
+    // Hospital letterhead
+    const logoBuffer = hospital._logoBuffer || hospital.logoBuffer;
+    if (logoBuffer) {
+      try { doc.image(logoBuffer, 50, 45, { fit: [48, 48], align: 'center', valign: 'center' }); } catch (_) { /* validated upstream */ }
+    }
+    const headerX = logoBuffer ? 105 : 50;
+    const headerWidth = logoBuffer ? 390 : 495;
+    doc.fontSize(18).font('Helvetica-Bold').text(hospital.hospitalName, headerX, 48, { width: headerWidth, align: 'center' });
+    doc.fontSize(9).font('Helvetica').text(hospital.hospitalAddress, headerX, doc.y + 2, { width: headerWidth, align: 'center' });
+    if (hospital.hospitalContact) doc.text(hospital.hospitalContact, headerX, doc.y + 2, { width: headerWidth, align: 'center' });
+    doc.moveDown(0.8);
+    doc.fontSize(15).font('Helvetica-Bold').text('PHARMACY INVOICE', { align: 'center' });
     doc.moveDown();
 
     // Patient & Invoice Details
@@ -87,13 +99,13 @@ const downloadInvoicePDF = async (req, res) => {
       const y = doc.y;
       doc.text(item.name, 50, y);
       doc.text(item.quantity, 300, y, { width: 90, align: 'right' });
-      doc.text(`$${item.price.toFixed(2)}`, 400, y, { width: 90, align: 'right' });
+      doc.text(`INR ${Number(item.price || 0).toFixed(2)}`, 400, y, { width: 90, align: 'right' });
       doc.moveDown();
     });
     
     // Total
     doc.font('Helvetica-Bold').fontSize(14);
-    doc.text(`Total: $${invoice.total_amount.toFixed(2)}`, 300, doc.y + 20, { align: 'right' });
+    doc.text(`Total: INR ${Number(invoice.total_amount || 0).toFixed(2)}`, 300, doc.y + 20, { align: 'right' });
 
     // Finalize the PDF and end the stream
     doc.end();

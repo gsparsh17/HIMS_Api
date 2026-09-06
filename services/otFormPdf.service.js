@@ -2,13 +2,13 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const Hospital = require('../models/Hospital');
 const { formatMedication } = require('../utils/medicationDisplay');
 
 const A4 = { width: 595.28, height: 841.89, margin: 16 };
 const DOC_MARGIN = A4.margin;
 const COLORS = { ink: '#111827', light: '#F3F4F6', muted: '#6B7280', line: '#111827', accent: '#0F766E' };
 const fileStorage = require('./fileStorage.service');
+const { getHospitalPrintIdentity } = require('./hospitalPrintIdentity.service');
 
 function value(v, fallback = '') {
   if (v === undefined || v === null || v === '') return fallback;
@@ -393,9 +393,9 @@ async function hydrateSignatures(signatures = [], hospitalId) {
   }));
 }
 
-async function contextHospital(hospitalId){return Hospital.findById(hospitalId).lean();}
+async function contextHospital(){return getHospitalPrintIdentity({ includeLogoBuffer: true });}
 async function renderOtFormPdf({ template, record, otCase, signatures = [], hospital }) {
-  const hydratedHospital = await hydrateHospitalLogo(hospital || await contextHospital(otCase.hospitalId));
+  const hydratedHospital = await hydrateHospitalLogo(await contextHospital());
   const hydratedSignatures = await hydrateSignatures(signatures, otCase.hospitalId);
   const ctx={hospital:hydratedHospital,patient:otCase.patientId||{},admission:otCase.admissionId||{},caseInfo:otCase}; const data=record?.formData||record||{};
   return collectPdf((doc)=>{
@@ -410,7 +410,7 @@ async function renderOtFormPdf({ template, record, otCase, signatures = [], hosp
   });
 }
 async function renderOtPacketPdf({ forms, otCase, hospital }) {
-  const hydratedHospital = await hydrateHospitalLogo(hospital || await contextHospital(otCase.hospitalId));
+  const hydratedHospital = await hydrateHospitalLogo(await contextHospital());
   return collectPdf(async(doc)=>{
     for(let index=0;index<forms.length;index+=1){
       const {template,record,signatures=[]}=forms[index];

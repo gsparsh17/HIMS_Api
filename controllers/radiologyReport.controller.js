@@ -2,10 +2,10 @@ const { operationNow } = require('../utils/operationTimeContext');
 const fs = require('fs');
 const fileStorage = require('../services/fileStorage.service');
 const RadiologyRequest = require('../models/RadiologyRequest');
-const Hospital = require('../models/Hospital');
 const { catalogVersion, listTemplates, getTemplate, matchTemplateDetailed } = require('../services/radiologyReportTemplate.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { generateRadiologyReportPdf } = require('../services/radiologyPdf.service');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 
 
 
@@ -139,9 +139,7 @@ exports.downloadGeneratedReport = async (req, res) => {
       .populate('appointmentId', 'token')
       .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
     if (!request || request.report_mode !== 'manual' || !request.manual_report) return res.status(404).json({ error: 'Structured radiology report not found' });
-    const hospitalId = request.admissionId?.hospitalId || req.user?.hospital_id;
-    let hospital = hospitalId ? await Hospital.findById(hospitalId) : null;
-    if (!hospital) return res.status(404).json({ error: 'Hospital not found' });
+    const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
     await generateRadiologyReportPdf({ request, hospital, res });
   } catch (error) {
     console.error('Error generating radiology PDF:', error);

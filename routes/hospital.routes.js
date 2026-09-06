@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const {
   getHospitalDetails,
+  getHospitalPrintProfile,
   getHospitalById,
   updateHospitalDetails,
   getVitalsConfig,
@@ -27,6 +28,7 @@ const upload = multer({
 
 router.use(protect);
 router.get('/', getHospitalDetails);
+router.get('/print-identity', getHospitalPrintProfile);
 router.get('/:hospitalId', getHospitalById);
 router.get('/:hospitalId/vitals-config', getVitalsConfig);
 router.patch('/:hospitalId/details', authorize('admin'), requireModuleAccess('masters_settings', 'manage'), upload.single('logo'), updateHospitalDetails);

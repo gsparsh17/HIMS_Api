@@ -1,6 +1,7 @@
 const Hospital = require('../models/Hospital');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 
 
 
@@ -33,6 +34,20 @@ const getHospitalDetails = async (req, res) => {
     return res.status(200).json(hospitals);
   } catch (error) {
     return res.status(500).json({ message: 'Server error while fetching hospital details.' });
+  }
+};
+
+const getHospitalPrintProfile = async (_req, res) => {
+  try {
+    // This deployment has exactly one active Hospital record per database.
+    // Print branding must never depend on a user/admission/invoice hospital ID.
+    const hospital = await getHospitalPrintIdentity();
+    return res.status(200).json({ hospital });
+  } catch (error) {
+    return res.status(error.statusCode || error.status || 500).json({
+      message: error.message || 'Unable to load hospital print profile.',
+      code: error.code || 'HOSPITAL_PRINT_PROFILE_ERROR'
+    });
   }
 };
 
@@ -136,6 +151,7 @@ const updateVitalsConfig = async (req, res) => {
 
 module.exports = {
   getHospitalDetails,
+  getHospitalPrintProfile,
   getHospitalById,
   updateHospitalDetails,
   getVitalsConfig,

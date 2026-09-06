@@ -16,7 +16,6 @@ const ImagingTest = require('../models/ImagingTest');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const Pharmacy = require('../models/Pharmacy');
 const Procedure = require('../models/Procedure');
-const Hospital = require('../models/Hospital');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
 const SafetyPolicy = require('../models/SafetyPolicy');
@@ -24,6 +23,7 @@ const { generatePrescriptionPdf, generateBlankPrescriptionOnePagePdf } = require
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requestHospitalId } = require('../utils/hospitalScope');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 
 async function attachAdmissionDetailsToPrescriptions(prescriptions, hospitalId, { includeWardCode = false } = {}) {
   const rows = prescriptions.map((prescription) =>
@@ -887,11 +887,12 @@ const downloadBlankPrescriptionPdfByAppointment = async (req, res, { onePage = f
       items: []
     };
 
+    const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
     const generator = onePage ? generateBlankPrescriptionOnePagePdf : generatePrescriptionPdf;
     return generator({
       res,
       prescription: blankPrescription,
-      hospital: appointment.hospital_id || null,
+      hospital,
       vitals: null
     });
   } catch (error) {
@@ -931,7 +932,7 @@ exports.downloadOpdSlipPdf = async (req, res) => {
     if (!prescription) return res.status(404).json({ success: false, error: 'OPD prescription/slip not found for this hospital' });
 
     const [hospital, vitals] = await Promise.all([
-      Hospital.findById(hospitalId).lean(),
+      getHospitalPrintIdentity({ includeLogoBuffer: true }),
       Vital.findOne({
         $or: [
           { prescription_id: prescription._id },
@@ -971,7 +972,7 @@ exports.downloadPrescriptionPdf = async (req, res) => {
           ...(prescription.appointment_id ? [{ appointment_id: prescription.appointment_id }] : [])
         ]
       }).sort({ recorded_at: -1 }).lean(),
-      req.user?.hospital_id ? Hospital.findById(req.user.hospital_id).lean() : null
+      getHospitalPrintIdentity({ includeLogoBuffer: true })
     ]);
 
     return generatePrescriptionPdf({ res, prescription, hospital, vitals });

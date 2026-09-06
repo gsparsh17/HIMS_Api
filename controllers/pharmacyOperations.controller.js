@@ -20,8 +20,8 @@ const Patient = require('../models/Patient');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
 const IPDCharge = require('../models/IPDCharge');
-const Hospital = require('../models/Hospital');
 const { userHospitalId } = require('../utils/hospitalScope');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 const Doctor = require('../models/Doctor');
 const {
   objectIdOrUndefined,
@@ -2567,53 +2567,23 @@ exports.getInventoryBatches = asyncHandler(async (req, res) => {
   res.json({ success: true, batches: enrichedBatches });
 });
 
-// ========== NEW: Get Hospital Details ==========
-exports.getHospitalDetails = asyncHandler(async (req, res) => {
-  const hospitalId = userHospitalId(req.user);
-
-  if (!hospitalId) {
-    // Return default if no hospital ID found
-    return res.json({
-      success: true,
-      data: {
-        name: 'CITY HOSPITAL',
-        hospitalName: 'CITY HOSPITAL',
-        address: '123 Healthcare Avenue, Medical District',
-        contact: '+91 12345 67890',
-        email: 'info@cityhospital.com',
-        logo: null,
-        gst: '27AAAAA1234A1Z',
-        gst_number: '27AAAAA1234A1Z'
-      }
-    });
-  }
-
-  const hospital = await Hospital.findById(hospitalId)
-    .select('hospitalName name address contact email logo gst gst_number vitalsEnabled vitalsController')
-    .lean();
-
-  if (!hospital) {
-    return res.json({
-      success: true,
-      data: {
-        name: 'CITY HOSPITAL',
-        hospitalName: 'CITY HOSPITAL',
-        address: '123 Healthcare Avenue, Medical District',
-        contact: '+91 12345 67890',
-        email: 'info@cityhospital.com',
-        logo: null,
-        gst: '27AAAAA1234A1Z',
-        gst_number: '27AAAAA1234A1Z'
-      }
-    });
-  }
+// ========== Hospital Details ==========
+exports.getHospitalDetails = asyncHandler(async (_req, res) => {
+  // One hospital record exists per HIMS database. Never synthesize a fake
+  // hospital identity and never depend on a user/admission hospital reference.
+  const hospital = await getHospitalPrintIdentity({ requireLogo: false });
 
   res.json({
     success: true,
     data: {
-      name: hospital.hospitalName || hospital.name,
-      hospitalName: hospital.hospitalName || hospital.name,
+      _id: hospital._id,
+      name: hospital.hospitalName,
+      hospitalName: hospital.hospitalName,
       address: hospital.address,
+      city: hospital.city,
+      state: hospital.state,
+      pinCode: hospital.pinCode,
+      hospitalAddress: hospital.hospitalAddress,
       contact: hospital.contact,
       email: hospital.email,
       logo: hospital.logo,

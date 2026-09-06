@@ -11,6 +11,7 @@ const { clinicalDayBounds, formatClinicalTime, dateKey } = require('../utils/cli
 const { DEFAULT_TIMEZONE, EWS_CONFIG } = require('../config/clinicalScoring');
 const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
 const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 
 const id = v => v?._id || v;
 const safeText = v => String(v || '').trim();
@@ -59,7 +60,8 @@ async function admissionForRequest(req, admissionId) {
   return admission;
 }
 
-function header(admission) {
+async function header(admission) {
+  const hospital = await getHospitalPrintIdentity();
   const p = admission.patientId || {};
   const d = admission.primaryDoctorId || {};
   const patientName = p.name || p.fullName || [p.salutation, p.first_name, p.firstName, p.middle_name, p.last_name, p.lastName].filter(Boolean).join(' ');
@@ -67,7 +69,17 @@ function header(admission) {
   const gender = p.gender || p.sex;
 
   return {
-    hospitalId: admission.hospitalId || admission.hospital_id,
+    hospitalId: hospital._id,
+    hospitalName: hospital.hospitalName,
+    hospitalAddress: hospital.hospitalAddress,
+    hospitalContact: hospital.hospitalContact,
+    hospitalLogo: hospital.logo,
+    logo: hospital.logo,
+    hospitalRegistryNo: hospital.registryNo || hospital.hospitalID || hospital.registrationNumber || '',
+    hospitalDistrict: hospital.district || '',
+    hospitalCity: hospital.city || '',
+    hospitalState: hospital.state || '',
+    hospitalPinCode: hospital.pinCode || hospital.pincode || '',
     patientName,
     ageGender: [age, gender].filter(v => v !== undefined && v !== null && v !== '').join(' / '),
     uhid: p.uhid || p.patientId || p.registration_number || '',
@@ -1111,7 +1123,7 @@ exports.printVitalsEws = async (req, res) => {
       payload: {
         reportType: 'vitals_ews',
         title: 'NURSING - VITALS WITH EWS SCORING',
-        header: header(x.admission),
+        header: await header(x.admission),
         chartDate: x.chartDate,
         timezone: x.timezone,
         clinicalDay: { start: x.bounds.start, end: x.bounds.end },
@@ -1144,7 +1156,7 @@ exports.printPatientCareFlow = async (req, res) => {
       payload: {
         reportType: 'patient_care_flow',
         title: 'NURSING - PATIENT CARE FLOW CHART',
-        header: header(x.admission),
+        header: await header(x.admission),
         chartDate: x.chartDate,
         timezone: x.timezone,
         rows,
@@ -1169,7 +1181,7 @@ exports.printDoctorInitialAssessment = async (req, res) => {
       payload: {
         reportType: 'doctor_initial_assessment',
         title: 'DOCTOR INITIAL ASSESSMENT FORM',
-        header: header(admission),
+        header: await header(admission),
         assessment
       }
     });
@@ -1191,7 +1203,7 @@ exports.printNursingAdmissionAssessment = async (req, res) => {
       payload: {
         reportType: 'nursing_admission_assessment',
         title: 'NURSING ADMISSION ASSESSMENT',
-        header: header(admission),
+        header: await header(admission),
         assessment
       }
     });
@@ -1246,7 +1258,7 @@ exports.printMedicationChart = async (req, res) => {
       payload: {
         reportType: 'medication_chart',
         title: 'NURSING MEDICATION CHART',
-        header: header(admission),
+        header: await header(admission),
         from: req.query.from || null,
         to: req.query.to || null,
         medications: medications
@@ -1316,7 +1328,7 @@ exports.printRounds = async (req, res) => {
         title: req.query.type === 'notes'
           ? "DOCTOR'S NOTE"
           : 'CONSULTANT DAILY ASSESSMENT AND MANAGEMENT PLAN',
-        header: header(admission),
+        header: await header(admission),
         rounds: rounds
       }
     });
