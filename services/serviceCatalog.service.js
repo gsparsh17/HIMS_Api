@@ -33,9 +33,9 @@ async function searchServiceCatalog({ user, query, encounterType = 'OPD', limit 
   const capped = Math.min(Math.max(Number(limit) || 30, 1), 60);
 
   const [labs, imaging, procedures, charges] = await Promise.all([
-    LabTest.find({ hospitalId, is_active: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
-    ImagingTest.find({ hospitalId, is_active: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
-    Procedure.find({ hospitalId, is_active: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
+    LabTest.find({ hospitalId, is_active: { $ne: false }, is_billable: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
+    ImagingTest.find({ hospitalId, is_active: { $ne: false }, is_billable: { $ne: false }, template_only: { $ne: true }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
+    Procedure.find({ hospitalId, is_active: { $ne: false }, is_billable: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
     HospitalCharges.findOne({ hospital: hospitalId }).sort({ effectiveFrom: -1 }).lean()
   ]);
 

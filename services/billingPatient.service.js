@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { hospitalDateKey } = require('../utils/hospitalDateTime');
+const { hospitalDateKey, hospitalDayBounds } = require('../utils/hospitalDateTime');
 const { operationDateKey } = require('../utils/operationTimeContext');
 const Bill = require('../models/Bill');
 const Invoice = require('../models/Invoice');
@@ -10,6 +10,7 @@ const FinancialTransaction = require('../models/FinancialTransaction');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const Hospital = require('../models/Hospital');
 const { normalizeFinancialLine } = require('../utils/financialLine');
+const { buildDailyAccommodationSummary } = require('./ipdFinancial.service');
 
 const asNumber = (value) => {
   const parsed = Number(value);
@@ -110,6 +111,22 @@ function billingSearchStage(search) {
   };
 }
 
+function billingPatientStatusStage(status) {
+  const value = String(status || '').trim();
+  if (!value || value === 'All') return null;
+  if (value === 'Billed') return { $match: { totalBill: { $gt: 0 } } };
+  if (value === 'Paid') {
+    return { $match: { totalBill: { $gt: 0 }, outstandingAmount: { $lte: 0 } } };
+  }
+  if (value === 'Partially Paid') {
+    return { $match: { $expr: { $and: [{ $gt: ['$outstandingAmount', 0] }, { $lt: ['$outstandingAmount', '$totalBill'] }] } } };
+  }
+  if (value === 'Pending') {
+    return { $match: { $expr: { $and: [{ $gt: ['$outstandingAmount', 0] }, { $gte: ['$outstandingAmount', '$totalBill'] }] } } };
+  }
+  return null;
+}
+
 function invoiceUpdateExpression(prefix = '$$invoice') {
   return {
     $ifNull: [
@@ -119,7 +136,7 @@ function invoiceUpdateExpression(prefix = '$$invoice') {
   };
 }
 
-async function aggregateIpdBillingRows({ hospitalObjectId, search, startDate = '', endDate = '', rowLimit = null, skip = 0 }) {
+async function aggregateIpdBillingRows({ hospitalObjectId, search, status = 'All', startDate = '', endDate = '', rowLimit = null, skip = 0 }) {
   const pipeline = [
     { $match: { hospitalId: hospitalObjectId } },
     { $set: { patientId: '$patientId' } },
@@ -248,6 +265,8 @@ async function aggregateIpdBillingRows({ hospitalObjectId, search, startDate = '
   ];
   const searchStage = billingSearchStage(search);
   if (searchStage) pipeline.push(searchStage);
+  const statusStage = billingPatientStatusStage(status);
+  if (statusStage) pipeline.push(statusStage);
   const dateStage = billingLastUpdatedStage(startDate, endDate);
   if (dateStage) pipeline.push(dateStage);
   pipeline.push({ $sort: { lastUpdated: -1 } });
@@ -259,7 +278,7 @@ async function aggregateIpdBillingRows({ hospitalObjectId, search, startDate = '
   return { rows: result.rows || [], count: result.count?.[0]?.value || 0 };
 }
 
-async function aggregateOpdBillingRows({ hospitalObjectId, search, startDate = '', endDate = '', rowLimit = null, skip = 0 }) {
+async function aggregateOpdBillingRows({ hospitalObjectId, search, status = 'All', startDate = '', endDate = '', rowLimit = null, skip = 0 }) {
   const pipeline = [
     { $match: { hospital_id: hospitalObjectId, is_deleted: { $ne: true }, $or: [{ admission_id: null }, { admission_id: { $exists: false } }] } },
     {
@@ -323,6 +342,8 @@ async function aggregateOpdBillingRows({ hospitalObjectId, search, startDate = '
   ];
   const searchStage = billingSearchStage(search);
   if (searchStage) pipeline.push(searchStage);
+  const statusStage = billingPatientStatusStage(status);
+  if (statusStage) pipeline.push(statusStage);
   const dateStage = billingLastUpdatedStage(startDate, endDate);
   if (dateStage) pipeline.push(dateStage);
   pipeline.push({ $sort: { lastUpdated: -1 } });
@@ -354,12 +375,8 @@ function utcDateRange(startDate, endDate, { requireBoth = false } = {}) {
   const end = String(endDate || '').trim();
   if (requireBoth && (!start || !end)) return null;
   const range = {};
-  if (start) range.$gte = new Date(`${start}T00:00:00.000Z`);
-  if (end) {
-    const endExclusive = new Date(`${end}T00:00:00.000Z`);
-    endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
-    range.$lt = endExclusive;
-  }
+  if (start) range.$gte = hospitalDayBounds(start).start;
+  if (end) range.$lt = hospitalDayBounds(end).end;
   return Object.keys(range).length ? range : null;
 }
 
@@ -383,14 +400,58 @@ function transactionSearchStage(search) {
 function transactionStatusStage(status) {
   const value = String(status || '').trim();
   if (!value || value === 'All') return null;
+  if (value === 'Billed') {
+    return {
+      $match: {
+        $or: [
+          { _sourceType: 'invoice', document_stage: { $nin: ['DRAFT', 'VOID', 'CREDIT_NOTE'] }, status: { $nin: ['Cancelled', 'Refunded'] } },
+          { _sourceType: 'bill', document_stage: 'INVOICED' }
+        ]
+      }
+    };
+  }
   return { $match: { status: value } };
 }
 
 function transactionDateStage(startDate, endDate) {
-  // Preserve the existing dashboard behavior: transaction date filtering only
-  // activates after BOTH bounds are selected.
-  const range = utcDateRange(startDate, endDate, { requireBoth: true });
+  const range = utcDateRange(startDate, endDate);
   return range ? { $match: { displayDate: range } } : null;
+}
+
+function canonicalBillInvoiceLookupStages(hospitalObjectId) {
+  return [
+    {
+      $lookup: {
+        from: Invoice.collection.name,
+        let: { billId: '$_id' },
+        pipeline: [
+          {
+            $match: {
+              hospital_id: hospitalObjectId,
+              is_deleted: { $ne: true },
+              document_stage: { $nin: ['VOID', 'CREDIT_NOTE'] },
+              invoice_type: { $ne: 'Credit Note' },
+              status: { $ne: 'Cancelled' }
+            }
+          },
+          {
+            $match: {
+              $expr: {
+                $or: [
+                  { $eq: ['$bill_id', '$$billId'] },
+                  { $in: ['$$billId', { $ifNull: ['$bill_ids', []] }] }
+                ]
+              }
+            }
+          },
+          { $limit: 1 },
+          { $project: { _id: 1 } }
+        ],
+        as: '_activeLinkedInvoices'
+      }
+    },
+    { $match: { '_activeLinkedInvoices.0': { $exists: false } } }
+  ];
 }
 
 function patientNameExpression(patientPath = '$_patient', fallbackPath = null) {
@@ -415,8 +476,10 @@ function patientNameExpression(patientPath = '$_patient', fallbackPath = null) {
 async function aggregateBillTransactions({ hospitalObjectId, search, status, startDate, endDate, scope = 'all', rowLimit = null }) {
   const baseMatch = { hospital_id: hospitalObjectId, is_deleted: { $ne: true } };
   if (scope === 'opd') baseMatch.$or = [{ admission_id: null }, { admission_id: { $exists: false } }];
+  if (scope === 'ipd') baseMatch.admission_id = { $ne: null };
   const pipeline = [
     { $match: baseMatch },
+    ...canonicalBillInvoiceLookupStages(hospitalObjectId),
     {
       $lookup: {
         from: Patient.collection.name,
@@ -447,6 +510,7 @@ async function aggregateBillTransactions({ hospitalObjectId, search, status, sta
         bill_number: 1,
         invoice_number: { $literal: null },
         invoice_type: { $literal: null },
+        document_stage: 1,
         admission_id: 1,
         status: 1,
         displayAmount: { $ifNull: ['$total_amount', 0] },
@@ -488,6 +552,7 @@ async function aggregateInvoiceTransactions({ hospitalObjectId, search, status, 
       { invoice_type: { $ne: 'Purchase' } }
     ];
   }
+  if (scope === 'ipd') baseMatch.admission_id = { $ne: null };
   const pipeline = [
     { $match: baseMatch },
     {
@@ -515,7 +580,9 @@ async function aggregateInvoiceTransactions({ hospitalObjectId, search, status, 
         invoice_number: 1,
         bill_number: { $literal: null },
         invoice_type: 1,
+        document_stage: 1,
         bill_id: 1,
+        bill_ids: 1,
         admission_id: 1,
         status: { $cond: [{ $eq: ['$status', 'Partial'] }, 'Partially Paid', '$status'] },
         displayAmount: { $ifNull: ['$total', 0] },
@@ -551,18 +618,39 @@ async function aggregateInvoiceTransactions({ hospitalObjectId, search, status, 
   return { rows, count: result.count?.[0]?.value || 0 };
 }
 
-async function getBillingDashboardStats(hospitalObjectId) {
-  const today = operationDateKey();
-  const [result = {}] = await Bill.aggregate([
-    { $match: { hospital_id: hospitalObjectId, is_deleted: { $ne: true } } },
+async function aggregateBillDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope = 'all', collectionStart, collectionEnd }) {
+  const baseMatch = { hospital_id: hospitalObjectId, is_deleted: { $ne: true } };
+  if (scope === 'opd') baseMatch.$or = [{ admission_id: null }, { admission_id: { $exists: false } }];
+  if (scope === 'ipd') baseMatch.admission_id = { $ne: null };
+
+  const pipeline = [
+    { $match: baseMatch },
+    ...canonicalBillInvoiceLookupStages(hospitalObjectId),
+    {
+      $lookup: {
+        from: Patient.collection.name,
+        localField: 'patient_id',
+        foreignField: '_id',
+        pipeline: [{ $project: { first_name: 1, middle_name: 1, last_name: 1 } }],
+        as: '_patient'
+      }
+    },
+    { $set: { _patient: { $arrayElemAt: ['$_patient', 0] } } },
     {
       $project: {
-        total_amount: { $ifNull: ['$total_amount', 0] },
+        _idText: { $toString: '$_id' },
+        _sourceType: { $literal: 'bill' },
+        patientName: patientNameExpression('$_patient'),
+        bill_number: 1,
+        invoice_number: { $literal: null },
+        document_stage: 1,
+        status: 1,
+        displayAmount: { $ifNull: ['$total_amount', 0] },
+        displayDate: { $ifNull: ['$generated_at', '$createdAt'] },
         paid_amount: { $ifNull: ['$paid_amount', 0] },
         balance_due: {
           $ifNull: ['$balance_due', { $max: [0, { $subtract: [{ $ifNull: ['$total_amount', 0] }, { $ifNull: ['$paid_amount', 0] }] }] }]
         },
-        status: 1,
         paid_at: 1,
         todayPayments: {
           $sum: {
@@ -571,7 +659,7 @@ async function getBillingDashboardStats(hospitalObjectId) {
               as: 'payment',
               in: {
                 $cond: [
-                  { $eq: [{ $substrBytes: [{ $ifNull: [{ $toString: '$$payment.date' }, ''] }, 0, 10] }, today] },
+                  { $and: [{ $gte: ['$$payment.date', collectionStart] }, { $lt: ['$$payment.date', collectionEnd] }] },
                   { $ifNull: ['$$payment.amount', 0] },
                   0
                 ]
@@ -580,36 +668,209 @@ async function getBillingDashboardStats(hospitalObjectId) {
           }
         }
       }
-    },
-    {
-      $group: {
-        _id: null,
-        totalOutstanding: { $sum: { $cond: [{ $in: ['$status', ['Pending', 'Partially Paid', 'Generated']] }, '$balance_due', 0] } },
-        collectedToday: { $sum: {
+    }
+  ];
+
+  [transactionSearchStage(search), transactionStatusStage(status), transactionDateStage(startDate, endDate)]
+    .filter(Boolean).forEach((stage) => pipeline.push(stage));
+
+  pipeline.push({
+    $group: {
+      _id: null,
+      totalOutstanding: {
+        $sum: {
           $cond: [
-            { $gt: ['$todayPayments', 0] }, '$todayPayments',
-            { $cond: [
-              { $eq: [{ $substrBytes: [{ $ifNull: [{ $toString: '$paid_at' }, ''] }, 0, 10] }, today] }, '$paid_amount', 0
-            ] }
+            { $and: [{ $gt: ['$balance_due', 0] }, { $not: [{ $in: ['$status', ['Draft', 'Cancelled', 'Refunded']] }] }] },
+            '$balance_due',
+            0
           ]
-        } },
-        overdueCount: { $sum: { $cond: [{ $in: ['$status', ['Pending', 'Partially Paid']] }, 1, 0] } },
-        totalCollected: { $sum: {
+        }
+      },
+      collectedToday: {
+        $sum: {
           $cond: [
-            { $gt: ['$paid_amount', 0] }, '$paid_amount',
-            { $cond: [{ $eq: ['$status', 'Paid'] }, '$total_amount', 0] }
+            { $gt: ['$todayPayments', 0] },
+            '$todayPayments',
+            {
+              $cond: [
+                { $and: [{ $gte: ['$paid_at', collectionStart] }, { $lt: ['$paid_at', collectionEnd] }] },
+                '$paid_amount',
+                0
+              ]
+            }
           ]
-        } },
-        totalBilled: { $sum: { $cond: [{ $in: ['$status', ['Paid', 'Pending', 'Partially Paid']] }, '$total_amount', 0] } }
+        }
+      },
+      overdueCount: {
+        $sum: {
+          $cond: [
+            { $and: [{ $gt: ['$balance_due', 0] }, { $not: [{ $in: ['$status', ['Draft', 'Cancelled', 'Refunded']] }] }] },
+            1,
+            0
+          ]
+        }
+      },
+      totalCollected: {
+        $sum: {
+          $cond: [{ $in: ['$status', ['Cancelled', 'Refunded']] }, 0, '$paid_amount']
+        }
+      },
+      totalBilled: {
+        $sum: {
+          $cond: [{ $in: ['$status', ['Draft', 'Cancelled', 'Refunded']] }, 0, '$displayAmount']
+        }
       }
     }
+  });
+
+  const [result = {}] = await Bill.aggregate(pipeline).allowDiskUse(true);
+  return result;
+}
+
+async function aggregateInvoiceDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope = 'all', collectionStart, collectionEnd }) {
+  const baseMatch = { hospital_id: hospitalObjectId, is_deleted: { $ne: true } };
+  if (scope === 'opd') {
+    baseMatch.$and = [
+      { $or: [{ admission_id: null }, { admission_id: { $exists: false } }] },
+      { invoice_type: { $ne: 'Purchase' } }
+    ];
+  }
+  if (scope === 'ipd') baseMatch.admission_id = { $ne: null };
+
+  const pipeline = [
+    { $match: baseMatch },
+    {
+      $lookup: {
+        from: Patient.collection.name,
+        localField: 'patient_id',
+        foreignField: '_id',
+        pipeline: [{ $project: { first_name: 1, middle_name: 1, last_name: 1 } }],
+        as: '_patient'
+      }
+    },
+    { $set: { _patient: { $arrayElemAt: ['$_patient', 0] } } },
+    {
+      $project: {
+        _idText: { $toString: '$_id' },
+        _sourceType: { $literal: 'invoice' },
+        patientName: patientNameExpression('$_patient', '$customer_name'),
+        bill_number: { $literal: null },
+        invoice_number: 1,
+        document_stage: 1,
+        status: { $cond: [{ $eq: ['$status', 'Partial'] }, 'Partially Paid', '$status'] },
+        displayAmount: { $ifNull: ['$total', 0] },
+        displayDate: { $ifNull: ['$issue_date', { $ifNull: ['$issued_at', { $ifNull: ['$created_at', '$createdAt'] }] }] },
+        paid_amount: { $ifNull: ['$amount_paid', 0] },
+        balance_due: {
+          $ifNull: ['$balance_due', { $max: [0, { $subtract: [{ $ifNull: ['$total', 0] }, { $ifNull: ['$amount_paid', 0] }] }] }]
+        },
+        paid_at: 1,
+        todayPayments: {
+          $sum: {
+            $map: {
+              input: { $ifNull: ['$payment_history', []] },
+              as: 'payment',
+              in: {
+                $cond: [
+                  {
+                    $and: [
+                      { $gte: ['$$payment.date', collectionStart] },
+                      { $lt: ['$$payment.date', collectionEnd] },
+                      { $ne: ['$$payment.status', 'Refunded'] }
+                    ]
+                  },
+                  { $ifNull: ['$$payment.amount', 0] },
+                  0
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ];
+
+  [transactionSearchStage(search), transactionStatusStage(status), transactionDateStage(startDate, endDate)]
+    .filter(Boolean).forEach((stage) => pipeline.push(stage));
+
+  pipeline.push({
+    $group: {
+      _id: null,
+      totalOutstanding: {
+        $sum: {
+          $cond: [
+            { $and: [{ $gt: ['$balance_due', 0] }, { $not: [{ $in: ['$status', ['Draft', 'Cancelled', 'Refunded']] }] }] },
+            '$balance_due',
+            0
+          ]
+        }
+      },
+      collectedToday: {
+        $sum: {
+          $cond: [
+            { $gt: ['$todayPayments', 0] },
+            '$todayPayments',
+            {
+              $cond: [
+                { $and: [{ $gte: ['$paid_at', collectionStart] }, { $lt: ['$paid_at', collectionEnd] }] },
+                '$paid_amount',
+                0
+              ]
+            }
+          ]
+        }
+      },
+      overdueCount: {
+        $sum: {
+          $cond: [
+            { $and: [{ $gt: ['$balance_due', 0] }, { $not: [{ $in: ['$status', ['Draft', 'Cancelled', 'Refunded']] }] }] },
+            1,
+            0
+          ]
+        }
+      },
+      totalCollected: {
+        $sum: {
+          $cond: [{ $in: ['$status', ['Cancelled', 'Refunded']] }, 0, '$paid_amount']
+        }
+      },
+      totalBilled: {
+        $sum: {
+          $cond: [
+            {
+              $or: [
+                { $in: ['$status', ['Draft', 'Cancelled', 'Refunded']] },
+                { $in: ['$document_stage', ['VOID', 'CREDIT_NOTE']] }
+              ]
+            },
+            0,
+            '$displayAmount'
+          ]
+        }
+      }
+    }
+  });
+
+  const [result = {}] = await Invoice.aggregate(pipeline).allowDiskUse(true);
+  return result;
+}
+
+async function getBillingDashboardStats({ hospitalObjectId, search = '', status = 'All', startDate = '', endDate = '', scope = 'all' }) {
+  const selectedCollectionRange = utcDateRange(startDate, endDate);
+  const operationDay = hospitalDayBounds(operationDateKey());
+  const collectionStart = selectedCollectionRange?.$gte || (selectedCollectionRange?.$lt ? new Date(0) : operationDay.start);
+  const collectionEnd = selectedCollectionRange?.$lt || (selectedCollectionRange?.$gte ? new Date('9999-12-31T23:59:59.999Z') : operationDay.end);
+  const [billStats = {}, invoiceStats = {}] = await Promise.all([
+    aggregateBillDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope, collectionStart, collectionEnd }),
+    aggregateInvoiceDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope, collectionStart, collectionEnd })
   ]);
+
   return {
-    totalOutstanding: asNumber(result.totalOutstanding),
-    collectedToday: asNumber(result.collectedToday),
-    overdueCount: asNumber(result.overdueCount),
-    totalCollected: asNumber(result.totalCollected),
-    totalBilled: asNumber(result.totalBilled)
+    totalOutstanding: asNumber(billStats.totalOutstanding) + asNumber(invoiceStats.totalOutstanding),
+    collectedToday: asNumber(billStats.collectedToday) + asNumber(invoiceStats.collectedToday),
+    overdueCount: asNumber(billStats.overdueCount) + asNumber(invoiceStats.overdueCount),
+    totalCollected: asNumber(billStats.totalCollected) + asNumber(invoiceStats.totalCollected),
+    totalBilled: asNumber(billStats.totalBilled) + asNumber(invoiceStats.totalBilled)
   };
 }
 
@@ -619,12 +880,12 @@ async function listBillingTransactions({ hospitalId, search = '', status = 'All'
   const safePage = Math.max(1, Number(page) || 1);
   const skip = (safePage - 1) * safeLimit;
   const candidateLimit = safePage * safeLimit;
-  const normalizedScope = scope === 'opd' ? 'opd' : 'all';
+  const normalizedScope = ['opd', 'ipd'].includes(scope) ? scope : 'all';
 
   const [bills, invoices, stats, openIpdCount, patientCounts] = await Promise.all([
     aggregateBillTransactions({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope, rowLimit: candidateLimit }),
     aggregateInvoiceTransactions({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope, rowLimit: candidateLimit }),
-    getBillingDashboardStats(hospitalObjectId),
+    getBillingDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope }),
     IPDAdmission.countDocuments({ hospitalId: hospitalObjectId, status: { $ne: 'Cancelled' }, financialClearanceStatus: { $ne: 'cleared' } }),
     getGlobalBillingCounts(hospitalObjectId)
   ]);
@@ -646,7 +907,7 @@ async function listBillingTransactions({ hospitalId, search = '', status = 'All'
   };
 }
 
-async function listPatientBillingSummaries({ hospitalId, type = 'all', search = '', startDate = '', endDate = '', limit = 250, page = 1 }) {
+async function listPatientBillingSummaries({ hospitalId, type = 'all', search = '', status = 'All', startDate = '', endDate = '', limit = 250, page = 1 }) {
   const hospitalObjectId = new mongoose.Types.ObjectId(String(hospitalId));
   // Preserve the legacy endpoint's accepted response size for callers that have
   // not yet migrated, while new high-traffic screens use much smaller pages.
@@ -654,26 +915,32 @@ async function listPatientBillingSummaries({ hospitalId, type = 'all', search = 
   const safePage = Math.max(1, Number(page) || 1);
   const skip = (safePage - 1) * safeLimit;
   const countsPromise = getGlobalBillingCounts(hospitalObjectId);
+  const normalizedScope = ['ipd', 'opd'].includes(type) ? type : 'all';
+  const statsPromise = getBillingDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope });
 
   if (type === 'ipd') {
-    const [result, counts] = await Promise.all([
-      aggregateIpdBillingRows({ hospitalObjectId, search, startDate, endDate, rowLimit: safeLimit, skip }),
-      countsPromise
+    const [result, counts, stats] = await Promise.all([
+      aggregateIpdBillingRows({ hospitalObjectId, search, status, startDate, endDate, rowLimit: safeLimit, skip }),
+      countsPromise,
+      statsPromise
     ]);
     return {
       rows: result.rows,
       counts,
+      stats,
       pagination: { page: safePage, limit: safeLimit, total: result.count, totalPages: Math.max(1, Math.ceil(result.count / safeLimit)) }
     };
   }
   if (type === 'opd') {
-    const [result, counts] = await Promise.all([
-      aggregateOpdBillingRows({ hospitalObjectId, search, startDate, endDate, rowLimit: safeLimit, skip }),
-      countsPromise
+    const [result, counts, stats] = await Promise.all([
+      aggregateOpdBillingRows({ hospitalObjectId, search, status, startDate, endDate, rowLimit: safeLimit, skip }),
+      countsPromise,
+      statsPromise
     ]);
     return {
       rows: result.rows,
       counts,
+      stats,
       pagination: { page: safePage, limit: safeLimit, total: result.count, totalPages: Math.max(1, Math.ceil(result.count / safeLimit)) }
     };
   }
@@ -682,10 +949,11 @@ async function listPatientBillingSummaries({ hospitalId, type = 'all', search = 
   // the requested combined page. This keeps Node memory bounded while preserving
   // the exact cross-type lastUpdated ordering used by the previous implementation.
   const candidateLimit = safePage * safeLimit;
-  const [ipd, opd, counts] = await Promise.all([
-    aggregateIpdBillingRows({ hospitalObjectId, search, startDate, endDate, rowLimit: candidateLimit, skip: 0 }),
-    aggregateOpdBillingRows({ hospitalObjectId, search, startDate, endDate, rowLimit: candidateLimit, skip: 0 }),
-    countsPromise
+  const [ipd, opd, counts, stats] = await Promise.all([
+    aggregateIpdBillingRows({ hospitalObjectId, search, status, startDate, endDate, rowLimit: candidateLimit, skip: 0 }),
+    aggregateOpdBillingRows({ hospitalObjectId, search, status, startDate, endDate, rowLimit: candidateLimit, skip: 0 }),
+    countsPromise,
+    statsPromise
   ]);
   const combined = [...ipd.rows, ...opd.rows]
     .sort((left, right) => new Date(right.lastUpdated || 0) - new Date(left.lastUpdated || 0));
@@ -693,6 +961,7 @@ async function listPatientBillingSummaries({ hospitalId, type = 'all', search = 
   return {
     rows: combined.slice(skip, skip + safeLimit),
     counts,
+    stats,
     pagination: { page: safePage, limit: safeLimit, total: filteredTotal, totalPages: Math.max(1, Math.ceil(filteredTotal / safeLimit)) }
   };
 }
@@ -915,6 +1184,13 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
       }));
 
   const unbilledCharges = displayCharges.filter((charge) => !charge.isBilled && charge.status !== 'INVOICED');
+  const billedDisplayCharges = displayCharges.filter((charge) => charge.isBilled || charge.status === 'INVOICED');
+  const [unbilledDailyChargeSummary, billedDailyChargeSummary] = admissionId
+    ? await Promise.all([
+        buildDailyAccommodationSummary(unbilledCharges, admission),
+        buildDailyAccommodationSummary(billedDisplayCharges, admission)
+      ])
+    : [[], []];
   const activeInvoices = invoices.filter((invoice) =>
     invoice.document_stage !== 'VOID' &&
     invoice.document_stage !== 'CREDIT_NOTE' &&
@@ -1192,6 +1468,8 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     invoices,
     charges: displayCharges,
     groupedCharges: groupCharges(displayCharges),
+    unbilledDailyChargeSummary,
+    billedDailyChargeSummary,
     transactions,
     advanceLedger,
     ledgerEntries,

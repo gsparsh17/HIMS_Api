@@ -2601,6 +2601,7 @@ exports.getPatientBillingSummaries = async (req, res, next) => {
       hospitalId,
       type: req.query.type || 'all',
       search: req.query.search || '',
+      status: req.query.status || 'All',
       startDate: req.query.startDate || '',
       endDate: req.query.endDate || '',
       limit: req.query.limit || 250,

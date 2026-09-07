@@ -34,7 +34,12 @@ const schema = new mongoose.Schema(
         'ABHA_ADDRESS_LOGIN',
         'FACE_LOGIN',
         'FINGERPRINT_LOGIN',
-        'IRIS_LOGIN'
+        'IRIS_LOGIN',
+        'ABHA_PROFILE_MOBILE_UPDATE',
+        'ABHA_PROFILE_DELETE',
+        'ABHA_PROFILE_DEACTIVATE',
+        'ABHA_PROFILE_REACTIVATE',
+        'ABHA_PROFILE_REKYC'
       ],
       index: true
     },

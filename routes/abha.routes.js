@@ -34,6 +34,10 @@ router.post('/login/password/verify', controller.verifyPasswordLogin);
 router.post('/login/address/search', controller.searchAbhaAddressLogin);
 router.post('/login/address/request-otp', controller.requestAbhaAddressLoginOtp);
 router.post('/login/address/verify-otp', controller.verifyAbhaAddressLoginOtp);
+router.post('/login/address/fingerprint/request', controller.requestAbhaAddressFingerprint);
+router.post('/login/address/fingerprint/verify', controller.verifyAbhaAddressFingerprint);
+router.post('/login/address/iris/request', controller.requestAbhaAddressIris);
+router.post('/login/address/iris/verify', controller.verifyAbhaAddressIris);
 
 router.post('/document/request-otp', controller.requestDocumentEnrollmentOtp);
 router.post('/document/verify-otp', controller.verifyDocumentEnrollmentOtp);
@@ -46,6 +50,8 @@ router.post('/address/suggestions', controller.getAddressSuggestions);
 router.post('/address/validate', controller.validateAddress);
 router.post('/address/create', controller.createAddress);
 router.post('/email/verification-link', controller.requestEmailVerification);
+router.post('/profile/action/request-otp', controller.requestProfileLifecycleOtp);
+router.post('/profile/action/verify-otp', controller.verifyProfileLifecycleOtp);
 
 router.get('/patients/search', controller.searchPatientsByAbha);
 router.get('/patients/:patientId', controller.getPatientAbha);

@@ -44,6 +44,28 @@ function checkoutError(message, statusCode = 400, code = 'DESK_CHECKOUT_INVALID'
   return Object.assign(new Error(message), { statusCode, code, details });
 }
 
+function isNewAdmissionCheckout(payload = {}) {
+  const action = String(payload.encounterAction || '').trim().toUpperCase();
+  const draft = payload.encounterDraft || payload.admissionDraft || null;
+  const draftType = String(draft?._deskEncounterType || draft?.type || '').trim().toUpperCase();
+  return Boolean(draft && (action === 'ADMISSION' || draftType === 'ADMISSION'));
+}
+
+function assertValidIpdAdmissionReference(payload = {}, encounterType = 'OPD') {
+  if (String(encounterType || '').toUpperCase() !== 'IPD') return;
+  if (isNewAdmissionCheckout(payload) && !payload.admissionId) return;
+
+  const rawAdmissionId = payload.admissionId?._id || payload.admissionId?.id || payload.admissionId;
+  const admissionId = typeof rawAdmissionId === 'string' ? rawAdmissionId.trim() : rawAdmissionId;
+  if (!admissionId || !mongoose.isValidObjectId(admissionId)) {
+    throw checkoutError(
+      'Select a valid active IPD admission, or switch the service billing context to OPD / walk-in.',
+      400,
+      'INVALID_IPD_ADMISSION_ID'
+    );
+  }
+}
+
 async function createAppointmentInternal(body, user, hospitalId) {
   return new Promise((resolve, reject) => {
     let resolved = false;
@@ -150,6 +172,7 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
   const rows = normalizeCart(cart, encounterType);
   const out = [];
   const hospitalId = userHospitalId(user);
+  assertValidIpdAdmissionReference(payload, encounterType);
   let declaredCoverage = null;
   if (payload.coverage?.payerId) {
     declaredCoverage = await resolveDeclaredCoveragePreference({ hospitalId, coverage: payload.coverage });

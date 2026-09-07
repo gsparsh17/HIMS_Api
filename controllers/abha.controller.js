@@ -19,7 +19,8 @@ const {
   getActiveAccessToken,
   getPatientSessionStatus,
   withPatientAccessToken,
-  clearPatientSession
+  clearPatientSession,
+  clearAllPatientSessions
 } = require('../services/abdmCredential.service');
 const { resolveVerifiedM1Profile } = require('../services/abdmM1ProfileAuth.service');
 const {
@@ -330,11 +331,13 @@ exports.enrolByAadhaarOtp = async (req, res) => {
       method: 'ABDM_AADHAAR_OTP',
       userId: req.user._id
     });
-    await markCompleted(transaction, { isNew: data.isNew });
+    const enrolmentTxnId = data.txnId || data.transactionId || null;
+    await markCompleted(transaction, { isNew: data.isNew, enrolmentTxnId });
     return res.json({
       success: true,
       message: data.message,
       isNew: data.isNew,
+      enrolmentTxnId,
       patientId: saved._id,
       abha: safeAbha(saved),
       credential: await getPatientSessionStatus(saved._id, 'ABHA_PROFILE')
@@ -667,12 +670,18 @@ exports.requestMobileOtp = async (req, res) => {
     }
     const patient = await ensurePatient(patientId, req.user);
     if (txnId) {
-      await getOwnedTransaction({
-        txnId,
-        patient,
+      const source = await AbdmIdentityTransaction.findOne({
+        patientId: patient._id,
+        hospitalId: patient.hospitalId,
         userId: req.user._id,
-        flows: ['AADHAAR_ENROLMENT', 'MOBILE_VERIFICATION']
+        $or: [
+          { txnId, flow: { $in: ['AADHAAR_ENROLMENT', 'BIOMETRIC_ENROLMENT', 'MOBILE_VERIFICATION'] } },
+          { 'metadata.enrolmentTxnId': txnId, flow: { $in: ['AADHAAR_ENROLMENT', 'BIOMETRIC_ENROLMENT'] } }
+        ]
       });
+      if (!source) {
+        return res.status(400).json({ success: false, error: 'The post-enrolment transaction ID is not valid for this patient' });
+      }
     }
     const previous = await latestActiveTransaction(
       patient._id,
@@ -1003,6 +1012,214 @@ exports.requestEmailVerification = async (req, res) => {
     );
     return res.json({ success: true, data });
   } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
+
+
+const PROFILE_LIFECYCLE_CONFIG = Object.freeze({
+  mobile_update: {
+    flow: 'ABHA_PROFILE_MOBILE_UPDATE',
+    scope: ['abha-profile', 'mobile-verify'],
+    loginHint: 'mobile',
+    otpSystem: 'abdm',
+    requiresProfileSession: true,
+    verifyPath: '/v3/profile/account/verify'
+  },
+  delete: {
+    flow: 'ABHA_PROFILE_DELETE',
+    scope: ['abha-profile', 'delete'],
+    loginHint: 'abha-number',
+    otpSystem: 'abdm',
+    requiresProfileSession: true,
+    verifyPath: '/v3/profile/account/verify'
+  },
+  deactivate: {
+    flow: 'ABHA_PROFILE_DEACTIVATE',
+    scope: ['abha-profile', 'de-activate'],
+    loginHint: 'abha-number',
+    otpSystem: 'abdm',
+    requiresProfileSession: true,
+    verifyPath: '/v3/profile/account/verify'
+  },
+  reactivate: {
+    flow: 'ABHA_PROFILE_REACTIVATE',
+    scope: ['abha-login', 'mobile-verify', 're-activate'],
+    loginHint: 'abha-number',
+    otpSystem: 'abdm',
+    requiresProfileSession: false,
+    verifyPath: '/v3/profile/login/verify'
+  },
+  rekyc: {
+    flow: 'ABHA_PROFILE_REKYC',
+    scope: ['abha-profile', 're-kyc'],
+    loginHint: 'abha-number',
+    otpSystem: 'aadhaar',
+    requiresProfileSession: true,
+    verifyPath: '/v3/profile/account/verify'
+  }
+});
+
+function normalizeProfileLifecycleAction(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function profileLifecycleConsent(req, patient, action) {
+  return consentEvidence(req, {
+    patientId: patient._id,
+    code: `abha-profile-${action}`,
+    version: req.body.consentVersion || '1.4',
+    text: req.body.consentText
+  });
+}
+
+async function callProfileLifecycleRequest(patient, config, body, userId) {
+  if (!config.requiresProfileSession) {
+    return abdmPost('/v3/profile/account/request/otp', body);
+  }
+  return patientProfileRequest(
+    patient,
+    (token) => abdmPost('/v3/profile/account/request/otp', body, { 'X-token': `Bearer ${token}` }),
+    { updatedBy: userId, requireEligible: false }
+  );
+}
+
+async function callProfileLifecycleVerify(patient, config, body, userId) {
+  if (!config.requiresProfileSession) return abdmPost(config.verifyPath, body);
+  return patientProfileRequest(
+    patient,
+    (token) => abdmPost(config.verifyPath, body, { 'X-token': `Bearer ${token}` }),
+    { updatedBy: userId, requireEligible: false }
+  );
+}
+
+exports.requestProfileLifecycleOtp = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    const action = normalizeProfileLifecycleAction(req.body.action);
+    const config = PROFILE_LIFECYCLE_CONFIG[action];
+    if (!config) return res.status(400).json({ success: false, error: 'Unsupported ABHA profile action' });
+
+    const consent = profileLifecycleConsent(req, patient, action);
+    let loginValue;
+    if (action === 'mobile_update') {
+      loginValue = cleanDigits(req.body.mobile);
+      if (!isValidMobile(loginValue)) return res.status(400).json({ success: false, error: 'A valid 10-digit mobile number is required' });
+    } else {
+      loginValue = patient.abha?.number;
+      if (!loginValue) return res.status(409).json({ success: false, error: 'A linked ABHA number is required for this action' });
+      loginValue = displayAbhaNumber(loginValue);
+    }
+
+    if (action === 'reactivate' && String(patient.abha?.status || '').toUpperCase() !== 'DEACTIVATED') {
+      return res.status(409).json({ success: false, error: 'Only a locally deactivated ABHA mapping can use the re-activation flow' });
+    }
+    if (['delete', 'deactivate'].includes(action) && !String(req.body.reason || '').trim()) {
+      return res.status(400).json({ success: false, error: 'A reason is required for this account action' });
+    }
+
+    const requestBody = {
+      scope: config.scope,
+      loginHint: config.loginHint,
+      loginId: await encryptForAbdm(loginValue),
+      otpSystem: config.otpSystem
+    };
+    const data = await callProfileLifecycleRequest(patient, config, requestBody, req.user._id);
+    const transaction = await createTransaction({
+      txnId: data.txnId || data.transactionId,
+      flow: config.flow,
+      patient,
+      userId: req.user._id,
+      consent,
+      req,
+      metadata: {
+        action,
+        scope: config.scope,
+        ...(action === 'mobile_update' ? { mobileLast4: loginValue.slice(-4) } : {}),
+        ...(req.body.reason ? { reason: String(req.body.reason).trim().slice(0, 500) } : {})
+      }
+    });
+    return res.json({ success: true, action, txnId: transaction.txnId, message: data.message });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
+exports.verifyProfileLifecycleOtp = async (req, res) => {
+  let transaction;
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    const action = normalizeProfileLifecycleAction(req.body.action);
+    const config = PROFILE_LIFECYCLE_CONFIG[action];
+    if (!config || !req.body.txnId) return res.status(400).json({ success: false, error: 'A valid action and txnId are required' });
+    transaction = await getOwnedTransaction({
+      txnId: req.body.txnId,
+      patient,
+      userId: req.user._id,
+      flows: [config.flow]
+    });
+    const otp = cleanDigits(req.body.otp);
+    if (otp.length < 4 || otp.length > 8) return res.status(400).json({ success: false, error: 'A valid OTP is required' });
+
+    const body = {
+      scope: config.scope,
+      authData: {
+        authMethods: ['otp'],
+        otp: {
+          txnId: transaction.txnId,
+          otpValue: await encryptForAbdm(otp)
+        }
+      },
+      ...(action === 'deactivate' ? { reasons: [transaction.metadata?.reason || 'Patient requested de-activation'] } : {})
+    };
+    const data = await callProfileLifecycleVerify(patient, config, body, req.user._id);
+    if (data.authResult && String(data.authResult).toLowerCase() !== 'success') {
+      const error = new Error(data.message || 'ABHA profile action failed');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (action === 'delete') {
+      await Patient.updateOne(
+        { _id: patient._id, hospitalId: patient.hospitalId },
+        { $set: { 'abha.status': 'DELETED', 'abha.kycVerified': false, 'abha.verificationMethod': 'ABDM_PROFILE_DELETE' } }
+      );
+      await clearAllPatientSessions(patient._id);
+    } else if (action === 'deactivate') {
+      await Patient.updateOne(
+        { _id: patient._id, hospitalId: patient.hospitalId },
+        { $set: { 'abha.status': 'DEACTIVATED', 'abha.kycVerified': false, 'abha.verificationMethod': 'ABDM_PROFILE_DEACTIVATE' } }
+      );
+      await clearAllPatientSessions(patient._id);
+    } else if (action === 'reactivate') {
+      const tokens = extractTokens(data);
+      if (!tokens.token) throw new Error('ABDM re-activation response did not include an access token');
+      const profile = await abdmGet('/v3/profile/account', { 'X-token': `Bearer ${tokens.token}` });
+      await saveVerifiedProfile({
+        patient,
+        profile: extractProfile(profile),
+        tokens,
+        method: 'ABDM_PROFILE_REACTIVATE',
+        userId: req.user._id
+      });
+    } else if (action === 'rekyc') {
+      await Patient.updateOne(
+        { _id: patient._id, hospitalId: patient.hospitalId },
+        { $set: { 'abha.kycVerified': true, 'abha.status': 'VERIFIED', 'abha.verificationMethod': 'ABDM_REKYC', 'abha.verifiedAt': new Date() } }
+      );
+    } else if (action === 'mobile_update') {
+      await Patient.updateOne(
+        { _id: patient._id, hospitalId: patient.hospitalId },
+        { $set: { 'abha.mobileVerificationStatus': 'verified', 'abha.mobileVerifiedAt': new Date() } }
+      );
+    }
+
+    await markCompleted(transaction, { action, resultMessage: data.message });
+    const refreshed = await Patient.findById(patient._id);
+    return res.json({ success: true, action, message: data.message, abha: safeAbha(refreshed) });
+  } catch (error) {
+    if (transaction) await recordAttempt(transaction, error).catch(() => {});
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
@@ -1502,9 +1719,16 @@ exports.initBiometricEnrollment = async (req, res) => {
     const patient = await ensurePatient(req.body.patientId, req.user);
     const method = loginMode(req.body.method || 'face');
     if (!['face', 'fingerprint', 'iris'].includes(method)) return res.status(400).json({ success: false, error: 'method must be face, fingerprint or iris' });
+    if (method !== 'face') {
+      return res.status(409).json({
+        success: false,
+        code: 'ABDM_DIRECT_RD_PID_REQUIRED',
+        error: `${method} ABHA creation uses the UIDAI Registered Device PID directly with /enrol/byAadhaar; auth/init + capturePID is reserved for the Face QR flow.`
+      });
+    }
     const consent = consentForIdentity(req, patient, 'abha-enrollment', '1.4');
-    const initScope = ['abha-enrol', method === 'face' ? 'face-auth' : method === 'fingerprint' ? 'bio-verify' : 'iris-verify'];
-    const captureScope = ['abha-enrol', method === 'face' ? 'face-verify' : method === 'fingerprint' ? 'bio-verify' : 'iris-verify'];
+    const initScope = ['abha-enrol', 'face-auth'];
+    const captureScope = ['abha-enrol', 'face-verify'];
     const data = await abdmPost('/v3/enrollment/enrol/auth/init', { scope: initScope });
     const transaction = await createTransaction({
       txnId: data.txnId,
@@ -1574,7 +1798,7 @@ exports.enrolByBiometric = async (req, res) => {
       const pid = requireOpaquePid(req.body.pid);
       authData = method === 'fingerprint'
         ? { authMethods: ['bio'], bio: { aadhaar: encryptedAadhaar, fingerPrintAuthPid: pid, mobile: cleanDigits(req.body.mobile) } }
-        : { authMethods: ['iris'], iris: { aadhaar: encryptedAadhaar, Pid: pid, mobile: cleanDigits(req.body.mobile) } };
+        : { authMethods: ['iris'], iris: { aadhaar: encryptedAadhaar, irisAuthPid: pid, mobile: cleanDigits(req.body.mobile) } };
     }
     const data = await abdmPost('/v3/enrollment/enrol/byAadhaar', {
       authData,
@@ -1584,8 +1808,9 @@ exports.enrolByBiometric = async (req, res) => {
       }
     });
     const saved = await saveVerifiedProfile({ patient, profile: extractProfile(data), tokens: extractTokens(data), method: `ABDM_${method.toUpperCase()}_ENROLMENT`, userId: req.user._id });
-    if (transaction) await markCompleted(transaction);
-    return res.json({ success: true, message: data.message, abha: safeAbha(saved) });
+    const enrolmentTxnId = data.txnId || data.transactionId || null;
+    if (transaction) await markCompleted(transaction, { enrolmentTxnId });
+    return res.json({ success: true, message: data.message, enrolmentTxnId, abha: safeAbha(saved) });
   } catch (error) {
     if (transaction) await recordAttempt(transaction, error).catch(() => { });
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
@@ -1650,6 +1875,125 @@ exports.verifyAbhaAddressLoginOtp = async (req, res) => {
     return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
   }
 };
+
+exports.requestAbhaAddressFingerprint = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    const search = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['ABHA_ADDRESS_LOGIN'] });
+    const scope = ['abha-login', 'aadhaar-bio-verify'];
+    const data = await abdmPost('/v3/phr/web/login/abha/request/otp', {
+      scope,
+      loginHint: 'abha-address',
+      loginId: await encryptForAbdm(search.metadata.address),
+      otpSystem: 'aadhaar'
+    });
+    const transaction = await createTransaction({
+      txnId: data.txnId || data.transactionId,
+      flow: 'ABHA_ADDRESS_LOGIN',
+      patient,
+      userId: req.user._id,
+      consent: search.consent,
+      req,
+      metadata: { address: search.metadata.address, scope, searchTxnId: search.txnId, biometricMethod: 'fingerprint' }
+    });
+    return res.json({ success: true, txnId: transaction.txnId, message: data.message });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
+exports.verifyAbhaAddressFingerprint = async (req, res) => {
+  let transaction;
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    transaction = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['ABHA_ADDRESS_LOGIN'] });
+    if (transaction.metadata?.biometricMethod !== 'fingerprint') {
+      return res.status(409).json({ success: false, error: 'This transaction is not a fingerprint ABHA Address verification request' });
+    }
+    const pid = String(req.body.pid || req.body.fingerPrintAuthPid || '').trim();
+    if (!pid) return res.status(400).json({ success: false, error: 'Fingerprint RD PID is required' });
+    const data = await abdmPost('/v3/phr/web/login/abha/verify', {
+      scope: ['abha-login', 'aadhaar-bio-verify'],
+      authData: {
+        authMethods: ['bio'],
+        bio: { txnId: transaction.txnId, fingerPrintAuthPid: pid }
+      }
+    });
+    const saved = await saveVerifiedProfile({
+      patient,
+      profile: extractProfile(data),
+      tokens: extractTokens(data),
+      method: 'ABDM_ABHA_ADDRESS_FINGERPRINT',
+      userId: req.user._id,
+      sessionKind: 'PHR_APP'
+    });
+    await markCompleted(transaction);
+    return res.json({ success: true, abha: safeAbha(saved), data: { authResult: data.authResult, message: data.message } });
+  } catch (error) {
+    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
+
+exports.requestAbhaAddressIris = async (req, res) => {
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    const search = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['ABHA_ADDRESS_LOGIN'] });
+    const scope = ['abha-login', 'aadhaar-iris-verify'];
+    const data = await abdmPost('/v3/phr/web/login/abha/request/otp', {
+      scope,
+      loginHint: 'abha-address',
+      loginId: await encryptForAbdm(search.metadata.address),
+      otpSystem: 'aadhaar'
+    });
+    const transaction = await createTransaction({
+      txnId: data.txnId || data.transactionId,
+      flow: 'ABHA_ADDRESS_LOGIN',
+      patient,
+      userId: req.user._id,
+      consent: search.consent,
+      req,
+      metadata: { address: search.metadata.address, scope, searchTxnId: search.txnId, biometricMethod: 'iris' }
+    });
+    return res.json({ success: true, txnId: transaction.txnId, message: data.message });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
+exports.verifyAbhaAddressIris = async (req, res) => {
+  let transaction;
+  try {
+    const patient = await ensurePatient(req.body.patientId, req.user);
+    transaction = await getOwnedTransaction({ txnId: req.body.txnId, patient, userId: req.user._id, flows: ['ABHA_ADDRESS_LOGIN'] });
+    if (transaction.metadata?.biometricMethod !== 'iris') {
+      return res.status(409).json({ success: false, error: 'This transaction is not an iris ABHA Address verification request' });
+    }
+    const pid = requireOpaquePid(req.body.pid || req.body.irisAuthPid, 'iris PID');
+    const data = await abdmPost('/v3/phr/web/login/abha/verify', {
+      scope: ['abha-login', 'aadhaar-iris-verify'],
+      authData: {
+        authMethods: ['iris'],
+        iris: { txnId: transaction.txnId, irisAuthPid: pid }
+      }
+    });
+    const saved = await saveVerifiedProfile({
+      patient,
+      profile: extractProfile(data),
+      tokens: extractTokens(data),
+      method: 'ABDM_ABHA_ADDRESS_IRIS',
+      userId: req.user._id,
+      sessionKind: 'PHR_APP'
+    });
+    await markCompleted(transaction);
+    return res.json({ success: true, abha: safeAbha(saved), data: { authResult: data.authResult, message: data.message } });
+  } catch (error) {
+    if (transaction) await recordAttempt(transaction, error).catch(() => {});
+    return res.status(error.statusCode || 502).json({ success: false, code: error.code, error: error.message, details: error.details });
+  }
+};
+
 
 const RECORD_MODELS = {
   appointment: { model: Appointment, patientField: 'patient_id' },

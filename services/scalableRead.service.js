@@ -129,6 +129,7 @@ function patientCareLookupStages(hospitalObjectId) {
     {
       $set: {
         _latestAppointment: { $arrayElemAt: ['$_appointmentSummary.latest', 0] },
+        _activeAdmission: { $arrayElemAt: ['$_admissionSummary.active', 0] },
         _selectedAdmission: {
           $ifNull: [
             { $arrayElemAt: ['$_admissionSummary.active', 0] },
@@ -231,6 +232,16 @@ const PATIENT_WORKLIST_PROJECTION = {
   latestAppointment: {
     _id: '$_latestAppointment._id', status: '$_latestAppointment.status', appointment_date: '$_latestAppointment.appointment_date',
     start_time: '$_latestAppointment.start_time', doctor_id: '$_latestAppointmentDoctor', department_id: '$_latestAppointmentDepartment'
+  },
+  activeAdmission: {
+    $cond: [
+      '$hasActiveAdmission',
+      {
+        _id: '$_activeAdmission._id', status: '$_activeAdmission.status', admissionDate: '$_activeAdmission.admissionDate',
+        primaryDoctorId: '$_admissionDoctor', departmentId: '$_admissionDepartment'
+      },
+      null
+    ]
   },
   selectedAdmission: {
     _id: '$_selectedAdmission._id', status: '$_selectedAdmission.status', admissionDate: '$_selectedAdmission.admissionDate',

@@ -14,6 +14,7 @@ const AbdmSubscription = require('../models/AbdmSubscription');
 const { decryptJson } = require('../services/abdmVault.service');
 const { withPatientAccessToken, getPatientSessionStatus } = require('../services/abdmCredential.service');
 const { masterRequest } = require('../services/abdmMasterClient.service');
+const { abdmPost, abdmGet, encryptForPhr } = require('../services/abdm.service');
 
 const patientFilter = (req) => ({ hospitalId: req.patient.hospitalId, patientId: req.patient._id });
 
@@ -448,5 +449,286 @@ exports.healthLockers = async (req, res) => {
     res.json({ success: true, data: r.data, requestId: r.requestId });
   } catch (error) {
     sendPatientAbdmError(res, error);
+  }
+};
+
+
+function parseFacilityShareTarget(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return {};
+  try {
+    const url = new URL(raw);
+    return {
+      hipId: String(url.searchParams.get('hipid') || url.searchParams.get('hipId') || '').trim(),
+      context: String(url.searchParams.get('counterid') || url.searchParams.get('counterId') || url.searchParams.get('context') || '').trim()
+    };
+  } catch (_error) {
+    const params = new URLSearchParams(raw.replace(/^\?/, ''));
+    return {
+      hipId: String(params.get('hipid') || params.get('hipId') || '').trim(),
+      context: String(params.get('counterid') || params.get('counterId') || params.get('context') || '').trim()
+    };
+  }
+}
+
+function patientShareProfile(patient, officialProfile = {}) {
+  const localDob = patient.dob ? new Date(patient.dob) : null;
+  const validLocalDob = localDob && !Number.isNaN(localDob.getTime());
+  const officialAbhaDigits = String(officialProfile.abhaNumber || '').replace(/\D/g, '');
+  const localAbhaDigits = String(patient.abha?.number || '').replace(/\D/g, '');
+  const officialMobileDigits = String(officialProfile.mobile || '').replace(/\D/g, '');
+  const localMobileDigits = String(patient.phone || '').replace(/\D/g, '').slice(-10);
+  const localAddressLine = [patient.address, patient.address_line1, patient.address_line2, patient.city]
+    .filter(Boolean).join(', ');
+  return {
+    // PHR profile values are preferred for demographics. The local verified
+    // mapping supplies full identifiers where the PHR get-profile response is
+    // masked (as shown in the official PHR examples).
+    abhaNumber: officialAbhaDigits.length === 14 ? officialAbhaDigits : localAbhaDigits,
+    abhaAddress: String(officialProfile.abhaAddress || patient.abha?.address || '').trim().toLowerCase(),
+    name: String(officialProfile.fullName || [officialProfile.firstName, officialProfile.middleName, officialProfile.lastName].filter(Boolean).join(' ') || [patient.first_name, patient.middle_name, patient.last_name].filter(Boolean).join(' ')).trim(),
+    gender: String(officialProfile.gender || patient.gender || '').trim().slice(0, 1).toUpperCase(),
+    dayOfBirth: String(officialProfile.dayOfBirth || (validLocalDob ? localDob.getUTCDate() : '')),
+    monthOfBirth: String(officialProfile.monthOfBirth || (validLocalDob ? localDob.getUTCMonth() + 1 : '')),
+    yearOfBirth: String(officialProfile.yearOfBirth || (validLocalDob ? localDob.getUTCFullYear() : '')),
+    address: {
+      line: officialProfile.address || localAddressLine || null,
+      district: officialProfile.districtName || patient.district || patient.districtName || null,
+      state: officialProfile.stateName || patient.state || patient.stateName || null,
+      pincode: officialProfile.pinCode || patient.pinCode || patient.pincode || patient.zipCode || null
+    },
+    phoneNumber: officialMobileDigits.length === 10 ? officialMobileDigits : localMobileDigits
+  };
+}
+
+exports.abdmProfileShare = async (req, res) => {
+  try {
+    if (req.body?.consentAccepted !== true) {
+      return res.status(400).json({ success: false, error: 'Explicit patient consent is required before sharing the ABDM profile' });
+    }
+    const parsed = parseFacilityShareTarget(req.body?.qrContent || req.body?.shareUrl);
+    const hipId = String(req.body?.hipId || parsed.hipId || '').trim();
+    const context = String(req.body?.context || parsed.context || '').trim();
+    if (!hipId || !context) return res.status(400).json({ success: false, error: 'Facility HIP ID and counter context are required' });
+    const officialProfile = await patientPhrCall(req, token => abdmGet('/v3/phr/app/login/profile', phrTokenHeader(token)));
+    const profile = patientShareProfile(req.patient, officialProfile);
+    if (!profile.abhaAddress) return res.status(409).json({ success: false, error: 'The patient must have a linked ABHA Address before Scan & Share' });
+    const body = {
+      intent: 'PROFILE_SHARE',
+      metaData: {
+        hipId,
+        context,
+        ...(req.body?.hprId ? { hprId: String(req.body.hprId) } : {}),
+        ...(req.body?.latitude !== undefined ? { latitude: String(req.body.latitude) } : {}),
+        ...(req.body?.longitude !== undefined ? { longitude: String(req.body.longitude) } : {})
+      },
+      profile: { patient: profile }
+    };
+    const r = await patientAbdmAction(req, 'PHR_PROFILE_SHARE', { body });
+    return res.status(202).json({ success: true, requestId: r.requestId, data: r.data, hipId, context, message: 'Profile share submitted to ABDM' });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
+  }
+};
+
+exports.abdmRunningTokenStatus = async (req, res) => {
+  try {
+    const parsed = parseFacilityShareTarget(req.body?.qrContent || req.body?.shareUrl);
+    const hipId = String(req.body?.hipId || parsed.hipId || '').trim();
+    const context = String(req.body?.context || parsed.context || '').trim();
+    if (!hipId || !context) return res.status(400).json({ success: false, error: 'Facility HIP ID and counter context are required' });
+    const r = await patientAbdmAction(req, 'REQUEST_RUNNING_TOKEN_STATUS', { body: { hipId, context } });
+    return res.status(202).json({ success: true, requestId: r.requestId, data: r.data, hipId, context, message: 'Running-token status request submitted to ABDM' });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
+  }
+};
+
+
+async function patientPhrCall(req, operation) {
+  return withPatientAccessToken(
+    req.patient._id,
+    token => operation(token),
+    { sessionKind: 'PHR_APP' }
+  );
+}
+
+function phrTokenHeader(token) {
+  return { 'X-token': `Bearer ${String(token || '').replace(/^Bearer\s+/i, '')}` };
+}
+
+exports.requestPhrProfileOtp = async (req, res) => {
+  try {
+    const kind = String(req.body?.kind || '').trim().toLowerCase();
+    const value = String(req.body?.value || '').trim();
+    if (!['mobile', 'email'].includes(kind)) {
+      return res.status(400).json({ success: false, error: 'kind must be mobile or email' });
+    }
+    if (!value) return res.status(400).json({ success: false, error: `${kind} is required` });
+    if (kind === 'mobile' && !/^\d{10}$/.test(value.replace(/\D/g, '').slice(-10))) {
+      return res.status(400).json({ success: false, error: 'Enter a valid 10-digit mobile number' });
+    }
+    if (kind === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+      return res.status(400).json({ success: false, error: 'Enter a valid email address' });
+    }
+
+    const normalizedValue = kind === 'mobile' ? value.replace(/\D/g, '').slice(-10) : value.toLowerCase();
+    const encrypted = await encryptForPhr(normalizedValue);
+    const data = await patientPhrCall(req, token => abdmPost(
+      '/v3/phr/app/login/profile/request/otp',
+      {
+        scope: ['abha-address-profile', kind === 'mobile' ? 'mobile-verify' : 'email-verify'],
+        loginHint: kind === 'mobile' ? 'mobile-number' : 'email',
+        loginId: encrypted,
+        otpSystem: 'abdm'
+      },
+      phrTokenHeader(token)
+    ));
+    return res.status(202).json({ success: true, txnId: data?.txnId || data?.transactionId, message: `Verification OTP sent for ${kind} update` });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
+  }
+};
+
+exports.verifyPhrProfileOtp = async (req, res) => {
+  try {
+    const txnId = String(req.body?.txnId || '').trim();
+    const otp = String(req.body?.otp || '').trim();
+    const kind = String(req.body?.kind || '').trim().toLowerCase();
+    if (!txnId || !otp || !['mobile', 'email'].includes(kind)) {
+      return res.status(400).json({ success: false, error: 'txnId, otp and kind (mobile/email) are required' });
+    }
+    const encryptedOtp = await encryptForPhr(otp);
+    const data = await patientPhrCall(req, token => abdmPost(
+      '/v3/phr/app/login/profile/verify',
+      {
+        scope: ['abha-address-profile', kind === 'mobile' ? 'mobile-verify' : 'email-verify'],
+        authData: {
+          authMethods: ['otp'],
+          otp: { txnId, otpValue: encryptedOtp }
+        }
+      },
+      phrTokenHeader(token)
+    ));
+    return res.json({ success: true, data, message: `${kind === 'mobile' ? 'Mobile number' : 'Email'} updated in PHR profile` });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
+  }
+};
+
+exports.updatePhrPassword = async (req, res) => {
+  try {
+    const password = String(req.body?.password || '');
+    const abhaAddress = String(req.body?.abhaAddress || req.patient?.abha?.address || '').trim().toLowerCase();
+    if (!abhaAddress) return res.status(409).json({ success: false, error: 'No ABHA Address is linked to this patient' });
+    if (password.length < 8) return res.status(400).json({ success: false, error: 'PHR password must be at least 8 characters' });
+    const encryptedPassword = await encryptForPhr(password);
+    const data = await patientPhrCall(req, token => abdmPost(
+      '/v3/phr/app/login/profile/verify',
+      {
+        scope: ['abha-address-profile', 'password-verify'],
+        authData: {
+          authMethods: ['password'],
+          password: { abhaAddress, password: encryptedPassword }
+        }
+      },
+      phrTokenHeader(token)
+    ));
+    return res.json({ success: true, data, message: 'PHR password updated' });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
+  }
+};
+
+exports.getPhrProfile = async (req, res) => {
+  try {
+    const data = await patientPhrCall(req, token => abdmGet(
+      '/v3/phr/app/login/profile',
+      phrTokenHeader(token)
+    ));
+    return res.json({ success: true, profile: data });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
+  }
+};
+
+exports.updatePhrProfile = async (req, res) => {
+  try {
+    const incoming = req.body || {};
+    const editable = [
+      'profilePhoto', 'firstName', 'middleName', 'lastName',
+      'dayOfBirth', 'monthOfBirth', 'yearOfBirth', 'gender',
+      'address', 'stateName', 'districtName', 'pinCode', 'stateCode', 'districtCode'
+    ];
+    if (!editable.some((key) => Object.prototype.hasOwnProperty.call(incoming, key))) {
+      return res.status(400).json({ success: false, error: 'No supported PHR profile fields were supplied' });
+    }
+
+    // PHR V3 updateProfile expects a complete profile body. Fetch the current
+    // logged-in profile first and merge only fields this endpoint may change.
+    // Email/mobile stay on their dedicated OTP-verification paths.
+    const result = await patientPhrCall(req, async (token) => {
+      const headers = phrTokenHeader(token);
+      const current = await abdmGet('/v3/phr/app/login/profile', headers);
+      const kycVerified = ['VERIFIED', 'KYC_VERIFIED', 'TRUE'].includes(String(current?.kycStatus || '').toUpperCase());
+      const kycLocked = new Set(['firstName', 'middleName', 'lastName', 'dayOfBirth', 'monthOfBirth', 'yearOfBirth', 'gender']);
+      const payload = {
+        profilePhoto: current?.profilePhoto || '',
+        firstName: current?.firstName || '',
+        middleName: current?.middleName || '',
+        lastName: current?.lastName || '',
+        dayOfBirth: String(current?.dayOfBirth || ''),
+        monthOfBirth: String(current?.monthOfBirth || ''),
+        yearOfBirth: String(current?.yearOfBirth || ''),
+        gender: current?.gender || '',
+        email: current?.email || '',
+        mobile: current?.mobile || '',
+        address: current?.address || '',
+        stateName: current?.stateName || '',
+        districtName: current?.districtName || '',
+        pinCode: String(current?.pinCode || ''),
+        stateCode: String(current?.stateCode || ''),
+        districtCode: String(current?.districtCode || '')
+      };
+      for (const key of editable) {
+        if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
+        if (kycVerified && kycLocked.has(key)) continue;
+        payload[key] = incoming[key] == null ? '' : String(incoming[key]);
+      }
+      const updated = await abdmPost('/v3/phr/app/login/profile/updateProfile', payload, headers);
+      return { profile: updated, kycLocked: kycVerified };
+    });
+    return res.json({ success: true, data: result.profile, kycLocked: result.kycLocked, message: 'PHR profile updated in ABDM' });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
+  }
+};
+
+exports.getPhrQrCode = async (req, res) => {
+  try {
+    const data = await patientPhrCall(req, token => abdmGet(
+      '/v3/phr/app/login/profile/qrCode',
+      phrTokenHeader(token)
+    ));
+    return res.json({ success: true, data });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
+  }
+};
+
+exports.getPhrCard = async (req, res) => {
+  try {
+    const result = await patientPhrCall(req, token => abdmGet(
+      '/v3/phr/app/login/profile/phrCard',
+      phrTokenHeader(token),
+      'buffer'
+    ));
+    return res.json({
+      success: true,
+      contentType: result.contentType || 'application/octet-stream',
+      dataBase64: result.buffer.toString('base64')
+    });
+  } catch (error) {
+    return sendPatientAbdmError(res, error);
   }
 };

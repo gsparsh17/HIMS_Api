@@ -606,4 +606,133 @@ exports.faceComplete = async (req, res) => {
   } catch (error) { return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details }); }
 };
 
+
+
+exports.emailRequestOtp = async (req, res) => {
+  try {
+    const hospital = await hospitalForPublicRequest(req);
+    const email = String(req.body.email || '').trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ success: false, error: 'A valid email address is required' });
+    const scope = ['abha-address-login', 'email-verify'];
+    const data = await abdmPost('/v3/phr/app/login/request/otp', {
+      scope,
+      loginHint: 'email',
+      loginId: await encryptForPhr(email),
+      otpSystem: 'abdm'
+    });
+    const record = await PatientPortalAbdmTransaction.create({
+      hospitalId: hospital._id,
+      flow: 'EMAIL_LOGIN',
+      txnId: data.txnId,
+      status: 'WAITING',
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      metadata: { scope, emailHash: hash(email), apiFamily: 'PHR_APP' }
+    });
+    return res.json({ success: true, txnId: record.txnId, message: data.message, expiresIn: 600 });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+exports.emailVerifyOtp = async (req, res) => {
+  try {
+    const record = await PatientPortalAbdmTransaction.findOne({ txnId: req.body.txnId, flow: 'EMAIL_LOGIN' });
+    if (!record || record.expiresAt <= new Date()) return res.status(410).json({ success: false, error: 'Email login transaction expired' });
+    const otp = cleanDigits(req.body.otp);
+    if (!otp) return res.status(400).json({ success: false, error: 'OTP is required' });
+    const data = await abdmPost('/v3/phr/app/login/verify', {
+      scope: record.metadata?.scope || ['abha-address-login', 'email-verify'],
+      authData: { authMethods: ['otp'], otp: { txnId: record.txnId, otpValue: await encryptForPhr(otp) } }
+    });
+    if (String(data?.authResult || '').toLowerCase() !== 'success') {
+      const error = new Error(data?.message || 'Email OTP verification failed');
+      error.statusCode = 400;
+      throw error;
+    }
+    const tokens = tokenSetFromResponse(data);
+    if (isFinalPhrTokenSet(tokens)) {
+      const profile = await fetchPhrProfile(tokens.token);
+      return res.json(await finishPhrPortalLogin(record, data, profile));
+    }
+    const users = phrUsersFromResponse(data);
+    if (!tokens.token || !users.length) throw new Error('ABDM email verification did not return a PHR user selection token');
+    if (users.length === 1) {
+      const tokenResponse = await verifyPhrUserSelection(record, users[0].abhaAddress, tokens.token);
+      const finalTokens = tokenSetFromResponse(tokenResponse);
+      const profile = await fetchPhrProfile(finalTokens.token);
+      return res.json(await finishPhrPortalLogin(record, tokenResponse, profile));
+    }
+    record.metadata = {
+      ...(record.metadata || {}),
+      intermediateToken: encryptJson({ token: tokens.token }, `patient-portal-abdm:${record.txnId}`),
+      candidateAbhaAddresses: users.map((user) => user.abhaAddress)
+    };
+    await record.save();
+    return res.json({ success: true, selectionRequired: true, txnId: record.txnId, users });
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+exports.phrSelectUser = async (req, res) => {
+  try {
+    const record = await PatientPortalAbdmTransaction.findOne({
+      txnId: req.body.txnId,
+      flow: { $in: ['EMAIL_LOGIN', 'ABHA_NUMBER_LOGIN'] }
+    });
+    if (!record || record.expiresAt <= new Date()) return res.status(410).json({ success: false, error: 'PHR login transaction expired' });
+    if (!record.metadata?.intermediateToken) return res.status(409).json({ success: false, error: 'No PHR user selection is pending' });
+    const abhaAddress = String(req.body.abhaAddress || '').trim().toLowerCase();
+    const allowed = Array.isArray(record.metadata?.candidateAbhaAddresses) ? record.metadata.candidateAbhaAddresses.map((v) => String(v).toLowerCase()) : [];
+    if (!abhaAddress.includes('@') || (allowed.length && !allowed.includes(abhaAddress))) return res.status(400).json({ success: false, error: 'Invalid ABHA Address selection' });
+    const decrypted = decryptJson(record.metadata.intermediateToken, `patient-portal-abdm:${record.txnId}`);
+    const tokenResponse = await verifyPhrUserSelection(record, abhaAddress, decrypted?.token);
+    const tokens = tokenSetFromResponse(tokenResponse);
+    const profile = await fetchPhrProfile(tokens.token);
+    return res.json(await finishPhrPortalLogin(record, tokenResponse, profile));
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
+exports.passwordLogin = async (req, res) => {
+  try {
+    const hospital = await hospitalForPublicRequest(req);
+    const abhaAddress = String(req.body.abhaAddress || '').trim().toLowerCase();
+    const password = String(req.body.password || '');
+    if (!abhaAddress.includes('@') || !password) return res.status(400).json({ success: false, error: 'ABHA Address and password are required' });
+    const search = await abdmPost('/v3/phr/app/login/search', { abhaAddress });
+    const authMethods = Array.isArray(search?.authMethods) ? search.authMethods : [];
+    if (authMethods.length && !authMethods.some((value) => String(value).toUpperCase() === 'PASSWORD')) {
+      return res.status(409).json({ success: false, error: 'Password login is not enabled for this ABHA Address', authMethods });
+    }
+    const data = await abdmPost('/v3/phr/app/login/verify', {
+      scope: ['abha-address-login', 'password-verify'],
+      authData: {
+        authMethods: ['password'],
+        password: { abhaAddress, password: await encryptForPhr(password) }
+      }
+    });
+    if (String(data?.authResult || '').toLowerCase() !== 'success') {
+      const error = new Error(data?.message || 'Password verification failed');
+      error.statusCode = 400;
+      throw error;
+    }
+    const record = await PatientPortalAbdmTransaction.create({
+      hospitalId: hospital._id,
+      flow: 'PASSWORD_LOGIN',
+      txnId: data.txnId || crypto.randomUUID(),
+      abhaAddress,
+      status: 'WAITING',
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      metadata: { apiFamily: 'PHR_APP', authMethod: 'password' }
+    });
+    const tokens = tokenSetFromResponse(data);
+    const profile = await fetchPhrProfile(tokens.token);
+    return res.json(await finishPhrPortalLogin(record, data, profile));
+  } catch (error) {
+    return res.status(error.statusCode || 502).json({ success: false, error: error.message, details: error.details });
+  }
+};
+
 exports.me = async (req, res) => res.json({ success: true, patient: patientLabel(req.patient) });
