@@ -139,7 +139,10 @@ async function loadSelectedSales(input, session) {
 
   const query = {
     status: { $ne: 'Cancelled' },
-    include_in_discharge_clearance: true
+    include_in_discharge_clearance: true,
+    // Explicit IPD-owned sales are subledger/inventory records only and must
+    // never enter the Pharmacy patient-settlement engine.
+    billing_owner: { $ne: 'IPD' }
   };
   if (admissionId) query.admission_id = admissionId;
   if (patientId) query.patient_id = patientId;
@@ -153,7 +156,7 @@ async function loadSelectedSales(input, session) {
   if (!sales.length) throw new Error('No eligible pharmacy sales were found for this ledger context.');
 
   if (Array.isArray(input.saleIds) && sales.length !== input.saleIds.length) {
-    throw new Error('One or more selected sales do not belong to this patient/admission ledger or are cancelled.');
+    throw new Error('One or more selected sales are not Pharmacy-collectible for this patient/admission (cancelled, excluded, or owned by IPD consolidated billing).');
   }
   return sales;
 }

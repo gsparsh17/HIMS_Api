@@ -1,9 +1,9 @@
-const Pharmacy = require('../models/Pharmacy');
 const NursingNote = require('../models/NursingNote');
 const { frequencyToPerDay, parseDurationDays } = require('./pharmacyTransaction.service');
 const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 const { operationNow } = require('../utils/operationTimeContext');
 const { hospitalDateKey, dateKeyToStorageDate, addDateKeyDays } = require('../utils/hospitalDateTime');
+const { findActivePharmacyForHospital } = require('./pharmacyResolver.service');
 
 function normaliseBoolean(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -61,12 +61,7 @@ function generateTimingSlots(frequency, durationDays, startDate = operationNow()
 }
 
 async function findActivePharmacy(hospitalId, preferredPharmacyId, session = null) {
-  if (!hospitalId) throw new Error('Hospital context is required before selecting a pharmacy.');
-  if (preferredPharmacyId) {
-    const pharmacy = await Pharmacy.findOne({ _id: preferredPharmacyId, hospitalId, status: 'Active' }).session(session || null);
-    if (pharmacy) return pharmacy;
-  }
-  return Pharmacy.findOne({ hospitalId, status: 'Active' }).sort({ registeredAt: 1 }).session(session || null);
+  return findActivePharmacyForHospital(hospitalId, preferredPharmacyId, session);
 }
 
 async function createOrUpdatePharmacyRequest({ medication, requestedQuantity, requestedBy, pharmacyId, notePrefix = 'Pharmacy request', session = null }) {

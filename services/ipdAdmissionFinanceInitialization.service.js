@@ -32,6 +32,7 @@ async function markPending(admission, user, inputs, { isRetry = false } = {}) {
     ...prior,
     status: 'pending',
     requestedCollection: normalizeAmount(inputs.requestedCollection ?? prior.requestedCollection),
+    requestedAdvanceDeposit: normalizeAmount(inputs.requestedAdvanceDeposit ?? prior.requestedAdvanceDeposit),
     requestedDeposit: normalizeAmount(inputs.requestedDeposit ?? prior.requestedDeposit),
     paymentMethod: inputs.paymentMethod || prior.paymentMethod || 'Cash',
     selectedMode: inputs.selectedMode || prior.selectedMode || admission.selectedBillingMode || undefined,
@@ -52,6 +53,7 @@ async function processInitialFinance(admissionId, user, inputs = {}, { isRetry =
   const stored = admission.financeInitialization?.toObject?.() || admission.financeInitialization || {};
   const merged = {
     requestedCollection: normalizeAmount(inputs.requestedCollection ?? stored.requestedCollection),
+    requestedAdvanceDeposit: normalizeAmount(inputs.requestedAdvanceDeposit ?? stored.requestedAdvanceDeposit),
     requestedDeposit: normalizeAmount(inputs.requestedDeposit ?? stored.requestedDeposit),
     paymentMethod: inputs.paymentMethod || stored.paymentMethod || 'Cash',
     selectedMode: inputs.selectedMode || stored.selectedMode || admission.selectedBillingMode,
@@ -97,7 +99,32 @@ async function processInitialFinance(admissionId, user, inputs = {}, { isRetry =
     let issuedInvoice = null;
     let payment = null;
     let advanceReceipt = null;
-    if (Number(aggregatePolicy.requiredNow || 0) > 0 || merged.requestedCollection > 0) {
+
+    // POSTPAID admission money is a patient-credit deposit, not settlement
+    // against an interim invoice. The explicit field is preferred; the legacy
+    // requestedCollection field is treated as advance for POSTPAID only so old
+    // clients do not accidentally create cash-style admission invoices.
+    const postpaidLike = ['POSTPAID', 'AUTHORIZED_EXCEPTION'].includes(aggregatePolicy.selectedMode);
+    const legacyPostpaidAdvance = postpaidLike && merged.requestedAdvanceDeposit <= 0
+      ? merged.requestedCollection
+      : 0;
+    const advanceDepositRequested = normalizeAmount(
+      merged.requestedAdvanceDeposit + legacyPostpaidAdvance
+    );
+    const invoiceCollectionRequested = legacyPostpaidAdvance > 0
+      ? 0
+      : merged.requestedCollection;
+
+    if (advanceDepositRequested > 0) {
+      advanceReceipt = await ipdFinancial.recordAdvance(admission._id, {
+        amount: advanceDepositRequested,
+        paymentMethod: merged.paymentMethod,
+        idempotencyKey: `admission:${admission._id}:initial-advance-deposit`,
+        notes: `IPD advance received at admission - ${admission.admissionNumber}`
+      }, user);
+    }
+
+    if (Number(aggregatePolicy.requiredNow || 0) > 0 || invoiceCollectionRequested > 0) {
       const invoiceResult = await ipdFinancial.issueIPDInvoice(admission._id, {
         invoiceKind: 'interim',
         idempotencyKey: `admission:${admission._id}:initial-invoice`,
@@ -121,8 +148,8 @@ async function processInitialFinance(admissionId, user, inputs = {}, { isRetry =
         excess = normalizeAmount(priorPlan.plannedAdvanceAmount);
       } else {
         const invoiceOutstandingAtPlan = normalizeAmount(issuedInvoice?.balance_due);
-        applyToInvoice = Math.min(merged.requestedCollection, invoiceOutstandingAtPlan);
-        excess = Math.max(0, merged.requestedCollection - applyToInvoice);
+        applyToInvoice = Math.min(invoiceCollectionRequested, invoiceOutstandingAtPlan);
+        excess = Math.max(0, invoiceCollectionRequested - applyToInvoice);
         if (!planOwner) throw new Error('Admission not found while persisting initial finance allocation');
         planOwner.financeInitialization = {
           ...priorPlan,
@@ -150,8 +177,8 @@ async function processInitialFinance(admissionId, user, inputs = {}, { isRetry =
         advanceReceipt = await ipdFinancial.recordAdvance(admission._id, {
           amount: excess,
           paymentMethod: merged.paymentMethod,
-          idempotencyKey: `admission:${admission._id}:initial-advance`,
-          notes: `Excess collection retained as IPD advance - ${admission.admissionNumber}`
+          idempotencyKey: `admission:${admission._id}:initial-excess-advance`,
+          notes: `Excess admission collection retained as IPD advance - ${admission.admissionNumber}`
         }, user);
       }
     }
@@ -181,7 +208,8 @@ async function processInitialFinance(admissionId, user, inputs = {}, { isRetry =
       issuedInvoice,
       payment,
       advanceReceipt,
-      requestedCollection: merged.requestedCollection,
+      requestedCollection: invoiceCollectionRequested,
+      requestedAdvanceDeposit: advanceDepositRequested,
       satisfiedNow,
       clearanceState,
       financials: {

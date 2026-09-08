@@ -118,7 +118,12 @@ async function load({ query = {}, user = {} }) {
       invoice_type: { $nin: EXCLUDED_INVOICE_TYPES },
       is_deleted: { $ne: true },
       status: { $nin: ['Cancelled', 'Draft'] },
-      document_stage: { $ne: 'VOID' }
+      document_stage: { $ne: 'VOID' },
+      $nor: [
+        { invoice_type: 'Pharmacy', collection_owner: 'IPD' },
+        { invoice_type: 'Pharmacy', collection_mode: 'IPD_CONSOLIDATED' },
+        { invoice_type: 'Pharmacy', collection_transferred_to_ipd: true }
+      ]
     }).lean(),
     FinancialTransaction.find({
       ...hospitalFilter(hospitalId, 'hospitalId'),

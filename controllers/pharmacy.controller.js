@@ -1,6 +1,7 @@
 const Pharmacy = require('../models/Pharmacy');
 const User = require('../models/User');
 const mongoose = require('mongoose');
+const { requestHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 
 // ========== CREATE PHARMACY ==========
 exports.createPharmacy = async (req, res) => {
@@ -31,7 +32,9 @@ exports.createPharmacy = async (req, res) => {
     }
 
     // Create pharmacy
+    const hospitalId = requestHospitalId(req, { required: false });
     const pharmacy = new Pharmacy({
+      hospitalId: hospitalId || null,
       name,
       licenseNumber: licenseNumber.toUpperCase(),
       email: email.toLowerCase(),
@@ -186,7 +189,11 @@ exports.getPharmacyById = async (req, res) => {
 exports.updatePharmacy = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
+    if (!isPlatformAdmin(req.user)) {
+      delete updates.hospitalId;
+      delete updates.hospital_id;
+    }
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({

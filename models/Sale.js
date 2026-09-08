@@ -220,6 +220,21 @@ const saleSchema = new mongoose.Schema({
   commission_amount: { type: Number, default: 0, select: false },
 
   // ========== DEFERRED PAYMENT FIELDS ==========
+  // Patient collection ownership for IPD medicines. In IPD mode the Sale,
+  // Bill and Pharmacy invoice remain the pharmacy/inventory sub-ledger, while
+  // the mirrored IPDCharge is collected only by the IPD final invoice.
+  billing_owner: {
+    type: String,
+    enum: ['PHARMACY', 'IPD'],
+    default: 'PHARMACY',
+    index: true
+  },
+  collection_mode: {
+    type: String,
+    enum: ['PHARMACY_SETTLEMENT', 'IPD_CONSOLIDATED'],
+    default: 'PHARMACY_SETTLEMENT',
+    index: true
+  },
   payment_deferred: {
     type: Boolean,
     default: false,
@@ -296,6 +311,7 @@ saleSchema.index({ source_type: 1 });
 saleSchema.index({ patient_id: 1, admission_id: 1, sale_date: -1 });
 saleSchema.index({ doctor_id: 1, sale_date: -1 });
 saleSchema.index({ payment_deferred: 1, include_in_discharge_clearance: 1, status: 1 });
+saleSchema.index({ admission_id: 1, billing_owner: 1, status: 1 });
 
 saleSchema.index(
   { hospitalId: 1, idempotencyKey: 1 },

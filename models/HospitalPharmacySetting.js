@@ -3,6 +3,14 @@ const mongoose = require('mongoose');
 const hospitalPharmacySettingSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
   pharmacyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Pharmacy' },
+  // Controls who owns the patient-facing collectible document for IPD
+  // medicines. Pharmacy remains the inventory/sub-ledger owner in both modes.
+  ipdPharmacyBillingOwner: {
+    type: String,
+    enum: ['PHARMACY', 'IPD_CONSOLIDATED'],
+    default: 'PHARMACY',
+    index: true
+  },
   ipdAdvanceMode: {
     type: String,
     enum: ['SHARED_IPD_ADVANCE', 'PHARMACY_SEPARATE_ADVANCE', 'HYBRID'],

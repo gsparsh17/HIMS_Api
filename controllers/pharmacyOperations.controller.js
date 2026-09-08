@@ -3,7 +3,6 @@ const { semanticDateRange } = require('../utils/hospitalDateRange');
 const { operationNow, operationDateKey } = require('../utils/operationTimeContext');
 const { hospitalDayBounds } = require('../utils/hospitalDateTime');
 const HospitalPharmacySetting = require('../models/HospitalPharmacySetting');
-const Pharmacy = require('../models/Pharmacy');
 const Medicine = require('../models/Medicine');
 const MedicineBatch = require('../models/MedicineBatch');
 const Sale = require('../models/Sale');
@@ -39,6 +38,7 @@ const {
   getPatientOutstanding,
   getPatientPharmacySummary
 } = require('../services/pharmacyTransaction.service');
+const { findActivePharmacyIdForHospital } = require('../services/pharmacyResolver.service');
 
 function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -68,8 +68,7 @@ function stripCostFields(doc) {
 
 async function getDefaultPharmacyId(hospitalId) {
   if (!hospitalId) return null;
-  const pharmacy = await Pharmacy.findOne({ hospitalId, status: 'Active' }).select('_id');
-  return pharmacy?._id;
+  return findActivePharmacyIdForHospital(hospitalId);
 }
 
 // ========== EXISTING FUNCTIONS (kept as is) ==========
@@ -90,6 +89,7 @@ exports.updateSettings = asyncHandler(async (req, res) => {
   const hospitalId = getHospitalId(req, req.body.hospitalId);
   const pharmacyId = objectIdOrUndefined(req.body.pharmacyId || req.query.pharmacyId) || await getDefaultPharmacyId(hospitalId);
   const allowed = [
+    'ipdPharmacyBillingOwner',
     'ipdAdvanceMode',
     'allowNegativeIpdPharmacyBalance',
     'defaultIpdBillingMode',
@@ -310,6 +310,8 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
   if (!admission) return res.status(404).json({ success: false, error: 'Admission not found' });
 
   const patientId = admission.patientId?._id || admission.patientId;
+  const billingOwner = admission.pharmacyBillingPolicySnapshot?.billingOwner || 'PHARMACY';
+  const operationalOnly = billingOwner === 'IPD_CONSOLIDATED';
 
   const [sales, returns, ledgers, bills, invoices, deferredSales] = await Promise.all([
     Sale.find({ hospitalId, admission_id: admissionId }).sort({ sale_date: 1 }).lean(),
@@ -317,7 +319,7 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     PharmacyLedgerEntry.find({ hospitalId, admissionId }).sort({ entryDate: 1 }).lean(),
     Bill.find({ hospital_id: hospitalId, admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: 1 }).lean(),
     Invoice.find({ hospital_id: hospitalId, admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: 1 }).lean(),
-    Sale.find({ hospitalId, admission_id: admissionId, payment_deferred: true, status: 'Pending' }).lean()
+    Sale.find({ hospitalId, admission_id: admissionId, billing_owner: { $ne: 'IPD' }, payment_deferred: true, status: 'Pending' }).lean()
   ]);
 
   const balances = {
@@ -325,12 +327,18 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     PHARMACY_IPD: await getAdvanceBalance({ admissionId, patientId, walletType: 'PHARMACY_IPD' })
   };
 
+  const collectibleSales = sales.filter((sale) => sale.billing_owner !== 'IPD' && sale.collection_mode !== 'IPD_CONSOLIDATED');
+  const ipdOwnedSales = sales.filter((sale) => sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED');
   const totalSpent = sales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
-  const totalPaid = sales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
+  const totalPaid = collectibleSales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
   const totalReturnsAmount = returns.reduce((sum, ret) => sum + Number(ret.totalRefundAmount || 0), 0);
+  const ipdConsolidatedChargeTotal = ipdOwnedSales.reduce(
+    (sum, sale) => sum + Math.max(0, Number(sale.total_amount || 0) - Number(sale.return_amount || 0)),
+    0
+  );
 
-  const nonDeferredSales = sales.filter(s => !s.payment_deferred);
-  const deferredSalesList = sales.filter(s => s.payment_deferred === true);
+  const nonDeferredSales = collectibleSales.filter(s => !s.payment_deferred);
+  const deferredSalesList = collectibleSales.filter(s => s.payment_deferred === true);
 
   const totalDeferredAmount = deferredSalesList.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
   const totalDeferredPaid = deferredSalesList.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0);
@@ -350,7 +358,7 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
   const totalAdvanceUsed = advanceUsedForDeferred + advanceUsedForNonDeferred;
   const outstanding = Math.max(0, nonDeferredRemaining - advanceUsedForNonDeferred);
   const refundableAdvance = Math.max(0, pharmacyAdvance - totalAdvanceUsed);
-  const pendingBillsTotal = sales.reduce((sum, s) => sum + (s.balance_due || 0), 0);
+  const pendingBillsTotal = collectibleSales.reduce((sum, s) => sum + (s.balance_due || 0), 0);
 
   let totalPurchaseCost = 0;
   let totalGrossProfit = 0;
@@ -408,6 +416,9 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
       balanceDue: sale.balance_due || 0,
       closingOutstanding: sale.closing_outstanding || 0,
       paymentMethod: sale.payment_method,
+      billingOwner: sale.billing_owner || 'PHARMACY',
+      collectionMode: sale.collection_mode || 'PHARMACY_SETTLEMENT',
+      transferredToIpd: sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED',
       isDeferred: sale.payment_deferred === true,
       deferralReason: sale.deferral_reason,
       purchaseCost: salePurchaseCost,
@@ -444,11 +455,14 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     totalSales: normalizeMoney(totalSpent),
     totalReturns: normalizeMoney(totalReturnsAmount),
     totalPaid: normalizeMoney(totalPaid),
-    totalDue: normalizeMoney(outstanding),
+    totalDue: operationalOnly ? 0 : normalizeMoney(outstanding),
     totalDeferred: normalizeMoney(totalDeferredAmount),
+    billingOwner,
+    operationalOnly,
+    ipdConsolidatedChargeTotal: normalizeMoney(ipdConsolidatedChargeTotal),
     pharmacyAdvanceBalance: normalizeMoney(pharmacyAdvance),
     sharedIpdAdvanceBalance: normalizeMoney(balances.IPD_SHARED),
-    netPayableBeforeDischarge: normalizeMoney(outstanding + deferredRemaining),
+    netPayableBeforeDischarge: operationalOnly ? 0 : normalizeMoney(outstanding + deferredRemaining),
     refundableAdvance: normalizeMoney(refundableAdvance),
     deferredRemaining: normalizeMoney(deferredRemaining),
     nonDeferredRemaining: normalizeMoney(nonDeferredRemaining),
@@ -473,7 +487,10 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
     deferredCount: deferredSalesList.length,
     nonDeferredOutstanding: nonDeferredRemaining,
     deferredRemaining: deferredRemaining,
-    refundableAdvance: refundableAdvance
+    refundableAdvance: refundableAdvance,
+    billingOwner,
+    operationalOnly,
+    ipdConsolidatedChargeTotal: normalizeMoney(ipdConsolidatedChargeTotal)
   };
 
   const admissionWithDetails = {
@@ -487,6 +504,11 @@ exports.getAdmissionFinalClearance = asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
+    billingPolicy: {
+      billingOwner,
+      operationalOnly,
+      source: admission.pharmacyBillingPolicySnapshot?.source || 'LEGACY_ADMISSION_DEFAULT'
+    },
     admission: admissionWithDetails,
     bills: billRows,
     returns: returnRows,
@@ -521,6 +543,7 @@ exports.getDeferredPaymentsByAdmission = asyncHandler(async (req, res) => {
     ...(hospitalId ? { hospitalId } : {}),
     admission_id: admissionId,
     include_in_discharge_clearance: true,
+    billing_owner: { $ne: 'IPD' },
     payment_deferred: true,
     status: { $in: openStatuses }
   })
@@ -565,6 +588,7 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
 
   const query = {
     ...(hospitalId ? { hospitalId } : {}),
+    billing_owner: { $ne: 'IPD' },
     payment_deferred: true,
     status: { $in: requestedStatuses.length ? requestedStatuses : ['Pending', 'Partially Paid'] }
   };
@@ -609,6 +633,14 @@ exports.settleDeferredPayment = asyncHandler(async (req, res) => {
   const sale = await Sale.findById(saleId);
   if (!sale) {
     return res.status(404).json({ success: false, error: 'Sale not found' });
+  }
+
+  if (sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED') {
+    return res.status(409).json({
+      success: false,
+      code: 'IPD_CONSOLIDATED_PHARMACY_COLLECTION_BLOCKED',
+      error: 'This pharmacy sale is assigned to IPD consolidated billing. Collect payment through the IPD financial workspace.'
+    });
   }
 
   if (!sale.payment_deferred) {
@@ -994,6 +1026,15 @@ exports.depositAdvance = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, error: 'Cannot add advance payment to a patient who has already been discharged' });
   }
 
+  const billingOwner = admission.pharmacyBillingPolicySnapshot?.billingOwner || 'PHARMACY';
+  if (billingOwner === 'IPD_CONSOLIDATED') {
+    return res.status(409).json({
+      success: false,
+      code: 'IPD_CONSOLIDATED_PHARMACY_COLLECTION_BLOCKED',
+      error: 'This admission uses IPD consolidated Pharmacy billing. Pharmacy cannot collect Pharmacy Advance; receive patient advance through the IPD financial workspace.'
+    });
+  }
+
   const walletType = req.body.walletType || req.body.wallet_type || 'PHARMACY_IPD';
   const paymentMethod = req.body.paymentMethod || req.body.payment_method || 'Cash';
   const createdBy = getCreatedBy(req);
@@ -1032,8 +1073,10 @@ exports.depositAdvance = asyncHandler(async (req, res) => {
 exports.getAdvanceLedger = asyncHandler(async (req, res) => {
   const admissionId = objectIdOrUndefined(req.params.admissionId);
   const hospitalId = getHospitalId(req);
-  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('_id patientId');
+  const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).select('_id patientId pharmacyBillingPolicySnapshot');
   if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found' });
+  const billingOwner = admission.pharmacyBillingPolicySnapshot?.billingOwner || 'PHARMACY';
+  const operationalOnly = billingOwner === 'IPD_CONSOLIDATED';
   const walletType = req.query.walletType;
   const query = { hospitalId, admissionId };
   if (walletType) query.walletType = walletType;
@@ -1042,7 +1085,16 @@ exports.getAdvanceLedger = asyncHandler(async (req, res) => {
   const sharedBalance = await getAdvanceBalance({ admissionId, walletType: 'IPD_SHARED' });
   const pharmacyBalance = await getAdvanceBalance({ admissionId, walletType: 'PHARMACY_IPD' });
 
-  res.json({ success: true, balances: { IPD_SHARED: sharedBalance, PHARMACY_IPD: pharmacyBalance }, ledgers });
+  res.json({
+    success: true,
+    billingPolicy: {
+      billingOwner,
+      operationalOnly,
+      source: admission.pharmacyBillingPolicySnapshot?.source || 'LEGACY_ADMISSION_DEFAULT'
+    },
+    balances: { IPD_SHARED: sharedBalance, PHARMACY_IPD: pharmacyBalance },
+    ledgers
+  });
 });
 
 exports.getIPDQueue = asyncHandler(async (req, res) => {
@@ -1134,6 +1186,9 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
 
   if (!admission) return res.status(404).json({ success: false, error: 'IPD admission not found' });
 
+  const billingOwner = admission.pharmacyBillingPolicySnapshot?.billingOwner || 'PHARMACY';
+  const operationalOnly = billingOwner === 'IPD_CONSOLIDATED';
+
   const [medications, medicineStock, sales, returns, advanceLedgers, pharmacyLedgers, bills, invoices, deferredSales] = await Promise.all([
     IPDMedicationChart.find({ hospitalId, admissionId }).populate('medicineId', 'name base_unit pack_unit units_per_pack').sort({ startDate: -1 }).lean(),
     IPDPatientMedicineStock.find({ hospitalId, admissionId }).populate('medicineId batchId').sort({ updatedAt: -1 }).lean(),
@@ -1143,7 +1198,7 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
     PharmacyLedgerEntry.find({ hospitalId, admissionId }).sort({ entryDate: -1 }).lean(),
     Bill.find({ hospital_id: hospitalId, admission_id: admissionId, is_pharmacy_bill: true }).sort({ generated_at: -1 }).lean(),
     Invoice.find({ hospital_id: hospitalId, admission_id: admissionId, is_pharmacy_sale: true }).sort({ issue_date: -1 }).lean(),
-    Sale.find({ hospitalId, admission_id: admissionId, payment_deferred: true, status: 'Pending' }).sort({ sale_date: -1 }).lean()
+    Sale.find({ hospitalId, admission_id: admissionId, billing_owner: { $ne: 'IPD' }, payment_deferred: true, status: 'Pending' }).sort({ sale_date: -1 }).lean()
   ]);
 
   const balances = {
@@ -1155,6 +1210,11 @@ exports.getAdmissionPharmacyFile = asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
+    billingPolicy: {
+      billingOwner,
+      operationalOnly,
+      source: admission.pharmacyBillingPolicySnapshot?.source || 'LEGACY_ADMISSION_DEFAULT'
+    },
     admission,
     balances,
     medications,
@@ -1709,7 +1769,7 @@ exports.getIPDPatients = asyncHandler(async (req, res) => {
       { $group: { _id: { admissionId: '$admissionId', walletType: '$walletType' }, balanceAfter: { $first: '$balanceAfter' } } }
     ]),
     Sale.aggregate([
-      { $match: { admission_id: { $in: ids }, payment_deferred: true, status: 'Pending' } },
+      { $match: { admission_id: { $in: ids }, billing_owner: { $ne: 'IPD' }, payment_deferred: true, status: 'Pending' } },
       { $group: { _id: '$admission_id', totalDeferredAmount: { $sum: { $ifNull: ['$balance_due', 0] } }, deferredCount: { $sum: 1 } } }
     ]),
     Sale.aggregate([

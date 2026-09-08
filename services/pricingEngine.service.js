@@ -867,19 +867,26 @@ async function quotePricing(input) {
 // Pricing Snapshot
 // ============================================
 
+function optionalSnapshotId(value) {
+  const resolved = value?._id ?? value;
+  if (resolved === undefined || resolved === null) return undefined;
+  if (typeof resolved === 'string' && !resolved.trim()) return undefined;
+  return resolved;
+}
+
 function pricingSnapshot(quote, input = {}) {
   return {
-    rateCardId: quote.rateCard?.id,
+    rateCardId: optionalSnapshotId(quote.rateCard?.id),
     rateCardVersion: quote.rateCard?.version,
-    rateCardItemId: quote.rateCardItemId,
+    rateCardItemId: optionalSnapshotId(quote.rateCardItemId),
     serviceCode: quote.serviceCode,
-    internalServiceModel: input.internalServiceModel,
-    internalServiceId: input.internalServiceId,
+    internalServiceModel: input.internalServiceModel || undefined,
+    internalServiceId: optionalSnapshotId(input.internalServiceId),
     resultType: quote.resultType,
     fallbackReason: quote.fallbackReason,
     packageCode: quote.packageCode,
-    packageEpisodeId: quote.packageEpisodeId,
-    packageTriggerRateCardItemId: quote.packageTriggerRateCardItemId,
+    packageEpisodeId: optionalSnapshotId(quote.packageEpisodeId),
+    packageTriggerRateCardItemId: optionalSnapshotId(quote.packageTriggerRateCardItemId),
     packageDecision: quote.packageDecision,
     inputs: quote.inputs,
     amounts: quote.amounts,

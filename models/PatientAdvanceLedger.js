@@ -34,7 +34,7 @@ const patientAdvanceLedgerSchema = new mongoose.Schema({
   openingBalance: { type: Number, default: 0 },
   paymentMethod: {
     type: String,
-    enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'Wallet', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment'],
+    enum: ['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'Wallet', 'IPDAdvance', 'OPDAdvance', 'PharmacyAdvance', 'Adjustment', 'Split'],
     default: 'Cash'
   },
   referenceNumber: { type: String, trim: true },

@@ -11,6 +11,7 @@ const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const Hospital = require('../models/Hospital');
 const { normalizeFinancialLine } = require('../utils/financialLine');
 const { buildDailyAccommodationSummary } = require('./ipdFinancial.service');
+const { ipdOwnsPharmacyBilling } = require('./ipdPharmacyBillingPolicy.service');
 
 const asNumber = (value) => {
   const parsed = Number(value);
@@ -41,6 +42,25 @@ const invoiceOutstanding = (invoice) => asNumber(
   invoice.balance_due !== undefined
     ? invoice.balance_due
     : Math.max(0, asNumber(invoice.total) - asNumber(invoice.amount_paid))
+);
+
+const isPharmacyInvoice = (invoice = {}) => (
+  invoice.is_pharmacy_sale === true ||
+  String(invoice.invoice_type || '').toLowerCase().includes('pharmacy') ||
+  Boolean(invoice.sale_id)
+);
+
+const isPharmacyBill = (bill = {}) => (
+  bill.is_pharmacy_bill === true ||
+  String(bill.bill_type || bill.invoice_type || '').toLowerCase().includes('pharmacy') ||
+  Boolean(bill.sale_id)
+);
+
+const isTransferredToIpd = (document = {}, admissionOwnsPharmacy = false, pharmacyPredicate = () => false) => (
+  document.collection_owner === 'IPD' ||
+  document.collection_mode === 'IPD_CONSOLIDATED' ||
+  document.collection_transferred_to_ipd === true ||
+  (admissionOwnsPharmacy && pharmacyPredicate(document))
 );
 
 function chargeSection(charge = {}) {
@@ -1197,24 +1217,31 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     invoice.invoice_type !== 'Credit Note' &&
     invoice.status !== 'Cancelled'
   );
-  const invoiceTotal = activeInvoices.reduce((sum, invoice) => sum + asNumber(invoice.total), 0);
+  const admissionOwnsPharmacyCollection = Boolean(admissionId && admission && ipdOwnsPharmacyBilling(admission));
+  // A Pharmacy sub-ledger invoice transferred to IPD remains visible/auditable,
+  // but it is not a second patient receivable and must not enter IPD paid/due
+  // totals. Legacy admissions remain Pharmacy-owned by policyFromAdmission().
+  const collectibleInvoices = admissionId
+    ? activeInvoices.filter((invoice) => !isTransferredToIpd(invoice, admissionOwnsPharmacyCollection, isPharmacyInvoice))
+    : activeInvoices;
+  const invoiceTotal = collectibleInvoices.reduce((sum, invoice) => sum + asNumber(invoice.total), 0);
   const billTotal = bills
     .filter((bill) => !['VOID', 'Cancelled'].includes(bill.document_stage || bill.status))
     .reduce((sum, bill) => sum + asNumber(bill.total_amount), 0);
   const chargeTotal = displayCharges.reduce((sum, charge) => sum + asNumber(charge.netAmount ?? charge.amount), 0);
   const unbilledTotal = unbilledCharges.reduce((sum, charge) => sum + asNumber(charge.netAmount ?? charge.amount), 0);
 
-  const activeInvoiceIds = new Set(activeInvoices.map((invoice) => idString(invoice._id)).filter(Boolean));
-  const invoiceLinkedBillIds = new Set(activeInvoices.flatMap((invoice) => [invoice.bill_id, ...(invoice.bill_ids || [])]).map(idString).filter(Boolean));
+  const activeInvoiceIds = new Set(collectibleInvoices.map((invoice) => idString(invoice._id)).filter(Boolean));
+  const invoiceLinkedBillIds = new Set(collectibleInvoices.flatMap((invoice) => [invoice.bill_id, ...(invoice.bill_ids || [])]).map(idString).filter(Boolean));
   const standaloneBills = bills.filter((bill) => {
     const linkedInvoiceId = idString(bill.invoice_id);
     return !invoiceLinkedBillIds.has(idString(bill._id)) && (!linkedInvoiceId || !activeInvoiceIds.has(linkedInvoiceId));
   });
-  const opdOutstanding = activeInvoices.reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) +
+  const opdOutstanding = collectibleInvoices.reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) +
     standaloneBills.reduce((sum, bill) => sum + billOutstanding(bill), 0);
-  const opdPaid = activeInvoices.reduce((sum, invoice) => sum + asNumber(invoice.amount_paid), 0) +
+  const opdPaid = collectibleInvoices.reduce((sum, invoice) => sum + asNumber(invoice.amount_paid), 0) +
     standaloneBills.reduce((sum, bill) => sum + asNumber(bill.paid_amount), 0);
-  const orphanInvoiceTotal = activeInvoices
+  const orphanInvoiceTotal = collectibleInvoices
     .filter((invoice) => {
       const linkedIds = [invoice.bill_id, ...(invoice.bill_ids || [])].map(idString).filter(Boolean);
       return !linkedIds.length || !linkedIds.some((billId) => bills.some((bill) => idString(bill._id) === billId));
@@ -1222,7 +1249,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     .reduce((sum, invoice) => sum + asNumber(invoice.total), 0);
 
   const calculatedOutstanding = admissionId
-    ? activeInvoices.reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) + unbilledTotal
+    ? collectibleInvoices.reduce((sum, invoice) => sum + invoiceOutstanding(invoice), 0) + unbilledTotal
     : opdOutstanding;
   // Documents and active ledger rows are authoritative. Cached admission totals are
   // projections and may lag after settlement/credit/refund operations, so they must
@@ -1234,11 +1261,12 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
       ? billTotal
       : asNumber(billTotal + orphanInvoiceTotal);
   const paidAmount = admissionId
-    ? activeInvoices.reduce((sum, invoice) => sum + asNumber(invoice.amount_paid), 0)
+    ? collectibleInvoices.reduce((sum, invoice) => sum + asNumber(invoice.amount_paid), 0)
     : opdPaid;
 
   const billEntries = bills
     .filter((bill) => !['VOID', 'Cancelled'].includes(bill.document_stage || bill.status))
+    .filter((bill) => !admissionId || !isTransferredToIpd(bill, admissionOwnsPharmacyCollection, isPharmacyBill))
     .map((bill) => ({
       date: bill.generated_at || bill.createdAt,
       kind: 'BILL',
@@ -1251,6 +1279,7 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   const orphanInvoiceEntries = invoices
     .filter((invoice) => {
       if (invoice.document_stage === 'VOID' || invoice.document_stage === 'CREDIT_NOTE' || invoice.invoice_type === 'Credit Note' || invoice.status === 'Cancelled') return false;
+      if (admissionId && isTransferredToIpd(invoice, admissionOwnsPharmacyCollection, isPharmacyInvoice)) return false;
       const ids = [invoice.bill_id, ...(invoice.bill_ids || [])].map(idString).filter(Boolean);
       return !ids.length || !ids.some((billId) => bills.some((bill) => idString(bill._id) === billId));
     })
@@ -1405,7 +1434,17 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
   // values side by side and the advance becomes settlement only when explicitly
   // applied through the finance service.
   const patientBalance = asNumber(outstanding);
-  const netPayableAfterAdvance = asNumber(Math.max(0, outstanding - advanceAvailable));
+  const advanceAppliedActual = asNumber(advanceTotals.applied);
+  const advancePendingAdjustment = asNumber(Math.min(outstanding, advanceAvailable));
+  const advanceAdjusted = asNumber(advanceAppliedActual + advancePendingAdjustment);
+  const availableAdvanceAfterAdjustment = asNumber(Math.max(0, advanceAvailable - advancePendingAdjustment));
+  const balancePayableAfterAdvance = asNumber(Math.max(0, outstanding - advancePendingAdjustment));
+  const netPayableAfterAdvance = balancePayableAfterAdvance;
+  const authorisedCreditOutstanding = asNumber((collectibleInvoices || []).reduce((sum, invoice) => {
+    if (String(invoice.credit_status || '').toUpperCase() !== 'AUTHORIZED') return sum;
+    return sum + Math.min(asNumber(invoice.balance_due), asNumber(invoice.credit_authorised_amount));
+  }, 0));
+  const immediateDueAmount = asNumber(Math.max(0, outstanding - authorisedCreditOutstanding));
   const transactionAmount = (types) => transactions
     .filter((transaction) => types.includes(String(transaction.transactionType || '').toUpperCase()))
     .reduce((sum, transaction) => sum + asNumber(transaction.amount), 0);
@@ -1445,9 +1484,20 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     due: outstanding,
     patientBalance,
     advanceReceived: advanceTotals.received,
-    advanceApplied: advanceTotals.applied,
+    advanceApplied: advanceAppliedActual,
+    advanceAppliedActual,
+    advancePendingAdjustment,
+    advanceAdjusted,
     advanceRefunded: advanceTotals.refunded,
     advanceAvailable,
+    advanceWalletBalance: advanceAvailable,
+    availableAdvanceAfterAdjustment,
+    authorisedCreditOutstanding,
+    immediateDueAmount,
+    // Actual legal receivable remains outstanding until a real payment,
+    // wallet utilisation, credit note or refund adjustment posts.
+    balancePayable: outstanding,
+    balancePayableAfterAdvance,
     netPayableAfterAdvance
   };
   // Backward-compatible alias: "paid" means external collections, while
@@ -1493,13 +1543,23 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
       creditNotes,
       refunds: paymentRefunds,
       advanceReceived: advanceTotals.received,
-      advanceApplied: advanceTotals.applied,
+      advanceApplied: advanceAppliedActual,
+      advanceAppliedActual,
+      advancePendingAdjustment,
+      advanceAdjusted,
       advanceRefunded: advanceTotals.refunded,
       advanceAvailable,
+      advanceWalletBalance: advanceAvailable,
+      availableAdvanceAfterAdjustment,
       patientBalance,
+      authorisedCreditOutstanding,
+      immediateDueAmount,
+      balancePayable: outstanding,
+      balancePayableAfterAdvance,
       netPayableAfterAdvance,
       billCount: bills.length,
-      invoiceCount: activeInvoices.length,
+      invoiceCount: collectibleInvoices.length,
+      documentInvoiceCount: activeInvoices.length,
       chargeCount: displayCharges.length
     }
   };

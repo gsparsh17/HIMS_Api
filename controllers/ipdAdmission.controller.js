@@ -26,6 +26,7 @@ const { checkModuleAccess, _hasActionPermission } = require('../middlewares/auth
 // Consolidated implementation support
 const { requireHospitalId: requireAdmissionHospitalId } = require('../services/tenantScope.service');
 const { processInitialFinance } = require('../services/ipdAdmissionFinanceInitialization.service');
+const { snapshotAdmissionPolicy } = require('../services/ipdPharmacyBillingPolicy.service');
 const { resolveClinicalActor } = require('../services/clinicalActor.service');
 const Payer2026 = require('../models/Payer');
 const AdmissionCoverage2026 = require('../models/AdmissionCoverage');
@@ -297,8 +298,13 @@ exports.createAdmission = async (req, res) => {
     const hospitalId = requireAdmissionHospitalId(req);
     const payload = req.body || {};
     const requestedCollectionAtAdmission = Math.max(0, Number(payload.amountPaid ?? payload.paymentAmount ?? 0));
-    if (requestedCollectionAtAdmission > 0 && (!checkModuleAccess(req.user, 'billing_finance', 'manage') || !_hasActionPermission(req.user, 'settlement'))) {
-      const error = new Error('Admission can be created, but this user is not permitted to collect money. Set collection to ₹0 and hand off to Finance/authorised Front Desk.');
+    // A deposit is patient credit, not settlement against an admission invoice.
+    // `advanceAmount` is accepted only as a backwards-compatible alias for the
+    // previously disconnected Admin admission field.
+    const requestedAdvanceDepositAtAdmission = Math.max(0, Number(payload.advanceDepositAmount ?? payload.advanceAmount ?? 0));
+    const admissionMoneyReceived = requestedCollectionAtAdmission + requestedAdvanceDepositAtAdmission;
+    if (admissionMoneyReceived > 0 && (!checkModuleAccess(req.user, 'billing_finance', 'manage') || !_hasActionPermission(req.user, 'settlement'))) {
+      const error = new Error('Admission can be created, but this user is not permitted to collect money. Set collection/advance to ₹0 and hand off to Finance/authorised Front Desk.');
       error.statusCode = 403;
       error.code = 'ADMISSION_COLLECTION_PERMISSION_REQUIRED';
       throw error;
@@ -418,8 +424,9 @@ exports.createAdmission = async (req, res) => {
         financeInitialization: {
           status: 'pending',
           requestedCollection: requestedCollectionAtAdmission,
+          requestedAdvanceDeposit: requestedAdvanceDepositAtAdmission,
           requestedDeposit: Math.max(0, Number(payload.requestedDeposit || 0)),
-          paymentMethod: payload.paymentMethod || 'Cash',
+          paymentMethod: payload.paymentMethod || payload.advancePaymentMethod || 'Cash',
           selectedMode: payload.selectedMode || payload.billingMode || undefined,
           payerCategory: payload.coverage?.payerCategory || undefined,
           billingModeOverrideReason: payload.billingModeOverrideReason || undefined,
@@ -428,6 +435,15 @@ exports.createAdmission = async (req, res) => {
           lastAttemptBy: req.user?._id
         }
       }], { session });
+
+      // Freeze the Pharmacy-vs-IPD collection owner at admission time. A
+      // hospital setting changed later applies only to new admissions.
+      await snapshotAdmissionPolicy({
+        admission,
+        hospitalId,
+        userId: req.user?._id,
+        session
+      });
 
       if (bed) {
         const occupied = await Bed.findOneAndUpdate(
@@ -696,8 +712,9 @@ exports.createAdmission = async (req, res) => {
     // and reuse idempotency keys on every retry instead of recreating admission/bed.
     const financeStage = await processInitialFinance(admission._id, req.user, {
       requestedCollection: requestedCollectionAtAdmission,
+      requestedAdvanceDeposit: requestedAdvanceDepositAtAdmission,
       requestedDeposit: Math.max(0, Number(payload.requestedDeposit || 0)),
-      paymentMethod: payload.paymentMethod || 'Cash',
+      paymentMethod: payload.paymentMethod || payload.advancePaymentMethod || 'Cash',
       selectedMode: admission.selectedBillingMode || payload.selectedMode || payload.billingMode,
       payerCategory: coverage?.payerCategory || payload.coverage?.payerCategory || 'SELF',
       billingModeOverrideReason: payload.billingModeOverrideReason

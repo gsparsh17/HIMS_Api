@@ -26,6 +26,7 @@ const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
 const { recordPackageUtilization } = require('./packageAdjudication.service');
 const { replaceCoverageUtilization } = require('./coverageUtilization.service');
 const { resolveFinancialPolicy, calculateRequiredNow } = require('./financialPolicy.service');
+const { policyFromAdmission, ipdOwnsPharmacyBilling } = require('./ipdPharmacyBillingPolicy.service');
 
 function objectIdOrUndefined(id) {
   return id && mongoose.Types.ObjectId.isValid(id) ? id : undefined;
@@ -520,7 +521,13 @@ function calculateTotals(items, { discount = 0, discount_type = 'percentage', ta
 
 async function getPatientOutstanding({ patientId, admissionId, excludeSaleId, session } = {}) {
   if (!patientId && !admissionId) return 0;
-  const match = { balance_due: { $gt: 0 }, status: { $nin: ['Cancelled', 'Refunded'] } };
+  const match = {
+    balance_due: { $gt: 0 },
+    status: { $nin: ['Cancelled', 'Refunded'] },
+    // Missing billing_owner is a legacy Pharmacy-owned sale; only explicit
+    // IPD ownership removes a sale from the Pharmacy collectible balance.
+    billing_owner: { $ne: 'IPD' }
+  };
   if (admissionId) match.admission_id = admissionId;
   else match.patient_id = patientId;
   if (excludeSaleId) match._id = { $ne: excludeSaleId };
@@ -598,7 +605,31 @@ async function applyIpdMedicineStock({ items, sale, admissionId, patientId, sess
     // Keep each physical pharmacy dispatch in its own bedside-stock row. Receipt
     // acknowledgement is per dispatch; merging a second partial issue into an
     // already acknowledged row would make unreceived stock administrable.
-    const query = { hospitalId: sale.hospitalId, admissionId, patientId, medicineId: item.medicine_id, batchId: item.batch_id, sourceSaleIds: sale._id };
+    // Use a deterministic document id for the physical sale/medicine/batch
+    // dispatch instead of putting the array field `sourceSaleIds` in an upsert
+    // selector. MongoDB can materialize a single-value array predicate as a
+    // scalar while constructing an upsert candidate, which makes a subsequent
+    // `$addToSet` fail with "sourceSaleIds has non-array type objectId".
+    //
+    // A deterministic _id keeps each sale dispatch isolated, gives the same
+    // selector if the request is retried, and lets `$addToSet` create/maintain sourceSaleIds as an
+    // actual array. Same-sale duplicate lines for the same medicine/batch still
+    // converge on the same bedside-stock row.
+    const dispatchStockId = new mongoose.Types.ObjectId(
+      crypto
+        .createHash('sha256')
+        .update([
+          String(sale._id),
+          String(sale.hospitalId || ''),
+          String(admissionId),
+          String(patientId),
+          String(item.medicine_id || ''),
+          String(item.batch_id || '')
+        ].join('|'))
+        .digest('hex')
+        .slice(0, 24)
+    );
+    const query = { _id: dispatchStockId };
     const update = {
       $setOnInsert: {
         hospitalId: sale.hospitalId,
@@ -631,7 +662,14 @@ async function applyIpdMedicineStock({ items, sale, admissionId, patientId, sess
 
 async function createSaleInvoice({ sale, items, customerName, customerPhone, totals, paymentEntries, createdBy, isDeferred = false, appointmentId, pharmacyPricing, session = null }) {
   const customerType = sale.customer_type === 'WalkIn' || sale.customer_type === 'walkin' ? 'Walk-in' : 'Patient';
-  const amountPaid = normalizeMoney(Math.min(sale.amount_paid || 0, sale.net_amount_after_returns || sale.total_amount || 0));
+  const ipdOwnedCollection = sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED';
+  // In consolidated mode this Pharmacy Invoice is an operational/tax sub-ledger
+  // document only. Patient money belongs to the IPD invoice, so never mirror a
+  // Pharmacy counter payment onto this document even if an older browser sends
+  // stale payment fields.
+  const amountPaid = ipdOwnedCollection
+    ? 0
+    : normalizeMoney(Math.min(sale.amount_paid || 0, sale.net_amount_after_returns || sale.total_amount || 0));
 
   // A deferred sale can still be partially paid. Invoice status must reflect
   // that immediate Cash/UPI/Card/etc. was collected even though a balance remains.
@@ -670,6 +708,10 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
       ...pharmacyPricing.allocation
     } : undefined,
     sale_id: sale._id,
+    collection_owner: ipdOwnedCollection ? 'IPD' : 'PHARMACY',
+    collection_mode: ipdOwnedCollection ? 'IPD_CONSOLIDATED' : 'PHARMACY_SETTLEMENT',
+    collection_transferred_to_ipd: ipdOwnedCollection,
+    collection_transferred_amount: ipdOwnedCollection ? finalTotal : 0,
     prescription_id: sale.prescription_id || undefined,
     customer_type: customerType,
     customer_name: customerName,
@@ -731,6 +773,7 @@ async function createSaleInvoice({ sale, items, customerName, customerPhone, tot
 // In createPharmacyBill function, around line ~700-750
 
 async function createPharmacyBill({ sale, items, totals, paymentEntries, patientId, admissionId, createdBy, isDeferred = false, appointmentId, pharmacyPricing, session = null }) {
+  const ipdOwnedCollection = sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED';
   const billItems = items.map(item => ({
     description: item.medicine_name,
     amount: item.contracted_amount ?? item.net_amount ?? item.total_price,
@@ -785,16 +828,17 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
 
   // amount_paid always represents the money/wallet value applied to this bill.
   // A deferred sale with an immediate split is therefore Partially Paid, not Pending.
-  let paymentAmount = isDeferred || sale.payment_deferred === true
+  let paymentAmount = ipdOwnedCollection ? 0 : (isDeferred || sale.payment_deferred === true
     ? normalizeMoney(sale.amount_paid || 0)
     : normalizeMoney(
       normalizedPaymentEntries.reduce(
         (sum, payment) => sum + Number(payment.amount || 0),
         0
       )
-    );
+    ));
 
   if (
+    !ipdOwnedCollection &&
     !paymentAmount &&
     !isDeferred &&
     sale.payment_method !== 'NoPayment' &&
@@ -804,7 +848,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
     paymentAmount = normalizeMoney(totals.total);
   }
 
-  const pharmacyAdvanceUsed = normalizeMoney(
+  const pharmacyAdvanceUsed = ipdOwnedCollection ? 0 : normalizeMoney(
     normalizedPaymentEntries
       .filter((payment) => payment.method === 'PharmacyAdvance')
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
@@ -814,17 +858,17 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
   // PatientAdvanceLedger and PharmacyLedgerEntry. It must not be treated as a
   // payment against this bill or as a second patient-balance increment here.
   let pharmacyAdvanceCreated = 0;
-  if (!isDeferred && !sale.payment_deferred && paymentAmount > totals.total) {
+  if (!ipdOwnedCollection && !isDeferred && !sale.payment_deferred && paymentAmount > totals.total) {
     pharmacyAdvanceCreated = normalizeMoney(paymentAmount - totals.total);
   }
 
   const billBalanceDue = normalizeMoney(Math.max(0, totals.total - paymentAmount));
-  const pharmacyOutstandingAfter = normalizeMoney(
-    Math.max(0, pharmacyOutstandingBefore + billBalanceDue)
-  );
-  const pharmacyAdvanceAfter = normalizeMoney(
-    pharmacyAdvanceBefore - pharmacyAdvanceUsed + pharmacyAdvanceCreated
-  );
+  const pharmacyOutstandingAfter = ipdOwnedCollection
+    ? normalizeMoney(pharmacyOutstandingBefore)
+    : normalizeMoney(Math.max(0, pharmacyOutstandingBefore + billBalanceDue));
+  const pharmacyAdvanceAfter = ipdOwnedCollection
+    ? normalizeMoney(pharmacyAdvanceBefore)
+    : normalizeMoney(pharmacyAdvanceBefore - pharmacyAdvanceUsed + pharmacyAdvanceCreated);
 
   const billStatus = billBalanceDue <= 0
     ? 'Paid'
@@ -856,6 +900,10 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
     prescription_id: sale.prescription_id,
     sale_id: sale._id,
     invoice_id: sale.invoice_id,
+    collection_owner: ipdOwnedCollection ? 'IPD' : 'PHARMACY',
+    collection_mode: ipdOwnedCollection ? 'IPD_CONSOLIDATED' : 'PHARMACY_SETTLEMENT',
+    collection_transferred_to_ipd: ipdOwnedCollection,
+    collection_transferred_amount: ipdOwnedCollection ? normalizeMoney(totals.total) : 0,
     total_amount: totals.total,
     subtotal: pharmacyPricing?.coverage ? totals.total : totals.subtotal,
     tax_amount: pharmacyPricing?.coverage ? 0 : totals.tax,
@@ -888,7 +936,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
   // Keep legacy patient balance fields aligned with the authoritative Sale.
   // A wallet debit reduces the wallet, while every unpaid remainder increases
   // pharmacy outstanding exactly once.
-  if (patientId) {
+  if (patientId && !ipdOwnedCollection) {
     let patientUpdate = Patient.findByIdAndUpdate(patientId, {
       $inc: {
         pharmacy_outstanding_balance: billBalanceDue,
@@ -907,6 +955,7 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
 
 async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage, isDeferred = false, session = null }) {
   if (!sale.admission_id || !sale.patient_id) return [];
+  const ipdCollectible = sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED';
   const charges = [];
   for (let index = 0; index < (pricedItems || []).length; index += 1) {
     const item = pricedItems[index];
@@ -933,14 +982,18 @@ async function createIpdChargesForSale({ sale, pricedItems, createdBy, coverage,
       },
       idempotencyKey: `pharmacy-sale:${sale._id}:item:${index}`,
       isAutoGenerated: true,
-      isBilled: !isDeferred,
-      status: isDeferred ? 'ACTIVE' : 'INVOICED',
-      billedAt: isDeferred ? undefined : operationNow(),
-      invoiceId: sale.invoice_id,
-      billId: sale.bill_id,
+      // In consolidated mode the Pharmacy invoice is a subledger document only;
+      // keep the mirror ACTIVE/unbilled so IPD Finance can invoice it exactly once.
+      isBilled: ipdCollectible ? false : !isDeferred,
+      status: ipdCollectible ? 'ACTIVE' : (isDeferred ? 'ACTIVE' : 'INVOICED'),
+      billedAt: ipdCollectible || isDeferred ? undefined : operationNow(),
+      invoiceId: ipdCollectible ? undefined : sale.invoice_id,
+      billId: ipdCollectible ? undefined : sale.bill_id,
       addedBy: createdBy,
       pricingSnapshot: snapshot,
-      notes: isDeferred ? 'Deferred pharmacy charge; clinical stock was issued' : 'Auto-created from pharmacy sale'
+      notes: ipdCollectible
+        ? 'IPD consolidated pharmacy charge; Pharmacy Sale is inventory/subledger only'
+        : (isDeferred ? 'Deferred pharmacy charge; clinical stock was issued' : 'Auto-created from pharmacy sale')
     }, session);
     await replaceCoverageUtilization({
       coverage,
@@ -983,6 +1036,10 @@ async function finalizePharmacyCoverageArtifacts({ pharmacyPricing, invoice, bil
   if (!admissionId && bill) {
     await pharmacyCoveragePricing.recordUtilizationForBill({ pricedItems, bill, coverage: pharmacyPricing.coverage, userId: createdBy, session });
   }
+  // When the Pharmacy charge is transferred to the IPD file, sponsor/payer
+  // receivable recognition belongs to the consolidated IPD invoice. Recording
+  // it here as well would recognise the same liability twice.
+  if (sale?.billing_owner === 'IPD' || sale?.collection_mode === 'IPD_CONSOLIDATED') return;
   await pharmacyCoveragePricing.recognizeSponsorReceivable({
     coverage: pharmacyPricing.coverage,
     allocation: pharmacyPricing.allocation,
@@ -1064,7 +1121,11 @@ async function allocatePaymentToOutstanding({ patientId, admissionId, createdBy,
   let remaining = normalizeMoney(amount);
   const allocations = [];
   if (!remaining || (!patientId && !admissionId)) return { allocated: 0, remaining, allocations };
-  const query = { balance_due: { $gt: 0 }, status: { $nin: ['Cancelled', 'Refunded'] } };
+  const query = {
+    balance_due: { $gt: 0 },
+    status: { $nin: ['Cancelled', 'Refunded'] },
+    billing_owner: { $ne: 'IPD' }
+  };
   if (admissionId) query.admission_id = admissionId;
   else query.patient_id = patientId;
   if (sale?._id) query._id = { $ne: sale._id };
@@ -1360,6 +1421,8 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
   const admissionId = objectIdOrUndefined(payload.admission_id || payload.admissionId);
   const prescriptionId = objectIdOrUndefined(payload.prescription_id || payload.prescriptionId);
   const context = await resolvePatientContext({ hospitalId, patientId, admissionId, prescriptionId, explicit: payload });
+  const pharmacyBillingPolicy = policyFromAdmission(context.admission);
+  const consolidatedIpdCollection = Boolean(admissionId && ipdOwnsPharmacyBilling(pharmacyBillingPolicy));
   if (patientId && !context.patient) { const error = new Error('Patient not found for this hospital'); error.statusCode = 404; error.code = 'PHARMACY_PATIENT_NOT_FOUND'; throw error; }
   if (admissionId && !context.admission) { const error = new Error('IPD admission not found for this hospital'); error.statusCode = 404; error.code = 'PHARMACY_ADMISSION_NOT_FOUND'; throw error; }
   if (context.admission && ['Discharged', 'Cancelled', 'LAMA', 'DAMA', 'Expired'].includes(String(context.admission.status || ''))) {
@@ -1507,15 +1570,21 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
   const policyAllowsOutstanding = ['PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION'].includes(selectedFinancialMode);
   // Browser payment_deferred is compatibility metadata only. Whether an
   // outstanding balance may exist is decided by the resolved hospital policy.
-  const paymentDeferred = policyAllowsOutstanding;
+  // When IPD owns Pharmacy billing the Pharmacy counter never owns collection,
+  // so the Pharmacy Sale always remains deferred/subledger-only.
+  const paymentDeferred = consolidatedIpdCollection || policyAllowsOutstanding;
 
   let deferralReason = undefined;
   if (paymentDeferred) {
-    deferralReason = payload.deferral_reason || payload.defer_reason || `policy:${selectedFinancialMode}`;
+    deferralReason = consolidatedIpdCollection
+      ? 'IPD consolidated billing'
+      : (payload.deferral_reason || payload.defer_reason || `policy:${selectedFinancialMode}`);
   }
 
   const expectedPaymentDate = payload.expected_payment_date ? new Date(payload.expected_payment_date) : null;
-  const includeInDischargeClearance = payload.include_in_discharge_clearance !== false;
+  const includeInDischargeClearance = consolidatedIpdCollection
+    ? false
+    : payload.include_in_discharge_clearance !== false;
 
   // Canonical immediate payment allocations. This permits one or many tenders
   // (for example Cash + UPI) while the uncollected remainder stays deferred.
@@ -1533,18 +1602,33 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
     )
   );
 
+  if (consolidatedIpdCollection) {
+    if (deferredPaymentTotal > 0 || advanceDepositTotal > 0) {
+      const err = new Error('This admission uses IPD consolidated Pharmacy billing. Pharmacy cannot collect payment or Pharmacy Advance for this sale; use the IPD financial workspace.');
+      err.statusCode = 409;
+      err.code = 'IPD_CONSOLIDATED_PHARMACY_COLLECTION_BLOCKED';
+      throw err;
+    }
+    if (financialPolicy.clearanceState === 'PAYMENT_REQUIRED') {
+      const err = new Error('The patient financial policy requires clearance before this medicine can be dispensed. Resolve it through IPD Finance; Pharmacy collection is disabled for this admission.');
+      err.statusCode = 409;
+      err.code = 'IPD_FINANCE_CLEARANCE_REQUIRED';
+      throw err;
+    }
+  }
+
   if (deferredPaymentTotal > collectionTarget + 0.009) {
     throw new Error('Immediate payment allocations cannot exceed the patient liability.');
   }
-  if (selectedFinancialMode === 'FULL_PREPAY' && deferredPaymentTotal + 0.009 < collectionTarget) {
+  if (!consolidatedIpdCollection && selectedFinancialMode === 'FULL_PREPAY' && deferredPaymentTotal + 0.009 < collectionTarget) {
     const err = new Error(`Full prepay requires ₹${collectionTarget.toFixed(2)} before dispensing.`);
     err.statusCode = 409; err.code = 'PHARMACY_FULL_PREPAY_REQUIRED'; throw err;
   }
-  if (selectedFinancialMode === 'PARTIAL_PREPAY' && deferredPaymentTotal + 0.009 < Number(financialPolicy.requiredNow || 0)) {
+  if (!consolidatedIpdCollection && selectedFinancialMode === 'PARTIAL_PREPAY' && deferredPaymentTotal + 0.009 < Number(financialPolicy.requiredNow || 0)) {
     const err = new Error(`Partial prepay requires at least ₹${Number(financialPolicy.requiredNow || 0).toFixed(2)} before dispensing.`);
     err.statusCode = 409; err.code = 'PHARMACY_PARTIAL_PREPAY_REQUIRED'; throw err;
   }
-  if (selectedFinancialMode === 'TPA_SPONSOR' && financialPolicy.clearanceState === 'PAYMENT_REQUIRED' && deferredPaymentTotal + 0.009 < collectionTarget) {
+  if (!consolidatedIpdCollection && selectedFinancialMode === 'TPA_SPONSOR' && financialPolicy.clearanceState === 'PAYMENT_REQUIRED' && deferredPaymentTotal + 0.009 < collectionTarget) {
     const err = new Error('Sponsor clearance is unavailable for this sale; patient liability must be settled before dispensing.');
     err.statusCode = 409; err.code = 'PHARMACY_SPONSOR_CLEARANCE_REQUIRED'; throw err;
   }
@@ -1677,6 +1761,8 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
       created_by: createdBy,
       bill_date: payload.bill_date || operationNow(),
       created_by_name: payload.created_by_name,
+      billing_owner: consolidatedIpdCollection ? 'IPD' : 'PHARMACY',
+      collection_mode: consolidatedIpdCollection ? 'IPD_CONSOLIDATED' : 'PHARMACY_SETTLEMENT',
       payment_deferred: true,
       deferral_reason: deferralReason,
       expected_payment_date: expectedPaymentDate,
@@ -1857,8 +1943,10 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
     // ✅ Apply IPD medicine stock - this handles both chart-linked and direct IPD sales
     await applyIpdMedicineStock({ items, sale, admissionId, patientId, session });
 
-    // Create due ledger entry for the deferred amount
-    if (sale.balance_due > 0) {
+    // Create a Pharmacy collectible due only when Pharmacy owns collection.
+    // IPD-owned Sales keep their subledger balance but the patient liability is
+    // represented by the ACTIVE IPDCharge mirror and collected by IPD Finance.
+    if (sale.balance_due > 0 && sale.billing_owner !== 'IPD') {
       await createOne(PharmacyLedgerEntry, {
         hospitalId,
         pharmacyId: sale.pharmacy_id,
@@ -1906,7 +1994,7 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
     }
 
     const finalSummary = await getPatientPharmacySummary({ patientId, admissionId, session });
-    sale.closing_outstanding = finalSummary.outstanding;
+    sale.closing_outstanding = sale.billing_owner === 'IPD' ? sale.balance_due : finalSummary.outstanding;
     sale.pharmacy_advance_after = finalSummary.pharmacyAdvance;
     await sale.save(session ? { session } : undefined);
 
@@ -1915,7 +2003,7 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
       .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
       .populate({
         path: 'admission_id',
-        select: 'admissionNumber status paymentType advanceAmount bedId wardId',
+        select: 'admissionNumber status paymentType advanceAmount bedId wardId pharmacyBillingPolicySnapshot',
         populate: [
           { path: 'bedId', model: 'Bed', select: 'bedNumber bed_number bedName' },
           { path: 'wardId', model: 'Ward', select: 'name wardName' }
@@ -1931,6 +2019,9 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
       invoice,
       bill,
       paymentDeferred: true,
+      pharmacyBillingPolicy,
+      billingOwner: consolidatedIpdCollection ? 'IPD' : 'PHARMACY',
+      collectionMode: consolidatedIpdCollection ? 'IPD_CONSOLIDATED' : 'PHARMACY_SETTLEMENT',
       deferredAmount: sale.balance_due,
       deferralReason: deferralReason,
       previous_outstanding: previousOutstanding,
@@ -3044,6 +3135,7 @@ async function createOutstandingSettlement(payload, req = {}) {
   // Check if we need to use advance for deferred payments first
   const deferredSales = await Sale.find({
     admission_id: admissionId,
+    billing_owner: { $ne: 'IPD' },
     payment_deferred: true,
     status: { $in: ['Pending', 'Partially Paid'] },
     balance_due: { $gt: 0 }
@@ -3225,6 +3317,7 @@ async function bulkSettleDeferredPayments(payload, req = {}) {
 
   const query = {
     include_in_discharge_clearance: true,
+    billing_owner: { $ne: 'IPD' },
     status: { $ne: 'Cancelled' }
   };
 
@@ -3647,6 +3740,13 @@ async function settleSingleDeferredPayment(saleId, payload, req = {}) {
     throw new Error('Sale not found');
   }
 
+  if (sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED') {
+    const error = new Error('This pharmacy sale belongs to IPD consolidated billing. Settle the patient through the IPD financial workspace.');
+    error.statusCode = 409;
+    error.code = 'IPD_CONSOLIDATED_PHARMACY_COLLECTION_BLOCKED';
+    throw error;
+  }
+
   if (!sale.payment_deferred) {
     throw new Error('This sale is not a deferred payment');
   }
@@ -3888,6 +3988,7 @@ async function createReturn(payload, req = {}) {
 }
 
 module.exports = {
+  prepareSaleFinancialQuote,
   objectIdOrUndefined,
   getHospitalId,
   getCreatedBy,

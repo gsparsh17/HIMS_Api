@@ -131,6 +131,22 @@ const ipdAdmissionSchema = new mongoose.Schema({
     enum: ['FULL_PREPAY', 'PARTIAL_PREPAY', 'POSTPAID', 'TPA_SPONSOR', 'AUTHORIZED_EXCEPTION']
   },
   financialPolicySnapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Pharmacy billing ownership is snapshotted when the admission is created so
+  // a later hospital-setting change never changes accounting ownership for an
+  // in-flight encounter. Legacy admissions without this field remain PHARMACY.
+  pharmacyBillingPolicySnapshot: {
+    billingOwner: {
+      type: String,
+      enum: ['PHARMACY', 'IPD_CONSOLIDATED'],
+      default: undefined
+    },
+    source: { type: String, trim: true },
+    settingId: { type: mongoose.Schema.Types.ObjectId, ref: 'HospitalPharmacySetting' },
+    pharmacyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Pharmacy' },
+    resolvedAt: Date,
+    resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    version: { type: Number, default: 1, min: 1 }
+  },
   // Durable post-admission finance bootstrap. A clinically valid admission/bed
   // remains committed even if initial billing fails; this state makes recovery
   // visible after refresh/logout and stores only the inputs needed for an
@@ -138,6 +154,9 @@ const ipdAdmissionSchema = new mongoose.Schema({
   financeInitialization: {
     status: { type: String, enum: ['ready', 'pending'], default: 'ready', index: true },
     requestedCollection: { type: Number, default: 0, min: 0 },
+    // Explicit patient credit received at admission. This is intentionally
+    // separate from requestedDeposit, which is an input to financial policy.
+    requestedAdvanceDeposit: { type: Number, default: 0, min: 0 },
     requestedDeposit: { type: Number, default: 0, min: 0 },
     paymentMethod: { type: String, trim: true, default: 'Cash' },
     selectedMode: { type: String, trim: true },

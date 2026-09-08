@@ -230,6 +230,22 @@ const billSchema = new mongoose.Schema({
     ref: 'Sale'
   },
 
+  // A Pharmacy bill can remain an operational stock/tax document while IPD
+  // Finance owns patient collection. These fields make that ownership explicit
+  // without changing legacy Bill settlement behaviour for every other flow.
+  collection_owner: {
+    type: String,
+    enum: ['IPD', 'PHARMACY'],
+    index: true
+  },
+  collection_mode: {
+    type: String,
+    enum: ['IPD_CONSOLIDATED', 'PHARMACY_SETTLEMENT'],
+    index: true
+  },
+  collection_transferred_to_ipd: { type: Boolean, default: false, index: true },
+  collection_transferred_amount: { type: Number, default: 0, min: 0 },
+
   total_amount: {
     type: Number,
     required: true
@@ -240,6 +256,13 @@ const billSchema = new mongoose.Schema({
   taxable_amount: { type: Number, default: 0 },
   rounding_adjustment: { type: Number, default: 0 },
   advance_applied: { type: Number, default: 0, min: 0 },
+  // Mirror of invoice deferred-credit state for legacy bill views. Authorised
+  // credit remains an outstanding receivable and is never added to paid_amount.
+  credit_authorised_amount: { type: Number, default: 0, min: 0 },
+  credit_status: { type: String, enum: ['NONE', 'AUTHORIZED', 'SETTLED', 'CANCELLED'], default: 'NONE', index: true },
+  credit_due_date: Date,
+  credit_reason: { type: String, trim: true },
+  credit_reference: { type: String, trim: true },
   refund_amount: { type: Number, default: 0, min: 0 },
   subtotal: {
     type: Number,

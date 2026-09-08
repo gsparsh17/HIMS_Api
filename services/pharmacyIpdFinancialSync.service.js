@@ -17,9 +17,10 @@ async function postReturnAdjustment({ sale, returnRecord, returnValue, createdBy
   const existing = await IPDCharge.findOne({ hospitalId: sale.hospitalId, idempotencyKey }).session(session || null);
   if (existing) return existing;
 
-  // Separate pharmacy billing is authoritative. This line only keeps the IPD running
-  // ledger mathematically aligned before Pharmacy Final Clearance; it is never a
-  // second collectible pharmacy invoice.
+  // Keep the IPD running ledger aligned with the authoritative Pharmacy return.
+  // In PHARMACY mode this remains a display-only mirror; in IPD_CONSOLIDATED
+  // mode an open mirror is the collectible IPD liability and this adjustment
+  // reduces the final consolidated bill without a counter refund.
   const hasOpenMirror = await IPDCharge.exists({
     hospitalId: sale.hospitalId,
     admissionId: sale.admission_id,
@@ -60,10 +61,12 @@ async function postReturnAdjustment({ sale, returnRecord, returnValue, createdBy
     isBilled: !hasOpenMirror,
     status: hasOpenMirror ? 'ACTIVE' : 'INVOICED',
     billedAt: hasOpenMirror ? undefined : operationNow(),
-    invoiceId: sale.invoice_id,
-    billId: sale.bill_id,
+    invoiceId: sale.billing_owner === 'IPD' && hasOpenMirror ? undefined : sale.invoice_id,
+    billId: sale.billing_owner === 'IPD' && hasOpenMirror ? undefined : sale.bill_id,
     addedBy: createdBy,
-    notes: 'Negative pharmacy mirror created from authoritative medicine return; separate pharmacy bill remains source of collection.'
+    notes: sale.billing_owner === 'IPD'
+      ? 'Medicine return adjustment transferred to the IPD consolidated running bill.'
+      : 'Negative pharmacy mirror created from authoritative medicine return; separate pharmacy bill remains source of collection.'
   }], { session });
   return charge;
 }
@@ -115,6 +118,8 @@ async function syncSaleDocuments({ sale, returnRecord = null, session }) {
 async function markSaleMirrorsExternallySettled({ sales, settlementId, session }) {
   const at = operationNow();
   for (const sale of sales || []) {
+    // IPD-owned mirrors must remain open until the IPD invoice owns them.
+    if (sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED') continue;
     await IPDCharge.updateMany({
       hospitalId: sale.hospitalId,
       admissionId: sale.admission_id,
@@ -143,6 +148,7 @@ async function syncPatientPharmacyOutstanding({ sale, session }) {
     hospitalId: sale.hospitalId,
     patient_id: sale.patient_id,
     status: { $ne: 'Cancelled' },
+    billing_owner: { $ne: 'IPD' },
     balance_due: { $gt: 0 }
   }).select('balance_due').session(session || null).lean();
   const balance = money(rows.reduce((sum, row) => sum + Number(row.balance_due || 0), 0));

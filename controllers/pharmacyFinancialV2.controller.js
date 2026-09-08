@@ -655,16 +655,24 @@ exports.clearancePreview = async (req, res) => {
       preview: {
         admissionId: snapshot.admission._id,
         clearanceStatus: snapshot.admission.pharmacyClearanceStatus,
-        sales: snapshot.sales.map((sale) => ({
+        billingOwner: snapshot.billingOwner,
+        operationalOnly: snapshot.operationalOnly,
+        ipdConsolidatedChargeTotal: snapshot.ipdConsolidatedChargeTotal,
+        unsyncedSaleIds: snapshot.unsyncedSaleIds,
+        sales: (snapshot.displaySales || snapshot.sales).map((sale) => ({
           _id: sale._id,
           saleNumber: sale.sale_number,
           saleDate: sale.sale_date,
           netAmount: sale.net_amount_after_returns || sale.total_amount,
           paidRetained: sale.amount_paid,
           refunded: sale.refunded_amount || 0,
-          due: sale.balance_due,
+          due: snapshot.operationalOnly && (sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED') ? 0 : sale.balance_due,
+          subledgerDue: sale.balance_due,
           returnValue: sale.return_amount || 0,
           paymentDeferred: sale.payment_deferred,
+          billingOwner: sale.billing_owner || 'PHARMACY',
+          collectionMode: sale.collection_mode || 'PHARMACY_SETTLEMENT',
+          transferredToIpd: sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED',
           status: sale.status,
         })),
         outstanding: snapshot.outstanding,
@@ -680,10 +688,12 @@ exports.clearancePreview = async (req, res) => {
         generatedAt: snapshot.generatedAt,
         canStartClearance:
           snapshot.pendingReturns.length === 0 &&
+          snapshot.unsyncedSaleIds.length === 0 &&
           snapshot.admission.pharmacyClearanceStatus !== 'cleared',
         canFinalizeWithoutCollection:
           snapshot.outstanding === 0 &&
           snapshot.pendingReturns.length === 0 &&
+          snapshot.unsyncedSaleIds.length === 0 &&
           snapshot.admission.pharmacyClearanceStatus !== 'cleared',
       },
     });
@@ -708,9 +718,12 @@ exports.clearanceComplete = async (req, res) => {
       success: true,
       idempotent: result.idempotent,
       settlement: result.settlement,
+      operationalOnly: result.operationalOnly === true,
       message: result.idempotent
         ? 'This final pharmacy clearance request was already completed.'
-        : 'Final pharmacy clearance completed after settling open dues and reconciling unused Pharmacy Advance.',
+        : result.operationalOnly
+          ? 'Pharmacy operational clearance completed. Patient collection remains with IPD Finance.'
+          : 'Final pharmacy clearance completed after settling open dues and reconciling unused Pharmacy Advance.',
     });
   } catch (error) {
     res.status(error.status || 400).json({

@@ -20,6 +20,7 @@ const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const PharmacyLedgerSettlement = require('../models/PharmacyLedgerSettlement');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const IPDAdmission = require('../models/IPDAdmission');
+const IPDCharge = require('../models/IPDCharge');
 const MedicineBatch = require('../models/MedicineBatch');
 const InventoryLedger = require('../models/InventoryLedger');
 const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
@@ -859,14 +860,24 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
   }
   assertHospitalScope(req, admission);
 
-  const sales = await queryWithSession(
+  const allSales = await queryWithSession(
     Sale.find({
       admission_id: admission._id,
       status: { $ne: 'Cancelled' },
-      include_in_discharge_clearance: { $ne: false },
     })
-      .select('hospitalId sale_number sale_date total_amount net_amount_after_returns amount_paid refunded_amount balance_due return_amount payment_deferred payments updatedAt discharge_settlement_id status transactionGroupId pharmacy_id invoice_id bill_id invoice_number patient_id admission_id'),
+      .select('hospitalId sale_number sale_date total_amount net_amount_after_returns amount_paid refunded_amount balance_due return_amount payment_deferred payments updatedAt discharge_settlement_id status transactionGroupId pharmacy_id invoice_id bill_id invoice_number patient_id admission_id include_in_discharge_clearance billing_owner collection_mode'),
     session
+  );
+
+  const billingOwner = admission.pharmacyBillingPolicySnapshot?.billingOwner || 'PHARMACY';
+  const operationalOnly = billingOwner === 'IPD_CONSOLIDATED';
+  const ipdOwnedSales = allSales.filter((sale) =>
+    sale.billing_owner === 'IPD' || sale.collection_mode === 'IPD_CONSOLIDATED'
+  );
+  const sales = allSales.filter((sale) =>
+    sale.billing_owner !== 'IPD' &&
+    sale.collection_mode !== 'IPD_CONSOLIDATED' &&
+    sale.include_in_discharge_clearance !== false
   );
 
   const pendingReturns = await queryWithSession(
@@ -880,14 +891,40 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
     getAdvanceBalance({ patientId: admission.patientId, admissionId: admission._id, walletType: 'IPD_SHARED', session }),
   ]);
 
-  const pharmacyPolicy = await loadPharmacyPolicy({ hospitalId: admission.hospitalId, pharmacyId: sales[0]?.pharmacy_id, session });
+  const pharmacyPolicy = await loadPharmacyPolicy({ hospitalId: admission.hospitalId, pharmacyId: allSales[0]?.pharmacy_id, session });
 
-  const outstanding = money(sales.reduce((sum, sale) => sum + Number(sale.balance_due || 0), 0));
-  const returnValue = money(sales.reduce((sum, sale) => sum + Number(sale.return_amount || 0), 0));
+  const outstanding = operationalOnly
+    ? 0
+    : money(sales.reduce((sum, sale) => sum + Number(sale.balance_due || 0), 0));
+  const returnValue = money(allSales.reduce((sum, sale) => sum + Number(sale.return_amount || 0), 0));
   const paidRetained = money(sales.reduce((sum, sale) => sum + Number(sale.amount_paid || 0), 0));
-  const canUsePharmacyAdvance = pharmacyPolicy.ipdAdvanceMode !== 'SHARED_IPD_ADVANCE';
-  const canUseIpdAdvance = pharmacyPolicy.ipdAdvanceMode !== 'PHARMACY_SEPARATE_ADVANCE';
-  const autoUseAdvance = pharmacyPolicy.defaultIpdBillingMode !== 'COLLECT_AT_COUNTER';
+
+  let unsyncedSaleIds = [];
+  if (ipdOwnedSales.length > 0) {
+    const sourceIds = ipdOwnedSales.map((sale) => sale._id);
+    const mirrors = await queryWithSession(
+      IPDCharge.find({
+        hospitalId: admission.hospitalId,
+        admissionId: admission._id,
+        sourceModule: 'Pharmacy',
+        sourceId: { $in: sourceIds },
+        status: { $ne: 'VOIDED' },
+        is_active: { $ne: false },
+      }).select('sourceId'),
+      session
+    );
+    const synced = new Set(mirrors.map((row) => String(row.sourceId)));
+    unsyncedSaleIds = sourceIds.filter((id) => !synced.has(String(id))).map(String);
+  }
+
+  const ipdConsolidatedChargeTotal = money(ipdOwnedSales.reduce(
+    (sum, sale) => sum + Math.max(0, Number(sale.total_amount || 0) - Number(sale.return_amount || 0)),
+    0
+  ));
+
+  const canUsePharmacyAdvance = !operationalOnly && pharmacyPolicy.ipdAdvanceMode !== 'SHARED_IPD_ADVANCE';
+  const canUseIpdAdvance = !operationalOnly && pharmacyPolicy.ipdAdvanceMode !== 'PHARMACY_SEPARATE_ADVANCE';
+  const autoUseAdvance = !operationalOnly && pharmacyPolicy.defaultIpdBillingMode !== 'COLLECT_AT_COUNTER';
   const defaultPharmacyAdvanceApplied = autoUseAdvance && canUsePharmacyAdvance
     ? money(Math.min(outstanding, Number(pharmacyAdvance || 0)))
     : 0;
@@ -899,13 +936,20 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
   const projectedUnusedPharmacyAdvance = money(Number(pharmacyAdvance || 0) - defaultPharmacyAdvanceApplied);
 
   const sourceVersionPayload = {
-    admission: [String(admission._id), admission.updatedAt?.toISOString?.() || null, admission.pharmacyClearanceStatus],
-    sales: sales.map((sale) => [
+    admission: [
+      String(admission._id),
+      admission.updatedAt?.toISOString?.() || null,
+      admission.pharmacyClearanceStatus,
+      billingOwner,
+    ],
+    sales: allSales.map((sale) => [
       String(sale._id), sale.updatedAt?.toISOString?.() || null,
-      Number(sale.balance_due || 0), Number(sale.return_amount || 0), Number(sale.refunded_amount || 0), String(sale.discharge_settlement_id || ''),
+      Number(sale.balance_due || 0), Number(sale.return_amount || 0), Number(sale.refunded_amount || 0),
+      String(sale.discharge_settlement_id || ''), sale.billing_owner || 'PHARMACY', sale.collection_mode || 'PHARMACY_SETTLEMENT',
     ]),
     pendingReturns: pendingReturns.map((record) => [String(record._id), record.updatedAt?.toISOString?.() || null, record.status]),
     balances: [money(pharmacyAdvance), money(ipdAdvance)],
+    unsyncedSaleIds,
   };
 
   const sourceVersion = crypto.createHash('sha256').update(JSON.stringify(sourceVersionPayload)).digest('hex');
@@ -913,6 +957,13 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
   return {
     admission,
     sales,
+    allSales,
+    displaySales: allSales,
+    ipdOwnedSales,
+    billingOwner,
+    operationalOnly,
+    unsyncedSaleIds,
+    ipdConsolidatedChargeTotal,
     pendingReturns,
     outstanding,
     returnValue,
@@ -1076,6 +1127,10 @@ async function completeFinalClearance({ admissionId, payload, req }) {
         throw error;
       }
       if (snapshot.admission.pharmacyClearanceStatus === 'cleared') {
+        if (snapshot.operationalOnly) {
+          result = { idempotent: true, operationalOnly: true, settlement: null, admission: snapshot.admission };
+          return;
+        }
         const error = new Error('Pharmacy clearance is already complete.');
         error.status = 409;
         throw error;
@@ -1084,6 +1139,50 @@ async function completeFinalClearance({ admissionId, payload, req }) {
         const error = new Error('Pending return requests must be resolved before final pharmacy clearance.');
         error.status = 409;
         throw error;
+      }
+
+      if (snapshot.operationalOnly) {
+        if (snapshot.unsyncedSaleIds.length > 0) {
+          const error = new Error('One or more IPD-owned pharmacy sales have not been synchronized to the IPD running bill.');
+          error.status = 409;
+          error.code = 'PHARMACY_IPD_CHARGE_SYNC_REQUIRED';
+          error.details = { saleIds: snapshot.unsyncedSaleIds };
+          throw error;
+        }
+
+        snapshot.admission.pharmacyClearanceStatus = 'cleared';
+        snapshot.admission.pharmacyClearanceDate = operationNow();
+        snapshot.admission.pharmacyClearanceBy = getRequestUserId(req);
+        snapshot.admission.pharmacyFinalBalance = 0;
+        await snapshot.admission.save({ session });
+
+        const pharmacyId = snapshot.ipdOwnedSales[0]?.pharmacy_id || snapshot.allSales[0]?.pharmacy_id;
+        await PharmacyLedgerEntry.create([{
+          hospitalId: snapshot.admission.hospitalId,
+          pharmacyId,
+          entryType: 'FINAL_CLEARANCE',
+          direction: 'NON_CASH',
+          amount: 0,
+          paymentMethod: 'Adjustment',
+          patientId: snapshot.admission.patientId,
+          admissionId: snapshot.admission._id,
+          notes: 'Pharmacy operational clearance completed. Patient collection is owned by IPD consolidated billing.',
+          createdBy: getRequestUserId(req),
+          transactionGroupId: newBusinessGroup(payload.transactionGroupId || idempotencyKey),
+          parentGroupId: payload.transactionGroupId || idempotencyKey,
+          idempotencyKey,
+          presentationType: 'IPD_CONSOLIDATED_PHARMACY_CLEARANCE',
+        }], { session });
+
+        result = {
+          idempotent: false,
+          operationalOnly: true,
+          settlement: null,
+          plan: null,
+          sourceVersion: snapshot.sourceVersion,
+          admission: snapshot.admission,
+        };
+        return;
       }
 
       const plan = normalizeClearanceRequest(snapshot, payload);

@@ -100,13 +100,27 @@ exports.finalizeBill = async (req, res) => {
       ...req.body,
       invoiceKind: req.body?.invoiceKind || 'final'
     }, req.user);
+    let advanceSettlement = null;
+    const invoiceKind = String(req.body?.invoiceKind || 'final').toLowerCase();
+    const shouldAutoApplyAdvance = invoiceKind === 'final' && req.body?.autoApplyAdvance === true;
+    if (shouldAutoApplyAdvance && result.invoice?._id) {
+      advanceSettlement = await finance.applyAvailableIPDAdvance(req.params.admissionId, {
+        invoiceId: result.invoice._id,
+        sourceModule: 'IPD',
+        receiptType: 'Advance Utilisation',
+        notes: 'Available IPD advance automatically applied to final invoice',
+        idempotencyKey: req.body?.idempotencyKey ? `${req.body.idempotencyKey}:advance-auto` : undefined
+      }, req.user);
+      if (advanceSettlement?.invoice) result.invoice = advanceSettlement.invoice;
+    }
     res.status(result.alreadyExists ? 200 : 201).json({
       success: true,
       message: result.alreadyExists ? 'Existing invoice returned' : 'IPD invoice issued successfully',
       invoice: result.invoice,
       bill: result.bill,
       unbilledAmount: result.invoice.total,
-      alreadyExists: result.alreadyExists
+      alreadyExists: result.alreadyExists,
+      advanceSettlement
     });
   } catch (error) { handleError(res, error); }
 };
@@ -121,7 +135,7 @@ exports.recordAdvance = async (req, res) => {
 exports.refundAdvance = async (req, res) => {
   try {
     const result = await finance.refundAdvance(req.params.admissionId, req.body, req.user);
-    res.status(201).json({ success: true, message: 'Advance refund recorded successfully', ...result });
+    res.status(result.alreadyExists ? 200 : 201).json({ success: true, message: result.alreadyExists ? 'Existing advance refund returned' : 'Advance refund recorded successfully', ...result });
   } catch (error) { handleError(res, error); }
 };
 

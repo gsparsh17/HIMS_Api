@@ -216,7 +216,7 @@ exports.issueIPDInvoice = async (req, res) => {
   try {
     const result = await financial.issueIPDInvoice(req.params.admissionId, req.body, req.user);
     let advanceSettlement = null;
-    const shouldAutoApplyAdvance = String(req.body?.invoiceKind || '').toLowerCase() === 'final' && req.body?.autoApplyAdvance !== false;
+    const shouldAutoApplyAdvance = String(req.body?.invoiceKind || '').toLowerCase() === 'final' && req.body?.autoApplyAdvance === true;
     if (shouldAutoApplyAdvance && result.invoice?._id) {
       advanceSettlement = await financial.applyAvailableIPDAdvance(req.params.admissionId, {
         invoiceId: result.invoice._id,
@@ -253,7 +253,7 @@ exports.recordIPDAdvance = async (req, res) => {
 exports.refundIPDAdvance = async (req, res) => {
   try {
     const result = await financial.refundAdvance(req.params.admissionId, req.body, req.user);
-    res.status(201).json({ success: true, message: 'IPD advance refund posted successfully', ...result });
+    res.status(result.alreadyExists ? 200 : 201).json({ success: true, message: result.alreadyExists ? 'Existing advance refund returned' : 'IPD advance refund posted successfully', ...result });
   } catch (error) { sendError(res, error); }
 };
 

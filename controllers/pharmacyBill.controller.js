@@ -6,6 +6,14 @@ const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const { requestHospitalId } = require('../utils/hospitalScope');
 const { operationNow } = require('../utils/operationTimeContext');
 
+function isIpdOwnedPharmacyBill(bill = {}, sale = null) {
+  return bill.collection_owner === 'IPD' ||
+    bill.collection_mode === 'IPD_CONSOLIDATED' ||
+    bill.collection_transferred_to_ipd === true ||
+    sale?.billing_owner === 'IPD' ||
+    sale?.collection_mode === 'IPD_CONSOLIDATED';
+}
+
 exports.getPatientPharmacyBills = async (req, res) => {
   try {
     const { patientId } = req.params;
@@ -44,7 +52,36 @@ exports.getPatientPharmacyBills = async (req, res) => {
           _id: null,
           totalAmount: { $sum: '$total_amount' },
           totalPaid: { $sum: '$paid_amount' },
-          totalDue: { $sum: '$balance_due' },
+          totalDue: {
+            $sum: {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ['$collection_owner', 'IPD'] },
+                    { $eq: ['$collection_mode', 'IPD_CONSOLIDATED'] },
+                    { $eq: ['$collection_transferred_to_ipd', true] }
+                  ]
+                },
+                0,
+                '$balance_due'
+              ]
+            }
+          },
+          transferredToIpdAmount: {
+            $sum: {
+              $cond: [
+                {
+                  $or: [
+                    { $eq: ['$collection_owner', 'IPD'] },
+                    { $eq: ['$collection_mode', 'IPD_CONSOLIDATED'] },
+                    { $eq: ['$collection_transferred_to_ipd', true] }
+                  ]
+                },
+                { $ifNull: ['$collection_transferred_amount', '$total_amount'] },
+                0
+              ]
+            }
+          },
           count: { $sum: 1 }
         }
       }
@@ -115,6 +152,17 @@ exports.updatePharmacyBillPayment = async (req, res) => {
     const bill = await Bill.findOne({ _id: billId, hospital_id: hospitalId, is_pharmacy_bill: true });
     if (!bill) {
       return res.status(404).json({ error: 'Pharmacy bill not found' });
+    }
+
+    const linkedSale = bill.sale_id
+      ? await Sale.findOne({ _id: bill.sale_id, hospitalId }).select('billing_owner collection_mode')
+      : null;
+    if (isIpdOwnedPharmacyBill(bill, linkedSale)) {
+      return res.status(409).json({
+        error: 'This Pharmacy bill is settled through IPD Billing. Counter payment is blocked.',
+        code: 'PHARMACY_COLLECTION_OWNED_BY_IPD',
+        collectionOwner: 'IPD'
+      });
     }
 
     if (bill.status === 'Paid' || Number(bill.balance_due || 0) <= 0) {
@@ -249,6 +297,17 @@ exports.voidPharmacyBill = async (req, res) => {
 
     if (bill.status === 'Cancelled') {
       return res.status(400).json({ error: 'Bill is already cancelled' });
+    }
+
+    const linkedSale = bill.sale_id
+      ? await Sale.findOne({ _id: bill.sale_id, hospitalId }).select('billing_owner collection_mode')
+      : null;
+    if (isIpdOwnedPharmacyBill(bill, linkedSale)) {
+      return res.status(409).json({
+        error: 'This Pharmacy bill has been transferred to the IPD file. Use the Pharmacy return/correction workflow so the IPD running charge is reversed consistently.',
+        code: 'PHARMACY_IPD_TRANSFER_VOID_BLOCKED',
+        collectionOwner: 'IPD'
+      });
     }
 
     bill.status = 'Cancelled';

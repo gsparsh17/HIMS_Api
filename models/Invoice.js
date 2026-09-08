@@ -577,6 +577,23 @@ const invoiceSchema = new mongoose.Schema({
     ref: 'Sale',
     index: true
   },
+  // Collection ownership is intentionally separate from invoice_type. Pharmacy
+  // still creates an operational/tax sub-ledger invoice when medicines are
+  // transferred to the IPD file, but that document must not become a second
+  // patient receivable. Null/undefined preserves every historic/non-pharmacy
+  // document exactly as before this feature.
+  collection_owner: {
+    type: String,
+    enum: ['IPD', 'PHARMACY'],
+    index: true
+  },
+  collection_mode: {
+    type: String,
+    enum: ['IPD_CONSOLIDATED', 'PHARMACY_SETTLEMENT'],
+    index: true
+  },
+  collection_transferred_to_ipd: { type: Boolean, default: false, index: true },
+  collection_transferred_amount: { type: Number, default: 0, min: 0 },
   prescription_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Prescription',
@@ -611,6 +628,25 @@ const invoiceSchema = new mongoose.Schema({
   taxable_amount: { type: Number, default: 0 },
   rounding_adjustment: { type: Number, default: 0 },
   advance_applied: { type: Number, default: 0, min: 0 },
+  // Authorised patient credit is a deferred receivable, not a payment. It never
+  // reduces amount_paid/balance_due; clearance may allow the explicitly
+  // authorised portion to remain payable after discharge.
+  credit_authorised_amount: { type: Number, default: 0, min: 0 },
+  credit_status: { type: String, enum: ['NONE', 'AUTHORIZED', 'SETTLED', 'CANCELLED'], default: 'NONE', index: true },
+  credit_due_date: Date,
+  credit_reason: { type: String, trim: true },
+  credit_reference: { type: String, trim: true },
+  credit_authorised_at: Date,
+  credit_authorised_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  credit_history: [{
+    action: { type: String, enum: ['AUTHORIZE', 'UPDATE', 'CANCEL', 'AUTO_SETTLED'], required: true },
+    amount: { type: Number, default: 0, min: 0 },
+    dueDate: Date,
+    reason: { type: String, trim: true },
+    reference: { type: String, trim: true },
+    at: { type: Date, default: operationNow },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }],
   // A credit note changes an issued invoice retrospectively. A final settlement
   // concession is separate so historical item/bill discounts and tax are preserved.
   credit_note_total: { type: Number, default: 0, min: 0 },
@@ -892,6 +928,13 @@ invoiceSchema.pre('save', function (next) {
       Number(this.settlement_discount_amount || 0) -
       Number(this.credit_note_total || 0)
   );
+
+  // Deferred credit is only an authorisation to leave a receivable open. Mark
+  // it settled once normal payments/advance/adjustments bring the invoice due
+  // to zero; never count the authorisation itself as amount_paid.
+  if (Number(this.credit_authorised_amount || 0) > 0 && this.balance_due <= 0 && this.credit_status === 'AUTHORIZED') {
+    this.credit_status = 'SETTLED';
+  }
 
   // Validate dates
   if (this.due_date < this.issue_date) {

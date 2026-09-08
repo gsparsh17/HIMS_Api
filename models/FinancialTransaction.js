@@ -25,7 +25,8 @@ const financialTransactionSchema = new mongoose.Schema({
       'CREDIT_NOTE',
       'ADJUSTMENT',
       'WRITE_OFF',
-      'SETTLEMENT'
+      'SETTLEMENT',
+      'DEFERRED_CREDIT'
     ],
     required: true,
     index: true

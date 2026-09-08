@@ -1442,7 +1442,11 @@ exports.getAllInvoices = async (req, res) => {
           document_stage: 1,
           customer_name: 1,
           customer_phone: 1,
-          appointment_id: 1
+          appointment_id: 1,
+          collection_owner: 1,
+          collection_mode: 1,
+          collection_transferred_to_ipd: 1,
+          collection_transferred_amount: 1
         }
       }
     );
@@ -1498,6 +1502,37 @@ exports.updateInvoicePayment = async (req, res) => {
     const invoice = await Invoice.findOne(invoiceScope(req, { _id: invoiceId }));
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    // Pharmacy may keep an issued sub-ledger Invoice while collection is
+    // explicitly transferred to IPD Finance. Resolve the linked Sale before
+    // mutating any document and hard-stop this generic legacy payment endpoint
+    // when IPD owns collection. This closes the double-collection path where a
+    // Pharmacy cashier could otherwise settle the sub-ledger invoice and the
+    // same medicines would still appear on the final IPD invoice.
+    let linkedSale = null;
+    if (invoice.sale_id) {
+      linkedSale = await Sale.findById(invoice.sale_id);
+    }
+    if (!linkedSale && invoice.prescription_id) {
+      linkedSale = await Sale.findOne({ prescription_id: invoice.prescription_id });
+    }
+    if (!linkedSale && invoice.bill_id) {
+      const linkedBill = await Bill.findById(invoice.bill_id);
+      if (linkedBill) linkedSale = await Sale.findOne({ bill_id: linkedBill._id });
+    }
+    const collectionOwnedByIpd =
+      invoice.collection_owner === 'IPD' ||
+      invoice.collection_mode === 'IPD_CONSOLIDATED' ||
+      invoice.collection_transferred_to_ipd === true ||
+      linkedSale?.billing_owner === 'IPD' ||
+      linkedSale?.collection_mode === 'IPD_CONSOLIDATED';
+    if (collectionOwnedByIpd) {
+      return res.status(409).json({
+        error: 'This Pharmacy document is settled through IPD Billing. Counter payment is blocked.',
+        code: 'PHARMACY_COLLECTION_OWNED_BY_IPD',
+        collectionOwner: 'IPD'
+      });
     }
 
     // Check if payment amount exceeds balance due
@@ -1579,8 +1614,8 @@ exports.updateInvoicePayment = async (req, res) => {
     console.log(`✅ Invoice ${invoice.invoice_number} updated. Balance due: ${invoice.balance_due}`);
 
     // ========== 2. UPDATE ASSOCIATED SALE ==========
-    let sale = null;
-    if (invoice.sale_id) {
+    let sale = linkedSale;
+    if (!sale && invoice.sale_id) {
       sale = await Sale.findById(invoice.sale_id);
     }
 
@@ -2422,7 +2457,19 @@ function addFooter(doc, invoice) {
   const tax = n(invoice.tax ?? invoice.tax_amount);
   const total = n(invoice.total ?? invoice.total_amount ?? (subtotal - baseDiscount + tax + rounding));
   const paid = n(invoice.amount_paid ?? invoice.paid_amount);
-  const due = n(invoice.balance_due ?? Math.max(0, total - paid - settlementDiscount - creditNotes));
+  const collectionTransferredToIpd =
+    invoice.collection_owner === 'IPD' ||
+    invoice.collection_mode === 'IPD_CONSOLIDATED' ||
+    invoice.collection_transferred_to_ipd === true;
+  const transferredAmount = n(
+    invoice.collection_transferred_amount ||
+    invoice.payer_allocation?.patient_liability ||
+    invoice.total ||
+    invoice.total_amount
+  );
+  const due = collectionTransferredToIpd
+    ? 0
+    : n(invoice.balance_due ?? Math.max(0, total - paid - settlementDiscount - creditNotes));
   const advanceApplied = n(invoice.advance_applied);
   const payer = invoice.payer_allocation || {};
 
@@ -2445,8 +2492,13 @@ function addFooter(doc, invoice) {
   if (settlementDiscount > 0) row('Final Settlement Discount:', settlementDiscount, { negative: true });
   if (creditNotes > 0) row('Credit Notes / Adjustments:', creditNotes, { negative: true });
   if (advanceApplied > 0) row('Advance Applied:', advanceApplied);
-  row('Amount Paid / Settled:', paid);
-  row('Balance Due:', due, { bold: true });
+  if (collectionTransferredToIpd) {
+    row('Transferred to IPD File:', transferredAmount);
+    row('Pharmacy Counter Due:', 0, { bold: true });
+  } else {
+    row('Amount Paid / Settled:', paid);
+    row('Balance Due:', due, { bold: true });
+  }
 
   if (n(payer.standard_amount) || n(payer.contracted_amount) || n(payer.sponsor_liability)) {
     y += 5;
@@ -2461,8 +2513,9 @@ function addFooter(doc, invoice) {
   }
 
   const statusColors = { Paid: '#10B981', Partial: '#3B82F6', Pending: '#EF4444', Overdue: '#DC2626' };
-  doc.fillColor(statusColors[invoice.status] || '#6B7280');
-  doc.fontSize(9).font('Helvetica-Bold').text(`Status: ${invoice.status || 'Issued'}`, 50, Math.min(y + 5, 760));
+  const displayStatus = collectionTransferredToIpd ? 'Transferred to IPD Billing' : (invoice.status || 'Issued');
+  doc.fillColor(collectionTransferredToIpd ? '#2563EB' : (statusColors[invoice.status] || '#6B7280'));
+  doc.fontSize(9).font('Helvetica-Bold').text(`Status: ${displayStatus}`, 50, Math.min(y + 5, 760));
   doc.fillColor('#000000');
   const footerY = Math.min(y + 30, 765);
   doc.fontSize(8).font('Helvetica').text(COMPUTER_GENERATED_BILL_EN, 50, footerY, { width: 495, align: 'center' });

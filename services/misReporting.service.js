@@ -41,6 +41,14 @@ function issuedInvoiceFilter({ from, to, hospitalId, invoiceType, patientId, adm
     is_deleted: { $ne: true },
     status: { $ne: 'Cancelled' },
     document_stage: { $ne: 'VOID' },
+    // IPD-consolidated Pharmacy invoices are sub-ledger documents. The same
+    // patient liability is recognised on the IPD invoice, so generic hospital
+    // revenue/MIS must not count the Pharmacy document a second time.
+    $nor: [
+      { invoice_type: 'Pharmacy', collection_owner: 'IPD' },
+      { invoice_type: 'Pharmacy', collection_mode: 'IPD_CONSOLIDATED' },
+      { invoice_type: 'Pharmacy', collection_transferred_to_ipd: true }
+    ],
     ...tenantCondition(hospitalId)
   };
   if (invoiceType) filter.invoice_type = invoiceType;

@@ -7,7 +7,8 @@ const PREFIXES = {
   RECEIPT: 'RCP',
   ADVANCE_RECEIPT: 'ADV',
   ADVANCE_REFUND: 'ARF',
-  CREDIT_NOTE: 'CRN'
+  CREDIT_NOTE: 'CRN',
+  CREDIT_AUTHORIZATION: 'CRT'
 };
 
 const money = (value) => Math.round((Number(value) || 0) * 100) / 100;
