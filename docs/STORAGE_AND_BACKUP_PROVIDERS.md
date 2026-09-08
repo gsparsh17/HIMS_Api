@@ -208,3 +208,29 @@ That migration does not need to be run merely to switch new uploads to B2; old l
 Hospital Admin can upload/replace the hospital logo from the hospital profile. The logo is stored through the same selected media provider and saved as `Hospital.logo` using the protected HIMS file URL.
 
 The configured logo is used by the sidebar and the shared clinical/report print-branding components. Server-generated consent/OT PDFs also resolve the same stored logo. If no logo is configured, the existing fallback hospital mark remains.
+
+---
+
+## Windows LAN shared-drive profile (opt-in)
+
+The shared-drive/single-backup-node behavior is enabled only with:
+
+```env
+LAN_DEPLOYMENT_ENABLED=true
+```
+
+If the flag is missing or false, existing cloud media and backup behavior remains unchanged. For the LAN profile and Windows paths, see `docs/LAN_SHARED_STORAGE_AND_SINGLE_BACKUP.md` and `.env.lan-server.example`.
+
+Recommended LAN server paths:
+
+```env
+LAN_DEPLOYMENT_ENABLED=true
+HIMS_SHARED_STORAGE_ROOT=E:/MediQliqMedia
+MEDIA_STORAGE_PROVIDER=local
+UPLOAD_DIR=E:/MediQliqMedia
+MEDIA_STORAGE_PREFIX=media
+UPLOAD_TMP_DIR=E:/MediQliqMedia/temp
+HIMS_BACKUP_DIR=E:/MediQliqMedia/backups
+```
+
+Only the designated LAN `NODE_ROLE=SERVER` instance should enable backup scheduling. LAN client-backend instances must use `NODE_ROLE=CLIENT` and disable backup scheduling; a MongoDB lease provides an additional duplicate-execution safeguard.

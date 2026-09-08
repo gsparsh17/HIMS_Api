@@ -15,12 +15,32 @@ const {
   localRetentionDays,
   incrementalRetentionDays,
   fullRetentionDays,
-  incrementalFallbackToFull
+  incrementalFallbackToFull,
+  lanDeploymentEnabled,
+  backupNodeEnabled
 } = require('./config');
+const {
+  ownerIdentity,
+  acquireLease,
+  releaseLease,
+  startLeaseHeartbeat
+} = require('./backupCoordinator.service');
 
 const FULL_SCHEMA = 'hims-full-backup-2';
 const INCREMENTAL_SCHEMA = 'hims-incremental-backup-1';
 let backupInProgress = false;
+
+function backupRunMetadata(options = {}) {
+  if (!lanDeploymentEnabled()) return {};
+  const owner = ownerIdentity();
+  return {
+    scheduleKey: options.scheduleKey || undefined,
+    triggerSource: options.triggerSource || 'internal',
+    ownerInstanceId: owner.instanceId,
+    ownerHostname: owner.hostname,
+    ownerPid: owner.pid
+  };
+}
 
 function ensureDirs() {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
@@ -112,10 +132,11 @@ async function finalizeRun(run, { distribution, filePath, stats, checkpointEvent
   return { status, completedAt };
 }
 
-async function createFullBackup({ reason = 'scheduled' } = {}) {
+async function createFullBackup(options = {}) {
+  const { reason = 'scheduled' } = options;
   ensureDirs();
   const id = backupId('full');
-  const run = await BackupRun.create({ backupId: id, type: 'full', status: 'running', stats: { reason } });
+  const run = await BackupRun.create({ backupId: id, type: 'full', status: 'running', stats: { reason }, ...backupRunMetadata(options) });
   const upperEvent = await latestJournalEvent();
   const tempDir = path.join(TEMP_DIR, id);
   fs.mkdirSync(tempDir, { recursive: true });
@@ -203,14 +224,15 @@ function documentGroupKey(change) {
   return `${change.collectionName}\u0000${EJSON.stringify(change.documentKey, { relaxed: false })}`;
 }
 
-async function createIncrementalBackup({ reason = 'scheduled' } = {}) {
+async function createIncrementalBackup(options = {}) {
+  const { reason = 'scheduled' } = options;
   ensureDirs();
   const full = await latestFullRun();
-  if (!full) return createFullBackup({ reason: `${reason}:initial-full-required` });
+  if (!full) return createFullBackup({ ...options, reason: `${reason}:initial-full-required` });
 
   const tracker = getChangeTrackerStatus();
   if (!tracker.running && tracker.enabled) {
-    if (incrementalFallbackToFull()) return createFullBackup({ reason: `${reason}:incremental-tracker-unavailable` });
+    if (incrementalFallbackToFull()) return createFullBackup({ ...options, reason: `${reason}:incremental-tracker-unavailable` });
     const id = backupId('incremental');
     await BackupRun.create({
       backupId: id,
@@ -218,7 +240,8 @@ async function createIncrementalBackup({ reason = 'scheduled' } = {}) {
       status: 'failed',
       completedAt: new Date(),
       baseFullBackupId: full.backupId,
-      error: `Incremental backup unavailable because MongoDB Change Streams are not running${tracker.lastError ? `: ${tracker.lastError}` : ''}`
+      error: `Incremental backup unavailable because MongoDB Change Streams are not running${tracker.lastError ? `: ${tracker.lastError}` : ''}`,
+      ...backupRunMetadata(options)
     });
     return { success: false, backupId: id, type: 'incremental', status: 'failed', error: tracker.lastError || 'Change tracker is not running' };
   }
@@ -234,7 +257,8 @@ async function createIncrementalBackup({ reason = 'scheduled' } = {}) {
       status: 'skipped',
       completedAt: new Date(),
       baseFullBackupId: full.backupId,
-      stats: { reason, changedDocuments: 0, message: 'No database changes since the last successful checkpoint' }
+      stats: { reason, changedDocuments: 0, message: 'No database changes since the last successful checkpoint' },
+      ...backupRunMetadata(options)
     });
     return { success: true, skipped: true, backupId: id, type: 'incremental', status: 'skipped', changedDocuments: 0 };
   }
@@ -273,7 +297,7 @@ async function createIncrementalBackup({ reason = 'scheduled' } = {}) {
   }
 
   const id = backupId('incremental');
-  const run = await BackupRun.create({ backupId: id, type: 'incremental', status: 'running', baseFullBackupId: full.backupId, stats: { reason } });
+  const run = await BackupRun.create({ backupId: id, type: 'incremental', status: 'running', baseFullBackupId: full.backupId, stats: { reason }, ...backupRunMetadata(options) });
   const tempDir = path.join(TEMP_DIR, id);
   fs.mkdirSync(tempDir, { recursive: true });
   const payloadPath = path.join(tempDir, 'incremental_payload.ejson');
@@ -382,19 +406,64 @@ function cleanOldBackups(retentionDays = null) {
 }
 
 async function performBackup(options = {}) {
+  const lanMode = lanDeploymentEnabled();
+
+  if (lanMode && !backupNodeEnabled() && !options.allowNonBackupNode) {
+    const error = new Error('This HIMS instance is not designated as the backup node');
+    error.code = 'BACKUP_NOT_DESIGNATED_NODE';
+    throw error;
+  }
+
   if (backupInProgress) {
-    const error = new Error('Another backup is already in progress');
+    const error = new Error(lanMode
+      ? 'Another backup is already in progress in this process'
+      : 'Another backup is already in progress');
     error.code = 'BACKUP_ALREADY_RUNNING';
     throw error;
   }
-  backupInProgress = true;
-  try {
-    const requested = String(options.type || 'incremental').toLowerCase();
-    if (requested === 'full') return await createFullBackup(options);
-    if (requested === 'incremental') return await createIncrementalBackup(options);
+
+  const requested = String(options.type || 'incremental').toLowerCase();
+
+  // Exact legacy/cloud path: no LAN node restriction and no distributed lease.
+  if (!lanMode) {
+    backupInProgress = true;
+    try {
+      if (requested === 'full') return await createFullBackup(options);
+      if (requested === 'incremental') return await createIncrementalBackup(options);
+      throw new Error(`Unsupported backup type: ${requested}`);
+    } finally {
+      backupInProgress = false;
+    }
+  }
+
+  if (!['full', 'incremental'].includes(requested)) {
     throw new Error(`Unsupported backup type: ${requested}`);
+  }
+
+  const reason = options.reason || options.triggerSource || 'backup';
+  const lease = await acquireLease({ reason: `${requested}:${reason}` });
+  if (!lease.acquired) {
+    const error = new Error('Another HIMS instance currently owns the shared backup lock');
+    error.code = 'BACKUP_ALREADY_RUNNING';
+    error.currentOwner = lease.current || null;
+    throw error;
+  }
+
+  const stopHeartbeat = startLeaseHeartbeat(lease.ownerToken);
+  backupInProgress = true;
+  let outcome = 'failed';
+  try {
+    const result = requested === 'full'
+      ? await createFullBackup(options)
+      : await createIncrementalBackup(options);
+    outcome = result?.success ? (result?.skipped ? 'skipped' : 'success') : 'failed';
+    return result;
   } finally {
     backupInProgress = false;
+    stopHeartbeat();
+    await releaseLease(lease.ownerToken, outcome).catch((error) => {
+      console.error(`[BackupCoordinator] Failed to release backup lease: ${error.message}`);
+    });
   }
 }
 

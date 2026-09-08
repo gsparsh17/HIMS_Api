@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { BACKUP_DIR, lanDeploymentEnabled, backupEnabled, backupNodeEnabled, schedulerEnabled, nodeRole } = require('../services/backup/config');
 
 function boolEnv(name, fallback = false) {
   const value = process.env[name];
@@ -10,6 +11,7 @@ function boolEnv(name, fallback = false) {
 function assertRuntimeConfig() {
   const errors = [];
   const production = process.env.NODE_ENV === 'production';
+  const lanMode = lanDeploymentEnabled();
 
   // ============================================================
   // DATABASE
@@ -32,6 +34,20 @@ function assertRuntimeConfig() {
     errors.push(
       'CORS_ORIGINS or FRONTEND_URL is required in production'
     );
+  }
+
+
+  // ============================================================
+  // LAN DEPLOYMENT (OPT-IN ONLY)
+  // ============================================================
+  if (lanMode) {
+    const role = nodeRole();
+    if (!['SERVER', 'CLIENT'].includes(role)) {
+      errors.push(`NODE_ROLE must be SERVER or CLIENT when LAN_DEPLOYMENT_ENABLED=true (received ${role})`);
+    }
+    if (schedulerEnabled() && !backupNodeEnabled()) {
+      errors.push('BACKUP_SCHEDULER_ENABLED=true is not allowed on a non-backup LAN client node');
+    }
   }
 
   // ============================================================
@@ -112,8 +128,10 @@ function assertRuntimeConfig() {
    *
    * when media storage is B2.
    */
+  const sharedStorageRoot = lanMode ? String(process.env.HIMS_SHARED_STORAGE_ROOT || '').trim() : '';
   const uploadDir = path.resolve(
     process.env.UPLOAD_DIR ||
+      sharedStorageRoot ||
       path.join(process.cwd(), 'uploads', 'storage')
   );
 
@@ -128,7 +146,7 @@ function assertRuntimeConfig() {
    */
   const uploadTmpDir = path.resolve(
     process.env.UPLOAD_TMP_DIR ||
-      path.join(process.cwd(), 'uploads', 'tmp')
+      (sharedStorageRoot ? path.join(sharedStorageRoot, 'temp') : path.join(process.cwd(), 'uploads', 'tmp'))
   );
 
   /*
@@ -144,7 +162,11 @@ function assertRuntimeConfig() {
     directoriesToCheck.push(uploadDir);
   }
 
-  for (const directory of directoriesToCheck) {
+  if (lanMode && backupEnabled() && backupNodeEnabled()) {
+    directoriesToCheck.push(BACKUP_DIR);
+  }
+
+  for (const directory of [...new Set(directoriesToCheck)]) {
     try {
       fs.mkdirSync(directory, { recursive: true });
 
@@ -180,6 +202,7 @@ function assertRuntimeConfig() {
   return {
     uploadDir,
     uploadTmpDir,
+    ...(lanMode ? { backupDir: BACKUP_DIR, nodeRole: nodeRole(), backupNode: backupNodeEnabled() } : {})
   };
 }
 

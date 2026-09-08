@@ -1,5 +1,5 @@
 .env
-.env.*
+
 !.env.example
 !.env.hospital.example
 node_modules/

@@ -11,7 +11,9 @@ const { hospitalIdFromUser, idString } = require('./tenantScope.service');
 const defaultUploadRoot = process.env.NODE_ENV === 'production'
   ? '/srv/mediqliq/uploads'
   : path.join(process.cwd(), 'uploads', 'storage');
-const uploadRoot = path.resolve(process.env.UPLOAD_DIR || defaultUploadRoot);
+const lanDeploymentEnabled = String(process.env.LAN_DEPLOYMENT_ENABLED || '').trim().toLowerCase() === 'true';
+const sharedStorageRoot = lanDeploymentEnabled ? String(process.env.HIMS_SHARED_STORAGE_ROOT || '').trim() : '';
+const uploadRoot = path.resolve(process.env.UPLOAD_DIR || sharedStorageRoot || defaultUploadRoot);
 
 function configuredDriver() {
   const requested = String(
@@ -73,6 +75,24 @@ async function checksum(filePath) {
     stream.on('error', reject);
     stream.on('end', () => resolve(hash.digest('hex')));
   });
+}
+
+async function copyLocalFileAtomically(source, destination) {
+  await fsp.mkdir(path.dirname(destination), { recursive: true });
+  const partial = `${destination}.part-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  try {
+    await fsp.copyFile(source, partial, fs.constants.COPYFILE_EXCL);
+    const handle = await fsp.open(partial, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fsp.rename(partial, destination);
+  } catch (error) {
+    await fsp.unlink(partial).catch(() => {});
+    throw error;
+  }
 }
 
 function absolutePath(storageKey) {
@@ -178,7 +198,11 @@ async function upload(file, req, options = {}) {
 
   const destination = absolutePath(storageKey);
   await fsp.mkdir(path.dirname(destination), { recursive: true });
-  await fsp.copyFile(file.path, destination, fs.constants.COPYFILE_EXCL);
+  if (lanDeploymentEnabled) {
+    await copyLocalFileAtomically(file.path, destination);
+  } else {
+    await fsp.copyFile(file.path, destination, fs.constants.COPYFILE_EXCL);
+  }
   try {
     const stat = await fsp.stat(destination);
     if (!file.size) file.size = stat.size;
@@ -339,6 +363,44 @@ async function removeByUrl(url) {
   return true;
 }
 
+async function getLocalStorageInfo({ probeWrite = false } = {}) {
+  const driver = configuredDriver();
+  const info = {
+    driver,
+    uploadRoot,
+    mediaPrefix: mediaStoragePrefix(),
+    local: driver === 'local',
+    exists: false,
+    readable: false,
+    writable: false,
+    probeWrite: false
+  };
+
+  if (driver !== 'local') return info;
+
+  await fsp.mkdir(uploadRoot, { recursive: true });
+  info.exists = true;
+  try { await fsp.access(uploadRoot, fs.constants.R_OK); info.readable = true; } catch (_) {}
+  try { await fsp.access(uploadRoot, fs.constants.W_OK); info.writable = true; } catch (_) {}
+
+  if (probeWrite) {
+    const probeDir = path.join(uploadRoot, 'temp', 'healthchecks');
+    await fsp.mkdir(probeDir, { recursive: true });
+    const probe = path.join(probeDir, `.mediqliq-media-${process.pid}-${Date.now()}.txt`);
+    const payload = `MediQliq shared media probe ${new Date().toISOString()}`;
+    try {
+      await fsp.writeFile(probe, payload, { flag: 'wx' });
+      const roundTrip = await fsp.readFile(probe, 'utf8');
+      if (roundTrip !== payload) throw new Error('Shared media storage probe read-back did not match the written value');
+      info.probeWrite = true;
+    } finally {
+      await fsp.unlink(probe).catch(() => {});
+    }
+  }
+
+  return info;
+}
+
 module.exports = {
   uploadRoot,
   configuredDriver,
@@ -354,5 +416,6 @@ module.exports = {
   openStoragePath,
   storagePathExists,
   deleteStoredFile,
-  removeByUrl
+  removeByUrl,
+  getLocalStorageInfo
 };

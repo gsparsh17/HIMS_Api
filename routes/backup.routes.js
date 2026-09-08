@@ -17,8 +17,9 @@ const {
   INCREMENTAL_SCHEMA,
   parseEjson
 } = require('../services/backup/backupEngine.service');
-const { providers, requiredProviders } = require('../services/backup/config');
+const { providers, requiredProviders, lanDeploymentEnabled, backupNodeEnabled, instanceId } = require('../services/backup/config');
 const BackupRun = require('../models/BackupRun');
+const { getStorageDiagnostics } = require('../services/storageDiagnostics.service');
 const { protect, isAdmin } = require('../middlewares/auth');
 
 const backupDir = BACKUP_DIR;
@@ -26,31 +27,88 @@ const isSafeBackupName = (name) => /^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$/i.test(nam
 
 router.use(protect, isAdmin);
 
+function requireBackupNode(_req, res, next) {
+  if (!lanDeploymentEnabled()) return next();
+  if (!backupNodeEnabled()) {
+    return res.status(403).json({
+      success: false,
+      code: 'BACKUP_NOT_DESIGNATED_NODE',
+      message: `Backup filesystem and restore operations are disabled on this client instance (${instanceId()}).`
+    });
+  }
+  return next();
+}
+
 router.get('/status', async (_req, res) => {
   try {
-    res.json({
+    const backupStatus = await getBackupStatus();
+    if (!lanDeploymentEnabled()) {
+      // Preserve the existing cloud response shape/behavior.
+      return res.json({
+        success: true,
+        backupDir,
+        retentionDays: BACKUP_RETENTION_DAYS,
+        storageProviders: providers(),
+        requiredTargets: requiredProviders(),
+        ...backupStatus
+      });
+    }
+
+    const storage = await getStorageDiagnostics({ probeWrite: false });
+    return res.json({
       success: true,
       backupDir,
       retentionDays: BACKUP_RETENTION_DAYS,
       storageProviders: providers(),
       requiredTargets: requiredProviders(),
-      ...(await getBackupStatus())
+      storage,
+      ...backupStatus
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 
-router.post('/trigger', async (req, res) => {
+router.post('/storage-test', async (_req, res) => {
+  if (!lanDeploymentEnabled()) {
+    return res.status(404).json({ success: false, code: 'LAN_DEPLOYMENT_DISABLED', message: 'LAN shared-storage diagnostics are disabled for this deployment.' });
+  }
   try {
-    const type = String(req.body?.type || 'incremental').toLowerCase();
+    const storage = await getStorageDiagnostics({ probeWrite: true });
+    const mediaOkay = !storage.media.local || storage.media.probeWrite === true;
+    const backupOkay = !storage.machine?.backupNode || storage.backupProbe?.success === true;
+    const success = mediaOkay && backupOkay;
+    return res.status(success ? 200 : 500).json({
+      success,
+      message: success
+        ? 'Shared media and backup storage passed server-side read/write probes.'
+        : 'One or more shared storage read/write probes failed.',
+      storage
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.post('/trigger', requireBackupNode, async (req, res) => {
+  try {
+    const type = String(req.body?.type || (lanDeploymentEnabled() ? 'full' : 'incremental')).toLowerCase();
     if (!['full', 'incremental'].includes(type)) {
       return res.status(400).json({ success: false, message: 'type must be full or incremental' });
     }
     const result = await triggerManualBackup(type);
-    return res.status(result.success ? 200 : 500).json(result);
+    if (result.success) return res.status(200).json(result);
+    if (lanDeploymentEnabled() && result.code === 'BACKUP_NOT_DESIGNATED_NODE') return res.status(403).json(result);
+    if (lanDeploymentEnabled() && result.code === 'BACKUP_ALREADY_RUNNING') return res.status(409).json(result);
+    return res.status(500).json(result);
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    if (!lanDeploymentEnabled()) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
+    const status = error.code === 'BACKUP_NOT_DESIGNATED_NODE'
+      ? 403
+      : (error.code === 'BACKUP_ALREADY_RUNNING' ? 409 : 500);
+    return res.status(status).json({ success: false, message: error.message, code: error.code || null });
   }
 });
 
@@ -64,7 +122,7 @@ router.get('/runs', async (req, res) => {
   }
 });
 
-router.get('/list', async (_req, res) => {
+router.get('/list', requireBackupNode, async (_req, res) => {
   try {
     if (!fs.existsSync(backupDir)) return res.json({ success: true, backups: [] });
     const backups = fs.readdirSync(backupDir)
@@ -86,7 +144,7 @@ router.get('/list', async (_req, res) => {
   }
 });
 
-router.post('/retention/prune', async (_req, res) => {
+router.post('/retention/prune', requireBackupNode, async (_req, res) => {
   try {
     return res.json({ success: true, ...cleanOldBackups() });
   } catch (error) {
@@ -94,7 +152,7 @@ router.post('/retention/prune', async (_req, res) => {
   }
 });
 
-router.get('/download/:filename', async (req, res) => {
+router.get('/download/:filename', requireBackupNode, async (req, res) => {
   try {
     const { filename } = req.params;
     if (!isSafeBackupName(filename)) return res.status(400).json({ success: false, message: 'Invalid backup filename' });
@@ -145,7 +203,7 @@ function summarizePayload(payload) {
   throw new Error(`Unsupported restore payload schema: ${payload.schemaVersion || 'unknown'}`);
 }
 
-router.post('/restore/:filename', async (req, res) => {
+router.post('/restore/:filename', requireBackupNode, async (req, res) => {
   try {
     const { filename } = req.params;
     if (!isSafeBackupName(filename)) return res.status(400).json({ success: false, message: 'Invalid backup filename' });
