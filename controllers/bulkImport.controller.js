@@ -695,11 +695,18 @@ async function validateOperationalConstraints(entity, data, target) {
 async function rowsFromFile(file) {
   const workbook = new ExcelJS.Workbook();
   const ext = (file.originalname.split('.').pop() || '').toLowerCase();
+  if (!['xlsx', 'csv'].includes(ext)) {
+    const error = new Error('Only .xlsx and .csv files are supported. Legacy .xls files must be re-saved as .xlsx.');
+    error.statusCode = 415;
+    throw error;
+  }
   try {
     if (ext === 'csv') await workbook.csv.read(Readable.from(file.buffer));
     else await workbook.xlsx.load(file.buffer);
-  } catch (error) {
-    throw new Error(`Failed to parse file: ${error.message}`);
+  } catch (cause) {
+    const error = new Error(`Unable to read ${ext.toUpperCase()} file. Re-save the workbook as a standard .xlsx file and retry. Parser detail: ${cause.message}`);
+    error.statusCode = 422;
+    throw error;
   }
 
   const worksheet = workbook.worksheets.find((sheet) => sheet.name !== 'Instructions') || workbook.worksheets[0];

@@ -31,6 +31,26 @@ function editable(card) {
   return ['draft', 'staging', 'pending_approval', 'rejected'].includes(card.status);
 }
 
+function assertContractPayer(payer) {
+  if (String(payer?.type || '').toLowerCase() !== 'self') return;
+  const error = new Error('SELF/cash does not use a rate card. Hospital master prices are the authoritative SELF prices.');
+  error.statusCode = 422;
+  error.code = 'SELF_RATE_CARD_NOT_ALLOWED';
+  throw error;
+}
+
+async function assertContractRateCard(card, hospitalId) {
+  const payerId = card?.payerId?._id || card?.payerId;
+  const payer = await Payer.findOne({ _id: payerId, hospitalId }).select('type code name');
+  if (!payer) {
+    const error = new Error('Payer not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  assertContractPayer(payer);
+  return payer;
+}
+
 function inheritCardSourceRow(card, sourceRow = {}) {
   const row = { ...(sourceRow?.toObject?.() || sourceRow || {}) };
   const hasRowReference = Boolean(row.page || row.sheet || row.annexure);
@@ -145,6 +165,7 @@ exports.createRateCard = async (req, res) => {
     const hospitalId = requireHospitalId(req);
     const payer = await Payer.findOne({ _id: req.body.payerId, hospitalId });
     if (!payer) return res.status(404).json({ success: false, error: 'Payer not found' });
+    assertContractPayer(payer);
     const payload = scopedBody(req.body);
     payload.status = 'staging';
     payload.demoOnly = Boolean(payload.demoOnly || payer.demoOnly);
@@ -158,6 +179,7 @@ exports.updateRateCard = async (req, res) => {
     const hospitalId = requireHospitalId(req);
     const card = await RateCard.findOne({ _id: req.params.id, hospitalId });
     if (!card) return res.status(404).json({ success: false, error: 'Rate card not found' });
+    await assertContractRateCard(card, hospitalId);
     if (!editable(card)) return res.status(409).json({ success: false, error: 'Activated or closed rate cards cannot be edited; create a new version' });
     const payload = scopedBody(req.body);
     ['status', 'approval', 'quality', 'itemCount', 'revision', 'payerId'].forEach((key) => delete payload[key]);
@@ -201,6 +223,7 @@ exports.upsertRateCardItems = async (req, res) => {
     const hospitalId = requireHospitalId(req);
     const card = await RateCard.findOne({ _id: req.params.id, hospitalId });
     if (!card || !editable(card)) return res.status(409).json({ success: false, error: 'Rate card is not editable' });
+    await assertContractRateCard(card, hospitalId);
     const items = Array.isArray(req.body.items) ? req.body.items : [];
     if (!items.length) return res.status(400).json({ success: false, error: 'items array is required' });
     const operations = items.map((raw) => {
@@ -240,6 +263,7 @@ exports.updateRateCardItem = async (req, res) => {
     const hospitalId = requireHospitalId(req);
     const card = await RateCard.findOne({ _id: req.params.id, hospitalId });
     if (!card || !editable(card)) return res.status(409).json({ success: false, error: 'Rate card is not editable' });
+    await assertContractRateCard(card, hospitalId);
     const item = await RateCardItem.findOne({ _id: req.params.itemId, hospitalId, rateCardId: card._id });
     if (!item) return res.status(404).json({ success: false, error: 'Rate-card item not found' });
     const payload = scopedBody(req.body);
@@ -294,6 +318,9 @@ exports.validateRateCard = async (req, res) => {
 exports.prepareRateCard = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    const card = await RateCard.findOne({ _id: req.params.id, hospitalId });
+    if (!card) return res.status(404).json({ success: false, error: 'Rate card not found' });
+    await assertContractRateCard(card, hospitalId);
     const data = await prepareRateCardReadiness({
       hospitalId,
       rateCardId: req.params.id,
@@ -312,6 +339,9 @@ exports.prepareRateCard = async (req, res) => {
 exports.suggestMappings = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    const card = await RateCard.findOne({ _id: req.params.id, hospitalId });
+    if (!card) return res.status(404).json({ success: false, error: 'Rate card not found' });
+    await assertContractRateCard(card, hospitalId);
     const data = await suggestMappings({ hospitalId, rateCardId: req.params.id, threshold: req.body.threshold, limitPerItem: req.body.limitPerItem, overwriteSuggested: req.body.overwriteSuggested, userId: req.user._id });
     res.json({ success: true, data });
   } catch (error) { fail(res, error); }
@@ -348,6 +378,7 @@ exports.approveRateCard = async (req, res) => {
     const hospitalId = requireHospitalId(req);
     const card = await RateCard.findOne({ _id: req.params.id, hospitalId });
     if (!card) return res.status(404).json({ success: false, error: 'Rate card not found' });
+    await assertContractRateCard(card, hospitalId);
     if (!['staging', 'pending_approval', 'rejected'].includes(card.status)) return res.status(409).json({ success: false, error: 'Rate card cannot be approved in its current status' });
     const validation = await validateRateCard({ hospitalId, rateCardId: card._id, persist: true });
     if (validation.quality.criticalErrors) return res.status(409).json({ success: false, error: 'Critical validation errors must be resolved before approval', validation: validation.quality });
@@ -398,6 +429,7 @@ exports.activateRateCard = async (req, res) => {
     const hospitalId = requireHospitalId(req);
     const result = await validateRateCard({ hospitalId, rateCardId: req.params.id, persist: true });
     const card = result.card;
+    await assertContractRateCard(card, hospitalId);
     if (card.status !== 'pending_activation') return res.status(409).json({ success: false, error: 'Rate card must have two approvals before activation' });
     const gate = await activationGate({ card, hospitalId, quality: result.quality, mappingPercentage: result.mappingPercentage });
     if (!gate.ready) return res.status(409).json({ success: false, error: 'Activation gates are not satisfied', gate });

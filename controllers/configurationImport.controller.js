@@ -11,7 +11,6 @@ const ImagingTest = require('../models/ImagingTest');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { reviewMapping } = require('../services/tariffMapping.service');
 const { validateRateCard } = require('../services/tariffValidation.service');
-const { normalizeSpecimen } = require('../utils/insuranceTariffMigration');
 
 const ENTITIES = {
   payers: {
@@ -44,23 +43,38 @@ const ENTITIES = {
     title: 'Rate Card to Hospital Service Mapping Suggestions', sheet: 'Mappings',
     columns: [['payer_code', true], ['rate_card_version', true], ['external_code', true], ['internal_model', true], ['internal_code', true], ['confidence', false], ['rationale', false], ['allow_multiple_external_codes', false], ['required_for_billing', false]],
     example: { payer_code: 'TPA01', rate_card_version: 'TPA01-2026-v1', external_code: 'PKG-GS-001', internal_model: 'Procedure', internal_code: 'GS001', confidence: 1, rationale: 'Reviewed against signed agreement', allow_multiple_external_codes: false }
-  },
-  'service-procedures': {
-    title: 'Hospital Procedure Master', sheet: 'Procedures',
-    columns: [['code', true], ['name', true], ['category', true], ['subcategory', false], ['specialty', false], ['service_domain', false], ['description', false], ['duration_minutes', false], ['base_price', true], ['is_billable', false], ['allow_zero_price', false], ['consent_required', false], ['aliases', false], ['is_active', false]],
-    example: { code: 'GS001', name: 'Laparoscopic Appendicectomy', category: 'General Surgery', specialty: 'General Surgery', service_domain: 'surgery', duration_minutes: 90, base_price: 45000, is_billable: true, is_active: true }
-  },
-  'service-lab-tests': {
-    title: 'Hospital Laboratory Test Master', sheet: 'Lab Tests',
-    columns: [['code', true], ['name', true], ['category', true], ['sub_category', false], ['description', false], ['specimen_type', false], ['specimen_detail', false], ['base_price', true], ['turnaround_time_hours', false], ['report_template_id', false], ['is_billable', false], ['allow_zero_price', false], ['is_active', false]],
-    example: { code: 'CBC', name: 'Complete Blood Count', category: 'Hematology', specimen_type: 'Blood', specimen_detail: 'EDTA whole blood', base_price: 500, turnaround_time_hours: 6, is_billable: true, is_active: true }
-  },
-  'service-imaging-tests': {
-    title: 'Hospital Imaging Test Master', sheet: 'Imaging Tests',
-    columns: [['code', true], ['name', true], ['category', true], ['description', false], ['base_price', true], ['turnaround_time_hours', false], ['contrast_required', false], ['report_template_id', false], ['template_only', false], ['canonical_code', false], ['is_billable', false], ['allow_zero_price', false], ['is_active', false]],
-    example: { code: 'CT-BRAIN-001', name: 'CT Scan Brain', category: 'CT Scan', base_price: 5000, turnaround_time_hours: 8, contrast_required: true, template_only: false, is_billable: true, is_active: true }
-  }
+   }
+
 };
+
+const DEPRECATED_SERVICE_IMPORTS = {
+  'service-procedures': { label: 'Procedure master', coreEntity: 'procedures', uiRoute: '/dashboard/admin/ot/procedures', apiBase: '/api/procedures' },
+  'service-lab-tests': { label: 'Laboratory test master', coreEntity: 'lab-tests', uiRoute: '/dashboard/admin/lab-tests', apiBase: '/api/labtests' },
+  'service-imaging-tests': { label: 'Imaging test master', coreEntity: 'radiology-tests', uiRoute: '/dashboard/admin/imaging-tests', apiBase: '/api/radiology/tests' }
+};
+
+function deprecatedServiceImport(res, entity) {
+  const target = DEPRECATED_SERVICE_IMPORTS[entity];
+  if (!target) return false;
+  res.status(410).json({
+    success: false,
+    code: 'SERVICE_MASTER_IMPORT_MOVED',
+    error: `${target.label} bulk import is managed only from its core hospital module. The duplicate insurance/configuration import path has been retired.`,
+    canonicalImportEntity: target.coreEntity,
+    canonicalTemplateEndpoint: `/api/imports/templates/${target.coreEntity}`,
+    canonicalPreviewEndpoint: `/api/imports/${target.coreEntity}/preview`,
+    canonicalManagementApi: target.apiBase,
+    canonicalUiRoute: target.uiRoute
+  });
+  return true;
+}
+
+function assertContractPayer(payer) {
+  if (String(payer?.type || '').toLowerCase() !== 'self') return;
+  const error = new Error('SELF/cash does not use a contracted rate card. Hospital master prices are the authoritative SELF prices.');
+  error.statusCode = 422;
+  throw error;
+}
 
 const bool = (value, fallback = false) => value === undefined || value === null || value === '' ? fallback : ['true', 'yes', '1', 'y'].includes(String(value).trim().toLowerCase());
 const number = (value) => value === undefined || value === null || value === '' ? undefined : Number(String(value).replaceAll(',', ''));
@@ -73,8 +87,19 @@ function fail(res, error) { res.status(error.statusCode || 400).json({ success: 
 async function parseFile(file) {
   const workbook = new ExcelJS.Workbook();
   const ext = String(file.originalname || '').split('.').pop().toLowerCase();
-  if (ext === 'csv') await workbook.csv.read(Readable.from(file.buffer));
-  else await workbook.xlsx.load(file.buffer);
+  if (!['xlsx', 'csv'].includes(ext)) {
+    const error = new Error('Only .xlsx and .csv files are supported. Legacy .xls files must be re-saved as .xlsx.');
+    error.statusCode = 415;
+    throw error;
+  }
+  try {
+    if (ext === 'csv') await workbook.csv.read(Readable.from(file.buffer));
+    else await workbook.xlsx.load(file.buffer);
+  } catch (cause) {
+    const error = new Error(`Unable to read ${ext.toUpperCase()} file. Re-save the workbook as a standard .xlsx file and retry. Parser detail: ${cause.message}`);
+    error.statusCode = 422;
+    throw error;
+  }
   const sheet = workbook.worksheets.find((row) => row.name !== 'Instructions') || workbook.worksheets[0];
   if (!sheet) throw new Error('No data sheet found');
   const headers = [];
@@ -117,12 +142,6 @@ function normalize(entity, row, hospitalId, userId) {
     allowedWards: list(row.allowed_wards), claimRules: { preAuthorisationRequired: bool(row.preauth_required) }, sourceRow: { page: number(row.source_page), sheet: trim(row.source_sheet), annexure: trim(row.source_annexure), serialNumber: number(row.source_serial_number), raw: row }, active: bool(row.active, true), internalService: { mappingStatus: 'unmapped' }, mappingOptions: { requiredForBilling: bool(row.required_for_billing, true), unavailableAtHospital: false, allowMultipleExternalCodes: false }
   };
   if (entity === 'rate-card-mappings') return { hospitalId, _payerCode: trim(row.payer_code).toUpperCase(), _rateCardVersion: trim(row.rate_card_version), externalCode: trim(row.external_code).toUpperCase(), internalModel: trim(row.internal_model), internalCode: trim(row.internal_code).toUpperCase(), confidence: number(row.confidence), rationale: trim(row.rationale), allowMultipleExternalCodes: bool(row.allow_multiple_external_codes), requiredForBilling: bool(row.required_for_billing, true) };
-  if (entity === 'service-procedures') return { hospitalId, code: trim(row.code).toUpperCase(), name: trim(row.name), category: trim(row.category), subcategory: trim(row.subcategory), specialty: trim(row.specialty), serviceDomain: trim(row.service_domain) || 'procedure', description: trim(row.description), duration_minutes: number(row.duration_minutes) ?? 30, base_price: number(row.base_price) ?? 0, is_billable: bool(row.is_billable, true), allow_zero_price: bool(row.allow_zero_price), consent_required: bool(row.consent_required, true), aliases: list(row.aliases), is_active: bool(row.is_active, true), created_by: userId, updated_by: userId };
-  if (entity === 'service-lab-tests') {
-    const specimen = normalizeSpecimen(trim(row.specimen_detail) || trim(row.specimen_type));
-    return { hospitalId, code: trim(row.code).toUpperCase(), name: trim(row.name), category: trim(row.category), subCategory: trim(row.sub_category), description: trim(row.description), specimen_type: specimen.specimen_type, specimen_detail: specimen.specimen_detail, base_price: number(row.base_price) ?? 0, turnaround_time_hours: number(row.turnaround_time_hours) ?? 24, report_template_id: trim(row.report_template_id), is_billable: bool(row.is_billable, true), allow_zero_price: bool(row.allow_zero_price), is_active: bool(row.is_active, true), createdBy: userId, updatedBy: userId };
-  }
-  if (entity === 'service-imaging-tests') return { hospitalId, code: trim(row.code).toUpperCase(), name: trim(row.name), category: trim(row.category), description: trim(row.description), base_price: number(row.base_price) ?? 0, turnaround_time_hours: number(row.turnaround_time_hours) ?? 24, contrast_required: bool(row.contrast_required), report_template_id: trim(row.report_template_id), template_only: bool(row.template_only), _canonicalCode: trim(row.canonical_code).toUpperCase(), is_billable: bool(row.is_billable, true), allow_zero_price: bool(row.allow_zero_price), is_active: bool(row.is_active, true), createdBy: userId, updatedBy: userId };
   throw new Error('Unsupported configuration import entity');
 }
 
@@ -142,9 +161,6 @@ function validate(entity, data) {
     if (data.packageDefinition.exclusions === null) errors.push('exclusions_json must be valid JSON');
     if (!data.sourceRow?.page && !data.sourceRow?.sheet && !data.sourceRow?.annexure) errors.push('source_page, source_sheet or source_annexure is required');
   }
-  if (['service-procedures', 'service-lab-tests', 'service-imaging-tests'].includes(entity) && data.is_active && data.is_billable && Number(data.base_price || 0) === 0 && !data.allow_zero_price) {
-    errors.push('active billable services require a positive base_price or allow_zero_price=true');
-  }
   return errors;
 }
 
@@ -152,19 +168,16 @@ async function resolveReferences(entity, data, hospitalId) {
   if (entity === 'rate-cards') {
     const payer = await Payer.findOne({ hospitalId, code: data._payerCode });
     if (!payer) throw new Error(`Payer ${data._payerCode} not found`);
+    assertContractPayer(payer);
     data.payerId = payer._id; delete data._payerCode;
   }
   if (['rate-card-items', 'rate-card-mappings'].includes(entity)) {
     const payer = await Payer.findOne({ hospitalId, code: data._payerCode });
     if (!payer) throw new Error(`Payer ${data._payerCode} not found`);
+    assertContractPayer(payer);
     const card = await RateCard.findOne({ hospitalId, payerId: payer._id, version: data._rateCardVersion });
     if (!card) throw new Error(`Rate card ${data._rateCardVersion} for ${data._payerCode} not found`);
     data.payerId = payer._id; data.rateCardId = card._id; delete data._payerCode; delete data._rateCardVersion;
-  }
-  if (entity === 'service-imaging-tests' && data._canonicalCode) {
-    const canonical = await ImagingTest.findOne({ hospitalId, code: data._canonicalCode });
-    if (!canonical) throw new Error(`Canonical imaging code ${data._canonicalCode} not found`);
-    data.canonical_test_id = canonical._id; delete data._canonicalCode;
   }
   return data;
 }
@@ -174,9 +187,6 @@ async function existing(entity, data, hospitalId) {
   if (entity === 'rate-cards') return RateCard.findOne({ hospitalId, payerId: data.payerId, version: data.version });
   if (entity === 'rate-card-items') return RateCardItem.findOne({ hospitalId, rateCardId: data.rateCardId, externalCode: data.externalCode });
   if (entity === 'rate-card-mappings') return RateCardItem.findOne({ hospitalId, rateCardId: data.rateCardId, externalCode: data.externalCode });
-  if (entity === 'service-procedures') return Procedure.findOne({ hospitalId, code: data.code });
-  if (entity === 'service-lab-tests') return LabTest.findOne({ hospitalId, code: data.code });
-  if (entity === 'service-imaging-tests') return ImagingTest.findOne({ hospitalId, code: data.code });
   return null;
 }
 
@@ -188,11 +198,12 @@ function natural(entity, data) {
 }
 
 function model(entity) {
-  return { payers: Payer, 'rate-cards': RateCard, 'rate-card-items': RateCardItem, 'service-procedures': Procedure, 'service-lab-tests': LabTest, 'service-imaging-tests': ImagingTest }[entity];
+  return { payers: Payer, 'rate-cards': RateCard, 'rate-card-items': RateCardItem }[entity];
 }
 
 exports.template = async (req, res) => {
   try {
+    if (deprecatedServiceImport(res, req.params.entity)) return;
     const meta = ENTITIES[req.params.entity];
     if (!meta) return res.status(404).json({ success: false, error: 'Unknown import entity' });
     const workbook = new ExcelJS.Workbook();
@@ -210,6 +221,7 @@ exports.preview = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const entity = req.params.entity;
+    if (deprecatedServiceImport(res, entity)) return;
     if (!ENTITIES[entity]) return res.status(404).json({ success: false, error: 'Unknown import entity' });
     if (!req.file) return res.status(422).json({ success: false, error: 'file is required' });
     const ext = String(req.file.originalname || '').split('.').pop().toLowerCase();
@@ -247,6 +259,7 @@ exports.commit = async (req, res) => {
     const job = await BulkImportJob.findOne({ _id: req.params.jobId, hospitalId });
     if (!job) return res.status(404).json({ success: false, error: 'Import job not found' });
     if (job.status === 'committed') return res.json({ success: true, idempotent: true, job });
+    if (deprecatedServiceImport(res, job.entity)) return;
     if (job.status !== 'preview_ready') return res.status(409).json({ success: false, error: `Job cannot be committed from ${job.status}` });
     if (job.rows.some((row) => row.action === 'invalid')) return res.status(409).json({ success: false, error: 'Resolve invalid rows before commit' });
     job.status = 'committing'; await job.save();
@@ -269,12 +282,8 @@ exports.commit = async (req, res) => {
         row.before = current.toObject();
         const payload = { ...data };
         if (job.entity === 'rate-card-items') { payload.internalService = current.internalService; affectedCards.add(String(current.rateCardId)); }
-        if (['service-procedures', 'service-lab-tests', 'service-imaging-tests'].includes(job.entity) && Number(current.base_price || 0) !== Number(payload.base_price || 0)) {
-          payload.priceHistory = [...(current.priceHistory || []), { amount: Number(payload.base_price || 0), effectiveFrom: new Date(), reason: 'Bulk import update', changedBy: req.user._id }];
-        }
         current.set(payload); await current.save(); row.targetId = current._id; row.after = current.toObject(); updated += 1;
       } else if (!current) {
-        if (['service-procedures', 'service-lab-tests', 'service-imaging-tests'].includes(job.entity)) data.priceHistory = [{ amount: Number(data.base_price || 0), effectiveFrom: new Date(), reason: 'Bulk import', changedBy: req.user._id }];
         const createdDoc = await Model.create(data); row.targetId = createdDoc._id; row.after = createdDoc.toObject(); created += 1; if (job.entity === 'rate-card-items') affectedCards.add(String(createdDoc.rateCardId));
       } else skipped += 1;
     }
