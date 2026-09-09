@@ -212,8 +212,13 @@ exports.preview = async (req, res) => {
     const entity = req.params.entity;
     if (!ENTITIES[entity]) return res.status(404).json({ success: false, error: 'Unknown import entity' });
     if (!req.file) return res.status(422).json({ success: false, error: 'file is required' });
+    const ext = String(req.file.originalname || '').split('.').pop().toLowerCase();
+    if (!['xlsx', 'csv'].includes(ext)) return res.status(422).json({ success: false, error: 'Only .xlsx or .csv files are supported' });
     const mode = req.body.mode === 'UPDATE_BY_KEY' ? 'UPDATE_BY_KEY' : 'CREATE_ONLY';
     const parsed = await parseFile(req.file);
+    const requiredHeaders = ENTITIES[entity].columns.filter((row) => row[1]).map((row) => row[0]);
+    const missingHeaders = requiredHeaders.filter((header) => !parsed.headers.includes(header));
+    if (missingHeaders.length) return res.status(422).json({ success: false, error: `Missing required headers: ${missingHeaders.join(', ')}` });
     const rows = []; const summary = { validNew: 0, validUpdates: 0, duplicates: 0, invalid: 0, warnings: 0 };
     for (const source of parsed.rows) {
       let data = normalize(entity, source.data, hospitalId, req.user._id);

@@ -31,17 +31,20 @@ function roleFromStaffType(staffType, designation = '') {
 async function ensureDepartment(body = {}) {
   if (body.department) return body.department;
 
+  const hospitalId = body.hospitalId || body.hospital_id;
+  if (!hospitalId) throw new Error('Hospital scope is required to resolve or create a department');
+
   const departmentName = body.department_name || body.departmentName;
   if (departmentName) {
     const escaped = String(departmentName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const existing = await Department.findOne({ name: new RegExp(`^${escaped}$`, 'i') });
+    const existing = await Department.findOne({ hospitalId, name: new RegExp(`^${escaped}$`, 'i') });
     if (existing) return existing._id;
-    const created = await Department.create({ name: departmentName });
+    const created = await Department.create({ hospitalId, name: departmentName });
     return created._id;
   }
 
-  let department = await Department.findOne({ name: /^General$/i });
-  if (!department) department = await Department.create({ name: 'General' });
+  let department = await Department.findOne({ hospitalId, name: /^General$/i });
+  if (!department) department = await Department.create({ hospitalId, name: 'General' });
   return department._id;
 }
 
@@ -57,8 +60,11 @@ async function syncRoleCollectionsFromEmployee({ profile, body = {}, user = null
   const { firstName, lastName } = splitName(fullName);
   const staffType = String(body.staff_type || body.staffType || profile.staff_type || 'staff').toLowerCase();
   const designation = body.designation || body.role || profile.designation || staffType;
+  const hospitalId = body.hospitalId || body.hospital_id || profile.hospital_id || profile.hospitalId;
+  if (!hospitalId) throw new Error('Hospital scope is required for employee role synchronization');
   const resolvedDepartmentId = departmentId || profile.department || await ensureDepartment({
     ...body,
+    hospitalId,
     department_name: body.department_name || body.departmentName || profile.department_name
   });
   const userId = user?._id || user || profile.user_id || undefined;
@@ -72,6 +78,7 @@ async function syncRoleCollectionsFromEmployee({ profile, body = {}, user = null
     staff = await Staff.findOneAndUpdate(
       { email },
       {
+        hospitalId,
         user_id: userId,
         first_name: firstName,
         last_name: lastName,
@@ -95,6 +102,7 @@ async function syncRoleCollectionsFromEmployee({ profile, body = {}, user = null
     nurse = await Nurse.findOneAndUpdate(
       { email },
       {
+        hospitalId,
         first_name: firstName,
         last_name: lastName,
         email,
@@ -112,8 +120,9 @@ async function syncRoleCollectionsFromEmployee({ profile, body = {}, user = null
       `LIC-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
     doctor = await Doctor.findOneAndUpdate(
-      { email },
+      { hospitalId, email },
       {
+        hospitalId,
         user_id: userId,
         firstName,
         lastName,

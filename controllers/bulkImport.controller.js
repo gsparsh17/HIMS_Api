@@ -352,6 +352,7 @@ function normalize(entity, row, hospitalId, userId) {
 
   if (entity === 'patients') {
     return {
+      hospitalId,
       patientId: str('patient_id') || undefined, uhid: str('uhid') || undefined, salutation: str('salutation') || undefined,
       first_name: str('first_name'), middle_name: str('middle_name'), last_name: str('last_name'), email: str('email'),
       phone: str('phone'), gender: String(str('gender') || '').toLowerCase(), dob: dateValue(str('dob')),
@@ -481,24 +482,25 @@ function validate(entity, data) {
   return errors;
 }
 
-async function findPatientByReference(reference) {
+async function findPatientByReference(reference, hospitalId) {
   const ref = String(reference || '').trim();
   if (!ref) return null;
   if (/^[0-9a-fA-F]{24}$/.test(ref)) {
-    const byId = await Patient.findById(ref);
+    const byId = await Patient.findOne({ _id: ref, hospitalId });
     if (byId) return byId;
   }
-  return Patient.findOne({ $or: [{ patientId: ref }, { uhid: ref }, { phone: ref }] });
+  return Patient.findOne({ hospitalId, $or: [{ patientId: ref }, { uhid: ref }, { phone: ref }] });
 }
 
-async function findDoctorByReference(reference) {
+async function findDoctorByReference(reference, hospitalId) {
   const ref = String(reference || '').trim();
   if (!ref) return null;
   if (/^[0-9a-fA-F]{24}$/.test(ref)) {
-    const byId = await Doctor.findById(ref);
+    const byId = await Doctor.findOne({ _id: ref, hospitalId });
     if (byId) return byId;
   }
   return Doctor.findOne({
+    hospitalId,
     $or: [
       { email: ref.toLowerCase() },
       { licenseNumber: ref },
@@ -507,18 +509,18 @@ async function findDoctorByReference(reference) {
   });
 }
 
-async function findDepartmentByName(name) {
+async function findDepartmentByName(name, hospitalId) {
   if (!name) return null;
-  return Department.findOne({ name: new RegExp(`^${escapeRegex(name)}$`, 'i') });
+  return Department.findOne({ hospitalId, name: new RegExp(`^${escapeRegex(name)}$`, 'i') });
 }
 
-async function findBedByReference(reference, roomNumber, wardName) {
+async function findBedByReference(reference, roomNumber, wardName, hospitalId) {
   const ref = String(reference || '').trim();
   let query = null;
-  if (ref) query = { $or: [{ bedCode: ref.toUpperCase() }, { bedNumber: ref }] };
+  if (ref) query = { hospitalId, $or: [{ bedCode: ref.toUpperCase() }, { bedNumber: ref }] };
 
   let beds = query ? await Bed.find(query).populate('roomId wardId') : [];
-  if (!beds.length && (roomNumber || wardName)) beds = await Bed.find({}).populate('roomId wardId');
+  if (!beds.length && (roomNumber || wardName)) beds = await Bed.find({ hospitalId }).populate('roomId wardId');
 
   if (roomNumber) beds = beds.filter((bed) => String(bed.roomId?.room_number || '') === String(roomNumber));
   if (wardName) beds = beds.filter((bed) => String(bed.wardId?.name || '').toLowerCase() === String(wardName).toLowerCase());
@@ -557,7 +559,7 @@ async function prepareData(entity, row, hospitalId, userId) {
 
   if (entity === 'employees') {
     try {
-      data.department = await ensureDepartment({ department_name: data.department_name });
+      data.department = await ensureDepartment({ hospitalId, department_name: data.department_name });
     } catch (error) {
       errors.push(`department resolution failed: ${error.message}`);
     }
@@ -565,9 +567,9 @@ async function prepareData(entity, row, hospitalId, userId) {
   }
 
   if (entity === 'appointments') {
-    const patient = await findPatientByReference(data._import?.patient_ref);
-    const doctor = await findDoctorByReference(data._import?.doctor_ref);
-    const department = await findDepartmentByName(data._import?.department_name);
+    const patient = await findPatientByReference(data._import?.patient_ref, hospitalId);
+    const doctor = await findDoctorByReference(data._import?.doctor_ref, hospitalId);
+    const department = await findDepartmentByName(data._import?.department_name, hospitalId);
 
     if (!patient) errors.push(`patient not found for reference: ${data._import?.patient_ref || '(blank)'}`);
     if (!doctor) errors.push(`doctor not found for reference: ${data._import?.doctor_ref || '(blank)'}`);
@@ -595,10 +597,10 @@ async function prepareData(entity, row, hospitalId, userId) {
   }
 
   if (entity === 'ipd-admissions') {
-    const patient = await findPatientByReference(data._import?.patient_ref);
-    const doctor = await findDoctorByReference(data._import?.doctor_ref);
-    const department = await findDepartmentByName(data._import?.department_name);
-    const bed = await findBedByReference(data._import?.bed_ref, data._import?.room_number, data._import?.ward_name);
+    const patient = await findPatientByReference(data._import?.patient_ref, hospitalId);
+    const doctor = await findDoctorByReference(data._import?.doctor_ref, hospitalId);
+    const department = await findDepartmentByName(data._import?.department_name, hospitalId);
+    const bed = await findBedByReference(data._import?.bed_ref, data._import?.room_number, data._import?.ward_name, hospitalId);
 
     if (!patient) errors.push(`patient not found for reference: ${data._import?.patient_ref || '(blank)'}`);
     if (!doctor) errors.push(`primary doctor not found for reference: ${data._import?.doctor_ref || '(blank)'}`);
@@ -645,7 +647,7 @@ async function existing(entity, data, hospitalId) {
     if (data.patientId) clauses.push({ patientId: data.patientId });
     if (data.uhid) clauses.push({ uhid: data.uhid });
     if (data.phone) clauses.push({ phone: data.phone });
-    return clauses.length ? Patient.findOne({ $or: clauses }) : null;
+    return clauses.length ? Patient.findOne({ hospitalId, $or: clauses }) : null;
   }
   if (entity === 'appointments') {
     if (data.token) {
