@@ -1,4 +1,4 @@
-# MediQliq Hospital Backend — ABDM M1, M2 and M3
+# MediQliq Hospital Backend — ABDM M1, M2 and M3 
 
 This is the hospital-only backend fork of the combined HIMS API. It retains the existing clinical and operational HIMS APIs while removing the MediQliq master, super-admin and public ABDM callback surfaces.
 
