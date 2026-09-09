@@ -674,6 +674,7 @@ function previewPayment(totals, payment, encounterType) {
       outstandingBefore,
       taxAdjustment,
       settlementDiscount: discount,
+      residualSettlementDiscount: residualDiscount,
       netPayable,
       collectionAmount,
       amountApplied,
@@ -702,6 +703,7 @@ function previewPayment(totals, payment, encounterType) {
     outstandingBefore,
     taxAdjustment,
     settlementDiscount: discount,
+    residualSettlementDiscount: residualDiscount,
     netPayable,
     amountApplied,
     amountTendered,
@@ -1664,7 +1666,7 @@ async function commitDeskCheckout(payload, user) {
       // finance service's accounting order.
       const issuedOutstanding = round(issuedIPDInvoice?.balance_due || 0);
       const taxAdjustmentAmount = round(preview.payment?.taxAdjustment || 0);
-      const settlementDiscountAmount = round(preview.payment?.settlementDiscount || 0);
+      const settlementDiscountAmount = round(preview.payment?.residualSettlementDiscount ?? preview.payment?.settlementDiscount ?? 0);
       const adjustedOutstanding = round(Math.max(
         0,
         issuedOutstanding + taxAdjustmentAmount - settlementDiscountAmount

@@ -418,7 +418,12 @@ async function createCanonicalAppointmentBilling(req, payload) {
   const selectedMode = payload.selectedMode || payload.selectedBillingMode || appointment.selectedBillingMode;
   const created = [];
   const resolvedDiscountType = payload.discountType || payload.discount_type || (payload.discountRate || payload.discount_rate ? 'percentage' : 'fixed');
-  const resolvedDiscountRate = Number(payload.discountRate ?? payload.discount_rate ?? (resolvedDiscountType === 'percentage' ? (payload.discountValue ?? payload.discount) : 0));
+  // Percentage inputs must be explicit rates. `discount` is a monetary amount
+  // in legacy appointment callers and must never be reinterpreted as a percent.
+  const rawDiscountRate = resolvedDiscountType === 'percentage'
+    ? Number(payload.discountRate ?? payload.discount_rate ?? payload.discountValue ?? 0)
+    : 0;
+  const resolvedDiscountRate = Math.max(0, Math.min(100, Number.isFinite(rawDiscountRate) ? rawDiscountRate : 0));
   let remainingFixedDiscount = resolvedDiscountType === 'fixed' ? Number(payload.discountAmount ?? payload.discount_amount ?? (payload.discountValue ?? payload.discount ?? 0)) : 0;
   const resolvedDiscountReason = payload.discountReason || payload.discount_reason;
 

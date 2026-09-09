@@ -260,8 +260,11 @@ async function attachStockToMedicines(medicines, { includeBatches = true } = {})
 
 async function paginatedMedicineRead(req) {
   const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.pageSize || req.query.limit, 10) || (req.query.view === 'pos' ? 30 : 50)));
+  const isPosView = String(req.query.view || '').toLowerCase() === 'pos';
+  const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.pageSize || req.query.limit, 10) || (isPosView ? 30 : 50)));
   const filter = buildMedicineFilter(req);
+  const saleableFrom = operationNow();
+  saleableFrom.setHours(0, 0, 0, 0);
   const sortBy = String(req.query.sortBy || 'name');
   const sortOrder = req.query.sortOrder === 'desc' ? -1 : 1;
   const sortMap = {
@@ -280,7 +283,8 @@ async function paginatedMedicineRead(req) {
           { $match: { $expr: { $and: [
             { $eq: ['$medicine_id', '$$medicineId'] },
             { $eq: ['$is_active', true] },
-            { $gt: [{ $ifNull: ['$quantity', '$quantity_base_units'] }, 0] }
+            { $gt: [{ $ifNull: ['$quantity_base_units', '$quantity'] }, 0] },
+            ...(isPosView ? [{ $gt: ['$expiry_date', saleableFrom] }] : [])
           ] } } },
           { $sort: { expiry_date: 1 } },
           { $project: compactBatchProjection() }
@@ -320,7 +324,7 @@ async function paginatedMedicineRead(req) {
     $facet: {
       medicines: [
         { $skip: (page - 1) * limit }, { $limit: limit },
-        ...(req.query.view === 'pos' ? [{ $unset: '_stockBatches' }] : [{ $unset: '_stockBatches' }])
+        ...(isPosView ? [{ $unset: '_stockBatches' }] : [{ $unset: '_stockBatches' }])
       ],
       total: [{ $count: 'value' }]
     }
@@ -913,18 +917,24 @@ exports.searchMedicines = async (req, res) => {
     const escapedTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const wordRegex = escapedTerm.split(/\s+/).filter(Boolean).join('|');
 
+    const saleableFrom = operationNow();
+    saleableFrom.setHours(0, 0, 0, 0);
+    const hospitalId = hospitalIdFor(req);
+
     const batchMatches = searchBatches === 'false'
       ? []
       : await MedicineBatch
         .find({
           batch_number: { $regex: escapedTerm, $options: 'i' },
-          is_active: true
+          is_active: true,
+          expiry_date: { $gt: saleableFrom },
+          $or: [{ quantity_base_units: { $gt: 0 } }, { quantity: { $gt: 0 } }]
         })
         .select('medicine_id')
         .limit(Number(limit));
 
     const medicineQuery = {
-      hospitalId: hospitalIdFor(req),
+      hospitalId,
       is_active: true,
       $or: [
         { name: { $regex: escapedTerm, $options: 'i' } },
@@ -958,6 +968,7 @@ exports.searchMedicines = async (req, res) => {
       .find({
         medicine_id: { $in: medicineIds },
         is_active: true,
+        expiry_date: { $gt: saleableFrom },
         $or: [{ quantity_base_units: { $gt: 0 } }, { quantity: { $gt: 0 } }]
       })
       .sort({ expiry_date: 1 })

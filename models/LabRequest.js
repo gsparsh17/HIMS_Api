@@ -166,7 +166,7 @@ const labRequestSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
-  collectionEventKey: { type: String, trim: true, index: true, sparse: true },
+  collectionEventKey: { type: String, trim: true },
   
   // Processing
   processing_started_at: {
@@ -412,7 +412,13 @@ labRequestSchema.methods.checkAbnormal = function(value) {
 labRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
 labRequestSchema.index({ hospitalId: 1, orderNumber: 1, patientId: 1 });
 labRequestSchema.index({ hospitalId: 1, requestGroupKey: 1, patientId: 1 });
-labRequestSchema.index({ hospitalId: 1, collectionEventKey: 1 }, { unique: true, sparse: true });
+labRequestSchema.index(
+  { hospitalId: 1, collectionEventKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { collectionEventKey: { $type: 'string' } }
+  }
+);
 labRequestSchema.index({ doctorId: 1, status: 1 });
 labRequestSchema.index({ status: 1, scheduledDate: 1 });
 labRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });

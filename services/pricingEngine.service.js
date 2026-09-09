@@ -439,127 +439,14 @@ function calculateAllocation({ contracted, standardAmount, item, coverage, input
 // Self Tariff Quote
 // ============================================
 
-async function selfTariffQuote(input, standardUnit, quantity, serviceDate) {
-  const payer = await Payer.findOne({
-    hospitalId: input.hospitalId,
-    code: 'SELF',
-    isActive: { $ne: false },
-  }).lean();
-
-  if (!payer) {
-    return null;
-  }
-
-  const RateCard = require('../models/RateCard');
-
-  const baseFilter = {
-    hospitalId: input.hospitalId,
-    payerId: payer._id,
-    status: 'active',
-    effectiveFrom: { $lte: serviceDate },
-    $or: [
-      { effectiveTo: { $exists: false } },
-      { effectiveTo: null },
-      { effectiveTo: { $gte: serviceDate } },
-    ],
-  };
-
-  const rateCard = await RateCard.findOne({
-    ...baseFilter,
-    version: 'HOSPITAL-BASIC-2026-08-15',
-  })
-    .sort({ effectiveFrom: -1, createdAt: -1 })
-    .lean()
-    || await RateCard.findOne(baseFilter)
-      .sort({ effectiveFrom: -1, createdAt: -1 })
-      .lean();
-
-  if (!rateCard) {
-    return null;
-  }
-
-  const item = await findItem({
-    hospitalId: input.hospitalId,
-    rateCardId: rateCard._id,
-    externalCode: input.externalCode || input.payerServiceCode,
-    internalServiceModel: input.internalServiceModel,
-    internalServiceId: input.internalServiceId,
-    serviceType: input.serviceType || serviceTypeFromCharge(input.chargeType),
-    doctorId: input.doctorId,
-    encounterType: input.encounterType,
-    visitType: input.visitType,
-    wardEntitlement: input.wardEntitlement,
-  });
-
-  if (!item) {
-    return null;
-  }
-
-  const cityTier = input.cityTier || 'I';
-  const accreditation = input.accreditation || 'nabh_nabl';
-  const wardEntitlement = input.wardEntitlement || 'general';
-
-  const applied = applyConfiguredRateRules({
-    item,
-    rules: rateCard.rules || {},
-    cityTier,
-    accreditation,
-    wardEntitlement,
-    sameOtSessionIndex: input.sameOtSessionIndex || 1,
-    bilateralSecond: input.bilateralSecond === true,
-    withinPackagePeriod: input.withinPackagePeriod === true,
-  });
-
-  const unit = Number(applied.contractedUnit);
-
-  if (!Number.isFinite(unit) || unit < 0) {
-    return null;
-  }
-
-  const total = round(unit * quantity, rateCard.rules?.rounding);
-  const standard = round(Number(standardUnit || unit) * quantity, rateCard.rules?.rounding);
-
-  return {
-    resultType: 'self',
-    serviceCode: item.externalCode,
-    rateCard: {
-      id: rateCard._id,
-      version: rateCard.version,
-      name: rateCard.name,
-    },
-    rateCardItemId: item._id,
-    inputs: {
-      payer: 'SELF',
-      serviceDate,
-      quantity,
-      cityTier,
-      accreditation,
-      wardEntitlement,
-    },
-    amounts: {
-      hospitalStandard: standard,
-      contracted: total,
-      eligible: total,
-      sponsorLiability: 0,
-      patientLiability: total,
-      nonAdmissible: 0,
-      hospitalAdjustment: round(standard - total),
-      hospitalConcession: 0,
-      packageAbsorbed: 0,
-      coPay: 0,
-      deductible: 0,
-      fixedPatientShare: 0,
-      uncovered: 0,
-    },
-    explanation: [
-      'Hospital SELF tariff master rate selected',
-      ...(applied.explanation || []),
-    ],
-    ruleTrace: [
-      { rule: 'hospital_self_tariff', rateCardItemId: item._id },
-      ...(applied.ruleTrace || []),
-    ],
-  };
+async function selfTariffQuote(input, standardUnit, quantity) {
+  // Compatibility wrapper retained for older imports/tests. SELF pricing is not
+  // a negotiated tariff: the current hospital-admin service master is the sole
+  // source of truth. Rate cards are reserved for sponsored/contracted payers.
+  return selfQuote(input, standardUnit, quantity, [
+    'Standard hospital cash rate selected',
+    'SELF rate cards are ignored so cash pricing stays identical to the hospital master',
+  ]);
 }
 
 // ============================================
@@ -578,17 +465,18 @@ async function quotePricing(input) {
       ? await activeAppointmentCoverage(input.hospitalId, input.appointmentId)
       : null);
 
-  // Self coverage handling
-  if (!coverage || coverage.payerCategory === 'self' || coverage.payerId?.type === 'self') {
-    const tariffQuote = await selfTariffQuote(input, standardUnit, quantity, serviceDate);
-
-    if (tariffQuote) {
-      return tariffQuote;
-    }
-
+  // SELF/no-coverage pricing must always equal the current hospital-admin
+  // master price. A SELF payer record may still exist for coverage/accounting
+  // classification, but it must never introduce a second cash-price source.
+  // Normalise case because older coverage rows may contain `SELF` while newer
+  // rows use `self`.
+  const payerCategory = String(coverage?.payerCategory || '').trim().toLowerCase();
+  const embeddedPayerType = String(coverage?.payerId?.type || '').trim().toLowerCase();
+  if (!coverage || payerCategory === 'self' || embeddedPayerType === 'self') {
     return selfQuote(input, standardUnit, quantity, [
       'Standard hospital cash rate selected',
       coverage ? 'SELF coverage selected' : 'No sponsor coverage selected',
+      'SELF contracted amount equals hospital standard amount',
     ]);
   }
 

@@ -346,6 +346,21 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
     const medicine = batch.medicine_id;
     if (!medicine) throw new Error('Medicine linked to selected batch not found');
 
+    if (batch.is_active === false) {
+      const error = new Error(`Batch ${batch.batch_number || batch._id} is inactive and cannot be sold`);
+      error.statusCode = 409;
+      throw error;
+    }
+    const today = operationNow();
+    today.setHours(0, 0, 0, 0);
+    const expiryDate = batch.expiry_date ? new Date(batch.expiry_date) : null;
+    if (!expiryDate || Number.isNaN(expiryDate.getTime()) || expiryDate <= today) {
+      const error = new Error(`Batch ${batch.batch_number || batch._id} for ${medicine.name} has expired and cannot be sold`);
+      error.statusCode = 409;
+      error.code = 'MEDICINE_BATCH_EXPIRED';
+      throw error;
+    }
+
     let quantityBaseUnits = calculateRequiredBaseUnits(rawItem);
     const unitsPerPack = Number(rawItem.units_per_pack || rawItem.unitsPerPack || batch.units_per_pack || medicine.units_per_pack || 1);
     const allowLoose = honorLooseSale && medicine.allow_loose_sale !== false;
@@ -357,6 +372,12 @@ async function buildSaleItems(rawItems = [], { honorLooseSale = true, defaultDoc
     }
 
     const serverRatePerBaseUnit = Number(batch.selling_price_per_base_unit || (batch.selling_price || 0) / unitsPerPack || medicine.selling_price_per_base_unit || (medicine.selling_price || 0) / unitsPerPack || 0);
+    if (!(serverRatePerBaseUnit > 0)) {
+      const error = new Error(`Selling price is not configured for batch ${batch.batch_number || batch._id} (${medicine.name})`);
+      error.statusCode = 409;
+      error.code = 'MEDICINE_SELLING_PRICE_REQUIRED';
+      throw error;
+    }
     const requestedRate = Number(rawItem.rate_per_base_unit ?? rawItem.unit_price ?? serverRatePerBaseUnit);
     const ratePerBaseUnit = allowPriceOverride ? requestedRate : serverRatePerBaseUnit;
     if (!allowPriceOverride && Math.abs(requestedRate - serverRatePerBaseUnit) > 0.009) {

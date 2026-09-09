@@ -2575,8 +2575,10 @@ exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
 // ========== NEW: Get Inventory Batches for POS ==========
 exports.getInventoryBatches = asyncHandler(async (req, res) => {
   const { medicineId, status = 'active', limit = 100 } = req.query;
+  const today = operationNow();
+  today.setHours(0, 0, 0, 0);
 
-  const query = {};
+  const query = { expiry_date: { $gt: today } };
   if (medicineId) query.medicine_id = medicineId;
   if (status === 'active') query.is_active = true;
   if (status === 'inactive') query.is_active = false;

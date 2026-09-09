@@ -599,6 +599,12 @@ exports.receivePurchaseOrder = async (req, res) => {
       const mrpPerPack = roundMoney(receivedItem.mrp_per_pack ?? orderItem.mrp_per_pack ?? medicine.mrp ?? sellingPricePerPack);
       const purchasePricePerBaseUnit = roundMoney(receivedItem.purchase_price_per_base_unit ?? purchasePricePerPack / unitsPerPack);
       const sellingPricePerBaseUnit = roundMoney(receivedItem.selling_price_per_base_unit ?? sellingPricePerPack / unitsPerPack);
+      if (!(sellingPricePerPack > 0) || !(sellingPricePerBaseUnit > 0)) {
+        return res.status(400).json({ error: `Selling price must be greater than zero for ${orderItem.medicine_name}.` });
+      }
+      if (mrpPerPack > 0 && sellingPricePerPack - mrpPerPack > 0.009) {
+        return res.status(400).json({ error: `Selling price cannot exceed MRP for ${orderItem.medicine_name}.` });
+      }
 
       const batch = new MedicineBatch({
         medicine_id: medicine._id,

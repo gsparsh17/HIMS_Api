@@ -514,14 +514,39 @@ exports.createAdmission = async (req, res) => {
       configuredRegistrationFee = Math.max(0, Number(hospitalChargeConfig?.ipdCharges?.registrationFee || 0));
       configuredAdmissionFee = Math.max(0, Number(hospitalChargeConfig?.ipdCharges?.admissionFee || 0));
       const requestedSelectedMode = payload.selectedMode || payload.selectedBillingMode || payload.billingMode;
+      const requestedFixedAdmissionDiscount = payload.discountType === 'percentage'
+        ? 0
+        : Math.max(0, Number(payload.discountAmount ?? payload.discountValue ?? 0));
+      let remainingFixedAdmissionDiscount = requestedFixedAdmissionDiscount;
       const financeAdjustments = {
-        discountType: payload.discountType,
+        discountType: payload.discountType || (requestedFixedAdmissionDiscount > 0 ? 'fixed' : undefined),
         discountValue: payload.discountValue,
         discountRate: payload.discountRate,
         discountAmount: payload.discountAmount,
         discountReason: payload.discountReason,
         taxMode: payload.taxMode,
         taxRate: payload.taxRate
+      };
+      // A fixed admission-level concession is a single encounter amount, not an
+      // amount to repeat on Bed + Registration + Admission Fee. Consume it once
+      // across the initial lines in posting order. Percentage concessions remain
+      // line-relative and can safely be reused on every line.
+      const adjustmentsForInitialCharge = (lineGross) => {
+        if (financeAdjustments.discountType === 'percentage' || requestedFixedAdmissionDiscount <= 0) {
+          return financeAdjustments;
+        }
+        const allocated = Math.min(
+          Math.max(0, Number(lineGross || 0)),
+          Math.max(0, remainingFixedAdmissionDiscount)
+        );
+        remainingFixedAdmissionDiscount = Math.max(0, Number((remainingFixedAdmissionDiscount - allocated).toFixed(2)));
+        return {
+          ...financeAdjustments,
+          discountType: 'fixed',
+          discountValue: allocated,
+          discountAmount: allocated,
+          discountRate: 0
+        };
       };
 
       if (bed) {
@@ -577,7 +602,7 @@ exports.createAdmission = async (req, res) => {
           session,
           user: req.user,
           selectedMode: requestedSelectedMode,
-          adjustments: financeAdjustments,
+          adjustments: adjustmentsForInitialCharge(dailyBedCharge),
           requestedDeposit: payload.requestedDeposit,
           overrideReason: payload.billingModeOverrideReason
         });
@@ -604,7 +629,7 @@ exports.createAdmission = async (req, res) => {
           session,
           user: req.user,
           selectedMode: requestedSelectedMode,
-          adjustments: financeAdjustments,
+          adjustments: adjustmentsForInitialCharge(configuredRegistrationFee),
           requestedDeposit: payload.requestedDeposit,
           overrideReason: payload.billingModeOverrideReason
         }));
@@ -627,7 +652,7 @@ exports.createAdmission = async (req, res) => {
           session,
           user: req.user,
           selectedMode: requestedSelectedMode,
-          adjustments: financeAdjustments,
+          adjustments: adjustmentsForInitialCharge(configuredAdmissionFee),
           requestedDeposit: payload.requestedDeposit,
           overrideReason: payload.billingModeOverrideReason
         }));

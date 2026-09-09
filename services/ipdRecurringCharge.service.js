@@ -9,7 +9,7 @@ const { quotePricing, pricingSnapshot } = require('./pricingEngine.service');
 const { activeCoverage } = require('./coverage.service');
 const { replaceCoverageUtilization } = require('./coverageUtilization.service');
 const { resolveFinancialPolicy } = require('./financialPolicy.service');
-const { DAILY_TARIFF_CODES, resolveHospitalTariffRate, wardEntitlementFrom } = require('./hospitalTariff.service');
+const { DAILY_TARIFF_CODES, wardEntitlementFrom } = require('./hospitalTariff.service');
 const { userHospitalId, normalizeObjectId } = require('../utils/hospitalScope');
 const { loadIPDWorkflowPolicy } = require('./ipdWorkflowPolicy.service');
 
@@ -440,31 +440,13 @@ async function ensureAdmissionDailyCharges(
 
     const ward = segment?.bedType || bed?.bedType || 'General';
 
-    const bedTariff = await resolveHospitalTariffRate({
-      hospitalId: admission.hospitalId,
-      externalCode: DAILY_TARIFF_CODES.bed,
-      wardEntitlement: ward,
-      serviceDate: keyToChargeDate(key)
-    });
-
-    const nursingTariff = await resolveHospitalTariffRate({
-      hospitalId: admission.hospitalId,
-      externalCode: DAILY_TARIFF_CODES.nursing,
-      wardEntitlement: ward,
-      serviceDate: keyToChargeDate(key)
-    });
-
-    const rmoTariff = await resolveHospitalTariffRate({
-      hospitalId: admission.hospitalId,
-      externalCode: DAILY_TARIFF_CODES.rmo,
-      wardEntitlement: ward,
-      serviceDate: keyToChargeDate(key)
-    });
-
+    // Hospital-admin masters are the standard SELF price source. Do not route
+    // recurring cash/IPD charges through the legacy HOSPITAL-BASIC SELF card;
+    // sponsored coverage is still applied later by quotePricing().
     const rates = {
-      bed: Number(bedTariff?.amount ?? segment?.dailyRate ?? bed?.dailyCharge ?? 0),
-      nursing: Number(nursingTariff?.amount ?? fallback.nursing ?? 0),
-      rmo: Number(rmoTariff?.amount ?? fallback.rmo ?? 0)
+      bed: Number(bed?.dailyCharge ?? segment?.dailyRate ?? 0),
+      nursing: Number(fallback.nursing ?? 0),
+      rmo: Number(fallback.rmo ?? 0)
     };
 
     const labels = {
@@ -487,7 +469,7 @@ async function ensureAdmissionDailyCharges(
         result.skipped.push({
           key,
           kind,
-          reason: 'No positive configured tariff/fallback rate'
+          reason: 'No positive hospital master/configured rate'
         });
         continue;
       }
