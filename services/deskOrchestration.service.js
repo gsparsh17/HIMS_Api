@@ -26,7 +26,7 @@ const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require
 const { resolveDeclaredCoveragePreference } = require('./patientCoveragePreference.service');
 const { quotePricing } = require('./pricingEngine.service');
 const { resolveDoctorTariff } = require('./doctorTariff.service');
-const { resolveFinancialPolicy } = require('./financialPolicy.service');
+const { resolveFinancialPolicy, loadFinancialPolicy, summarizeDiscountPolicy } = require('./financialPolicy.service');
 const { _hasActionPermission } = require('../middlewares/auth');
 
 const round = value => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
@@ -241,7 +241,8 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
       discountValue: rowDiscountValue,
       discountReason: rowDiscountReason,
       taxMode: row.taxMode,
-      taxRate: row.taxRate
+      taxRate: row.taxRate,
+      taxReason: row.taxReason
     };
     // Registration/admission creation already posts canonical IPD fee
     // charges. Price the Desk row from that source charge (including payer
@@ -1074,6 +1075,52 @@ async function previewDeskCheckout(payload, user) {
 
   const totals = previewTotals(decoratedRows);
   const payment = previewPayment(totals, payload.payment, encounterType);
+
+  // Settlement discount is distributed into canonical service rows so the
+  // invoice snapshot and print documents retain line-level discount evidence.
+  // For the Desk editor, however, percentage/fixed settlement input must be
+  // calculated from the server-priced amount *before that settlement discount*
+  // (while preserving any explicit line discounts, payer allocation and normal
+  // tax policy). Re-price once without the global settlement discount when one
+  // is present so the browser never has to guess this base from cart gross.
+  const settlementDiscountInput = Number(
+    payload.payment?.settlementDiscountValue
+      ?? payload.payment?.settlementDiscountRate
+      ?? payload.payment?.settlementDiscountAmount
+      ?? 0
+  );
+  let settlementAdjustmentBase = totals.payableNow;
+  if (payload.payment?.collectNow && settlementDiscountInput > 0) {
+    const baselinePayment = {
+      ...(payload.payment || {}),
+      settlementDiscountValue: 0,
+      settlementDiscountRate: 0,
+      settlementDiscountAmount: 0
+    };
+    const baselineRows = await authoritativeCart({
+      user,
+      cart: payload.serviceCart,
+      encounterType,
+      payload: { ...payload, payment: baselinePayment }
+    });
+    settlementAdjustmentBase = previewTotals(baselineRows).payableNow;
+  }
+
+  const globalFinancialPolicy = await loadFinancialPolicy(userHospitalId(user));
+  const settlementPolicy = {
+    discount: summarizeDiscountPolicy(globalFinancialPolicy.discount || {}, user),
+    canAdjustTax: _hasActionPermission(user, 'tax_override'),
+    adjustmentBase: round(settlementAdjustmentBase)
+  };
+
+  if (payment?.taxAdjustment && !settlementPolicy.canAdjustTax) {
+    throw checkoutError(
+      'Manual tax adjustment requires tax_override permission',
+      403,
+      'TAX_OVERRIDE_PERMISSION_REQUIRED'
+    );
+  }
+
   const clinicalContext = await resolveClinicalContext({
     payload,
     user,
@@ -1119,6 +1166,7 @@ async function previewDeskCheckout(payload, user) {
     rows: decoratedRows,
     totals,
     payment,
+    settlementPolicy,
     clinicalContext,
     warnings,
     previewToken: stableHash(canonicalPayload),
@@ -1696,7 +1744,8 @@ async function commitDeskCheckout(payload, user) {
           settlementDiscountAmount,
           settlementDiscountReason: payload.payment.settlementDiscountReason || '',
           taxAdjustmentAmount,
-          adjustmentReason: payload.payment.taxAdjustmentReason || payload.payment.settlementDiscountReason || '',
+          taxAdjustmentReason: payload.payment.taxAdjustmentReason || '',
+          adjustmentReason: payload.payment.taxAdjustmentReason || '',
           paymentMethod,
           reference,
           sourceModule: 'IPD',

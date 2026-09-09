@@ -2095,6 +2095,12 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
   }
   const settlementDiscountAmount = optionalMoney(payload.settlementDiscountAmount ?? payload.finalDiscountAmount);
   const taxAdjustmentAmount = optionalMoney(payload.taxAdjustmentAmount);
+  if (taxAdjustmentAmount !== 0 && !_hasActionPermission(user, 'tax_override')) {
+    const error = new Error('Manual tax adjustment requires tax_override permission');
+    error.statusCode = 403;
+    error.code = 'TAX_OVERRIDE_PERMISSION_REQUIRED';
+    throw error;
+  }
   const explicitDeferredCredit = requestedDeferredCredit(payload);
   const deferRemaining = payload.deferRemaining === true || payload.authorizeRemainingCredit === true;
 
@@ -2115,9 +2121,16 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
     error.statusCode = 409;
     throw error;
   }
-  if ((settlementDiscountAmount > 0 || taxAdjustmentAmount !== 0) && !String(payload.settlementDiscountReason || payload.adjustmentReason || '').trim()) {
-    const error = new Error('Reason is required for settlement discount or tax adjustment');
+  if (settlementDiscountAmount > 0 && !String(payload.settlementDiscountReason || payload.adjustmentReason || '').trim()) {
+    const error = new Error('Settlement discount reason is required');
     error.statusCode = 400;
+    error.code = 'DISCOUNT_REASON_REQUIRED';
+    throw error;
+  }
+  if (taxAdjustmentAmount !== 0 && !String(payload.taxAdjustmentReason || payload.adjustmentReason || '').trim()) {
+    const error = new Error('Tax adjustment reason is required');
+    error.statusCode = 400;
+    error.code = 'TAX_OVERRIDE_REASON_REQUIRED';
     throw error;
   }
   if ((explicitDeferredCredit > 0 || deferRemaining) && !String(payload.deferredCreditReason || payload.creditReason || payload.deferralReason || '').trim()) {

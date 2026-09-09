@@ -111,6 +111,22 @@ function roleDiscountCeiling(policy, user) {
   return Math.min(hospitalMax, Math.max(0, Number(policy.registrarMaxPercentage ?? hospitalMax)));
 }
 
+function summarizeDiscountPolicy(discountPolicy = {}, user) {
+  const override = _hasActionPermission(user, 'discount_override');
+  const hospitalMax = Math.max(0, Math.min(100, Number(discountPolicy.maxPercentage ?? 0)));
+  return {
+    enabled: discountPolicy.enabled !== false,
+    canApply: _hasActionPermission(user, 'billing_apply_discount') || override,
+    canOverride: override,
+    hospitalMaxPercentage: hospitalMax,
+    directPercentageCeiling: override ? 100 : roleDiscountCeiling(discountPolicy, user),
+    maxFixedAmount: Math.max(0, round(discountPolicy.maxFixedAmount || 0)),
+    requireReasonAbove: Math.max(0, Number(discountPolicy.requireReasonAbove || 0)),
+    allowPercentage: discountPolicy.allowPercentage !== false,
+    allowFixed: discountPolicy.allowFixed !== false
+  };
+}
+
 function normalizePartial(partial = {}) {
   return {
     type: ['PERCENTAGE', 'FIXED', 'MINIMUM'].includes(upper(partial.type)) ? upper(partial.type) : 'PERCENTAGE',
@@ -450,7 +466,8 @@ async function resolveFinancialPolicy({
       canApplyDiscount: _hasActionPermission(user, 'billing_apply_discount'),
       canOverridePrice: _hasActionPermission(user, 'pricing_override'),
       canOverrideMode: _hasActionPermission(user, 'billing_mode_override'),
-      canOverrideTax: _hasActionPermission(user, 'tax_override')
+      canOverrideTax: _hasActionPermission(user, 'tax_override'),
+      discountPolicy: summarizeDiscountPolicy(resolveDiscountConfig(policy.discount, rule), user)
     }
   };
 }
@@ -459,6 +476,7 @@ module.exports = {
   MODES,
   BILLING_INTENT_BY_MODE,
   loadFinancialPolicy,
+  summarizeDiscountPolicy,
   resolveFinancialPolicy,
   calculateRequiredNow,
   applyDiscountAndTax
