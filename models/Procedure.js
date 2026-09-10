@@ -9,14 +9,54 @@ const { addSoftDeleteFields } = require('../utils/softDelete');
  * references cannot accidentally cross an installation boundary. Clients must
  * never submit or choose this value; controllers derive it from req.user.
  */
+function normalizeProcedureCategory(val) {
+  if (!val) return 'General';
+  const trimmed = String(val).trim();
+  return trimmed || 'General';
+}
+
+function normalizeServiceDomain(val) {
+  if (!val) return 'procedure';
+  const s = String(val).trim().toLowerCase();
+  const valid = ['procedure', 'surgery', 'therapy', 'consultation', 'diagnostic', 'other'];
+  return valid.includes(s) ? s : 'procedure';
+}
+
+function normalizeFacilityLevel(val) {
+  const validMap = { primary: 'Primary', secondary: 'Secondary', tertiary: 'Tertiary' };
+  const arr = Array.isArray(val) ? val : String(val || '').split(',');
+  const normalized = arr.map((item) => validMap[String(item || '').trim().toLowerCase()]).filter(Boolean);
+  return normalized.length ? [...new Set(normalized)] : ['Primary'];
+}
+
+function normalizeInsuranceCoverage(val) {
+  if (!val) return 'Partial';
+  const s = String(val).trim().toLowerCase();
+  if (s === 'none' || s === 'no') return 'None';
+  if (s === 'full' || s === 'yes') return 'Full';
+  if (s.includes('pre-auth') || s.includes('preauthorization') || s.includes('pre-authorization')) return 'Pre-authorization Required';
+  return 'Partial';
+}
+
 const procedureSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   code: { type: String, required: true, trim: true, uppercase: true, index: true },
   name: { type: String, required: true, trim: true, index: true },
-  category: { type: String, required: true, trim: true, index: true },
+  category: {
+    type: String,
+    trim: true,
+    default: 'General',
+    set: normalizeProcedureCategory,
+    index: true
+  },
   subcategory: { type: String, trim: true },
   specialty: { type: String, trim: true, index: true },
-  serviceDomain: { type: String, enum: ['procedure', 'surgery', 'therapy', 'consultation', 'diagnostic', 'other'], default: 'procedure', index: true },
+  serviceDomain: {
+    type: String,
+    default: 'procedure',
+    set: normalizeServiceDomain,
+    index: true
+  },
   description: { type: String, trim: true },
   indications: [{ type: String, trim: true }],
   contraindications: [{ type: String, trim: true }],
@@ -36,15 +76,19 @@ const procedureSchema = new mongoose.Schema({
   allow_zero_price: { type: Boolean, default: false },
   insurance_coverage: {
     type: String,
-    enum: ['Full', 'Partial', 'None', 'Pre-authorization Required'],
-    default: 'Partial'
+    default: 'Partial',
+    set: normalizeInsuranceCoverage
   },
   cpt_code: { type: String, trim: true, uppercase: true },
   icd10_codes: [{ type: String, trim: true, uppercase: true }],
   equipment_required: [{ type: String, trim: true }],
   consumables: [{ name: String, quantity: Number, unit: String }],
   personnel_required: { type: [String], default: ['Doctor'] },
-  facility_level: { type: [String], enum: ['Primary', 'Secondary', 'Tertiary'], default: ['Primary'] },
+  facility_level: {
+    type: [String],
+    default: ['Primary'],
+    set: normalizeFacilityLevel
+  },
   pre_procedure_instructions: { type: String, trim: true },
   post_procedure_instructions: { type: String, trim: true },
   consent_required: { type: Boolean, default: true },
@@ -78,7 +122,12 @@ procedureSchema.virtual('display_name').get(function displayName() {
   return `${this.code} - ${this.name}`;
 });
 
-procedureSchema.pre('validate', function validateBillablePrice(next) {
+procedureSchema.pre('validate', function validateProcedure(next) {
+  this.category = normalizeProcedureCategory(this.category);
+  this.serviceDomain = normalizeServiceDomain(this.serviceDomain);
+  this.insurance_coverage = normalizeInsuranceCoverage(this.insurance_coverage);
+  this.facility_level = normalizeFacilityLevel(this.facility_level);
+
   if (this.is_active && this.is_billable && Number(this.base_price || 0) === 0 && !this.allow_zero_price) {
     this.invalidate('base_price', 'Active billable procedures require a positive cash price or allow_zero_price=true');
   }

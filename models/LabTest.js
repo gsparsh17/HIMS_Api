@@ -20,14 +20,46 @@ const labParameterSchema = new mongoose.Schema({
 
 const BROAD_SPECIMEN_TYPES = ['Blood', 'Urine', 'Stool', 'CSF', 'Sputum', 'Tissue', 'Swab', 'Body Fluid', 'Semen', 'Other', 'Not Applicable'];
 
+const STANDARD_LAB_CATEGORIES = [
+  'Hematology', 'Biochemistry', 'Microbiology', 'Immunology',
+  'Pathology', 'Serology', 'Toxicology', 'Endocrinology',
+  'Molecular Diagnostics', 'Genetic Testing', 'Cardiology', 'Radiology', 'Other'
+];
+
+function normalizeLabCategory(val) {
+  if (!val) return 'Other';
+  const trimmed = String(val).trim();
+  if (!trimmed) return 'Other';
+  const matched = STANDARD_LAB_CATEGORIES.find((c) => c.toLowerCase() === trimmed.toLowerCase());
+  return matched || trimmed;
+}
+
+function normalizeLabSpecimen(val) {
+  if (!val) return 'Blood';
+  const trimmed = String(val).trim();
+  if (!trimmed) return 'Blood';
+  const matched = BROAD_SPECIMEN_TYPES.find((b) => b.toLowerCase() === trimmed.toLowerCase());
+  return matched || trimmed;
+}
+
+function normalizeInsuranceCoverage(val) {
+  if (!val) return 'Partial';
+  const s = String(val).trim().toLowerCase();
+  if (s === 'none' || s === 'no') return 'None';
+  if (s === 'full' || s === 'yes') return 'Full';
+  if (s.includes('pre-auth') || s.includes('preauthorization') || s.includes('pre-authorization')) return 'Pre-authorization Required';
+  return 'Partial';
+}
+
 const labTestSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   code: { type: String, required: true, uppercase: true, trim: true, index: true },
   name: { type: String, required: true, trim: true, index: true },
   category: {
     type: String,
-    enum: ['Hematology', 'Biochemistry', 'Microbiology', 'Immunology', 'Pathology', 'Serology', 'Toxicology', 'Endocrinology', 'Molecular Diagnostics', 'Genetic Testing', 'Other'],
+    trim: true,
     default: 'Other',
+    set: normalizeLabCategory,
     index: true
   },
   subCategory: { type: String, trim: true },
@@ -42,11 +74,21 @@ const labTestSchema = new mongoose.Schema({
   },
   description: { type: String, trim: true },
   aliases: [{ type: String, trim: true }],
-  service_domain: { type: String, enum: ['laboratory'], default: 'laboratory', immutable: true },
+  service_domain: {
+    type: String,
+    default: 'laboratory',
+    trim: true,
+    set: (v) => ((v && String(v).trim().toLowerCase()) ? String(v).trim().toLowerCase() : 'laboratory')
+  },
   report_template_id: { type: String, trim: true, index: true },
   report_template_name: { type: String, trim: true },
   report_template_version: { type: String, trim: true },
-  specimen_type: { type: String, enum: BROAD_SPECIMEN_TYPES, default: 'Blood' },
+  specimen_type: {
+    type: String,
+    trim: true,
+    default: 'Blood',
+    set: normalizeLabSpecimen
+  },
   // Detailed source wording such as "EDTA whole blood" or "Plasma (citrate)".
   specimen_detail: { type: String, trim: true },
   specimen_volume: { type: String, trim: true },
@@ -61,7 +103,11 @@ const labTestSchema = new mongoose.Schema({
   units: { type: String, trim: true },
   base_price: { type: Number, default: 0, min: 0 },
   priceHistory: [{ amount: { type: Number, min: 0 }, effectiveFrom: Date, effectiveTo: Date, reason: String, changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } }],
-  insurance_coverage: { type: String, enum: ['None', 'Partial', 'Full'], default: 'Partial' },
+  insurance_coverage: {
+    type: String,
+    default: 'Partial',
+    set: normalizeInsuranceCoverage
+  },
   is_billable: { type: Boolean, default: true, index: true },
   allow_zero_price: { type: Boolean, default: false },
   is_active: { type: Boolean, default: true, index: true },
@@ -77,6 +123,11 @@ labTestSchema.index({ hospitalId: 1, name: 1 });
 labTestSchema.index({ hospitalId: 1, category: 1, is_active: 1, is_billable: 1 });
 
 labTestSchema.pre('validate', function validateLab(next) {
+  this.category = normalizeLabCategory(this.category);
+  this.specimen_type = normalizeLabSpecimen(this.specimen_type);
+  this.insurance_coverage = normalizeInsuranceCoverage(this.insurance_coverage);
+  this.service_domain = (this.service_domain && String(this.service_domain).trim().toLowerCase()) || 'laboratory';
+
   if (this.is_active && this.is_billable && Number(this.base_price || 0) === 0 && !this.allow_zero_price) {
     this.invalidate('base_price', 'Active billable lab tests require a positive cash price or allow_zero_price=true');
   }
@@ -92,4 +143,5 @@ labTestSchema.methods.incrementUsage = function incrementUsage() {
 addSoftDeleteFields(labTestSchema);
 
 module.exports = mongoose.model('LabTest', labTestSchema);
+module.exports.STANDARD_LAB_CATEGORIES = STANDARD_LAB_CATEGORIES;
 module.exports.BROAD_SPECIMEN_TYPES = BROAD_SPECIMEN_TYPES;

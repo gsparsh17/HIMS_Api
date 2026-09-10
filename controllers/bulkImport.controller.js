@@ -313,26 +313,71 @@ function normalize(entity, row, hospitalId, userId) {
   }
 
   if (entity === 'lab-tests') {
+    let rawCategory = str('category');
+    let category = 'Other';
+    if (rawCategory) {
+      const trimmed = String(rawCategory).trim();
+      const standard = ['Hematology', 'Biochemistry', 'Microbiology', 'Immunology', 'Pathology', 'Serology', 'Toxicology', 'Endocrinology', 'Molecular Diagnostics', 'Genetic Testing', 'Cardiology', 'Radiology', 'Other'];
+      const matched = standard.find((c) => c.toLowerCase() === trimmed.toLowerCase());
+      category = matched || trimmed || 'Other';
+    }
+
+    let insuranceCoverage = 'Partial';
+    if (str('insurance_coverage')) {
+      const cov = String(str('insurance_coverage')).trim().toLowerCase();
+      if (cov === 'none' || cov === 'no') insuranceCoverage = 'None';
+      else if (cov === 'full' || cov === 'yes') insuranceCoverage = 'Full';
+      else if (cov.includes('pre-auth') || cov.includes('preauthorization') || cov.includes('pre-authorization')) insuranceCoverage = 'Pre-authorization Required';
+      else insuranceCoverage = 'Partial';
+    }
+
     return {
-      hospitalId, code: String(str('code') || '').toUpperCase(), name: str('name'), category: str('category'),
+      hospitalId, code: String(str('code') || '').toUpperCase(), name: str('name'), category,
       subCategory: str('subCategory'), description: str('description'), specimen_type: str('specimen_type') || 'Blood', specimen_detail: str('specimen_detail') || str('specimen_type'),
       specimen_volume: str('specimen_volume'), container_type: str('container_type'), fasting_required: bool(str('fasting_required')),
       fasting_hours: num(str('fasting_hours')) || 0, preparation_instructions: str('preparation_instructions'),
       turnaround_time_hours: num(str('turnaround_time_hours')) || 24, normal_range: str('normal_range'),
       critical_low: str('critical_low'), critical_high: str('critical_high'), units: str('units'),
-      base_price: num(str('base_price')) || 0, insurance_coverage: str('insurance_coverage') || 'Partial',
+      base_price: num(str('base_price')) || 0, insurance_coverage: insuranceCoverage,
       is_billable: str('is_billable') === '' ? true : bool(str('is_billable')), allow_zero_price: bool(str('allow_zero_price')),
       is_active: str('is_active') === '' ? true : bool(str('is_active')), createdBy: userId
     };
   }
 
   if (entity === 'radiology-tests') {
+    let rawCategory = str('category');
+    let category = 'Other';
+    if (rawCategory) {
+      const trimmed = String(rawCategory).trim();
+      const lower = trimmed.toLowerCase();
+      const standard = ['X-Ray', 'CT Scan', 'MRI', 'Ultrasound', 'ECG', 'Echocardiography', 'EEG', 'EMG', 'NCV', 'TMT', 'Mammography', 'PET Scan', 'DEXA Scan', 'Fluoroscopy', 'Angiography', 'Interventional Radiology', 'Nuclear Medicine', 'Other'];
+      let matched = standard.find((c) => c.toLowerCase() === lower);
+      if (!matched) {
+        if (lower === 'xray') matched = 'X-Ray';
+        else if (lower === 'ct') matched = 'CT Scan';
+        else if (lower === 'usg' || lower === 'sonography') matched = 'Ultrasound';
+        else if (lower === 'echo') matched = 'Echocardiography';
+        else if (lower === 'pet') matched = 'PET Scan';
+        else if (lower === 'dexa') matched = 'DEXA Scan';
+      }
+      category = matched || trimmed || 'Other';
+    }
+
+    let insuranceCoverage = 'Partial';
+    if (str('insurance_coverage')) {
+      const cov = String(str('insurance_coverage')).trim().toLowerCase();
+      if (cov === 'none' || cov === 'no') insuranceCoverage = 'None';
+      else if (cov === 'full' || cov === 'yes') insuranceCoverage = 'Full';
+      else if (cov.includes('pre-auth') || cov.includes('preauthorization') || cov.includes('pre-authorization')) insuranceCoverage = 'Pre-authorization Required';
+      else insuranceCoverage = 'Partial';
+    }
+
     return {
-      hospitalId, code: String(str('code') || '').toUpperCase(), name: str('name'), category: str('category'),
+      hospitalId, code: String(str('code') || '').toUpperCase(), name: str('name'), category,
       description: str('description'), preparation_instructions: str('preparation_instructions'), contraindications: str('contraindications'),
       contrast_required: bool(str('contrast_required')), contrast_details: str('contrast_details'),
       turnaround_time_hours: num(str('turnaround_time_hours')) || 24, base_price: num(str('base_price')) || 0,
-      insurance_coverage: str('insurance_coverage') || 'Partial', template_only: bool(str('template_only')),
+      insurance_coverage: insuranceCoverage, template_only: bool(str('template_only')),
       is_billable: str('is_billable') === '' ? !bool(str('template_only')) : bool(str('is_billable')), allow_zero_price: bool(str('allow_zero_price')),
       canonical_code: String(str('canonical_code') || '').toUpperCase() || undefined, is_active: str('is_active') === '' ? true : bool(str('is_active')),
       createdBy: userId, updatedBy: userId
@@ -340,13 +385,30 @@ function normalize(entity, row, hospitalId, userId) {
   }
 
   if (entity === 'procedures') {
+    const rawCategory = str('category');
+    const category = rawCategory ? String(rawCategory).trim() || 'General' : 'General';
+
+    const rawLevels = parseArray(str('facility_level'));
+    const validMap = { primary: 'Primary', secondary: 'Secondary', tertiary: 'Tertiary' };
+    const normalizedLevels = rawLevels.map((lvl) => validMap[String(lvl || '').trim().toLowerCase()]).filter(Boolean);
+    const facility_level = normalizedLevels.length ? [...new Set(normalizedLevels)] : ['Primary'];
+
+    let insuranceCoverage = 'Partial';
+    if (str('insurance_coverage')) {
+      const cov = String(str('insurance_coverage')).trim().toLowerCase();
+      if (cov === 'none' || cov === 'no') insuranceCoverage = 'None';
+      else if (cov === 'full' || cov === 'yes') insuranceCoverage = 'Full';
+      else if (cov.includes('pre-auth') || cov.includes('preauthorization') || cov.includes('pre-authorization')) insuranceCoverage = 'Pre-authorization Required';
+      else insuranceCoverage = 'Partial';
+    }
+
     return {
-      hospitalId, code: String(str('code') || '').toUpperCase(), name: str('name'), category: str('category'), subcategory: str('subcategory'),
+      hospitalId, code: String(str('code') || '').toUpperCase(), name: str('name'), category, subcategory: str('subcategory'),
       description: str('description'), base_price: num(str('base_price')) || 0, duration_minutes: num(str('duration_minutes')) || 30,
       cpt_code: str('cpt_code'), icd10_codes: parseArray(str('icd10_codes')), equipment_required: parseArray(str('equipment_required')),
       pre_procedure_instructions: str('pre_procedure_instructions'), post_procedure_instructions: str('post_procedure_instructions'),
       consent_required: str('consent_required') === '' ? true : bool(str('consent_required')),
-      facility_level: parseArray(str('facility_level')), is_active: str('is_active') === '' ? true : bool(str('is_active')), is_billable: true, allow_zero_price: false, createdBy: userId, updatedBy: userId
+      facility_level, insurance_coverage: insuranceCoverage, is_active: str('is_active') === '' ? true : bool(str('is_active')), is_billable: true, allow_zero_price: false, createdBy: userId, updatedBy: userId
     };
   }
 
@@ -468,16 +530,7 @@ function validate(entity, data) {
 
   if (entity === 'procedures') {
     if (data.duration_minutes !== undefined && Number(data.duration_minutes) < 1) errors.push('duration_minutes must be at least 1');
-    const validLevels = ['Primary', 'Secondary', 'Tertiary'];
-    const invalidLevels = (data.facility_level || []).filter((level) => !validLevels.includes(level));
-    if (invalidLevels.length) errors.push(`facility_level must be one of: ${validLevels.join(', ')}. Invalid values: ${invalidLevels.join(', ')}`);
   }
-
-  const categorySets = {
-    'lab-tests': ['Hematology', 'Biochemistry', 'Microbiology', 'Immunology', 'Pathology', 'Serology', 'Toxicology', 'Endocrinology', 'Molecular Diagnostics', 'Genetic Testing', 'Other'],
-    'radiology-tests': ['X-Ray', 'CT Scan', 'MRI', 'Ultrasound', 'ECG', 'Echocardiography', 'EEG', 'EMG', 'NCV', 'TMT', 'Mammography', 'PET Scan', 'DEXA Scan', 'Fluoroscopy', 'Angiography', 'Other'],
-  };
-  if (categorySets[entity] && data.category && !categorySets[entity].includes(data.category)) errors.push(`category must be one of: ${categorySets[entity].join(', ')}`);
 
   return errors;
 }
