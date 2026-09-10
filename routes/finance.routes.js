@@ -15,6 +15,7 @@ router.get('/dashboard', finance.getDashboard);
 router.get('/kpis', finance.getCanonicalKpis);
 router.get('/kpis/daily', finance.getCanonicalKpis);
 router.get('/reports/:reportKey', finance.getCanonicalFinanceReport);
+router.get('/transactions/:transactionId/print-data', finance.getTransactionPrintData);
 router.get('/pharmacy/projection', finance.getPharmacyFinanceProjection);
 router.get('/pharmacy/integration-audit', requireActionPermission('billing_finalize'), finance.getPharmacyIntegrationAudit);
 router.get('/reconciliation/issues', requireActionPermission('billing_finalize'), reconciliation.list);
@@ -25,6 +26,7 @@ router.put('/feature-flags', requireActionPermission('billing_finalize'), reconc
 router.get('/mis/overview', finance.getMISOverview);
 router.get('/mis/reports/:reportKey', finance.getMISReport);
 router.get('/mis/reports/:reportKey/export', finance.exportMISReport);
+router.get('/opd/appointments/:appointmentId', finance.getOPDAppointmentFinance);
 router.get('/patients/:patientId/workspace', finance.getPatientWorkspace);
 router.get('/ipd/patients/:patientId/workspace', finance.getPatientIPDHistory);
 router.post('/patients/:patientId/charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.addOPDCharge);

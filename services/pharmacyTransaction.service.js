@@ -12,6 +12,7 @@ const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDAdmission = require('../models/IPDAdmission');
 const { assertAdmissionOpenForMutation } = require('./ipdLifecycleGuard.service');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
+const FinancialTransaction = require('../models/FinancialTransaction');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const InventoryLedger = require('../models/InventoryLedger');
 const IPDPatientMedicineStock = require('../models/IPDPatientMedicineStock');
@@ -27,6 +28,7 @@ const { recordPackageUtilization } = require('./packageAdjudication.service');
 const { replaceCoverageUtilization } = require('./coverageUtilization.service');
 const { resolveFinancialPolicy, calculateRequiredNow } = require('./financialPolicy.service');
 const { policyFromAdmission, ipdOwnsPharmacyBilling } = require('./ipdPharmacyBillingPolicy.service');
+const { nextFinancialNumber } = require('../utils/financeNumbers');
 
 function objectIdOrUndefined(id) {
   return id && mongoose.Types.ObjectId.isValid(id) ? id : undefined;
@@ -953,6 +955,44 @@ async function createPharmacyBill({ sale, items, totals, paymentEntries, patient
 
   sale.bill_id = bill._id;
   await sale.save(session ? { session } : undefined);
+
+  // Canonical Pharmacy document linkage is bidirectional. The Invoice is
+  // created before the Bill, so link the newly-created Bill back onto the
+  // already-issued Invoice immediately in the same transaction. This prevents
+  // a Bill -> Invoice link without the corresponding Invoice -> Bill link.
+  if (sale.invoice_id) {
+    let invoiceLookup = Invoice.findOne({
+      _id: sale.invoice_id,
+      hospital_id: sale.hospitalId
+    }).select('_id bill_id bill_ids');
+    if (session) invoiceLookup = invoiceLookup.session(session);
+    const linkedInvoice = await invoiceLookup;
+    if (!linkedInvoice) {
+      const error = new Error('Pharmacy Invoice not found while linking generated Bill');
+      error.statusCode = 409;
+      error.code = 'PHARMACY_INVOICE_LINK_MISSING';
+      throw error;
+    }
+
+    const existingPrimary = linkedInvoice.bill_id ? String(linkedInvoice.bill_id) : '';
+    const generatedBillId = String(bill._id);
+    if (existingPrimary && existingPrimary !== generatedBillId) {
+      const error = new Error('Pharmacy Invoice is already linked to a different primary Bill');
+      error.statusCode = 409;
+      error.code = 'PHARMACY_INVOICE_BILL_LINK_CONFLICT';
+      throw error;
+    }
+
+    const options = session ? { session } : undefined;
+    await Invoice.updateOne(
+      { _id: linkedInvoice._id, hospital_id: sale.hospitalId },
+      {
+        $set: { bill_id: bill._id },
+        $addToSet: { bill_ids: bill._id }
+      },
+      options
+    );
+  }
 
   // Keep legacy patient balance fields aligned with the authoritative Sale.
   // A wallet debit reduces the wallet, while every unpaid remainder increases
@@ -4000,6 +4040,354 @@ async function settleSingleDeferredPayment(saleId, payload, req = {}) {
 }
 
 
+async function recordPharmacyOutstandingPayment(payload, req = {}) {
+  const hospitalId = getHospitalId(req, payload.hospitalId || payload.hospital_id);
+  const createdBy = getCreatedBy(req);
+  const paymentAmount = normalizeMoney(payload.amount ?? payload.additional_payment);
+  const paymentMethod = normalizeText(payload.paymentMethod || payload.payment_method || 'Cash') || 'Cash';
+  const reference = normalizeText(payload.reference || payload.paymentReference);
+  const idempotencyKey = normalizeText(
+    payload.idempotencyKey ||
+    req.get?.('Idempotency-Key') ||
+    req.headers?.['idempotency-key']
+  );
+
+  if (!hospitalId) throw Object.assign(new Error('Hospital context is required'), { statusCode: 400 });
+  if (!(paymentAmount > 0)) throw Object.assign(new Error('Payment amount must be greater than zero'), { statusCode: 400 });
+  const supported = new Set(['Cash', 'Card', 'UPI', 'Bank', 'Net Banking', 'Insurance', 'Government Scheme', 'IPDAdvance', 'PharmacyAdvance']);
+  if (!supported.has(paymentMethod)) throw Object.assign(new Error('Unsupported pharmacy payment method'), { statusCode: 400 });
+  if (paymentMethod !== 'Cash' && !reference && !['IPDAdvance', 'PharmacyAdvance'].includes(paymentMethod)) {
+    throw Object.assign(new Error('Transaction reference is required for non-cash pharmacy payment'), { statusCode: 400 });
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      if (idempotencyKey) {
+        const existing = await FinancialTransaction.findOne({
+          hospitalId,
+          idempotencyKey,
+          status: 'POSTED'
+        }, null, { session });
+        if (existing) {
+          result = { receiptNumber: existing.transactionNumber, transaction: existing, alreadyExists: true };
+          return;
+        }
+      }
+
+      let invoice = null;
+      let bill = null;
+      let sale = null;
+
+      if (payload.invoiceId || payload.invoice_id) {
+        invoice = await Invoice.findOne({
+          _id: objectIdOrUndefined(payload.invoiceId || payload.invoice_id),
+          hospital_id: hospitalId,
+          is_deleted: { $ne: true }
+        }, null, { session });
+        if (!invoice) throw Object.assign(new Error('Pharmacy invoice not found'), { statusCode: 404 });
+      }
+
+      if (payload.billId || payload.bill_id) {
+        bill = await Bill.findOne({
+          _id: objectIdOrUndefined(payload.billId || payload.bill_id),
+          hospital_id: hospitalId,
+          is_deleted: { $ne: true },
+          is_pharmacy_bill: true
+        }, null, { session });
+        if (!bill) throw Object.assign(new Error('Pharmacy bill not found'), { statusCode: 404 });
+      }
+
+      if (payload.saleId || payload.sale_id) {
+        sale = await Sale.findOne({
+          _id: objectIdOrUndefined(payload.saleId || payload.sale_id),
+          hospitalId
+        }, null, { session });
+        if (!sale) throw Object.assign(new Error('Pharmacy sale not found'), { statusCode: 404 });
+      }
+
+      if (!bill && invoice) {
+        const invoiceBillIds = [invoice.bill_id, ...(invoice.bill_ids || [])].map(objectIdOrUndefined).filter(Boolean);
+        bill = await Bill.findOne({
+          hospital_id: hospitalId,
+          is_pharmacy_bill: true,
+          is_deleted: { $ne: true },
+          $or: [
+            ...(invoiceBillIds.length ? [{ _id: { $in: invoiceBillIds } }] : []),
+            { invoice_id: invoice._id },
+            { invoice_ids: invoice._id }
+          ]
+        }, null, { session });
+      }
+
+      if (!invoice && bill?.invoice_id) {
+        invoice = await Invoice.findOne({
+          _id: bill.invoice_id,
+          hospital_id: hospitalId,
+          is_deleted: { $ne: true }
+        }, null, { session });
+      }
+
+      if (!sale && bill?.sale_id) {
+        sale = await Sale.findOne({ _id: bill.sale_id, hospitalId }, null, { session });
+      }
+      if (!sale && invoice?.sale_id) {
+        sale = await Sale.findOne({ _id: invoice.sale_id, hospitalId }, null, { session });
+      }
+      if (!sale && invoice?.prescription_id) {
+        sale = await Sale.findOne({ prescription_id: invoice.prescription_id, hospitalId }, null, { session });
+      }
+
+      if (!bill && sale) {
+        bill = await Bill.findOne({
+          hospital_id: hospitalId,
+          sale_id: sale._id,
+          is_pharmacy_bill: true,
+          is_deleted: { $ne: true }
+        }, null, { session });
+      }
+      if (!invoice && sale?.invoice_id) {
+        invoice = await Invoice.findOne({
+          _id: sale.invoice_id,
+          hospital_id: hospitalId,
+          is_deleted: { $ne: true }
+        }, null, { session });
+      }
+
+      if (!invoice && !bill && !sale) {
+        throw Object.assign(new Error('No pharmacy financial document was found'), { statusCode: 404 });
+      }
+
+      const pharmacyDocument = Boolean(
+        sale ||
+        bill?.is_pharmacy_bill ||
+        invoice?.is_pharmacy_sale ||
+        String(invoice?.invoice_type || '').toLowerCase() === 'pharmacy'
+      );
+      if (!pharmacyDocument) {
+        const error = new Error('This endpoint can settle Pharmacy documents only');
+        error.statusCode = 409;
+        error.code = 'CANONICAL_SETTLEMENT_REQUIRED';
+        throw error;
+      }
+
+      const ipdOwnsCollection =
+        invoice?.collection_owner === 'IPD' ||
+        invoice?.collection_mode === 'IPD_CONSOLIDATED' ||
+        invoice?.collection_transferred_to_ipd === true ||
+        bill?.collection_owner === 'IPD' ||
+        bill?.collection_mode === 'IPD_CONSOLIDATED' ||
+        bill?.collection_transferred_to_ipd === true ||
+        sale?.billing_owner === 'IPD' ||
+        sale?.collection_mode === 'IPD_CONSOLIDATED';
+
+      if (ipdOwnsCollection) {
+        const error = new Error('This Pharmacy document is settled through IPD Billing. Counter payment is blocked.');
+        error.statusCode = 409;
+        error.code = 'PHARMACY_COLLECTION_OWNED_BY_IPD';
+        throw error;
+      }
+
+      const patientId = objectIdOrUndefined(invoice?.patient_id || bill?.patient_id || sale?.patient_id);
+      const admissionId = objectIdOrUndefined(invoice?.admission_id || bill?.admission_id || sale?.admission_id);
+      if (!patientId) throw Object.assign(new Error('Pharmacy settlement requires a patient-linked document'), { statusCode: 409 });
+
+      // Once issued, the Invoice is the liability authority. Bill/Sale balances are
+      // compatibility projections updated from the exact same settlement event.
+      const authoritativeDue = normalizeMoney(
+        invoice ? invoice.balance_due :
+        bill ? bill.balance_due :
+        sale?.balance_due
+      );
+      if (!(authoritativeDue > 0)) throw Object.assign(new Error('Document is already fully paid'), { statusCode: 409 });
+      if (paymentAmount > authoritativeDue + 0.009) {
+        const error = new Error(`Payment amount (${paymentAmount}) exceeds balance due (${authoritativeDue})`);
+        error.statusCode = 409;
+        error.code = 'PAYMENT_EXCEEDS_NET_PAYABLE';
+        throw error;
+      }
+
+      const usesAdvance = ['IPDAdvance', 'PharmacyAdvance'].includes(paymentMethod);
+      if (paymentMethod === 'IPDAdvance' && !admissionId) {
+        throw Object.assign(new Error('IPD advance can be used only for an IPD-linked Pharmacy document'), { statusCode: 409 });
+      }
+      if (usesAdvance) {
+        const walletType = paymentMethod === 'IPDAdvance' ? 'IPD_SHARED' : 'PHARMACY_IPD';
+        const available = await getAdvanceBalance({ admissionId, patientId, walletType, session });
+        if (paymentAmount > available + 0.009) {
+          const error = new Error(`Insufficient ${paymentMethod} balance. Available ₹${normalizeMoney(available).toFixed(2)}`);
+          error.statusCode = 409;
+          error.code = 'INSUFFICIENT_ADVANCE';
+          throw error;
+        }
+      }
+
+      const receiptNumber = await nextFinancialNumber({ documentType: 'RECEIPT', hospitalId, session });
+      const now = operationNow();
+
+      if (usesAdvance) {
+        const walletType = paymentMethod === 'IPDAdvance' ? 'IPD_SHARED' : 'PHARMACY_IPD';
+        await createAdvanceLedgerEntry({
+          hospitalId, patientId, admissionId, walletType,
+          transactionType: 'PHARMACY_SALE_DEBIT',
+          direction: 'DEBIT',
+          amount: paymentAmount,
+          paymentMethod,
+          referenceNumber: receiptNumber,
+          sourceModule: 'Pharmacy',
+          sourceId: sale?._id || invoice?._id || bill?._id,
+          notes: payload.notes || `Pharmacy outstanding settled from ${walletType}`,
+          createdBy,
+          idempotencyKey: idempotencyKey ? `${idempotencyKey}:advance` : undefined,
+          session
+        });
+      }
+
+      if (invoice) {
+        invoice.amount_paid = normalizeMoney(Number(invoice.amount_paid || 0) + paymentAmount);
+        invoice.payment_history = invoice.payment_history || [];
+        invoice.payment_history.push({
+          amount: paymentAmount,
+          method: paymentMethod,
+          reference: reference || receiptNumber,
+          status: 'Completed',
+          collected_by: createdBy,
+          date: now,
+          transaction_id: receiptNumber,
+          receipt_number: receiptNumber,
+          receipt_type: 'Payment',
+          amount_before_settlement: authoritativeDue,
+          settlement_discount_amount: 0,
+          advance_applied: usesAdvance ? paymentAmount : 0,
+          balance_after: normalizeMoney(authoritativeDue - paymentAmount),
+          payment_breakdown: [{ method: paymentMethod, amount: paymentAmount, reference }]
+        });
+        invoice.receipt_numbers = Array.from(new Set([...(invoice.receipt_numbers || []), receiptNumber]));
+        if (usesAdvance) invoice.advance_applied = normalizeMoney(Number(invoice.advance_applied || 0) + paymentAmount);
+        await invoice.save({ session });
+      }
+
+      if (bill) {
+        bill.paid_amount = normalizeMoney(Number(bill.paid_amount || 0) + paymentAmount);
+        bill.payment_method = paymentMethod;
+        bill.payments = bill.payments || [];
+        bill.payments.push({ method: paymentMethod, amount: paymentAmount, reference: receiptNumber, date: now });
+        await bill.save({ session });
+      }
+
+      if (sale) {
+        sale.amount_paid = normalizeMoney(Number(sale.amount_paid || 0) + paymentAmount);
+        sale.balance_due = normalizeMoney(Math.max(0, Number(sale.total_amount || 0) - Number(sale.amount_paid || 0)));
+        sale.closing_outstanding = sale.balance_due;
+        sale.payments = sale.payments || [];
+        sale.payments.push({
+          method: paymentMethod,
+          amount: paymentAmount,
+          reference: reference || receiptNumber,
+          date: now,
+          walletType: paymentMethod === 'IPDAdvance' ? 'IPD_SHARED' : paymentMethod === 'PharmacyAdvance' ? 'PHARMACY_IPD' : null
+        });
+        sale.payment_method = paymentMethod;
+        sale.status = sale.balance_due <= 0 ? 'Completed' : 'Pending';
+        if (sale.balance_due <= 0) {
+          sale.payment_deferred = false;
+          sale.settled_at = now;
+        }
+        await sale.save({ session });
+      }
+
+      const patient = await Patient.findOne({ _id: patientId, hospitalId }, null, { session });
+      if (patient) {
+        patient.pharmacy_outstanding_balance = normalizeMoney(Math.max(
+          0,
+          Number(patient.pharmacy_outstanding_balance || 0) - paymentAmount
+        ));
+        patient.last_pharmacy_transaction = now;
+        await patient.save({ session });
+      }
+
+      await createOne(PharmacyLedgerEntry, {
+        hospitalId,
+        pharmacyId: sale?.pharmacy_id,
+        entryType: usesAdvance ? 'ADVANCE_USED' : 'OUTSTANDING_PAYMENT',
+        direction: usesAdvance ? 'NON_CASH' : 'IN',
+        amount: paymentAmount,
+        paymentMethod,
+        patientId,
+        admissionId,
+        saleId: sale?._id,
+        invoiceId: invoice?._id,
+        billId: bill?._id,
+        notes: payload.notes || `Payment collected for ${invoice?.invoice_number || bill?.bill_number || sale?.sale_number || 'Pharmacy document'}`,
+        idempotencyKey: idempotencyKey ? `${idempotencyKey}:ledger` : undefined,
+        createdBy
+      }, session);
+
+      const externalReceived = usesAdvance ? 0 : paymentAmount;
+      const transaction = await createOne(FinancialTransaction, {
+        hospitalId,
+        patientId,
+        admissionId,
+        billId: bill?._id,
+        invoiceId: invoice?._id,
+        transactionNumber: receiptNumber,
+        transactionType: usesAdvance ? 'ADVANCE_UTILISATION' : 'RECEIPT',
+        direction: 'CREDIT',
+        amount: paymentAmount,
+        paymentMethod,
+        paymentReference: reference,
+        receiptType: 'Payment',
+        amountBeforeSettlement: authoritativeDue,
+        advanceApplied: usesAdvance ? paymentAmount : 0,
+        amountReceived: externalReceived,
+        amountTendered: externalReceived,
+        amountApplied: paymentAmount,
+        externalMoneyMovement: !usesAdvance,
+        cashFlowClass: usesAdvance ? 'WALLET_UTILISATION' : 'EXTERNAL_COLLECTION',
+        balanceAfter: normalizeMoney(authoritativeDue - paymentAmount),
+        paymentBreakdown: [{ method: paymentMethod, amount: paymentAmount, reference }],
+        documentAllocations: [{
+          documentType: invoice ? 'Invoice' : 'Bill',
+          documentId: invoice?._id || bill?._id,
+          amount: paymentAmount
+        }].filter((allocation) => allocation.documentId),
+        sourceModule: 'Pharmacy',
+        sourceId: sale?._id || invoice?._id || bill?._id,
+        status: 'POSTED',
+        remarks: payload.notes,
+        createdBy,
+        idempotencyKey: idempotencyKey || undefined,
+        metadata: {
+          receiptSummary: {
+            originalAmount: authoritativeDue,
+            discountAmount: 0,
+            discountPercent: 0,
+            netPayable: authoritativeDue
+          },
+          externalReceived
+        }
+      }, session);
+
+      result = {
+        receiptNumber,
+        transaction,
+        invoice,
+        bill,
+        sale,
+        amountApplied: paymentAmount,
+        balanceAfter: normalizeMoney(authoritativeDue - paymentAmount),
+        alreadyExists: false
+      };
+    });
+    return result;
+  } finally {
+    await session.endSession();
+  }
+}
+
+
+
 // Direct callers are routed into the authoritative engine as well. The old
 // implementation above remains only as a migration reference and is not used.
 async function createReturn(payload, req = {}) {
@@ -4024,6 +4412,7 @@ module.exports = {
   calculateTotals,
   createUnifiedSale,
   createReturn,
+  recordPharmacyOutstandingPayment,
   createOutstandingSettlement,
   bulkSettleDeferredPayments,
   settleSingleDeferredPayment,

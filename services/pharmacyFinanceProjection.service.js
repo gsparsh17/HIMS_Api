@@ -25,21 +25,22 @@ function parseRange(query = {}) {
   return { from, to, fromDate: fromText, toDate: toText, timezone: query.timezone || 'Asia/Kolkata' };
 }
 
-function scoped(hospitalId, field = 'hospitalId') {
-  if (!hospitalId) return {};
-  return { [field]: new mongoose.Types.ObjectId(hospitalId) };
-}
-
 async function loadData(query = {}, user = {}) {
   const range = parseRange(query);
   const hospitalId = hospitalIdFrom(user, query);
+  const hospitalObjectId = hospitalId ? new mongoose.Types.ObjectId(hospitalId) : null;
+
+  // Each finance collection uses its persisted tenant field. In particular,
+  // Bill is hospital_id (not hospitalId). The previous generic scoped()
+  // helper silently queried a non-schema field and could make a real
+  // Pharmacy Bill invisible to the integration audit.
   const saleFilter = {
-    ...scoped(hospitalId, 'hospitalId'),
+    ...(hospitalObjectId ? { hospitalId: hospitalObjectId } : {}),
     sale_date: { $gte: range.from, $lte: range.to },
     status: { $nin: ['Cancelled'] }
   };
   const invoiceFilter = {
-    ...scoped(hospitalId, 'hospital_id'),
+    ...(hospitalObjectId ? { hospital_id: hospitalObjectId } : {}),
     issue_date: { $gte: range.from, $lte: range.to },
     $or: [{ is_pharmacy_sale: true }, { invoice_type: /pharmacy/i }],
     is_deleted: { $ne: true },
@@ -47,41 +48,89 @@ async function loadData(query = {}, user = {}) {
     document_stage: { $ne: 'VOID' }
   };
   const ledgerFilter = {
-    ...scoped(hospitalId, 'hospitalId'),
+    ...(hospitalObjectId ? { hospitalId: hospitalObjectId } : {}),
     entryDate: { $gte: range.from, $lte: range.to }
   };
-  const [sales, invoices, bills, ledgerEntries, returns, advanceRows] = await Promise.all([
+
+  const [sales, invoices, ledgerEntries, returns, advanceRows] = await Promise.all([
     Sale.find(saleFilter).lean(),
     Invoice.find(invoiceFilter).lean(),
-    Bill.find({
-      ...scoped(hospitalId, 'hospitalId'),
-      createdAt: { $gte: range.from, $lte: range.to },
-      $or: [{ sourceModule: /pharmacy/i }, { bill_type: /pharmacy/i }, { invoice_type: /pharmacy/i }]
-    }).lean(),
     PharmacyLedgerEntry.find(ledgerFilter).lean(),
     PharmacyReturn.find({
-      ...scoped(hospitalId, 'hospitalId'),
+      ...(hospitalObjectId ? { hospitalId: hospitalObjectId } : {}),
       createdAt: { $gte: range.from, $lte: range.to }
     }).lean(),
     PatientAdvanceLedger.find({
+      ...(hospitalObjectId ? { hospitalId: hospitalObjectId } : {}),
       createdAt: { $gte: range.from, $lte: range.to },
       sourceModule: /pharmacy/i
     }).lean()
   ]);
+
+  // Load Bills from authoritative relationships, not a guessed Pharmacy type
+  // discriminator. Canonical Pharmacy Bills are marked is_pharmacy_bill and
+  // contain sale_id / invoice_id links, but do not need sourceModule,
+  // bill_type or invoice_type to be present.
+  const saleIds = sales.map((row) => row._id).filter(Boolean);
+  const invoiceIds = invoices.map((row) => row._id).filter(Boolean);
+  const invoiceBillIds = invoices.flatMap((row) => [row.bill_id, ...(row.bill_ids || [])]).filter(Boolean);
+  const billRelationshipClauses = [];
+  if (saleIds.length) {
+    billRelationshipClauses.push(
+      { sale_id: { $in: saleIds } },
+      { source_id: { $in: saleIds } }
+    );
+  }
+  if (invoiceIds.length) {
+    billRelationshipClauses.push(
+      { invoice_id: { $in: invoiceIds } },
+      { invoice_ids: { $in: invoiceIds } }
+    );
+  }
+  if (invoiceBillIds.length) {
+    billRelationshipClauses.push({ _id: { $in: invoiceBillIds } });
+  }
+
+  const bills = billRelationshipClauses.length
+    ? await Bill.find({
+        ...(hospitalObjectId ? { hospital_id: hospitalObjectId } : {}),
+        $or: billRelationshipClauses,
+        is_deleted: { $ne: true }
+      }).lean()
+    : [];
+
   return { range, hospitalId, sales, invoices, bills, ledgerEntries, returns, advanceRows };
 }
-
 function buildAudit(data) {
   const invoiceById = new Map(data.invoices.map((row) => [id(row._id), row]));
   const invoiceByNumber = new Map(data.invoices.map((row) => [String(row.invoice_number || row.invoiceNumber || ''), row]));
+  const invoiceBySale = new Map();
+  data.invoices.forEach((row) => {
+    const key = id(row.sale_id || row.saleId || row.pharmacy_sale_id || row.pharmacySaleId);
+    if (key) invoiceBySale.set(key, row);
+  });
+
+  const billById = new Map(data.bills.map((row) => [id(row._id), row]));
   const billBySale = new Map();
+  const billByInvoice = new Map();
   data.bills.forEach((row) => {
-    const key = id(row.sale_id || row.saleId || row.source_id || row.sourceId);
-    if (key) {
-      const list = billBySale.get(key) || [];
+    const saleKey = id(row.sale_id || row.saleId || row.pharmacy_sale_id || row.pharmacySaleId || row.source_id || row.sourceId);
+    if (saleKey) {
+      const list = billBySale.get(saleKey) || [];
       list.push(row);
-      billBySale.set(key, list);
+      billBySale.set(saleKey, list);
     }
+
+    const linkedInvoiceIds = [
+      row.invoice_id || row.invoiceId,
+      ...(row.invoice_ids || row.invoiceIds || [])
+    ].filter(Boolean);
+    linkedInvoiceIds.forEach((invoiceId) => {
+      const key = id(invoiceId);
+      const list = billByInvoice.get(key) || [];
+      list.push(row);
+      billByInvoice.set(key, list);
+    });
   });
   const ledgerBySale = new Map();
   data.ledgerEntries.forEach((row) => {
@@ -95,8 +144,15 @@ function buildAudit(data) {
   const anomalies = [];
   const saleRows = data.sales.map((sale) => {
     const saleId = id(sale._id);
-    const linkedInvoice = invoiceById.get(id(sale.invoice_id)) || invoiceByNumber.get(String(sale.invoice_number || ''));
-    const linkedBills = billBySale.get(saleId) || [];
+    const linkedInvoice = invoiceById.get(id(sale.invoice_id || sale.invoiceId))
+      || invoiceByNumber.get(String(sale.invoice_number || sale.invoiceNumber || ''))
+      || invoiceBySale.get(saleId);
+    const directBills = billBySale.get(saleId) || [];
+    const invoiceBills = linkedInvoice ? (billByInvoice.get(id(linkedInvoice._id)) || []) : [];
+    const explicitInvoiceBills = linkedInvoice
+      ? [linkedInvoice.bill_id, ...(linkedInvoice.bill_ids || [])].map((billId) => billById.get(id(billId))).filter(Boolean)
+      : [];
+    const linkedBills = [...new Map([...directBills, ...invoiceBills, ...explicitInvoiceBills].map((row) => [id(row._id), row])).values()];
     const ledger = ledgerBySale.get(saleId) || [];
     const saleNet = money(sale.net_amount_after_returns || Math.max(0, (sale.total_amount || 0) - (sale.return_amount || 0)));
     const invoiceNet = money(linkedInvoice?.total || linkedInvoice?.net_amount || 0);

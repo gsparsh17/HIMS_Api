@@ -931,84 +931,30 @@ exports.getSaleById = async (req, res) => {
 };
 
 exports.updateSalePayment = async (req, res) => {
-  const session = await mongoose.startSession();
   try {
-    const { id } = req.params;
-    const additionalPayment = roundMoney(req.body.additional_payment);
-    const paymentMethod = req.body.payment_method;
-    const notes = req.body.notes;
+    const { recordPharmacyOutstandingPayment } = require('../services/pharmacyTransaction.service');
+    const result = await recordPharmacyOutstandingPayment({
+      saleId: req.params.id,
+      amount: req.body.additional_payment ?? req.body.amount,
+      paymentMethod: req.body.payment_method || req.body.paymentMethod || 'Cash',
+      reference: req.body.reference,
+      notes: req.body.notes,
+      idempotencyKey: req.body.idempotencyKey || req.get?.('Idempotency-Key')
+    }, req);
 
-    if (!(additionalPayment > 0)) {
-      return res.status(400).json({ error: 'A positive additional_payment is required' });
-    }
-
-    let responsePayload;
-    await session.withTransaction(async () => {
-      const sale = await Sale.findById(id).session(session);
-      if (!sale) {
-        const error = new Error('Sale not found'); error.statusCode = 404; throw error;
-      }
-
-      // IPD pharmacy money must flow through the authoritative settlement/final
-      // clearance services so bill/invoice/advance/clearance state cannot diverge.
-      if (sale.admission_id) {
-        const error = new Error(
-          'IPD sale payments must be recorded through Pharmacy ledger settlement/final clearance, not the legacy sale-payment endpoint.'
-        );
-        error.statusCode = 409;
-        error.code = 'IPD_SALE_PAYMENT_REQUIRES_PHARMACY_SETTLEMENT';
-        throw error;
-      }
-
-      if (sale.status === 'Cancelled') {
-        const error = new Error('Cancelled sales cannot receive payment'); error.statusCode = 409; throw error;
-      }
-      if (sale.status === 'Completed' && Number(sale.balance_due || 0) <= 0) {
-        const error = new Error('Sale is already fully paid'); error.statusCode = 400; throw error;
-      }
-
-      const newPaymentAmount = Math.min(additionalPayment, Number(sale.balance_due || 0));
-      const newPaidAmount = roundMoney(Number(sale.amount_paid || 0) + newPaymentAmount);
-      const newBalanceDue = roundMoney(Math.max(0, Number(sale.total_amount || 0) - newPaidAmount));
-
-      sale.amount_paid = newPaidAmount;
-      sale.balance_due = newBalanceDue;
-      sale.status = newBalanceDue === 0 ? 'Completed' : 'Pending';
-      sale.payments.push({
-        method: paymentMethod,
-        amount: newPaymentAmount,
-        reference: req.body.reference,
-        date: operationNow()
-      });
-      await sale.save({ session });
-
-      await PharmacyLedgerEntry.create([{
-        hospitalId: sale.hospitalId || userHospitalId(req.user),
-        pharmacyId: sale.pharmacy_id,
-        entryType: 'OUTSTANDING_PAYMENT',
-        direction: 'IN',
-        amount: newPaymentAmount,
-        paymentMethod,
-        patientId: sale.patient_id,
-        admissionId: null,
-        saleId: sale._id,
-        notes: notes || `Payment received for sale ${sale.sale_number}`,
-        createdBy: req.user?._id
-      }], { session });
-
-      responsePayload = {
-        _id: sale._id,
-        amount_paid: sale.amount_paid,
-        balance_due: sale.balance_due,
-        status: sale.status
-      };
+    return res.json({
+      success: true,
+      message: result.alreadyExists ? 'Payment already recorded' : 'Payment recorded successfully',
+      receiptNumber: result.receiptNumber,
+      transaction: result.transaction,
+      sale: result.sale,
+      invoice: result.invoice,
+      bill: result.bill,
+      balance_due: result.balanceAfter,
+      alreadyExists: result.alreadyExists
     });
-
-    return res.json({ success: true, message: 'Payment recorded successfully', sale: responsePayload });
   } catch (err) {
     return res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
-  } finally {
-    await session.endSession();
   }
 };
 

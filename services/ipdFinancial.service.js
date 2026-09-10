@@ -341,6 +341,7 @@ async function syncLinkedBillFromInvoice(invoice, paymentMethod, session) {
   linkedBill.advance_applied = money(invoice.advance_applied || 0);
   linkedBill.settlement_discount_amount = money(invoice.settlement_discount_amount || 0);
   linkedBill.credit_note_amount = money(invoice.credit_note_total || 0);
+  linkedBill.refund_amount = money(invoice.refunded_amount || 0);
   linkedBill.credit_authorised_amount = money(invoice.credit_authorised_amount || 0);
   linkedBill.credit_status = invoice.credit_status || linkedBill.credit_status || 'NONE';
   linkedBill.credit_due_date = invoice.credit_due_date || linkedBill.credit_due_date;
@@ -2133,6 +2134,12 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
     error.code = 'TAX_OVERRIDE_REASON_REQUIRED';
     throw error;
   }
+  if (taxAdjustmentAmount !== 0) {
+    const error = new Error('Tax on an issued IPD invoice is immutable. Finalise tax on source charges before invoice issuance or use a dedicated debit/credit adjustment workflow.');
+    error.statusCode = 409;
+    error.code = 'ISSUED_INVOICE_TAX_IMMUTABLE';
+    throw error;
+  }
   if ((explicitDeferredCredit > 0 || deferRemaining) && !String(payload.deferredCreditReason || payload.creditReason || payload.deferralReason || '').trim()) {
     const error = new Error('Reason is required when authorising Credit / Pay Later');
     error.statusCode = 400;
@@ -2198,48 +2205,7 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
       : null;
     const transactions = [];
 
-    if (taxAdjustmentAmount !== 0) {
-      const invoice = selected[0];
-      const nextTotal = money(Number(invoice.total || 0) + taxAdjustmentAmount);
-      if (nextTotal < 0 || Number(invoice.amount_paid || 0) > nextTotal) {
-        const error = new Error('Tax adjustment would make the invoice total invalid');
-        error.statusCode = 400;
-        throw error;
-      }
-      invoice.tax = money(Number(invoice.tax || 0) + taxAdjustmentAmount);
-      invoice.total = nextTotal;
-      const linkedBill = invoice.bill_id ? await Bill.findById(invoice.bill_id, null, sessionOptions(session)) : null;
-      if (linkedBill) {
-        linkedBill.tax_amount = money(Number(linkedBill.tax_amount || 0) + taxAdjustmentAmount);
-        linkedBill.total_amount = money(Number(linkedBill.total_amount || 0) + taxAdjustmentAmount);
-        await linkedBill.save(sessionOptions(session));
-      }
-      await invoice.save(sessionOptions(session));
-      const taxTransaction = new FinancialTransaction({
-        hospitalId,
-        patientId: admission.patientId,
-        admissionId: admission._id,
-        billId: invoice.bill_id,
-        invoiceId: invoice._id,
-        transactionNumber: receiptNumber,
-        transactionType: 'ADJUSTMENT',
-        direction: taxAdjustmentAmount > 0 ? 'DEBIT' : 'CREDIT',
-        amount: Math.abs(taxAdjustmentAmount),
-        paymentMethod: 'Adjustment',
-        receiptType: 'Adjustment',
-        taxAdjustmentAmount,
-        externalMoneyMovement: false,
-        cashFlowClass: 'NON_CASH_ADJUSTMENT',
-        sourceModule: payload.sourceModule || 'Discharge',
-        sourceId: admission._id,
-        status: 'POSTED',
-        remarks: payload.adjustmentReason || payload.settlementDiscountReason,
-        createdBy: user?._id,
-        idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:tax` : undefined
-      });
-      await taxTransaction.save(sessionOptions(session));
-      transactions.push(taxTransaction);
-    }
+    // Issued-invoice tax is immutable; payment-time tax mutation intentionally removed.
 
     const discountAllocationByInvoice = new Map();
     if (settlementDiscountAmount > 0) {
@@ -2292,7 +2258,10 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
         status: 'POSTED',
         remarks: payload.settlementDiscountReason,
         createdBy: user?._id,
-        idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:discount` : undefined
+        idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:discount` : undefined,
+        documentAllocations: Array.from(discountAllocationByInvoice.entries()).map(([documentId, allocatedAmount]) => ({
+          documentType: 'Invoice', documentId, amount: allocatedAmount
+        }))
       });
       await discountTransaction.save(sessionOptions(session));
       transactions.push(discountTransaction);
@@ -2397,6 +2366,7 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
         cashFlowClass: externalReceived > 0 ? 'EXTERNAL_COLLECTION' : 'WALLET_UTILISATION',
         balanceAfter: projectedBalance,
         paymentBreakdown: invoiceBreakdown,
+        documentAllocations: [{ documentType: 'Invoice', documentId: invoice._id, amount: entry.amount }],
         sourceModule: payload.sourceModule || 'IPD',
         sourceId: admission._id,
         status: 'POSTED',
@@ -2785,7 +2755,7 @@ async function refundAdvance(admissionId, payload, user) {
     const balanceAfter = money(openingBalance - amount);
 
     const refundNumber = await nextFinancialNumber({
-      documentType: 'ADVANCE_REFUND',
+      documentType: 'REFUND',
       hospitalId,
       session
     });
@@ -2863,18 +2833,250 @@ async function refundAdvance(admissionId, payload, user) {
   });
 }
 
-async function createCreditNote(invoiceId, payload, user) {
-  const amount = assertAmount(payload.amount, 'Credit note amount');
 
+async function allocateInvoiceAdjustmentAcrossBills(invoice, adjustmentAmount, field, session) {
+  const linkedBillIds = Array.from(new Set([
+    ...(invoice?.bill_ids || []),
+    ...(invoice?.bill_id ? [invoice.bill_id] : [])
+  ].map((value) => String(value)).filter(Boolean)));
+  if (!linkedBillIds.length || adjustmentAmount <= 0) return [];
+
+  const linkedBills = await Bill.find(
+    { _id: { $in: linkedBillIds }, hospital_id: invoice.hospital_id, is_deleted: { $ne: true } },
+    null,
+    sessionOptions(session)
+  ).sort({ generated_at: 1, createdAt: 1 });
+
+  let remaining = money(adjustmentAmount);
+  const allocations = [];
+  for (const linkedBill of linkedBills) {
+    if (remaining <= 0.001) break;
+    let capacity = 0;
+    if (field === 'credit_note_amount') {
+      capacity = money(Math.max(0, Number(linkedBill.total_amount || 0) - Number(linkedBill.credit_note_amount || 0)));
+    } else if (field === 'refund_amount') {
+      capacity = money(Math.max(0, Number(linkedBill.paid_amount || 0) - Number(linkedBill.refund_amount || 0)));
+    } else {
+      throw new Error(`Unsupported Bill adjustment projection field: ${field}`);
+    }
+    const applied = money(Math.min(capacity, remaining));
+    if (applied <= 0) continue;
+    linkedBill[field] = money(Number(linkedBill[field] || 0) + applied);
+    await linkedBill.save(sessionOptions(session));
+    allocations.push({ documentType: 'Bill', documentId: linkedBill._id, amount: applied });
+    remaining = money(remaining - applied);
+  }
+  return allocations;
+}
+
+async function ensureAdjustmentInvoiceBillReverseLinks(adjustmentInvoice, originalInvoice, session) {
+  const linkedBillIds = Array.from(new Set([
+    ...(adjustmentInvoice?.bill_ids || []),
+    ...(adjustmentInvoice?.bill_id ? [adjustmentInvoice.bill_id] : [])
+  ].map((value) => String(value)).filter(Boolean)));
+  if (!linkedBillIds.length) return;
+
+  const updateResult = await Bill.updateMany({
+    _id: { $in: linkedBillIds },
+    hospital_id: originalInvoice.hospital_id,
+    patient_id: originalInvoice.patient_id,
+    is_deleted: { $ne: true }
+  }, {
+    $addToSet: { invoice_ids: adjustmentInvoice._id }
+  }, sessionOptions(session));
+
+  const matchedCount = Number(updateResult?.matchedCount ?? updateResult?.n ?? 0);
+  if (matchedCount !== linkedBillIds.length) {
+    const error = new Error('Credit-note Bill linkage could not be established for every referenced Bill');
+    error.statusCode = 409;
+    error.code = 'CREDIT_NOTE_BILL_LINK_CONFLICT';
+    throw error;
+  }
+}
+
+async function createCreditNoteInSession(invoice, payload, user, session) {
+  const amount = assertAmount(payload.amount, 'Credit note amount');
   if (!payload.reason?.trim()) {
     const error = new Error('Credit note reason is required');
     error.statusCode = 400;
     throw error;
   }
 
-  return runFinancialTransaction(async (session) => {
-    const invoice = await Invoice.findById(invoiceId, null, sessionOptions(session));
+  const scopedHospitalId = userHospitalId(user);
+  if (scopedHospitalId && String(invoice.hospital_id) !== String(scopedHospitalId)) {
+    const error = new Error('Invoice not found in this hospital');
+    error.statusCode = 404;
+    throw error;
+  }
 
+  if (payload.idempotencyKey) {
+    const existingTransaction = await FinancialTransaction.findOne({
+      hospitalId: invoice.hospital_id,
+      idempotencyKey: payload.idempotencyKey,
+      transactionType: 'CREDIT_NOTE'
+    }, null, sessionOptions(session));
+    if (existingTransaction) {
+      const existingCreditNoteId = existingTransaction.metadata?.creditNoteInvoiceId;
+      const existingCreditNote = existingCreditNoteId
+        ? await Invoice.findById(existingCreditNoteId, null, sessionOptions(session))
+        : null;
+      if (existingCreditNote) {
+        await ensureAdjustmentInvoiceBillReverseLinks(existingCreditNote, invoice, session);
+      }
+      return {
+        creditNote: existingCreditNote,
+        originalInvoice: invoice,
+        transaction: existingTransaction,
+        alreadyExists: true
+      };
+    }
+  }
+
+  if (!['Appointment', 'Procedure', 'Lab Test', 'Radiology', 'IPD Interim', 'IPD Final', 'Pharmacy', 'Mixed', 'Other'].includes(invoice.invoice_type) ||
+      invoice.document_stage === 'VOID') {
+    const error = new Error('This invoice cannot receive a credit note');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const eligible = money(Math.max(0, Number(invoice.total || 0) - Number(invoice.credit_note_total || 0)));
+  if (amount > eligible + 0.01) {
+    const error = new Error('Credit note amount exceeds the eligible invoice value');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const admission = invoice.admission_id
+    ? await findAdmission(invoice.admission_id, session, user)
+    : null;
+  const hospitalId = invoice.hospital_id || hospitalIdFor(admission, user);
+  const noteNumber = await nextFinancialNumber({ documentType: 'CREDIT_NOTE', hospitalId, session });
+
+  const creditNote = new Invoice({
+    hospital_id: hospitalId,
+    invoice_number: noteNumber,
+    patient_id: invoice.patient_id,
+    admission_id: invoice.admission_id,
+    appointment_id: invoice.appointment_id,
+    bill_id: invoice.bill_id,
+    bill_ids: invoice.bill_ids || (invoice.bill_id ? [invoice.bill_id] : []),
+    invoice_type: 'Credit Note',
+    document_stage: 'CREDIT_NOTE',
+    linked_invoice_id: invoice._id,
+    issue_date: operationNow(),
+    due_date: operationNow(),
+    subtotal: amount,
+    gross_amount: amount,
+    discount: 0,
+    tax: 0,
+    total: amount,
+    amount_paid: amount,
+    balance_due: 0,
+    status: 'Paid',
+    notes: payload.reason.trim(),
+    created_by: user?._id,
+    patient_snapshot: invoice.patient_snapshot,
+    hospital_snapshot: invoice.hospital_snapshot,
+    service_items: [{
+      description: `Credit note against ${invoice.invoice_number}: ${payload.reason.trim()}`,
+      quantity: 1,
+      unit_price: amount,
+      gross_amount: amount,
+      taxable_amount: amount,
+      net_amount: amount,
+      total_price: amount,
+      service_type: 'Other',
+      charge_type: 'Credit Note',
+      source_snapshot: {
+        sourceModule: 'Billing',
+        sourceId: invoice._id,
+        sourceLineKey: `credit-note:${invoice._id}:${noteNumber}`
+      }
+    }]
+  });
+  await creditNote.save(sessionOptions(session));
+
+  // Credit Notes are Invoice documents that intentionally retain the original
+  // Bill references for auditability. Keep that relationship bidirectional
+  // without replacing Bill.invoice_id, which remains the issued payment-authority
+  // Invoice. The adjustment document is appended only to Bill.invoice_ids.
+  await ensureAdjustmentInvoiceBillReverseLinks(creditNote, invoice, session);
+
+  invoice.credit_note_total = money(Number(invoice.credit_note_total || 0) + amount);
+  await invoice.save(sessionOptions(session));
+
+  const billCreditAllocations = await allocateInvoiceAdjustmentAcrossBills(
+    invoice,
+    amount,
+    'credit_note_amount',
+    session
+  );
+
+  const transaction = new FinancialTransaction({
+    hospitalId,
+    patientId: invoice.patient_id,
+    admissionId: invoice.admission_id,
+    billId: invoice.bill_id,
+    invoiceId: invoice._id,
+    transactionNumber: noteNumber,
+    transactionType: 'CREDIT_NOTE',
+    direction: 'CREDIT',
+    amount,
+    paymentMethod: 'Adjustment',
+    receiptType: 'Adjustment',
+    amountReceived: 0,
+    amountTendered: 0,
+    amountApplied: 0,
+    externalMoneyMovement: false,
+    cashFlowClass: 'NON_CASH_ADJUSTMENT',
+    documentAllocations: billCreditAllocations.length
+      ? billCreditAllocations
+      : [{ documentType: 'Invoice', documentId: invoice._id, amount }],
+    sourceModule: 'Billing',
+    sourceId: creditNote._id,
+    remarks: payload.reason.trim(),
+    createdBy: user?._id,
+    idempotencyKey: payload.idempotencyKey,
+    metadata: { creditNoteInvoiceId: creditNote._id }
+  });
+  await transaction.save(sessionOptions(session));
+
+  return { creditNote, originalInvoice: invoice, transaction, alreadyExists: false };
+}
+
+async function createCreditNote(invoiceId, payload, user) {
+  const result = await runFinancialTransaction(async (session) => {
+    const invoice = await Invoice.findById(invoiceId, null, sessionOptions(session));
+    if (!invoice) {
+      const error = new Error('Invoice not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    return createCreditNoteInSession(invoice, payload, user, session);
+  });
+
+  if (result.originalInvoice?.admission_id) {
+    await calculateAdmissionFinancials(result.originalInvoice.admission_id, { user });
+  }
+  return result;
+}
+
+async function refundInvoice(invoiceId, payload, user) {
+  const refundAmount = assertAmount(payload.amount, 'Refund amount');
+  const refundMethod = payload.paymentMethod || 'Cash';
+  if (!EXTERNAL_PAYMENT_METHODS.has(refundMethod)) {
+    const error = new Error('Invoice refunds must use an external refund method such as Cash, Card, UPI or Bank');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!payload.reason?.trim()) {
+    const error = new Error('Refund reason is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const result = await runFinancialTransaction(async (session) => {
+    const invoice = await Invoice.findById(invoiceId, null, sessionOptions(session));
     if (!invoice) {
       const error = new Error('Invoice not found');
       error.statusCode = 404;
@@ -2882,195 +3084,60 @@ async function createCreditNote(invoiceId, payload, user) {
     }
 
     const scopedHospitalId = userHospitalId(user);
-
     if (scopedHospitalId && String(invoice.hospital_id) !== String(scopedHospitalId)) {
       const error = new Error('Invoice not found in this hospital');
       error.statusCode = 404;
       throw error;
     }
 
-    if (!['Appointment', 'Procedure', 'Lab Test', 'Radiology', 'IPD Interim', 'IPD Final', 'Pharmacy', 'Mixed', 'Other'].includes(invoice.invoice_type) ||
-        invoice.document_stage === 'VOID') {
-      const error = new Error('This invoice cannot receive a credit note');
-      error.statusCode = 409;
-      throw error;
+    if (payload.idempotencyKey) {
+      const existing = await FinancialTransaction.findOne({
+        hospitalId: invoice.hospital_id,
+        idempotencyKey: payload.idempotencyKey,
+        transactionType: 'REFUND'
+      }, null, sessionOptions(session));
+      if (existing) {
+        const creditNoteId = existing.metadata?.creditNoteId;
+        return {
+          refundNumber: existing.transactionNumber,
+          transaction: existing,
+          creditNote: creditNoteId ? await Invoice.findById(creditNoteId, null, sessionOptions(session)) : null,
+          originalInvoice: invoice,
+          alreadyExists: true
+        };
+      }
     }
 
-    const eligible = money(invoice.total - (invoice.credit_note_total || 0));
-
-    if (amount > eligible) {
-      const error = new Error('Credit note amount exceeds the eligible invoice value');
+    const refundable = money(Math.max(0, Number(invoice.amount_paid || 0) - Number(invoice.refunded_amount || 0)));
+    if (refundAmount > refundable + 0.01) {
+      const error = new Error(`Refund amount exceeds the collected refundable amount of ₹${refundable.toFixed(2)}`);
       error.statusCode = 400;
       throw error;
     }
 
-    const admission = invoice.admission_id
-      ? await findAdmission(invoice.admission_id, session, user)
-      : null;
-
-    const hospitalId = invoice.hospital_id || hospitalIdFor(admission, user);
-    const noteNumber = await nextFinancialNumber({
-      documentType: 'CREDIT_NOTE',
-      hospitalId,
-      session
-    });
-
-    const creditNote = new Invoice({
-      hospital_id: hospitalId,
-      invoice_number: noteNumber,
-      patient_id: invoice.patient_id,
-      admission_id: invoice.admission_id,
-      bill_id: invoice.bill_id,
-      bill_ids: invoice.bill_ids || (invoice.bill_id ? [invoice.bill_id] : []),
-      invoice_type: 'Credit Note',
-      document_stage: 'CREDIT_NOTE',
-      linked_invoice_id: invoice._id,
-      issue_date: operationNow(),
-      due_date: operationNow(),
-      subtotal: amount,
-      gross_amount: amount,
-      discount: 0,
-      tax: 0,
-      total: amount,
-      amount_paid: amount,
-      balance_due: 0,
-      status: 'Paid',
-      notes: payload.reason.trim(),
-      created_by: user?._id,
-      service_items: [{
-        description: `Credit note against ${invoice.invoice_number}: ${payload.reason.trim()}`,
-        quantity: 1,
-        unit_price: amount,
-        total_price: amount,
-        service_type: 'Other'
-      }]
-    });
-
-    await creditNote.save(sessionOptions(session));
-
-    invoice.credit_note_total = money((invoice.credit_note_total || 0) + amount);
-    await invoice.save(sessionOptions(session));
-
-    // Keep every linked bill in sync with the invoice credit note. OPD can have
-    // one consolidated invoice linked to several bills, and patient-level due
-    // summaries are bill-backed; updating only the invoice would leave the OPD
-    // workspace and complete ledger with an incorrect outstanding amount.
-    const linkedBillIds = Array.from(new Set([
-      ...(invoice.bill_ids || []),
-      ...(invoice.bill_id ? [invoice.bill_id] : [])
-    ].map((value) => String(value)).filter(Boolean)));
-    let remainingBillCredit = amount;
-    if (linkedBillIds.length) {
-      const linkedBills = await Bill.find({ _id: { $in: linkedBillIds } }, null, sessionOptions(session)).sort({ generated_at: 1, createdAt: 1 });
-      for (const linkedBill of linkedBills) {
-        if (remainingBillCredit <= 0) break;
-        const eligibleBillCredit = money(Math.max(0, Number(linkedBill.total_amount || 0) - Number(linkedBill.credit_note_amount || 0)));
-        const applied = money(Math.min(eligibleBillCredit, remainingBillCredit));
-        if (applied <= 0) continue;
-        linkedBill.credit_note_amount = money(Number(linkedBill.credit_note_amount || 0) + applied);
-        await linkedBill.save(sessionOptions(session));
-        remainingBillCredit = money(remainingBillCredit - applied);
-      }
-    }
-
-    const transaction = new FinancialTransaction({
-      hospitalId,
-      patientId: invoice.patient_id,
-      admissionId: invoice.admission_id,
-      billId: invoice.bill_id,
-      invoiceId: invoice._id,
-      transactionNumber: noteNumber,
-      transactionType: 'CREDIT_NOTE',
-      direction: 'DEBIT',
-      amount,
-      paymentMethod: 'Adjustment',
-      sourceModule: 'Billing',
-      sourceId: creditNote._id,
-      remarks: payload.reason.trim(),
-      createdBy: user?._id,
-      idempotencyKey: payload.idempotencyKey,
-      metadata: { creditNoteInvoiceId: creditNote._id }
-    });
-
-    await transaction.save(sessionOptions(session));
-
-    return { creditNote, originalInvoice: invoice, transaction };
-  }).then(async (result) => {
-    if (result.originalInvoice.admission_id) {
-      await calculateAdmissionFinancials(result.originalInvoice.admission_id, { user });
-    }
-    return result;
-  });
-}
-
-async function refundInvoice(invoiceId, payload, user) {
-  const amount = assertAmount(payload.amount, 'Refund amount');
-
-  if (!payload.reason?.trim()) {
-    const error = new Error('Refund reason is required');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  if (payload.idempotencyKey) {
-    const existing = await FinancialTransaction.findOne({ idempotencyKey: payload.idempotencyKey }).lean();
-    if (existing) return { refundNumber: existing.transactionNumber, transaction: existing, alreadyExists: true };
-  }
-
-  const invoicePreview = await Invoice.findById(invoiceId).lean();
-  if (!invoicePreview) {
-    const error = new Error('Invoice not found');
-    error.statusCode = 404;
-    throw error;
-  }
-  const scopedHospitalId = userHospitalId(user);
-  if (scopedHospitalId && String(invoicePreview.hospital_id) !== String(scopedHospitalId)) {
-    const error = new Error('Invoice not found in this hospital');
-    error.statusCode = 404;
-    throw error;
-  }
-  const refundable = money(Math.max(0, Number(invoicePreview.amount_paid || 0) - Number(invoicePreview.refunded_amount || 0)));
-  if (amount > refundable + 0.01) {
-    const error = new Error(`Refund amount exceeds the collected refundable amount of ₹${refundable.toFixed(2)}`);
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const creditKey = payload.idempotencyKey ? `${payload.idempotencyKey}:credit` : undefined;
-  let credit;
-  if (creditKey) {
-    const existingCreditTransaction = await FinancialTransaction.findOne({ idempotencyKey: creditKey }).lean();
-    if (existingCreditTransaction?.metadata?.creditNoteInvoiceId) {
-      const [creditNote, originalInvoice] = await Promise.all([
-        Invoice.findById(existingCreditTransaction.metadata.creditNoteInvoiceId),
-        Invoice.findById(invoiceId)
-      ]);
-      credit = { creditNote, originalInvoice, transaction: existingCreditTransaction, alreadyExists: true };
-    }
-  }
-  if (!credit) {
-    credit = await createCreditNote(invoiceId, {
-      amount,
+    // A refund always carries an equal credit note so the patient's liability and
+    // the external cash reversal remain separate, auditable events. They are
+    // committed in the SAME MongoDB transaction: never persist a credit without
+    // its refund (or vice versa) because a network/database failure occurred.
+    const creditKey = payload.idempotencyKey ? `${payload.idempotencyKey}:credit` : undefined;
+    const credit = await createCreditNoteInSession(invoice, {
+      amount: refundAmount,
       reason: payload.reason,
       idempotencyKey: creditKey
-    }, user);
-  }
+    }, user, session);
 
-  return runFinancialTransaction(async (session) => {
-    const invoice = await Invoice.findById(invoiceId, null, sessionOptions(session));
-    const admission = invoice.admission_id
-      ? await findAdmission(invoice.admission_id, session, user)
-      : null;
+    const hospitalId = invoice.hospital_id;
+    const refundNumber = await nextFinancialNumber({ documentType: 'REFUND', hospitalId, session });
 
-    const hospitalId = invoice.hospital_id || hospitalIdFor(admission, user);
-    const refundNumber = await nextFinancialNumber({
-      documentType: 'ADVANCE_REFUND',
-      hospitalId,
-      session
-    });
-
-    invoice.refunded_amount = money((invoice.refunded_amount || 0) + amount);
+    invoice.refunded_amount = money(Number(invoice.refunded_amount || 0) + refundAmount);
     await invoice.save(sessionOptions(session));
+
+    const billRefundAllocations = await allocateInvoiceAdjustmentAcrossBills(
+      invoice,
+      refundAmount,
+      'refund_amount',
+      session
+    );
 
     const transaction = new FinancialTransaction({
       hospitalId,
@@ -3081,21 +3148,44 @@ async function refundInvoice(invoiceId, payload, user) {
       transactionNumber: refundNumber,
       transactionType: 'REFUND',
       direction: 'DEBIT',
-      amount,
-      paymentMethod: payload.paymentMethod || 'Cash',
+      amount: refundAmount,
+      paymentMethod: refundMethod,
       paymentReference: payload.reference,
+      receiptType: 'Refund',
+      amountReceived: 0,
+      amountTendered: 0,
+      amountApplied: 0,
+      externalMoneyMovement: true,
+      cashFlowClass: 'REFUND',
       sourceModule: 'Billing',
-      sourceId: credit.creditNote._id,
+      sourceId: credit.creditNote?._id,
       remarks: payload.reason.trim(),
       createdBy: user?._id,
       idempotencyKey: payload.idempotencyKey,
-      metadata: { creditNoteNumber: credit.creditNote.invoice_number }
+      documentAllocations: billRefundAllocations.length
+        ? billRefundAllocations
+        : [{ documentType: 'Invoice', documentId: invoice._id, amount: refundAmount }],
+      metadata: {
+        creditNoteNumber: credit.creditNote?.invoice_number,
+        creditNoteId: credit.creditNote?._id,
+        creditTransactionId: credit.transaction?._id
+      }
     });
-
     await transaction.save(sessionOptions(session));
 
-    return { creditNote: credit.creditNote, refundNumber, transaction };
+    return {
+      creditNote: credit.creditNote,
+      originalInvoice: invoice,
+      refundNumber,
+      transaction,
+      alreadyExists: false
+    };
   });
+
+  if (result.originalInvoice?.admission_id) {
+    await calculateAdmissionFinancials(result.originalInvoice.admission_id, { user });
+  }
+  return result;
 }
 
 async function getFinancialLedger(admissionId, user, options = {}) {

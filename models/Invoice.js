@@ -921,10 +921,14 @@ invoiceSchema.pre('save', function (next) {
   const patientBase = this.payer_allocation?.coverage_id
     ? Number(this.payer_allocation?.patient_liability || 0)
     : Number(this.total || 0);
+  // Refunds reverse previously collected money. A refund paired with a credit
+  // note must not leave the invoice looking more settled than the ledger.
+  // Example: total 1800, paid 1000, refund 500 + credit note 500 => due remains 800.
   this.balance_due = Math.max(
     0,
     patientBase -
-      this.amount_paid -
+      this.amount_paid +
+      Number(this.refunded_amount || 0) -
       Number(this.settlement_discount_amount || 0) -
       Number(this.credit_note_total || 0)
   );
@@ -958,6 +962,15 @@ invoiceSchema.pre('save', function (next) {
     this.status = 'Pending';
   }
 
+  // Canonical consolidated OPD/IPD invoices carry clinical services in
+  // service_items. Legacy specialized invoices may still use the typed arrays.
+  // Never reset has_* flags to false merely because a consolidated invoice has
+  // empty legacy typed arrays.
+  const canonicalServiceTypes = new Set((this.service_items || []).map((item) => String(
+    item?.service_type || item?.charge_type || item?.charge_head || ''
+  ).trim().toLowerCase()));
+  const hasCanonicalType = (...types) => types.some((value) => canonicalServiceTypes.has(String(value).toLowerCase()));
+
   // Update procedures related fields
   if (this.procedure_items && this.procedure_items.length > 0) {
     this.has_procedures = true;
@@ -970,6 +983,9 @@ invoiceSchema.pre('save', function (next) {
     } else {
       this.procedures_status = 'Partial';
     }
+  } else if (hasCanonicalType('Procedure')) {
+    this.has_procedures = true;
+    if (!this.procedures_status || this.procedures_status === 'None') this.procedures_status = 'Pending';
   } else {
     this.has_procedures = false;
     this.procedures_status = 'None';
@@ -987,6 +1003,9 @@ invoiceSchema.pre('save', function (next) {
     } else {
       this.lab_tests_status = 'Partial';
     }
+  } else if (hasCanonicalType('Lab Test', 'LAB', 'Laboratory')) {
+    this.has_lab_tests = true;
+    if (!this.lab_tests_status || this.lab_tests_status === 'None') this.lab_tests_status = 'Pending';
   } else {
     this.has_lab_tests = false;
     this.lab_tests_status = 'None';
@@ -1004,6 +1023,9 @@ invoiceSchema.pre('save', function (next) {
     } else {
       this.radiology_status = 'Partial';
     }
+  } else if (hasCanonicalType('Radiology', 'Imaging')) {
+    this.has_radiology = true;
+    if (!this.radiology_status || this.radiology_status === 'None') this.radiology_status = 'Pending';
   } else {
     this.has_radiology = false;
     this.radiology_status = 'None';

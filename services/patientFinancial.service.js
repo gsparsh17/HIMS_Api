@@ -16,16 +16,80 @@ const { activatePackageEpisode, recordPackageUtilization } = require('./packageA
 const { replaceCoverageUtilization } = require('./coverageUtilization.service');
 const { resolveFinancialPolicy } = require('./financialPolicy.service');
 const { _hasActionPermission } = require('../middlewares/auth');
+const { calculateChargeAmounts } = require('./financeInvariant.service');
 
 const PAYMENT_METHODS = [
   'Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme',
   'Bank', 'OPDAdvance', 'Adjustment'
 ];
 
+const EXTERNAL_PAYMENT_METHODS = new Set([
+  'Cash', 'Card', 'UPI', 'Net Banking', 'Insurance', 'Government Scheme', 'Bank'
+]);
+
 const sessionOptions = (session) => (session ? { session } : {});
 const id = (value) => String(value?._id || value || '');
 const amount = (value) => money(Number(value || 0));
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+
+
+function clinicalFlagsFromServiceItems(serviceItems = []) {
+  const types = new Set((serviceItems || []).map((item) => String(
+    item.service_type || item.charge_type || item.charge_head || item.item_type || ''
+  ).trim().toLowerCase()));
+  const has = (...needles) => needles.some((needle) => types.has(String(needle).toLowerCase()));
+  return {
+    has_procedures: has('Procedure'),
+    procedures_status: has('Procedure') ? 'Pending' : 'None',
+    has_lab_tests: has('Lab Test', 'LAB', 'Laboratory'),
+    lab_tests_status: has('Lab Test', 'LAB', 'Laboratory') ? 'Pending' : 'None',
+    has_radiology: has('Radiology', 'Imaging'),
+    radiology_status: has('Radiology', 'Imaging') ? 'Pending' : 'None'
+  };
+}
+
+async function resolveRequestedBillToInvoice({ billId, hospitalId, patientId, appointmentId, session = null }) {
+  if (!billId) return { bill: null, invoice: null };
+  const bill = await Bill.findOne({
+    _id: billId,
+    hospital_id: hospitalId,
+    patient_id: patientId,
+    is_deleted: { $ne: true }
+  }, null, sessionOptions(session)).lean();
+  if (!bill) throw financialError('Selected bill was not found for this patient.', 404, 'OPD_BILL_NOT_FOUND');
+
+  if (appointmentId && appointmentIdFromBillSource(bill) !== id(appointmentId)) {
+    throw financialError('The selected bill does not belong to this appointment.', 409, 'OPD_ENCOUNTER_MISMATCH');
+  }
+  if (bill.status === 'Discount Pending Approval' || bill.discount_approval?.status === 'PENDING') {
+    throw financialError('This bill is waiting for discount approval. Collect the final payment after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
+  }
+
+  const linkedInvoiceIds = [bill.invoice_id, ...(bill.invoice_ids || [])].map(id).filter(Boolean);
+  if (!linkedInvoiceIds.length) return { bill, invoice: null };
+
+  let query = Invoice.findOne({
+    _id: { $in: linkedInvoiceIds },
+    hospital_id: hospitalId,
+    patient_id: patientId,
+    is_deleted: { $ne: true },
+    document_stage: { $ne: 'VOID' },
+    status: { $nin: ['Cancelled', 'Refunded', 'Discount Pending Approval'] },
+    balance_due: { $gt: 0 },
+    $or: [{ admission_id: { $exists: false } }, { admission_id: null }]
+  }).sort({ issue_date: 1, created_at: 1 });
+  if (session) query = query.session(session);
+  const invoice = await query.lean();
+  if (!invoice) return { bill, invoice: null };
+  if (appointmentId && !(await invoiceBelongsToAppointment(invoice, appointmentId, { hospitalId, patientId, session }))) {
+    throw financialError('The selected bill resolves to an invoice outside this appointment.', 409, 'OPD_ENCOUNTER_MISMATCH');
+  }
+  if (await invoiceHasPendingDiscount({ hospitalId, patientId, invoiceId: invoice._id, session })) {
+    throw financialError('This invoice contains a bill waiting for discount approval. Collect the final payment after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
+  }
+  return { bill, invoice };
+}
 
 function appointmentIdFromBillSource(bill) {
   if (!bill) return '';
@@ -88,50 +152,11 @@ function financialError(message, statusCode = 400, code = 'FINANCIAL_VALIDATION_
 }
 
 function calculateLineAmounts(payload = {}) {
-  const quantity = Number(payload.quantity || 1);
-  const rate = amount(payload.rate);
-  if (!Number.isFinite(quantity) || quantity <= 0) throw financialError('Quantity must be greater than zero');
-  if (rate < 0) throw financialError('Rate cannot be negative');
-
-  const gross = amount(quantity * rate);
-  const discountType = payload.discountType === 'percentage' ? 'percentage' : 'fixed';
-  const discountRate = amount(payload.discountRate);
-  let discountAmount = amount(payload.discountAmount);
-  if (discountType === 'percentage') {
-    discountAmount = amount(gross * Math.max(0, Math.min(100, discountRate)) / 100);
-  } else {
-    discountAmount = Math.max(0, Math.min(gross, discountAmount));
+  try {
+    return calculateChargeAmounts(payload);
+  } catch (error) {
+    throw financialError(error.message);
   }
-
-  const afterDiscount = amount(gross - discountAmount);
-  const taxMode = ['inclusive', 'exempt'].includes(payload.taxMode) ? payload.taxMode : 'exclusive';
-  const taxRate = taxMode === 'exempt' ? 0 : Math.max(0, Number(payload.taxRate || 0));
-  if (taxRate > 100) throw financialError('Tax rate cannot exceed 100%');
-
-  let taxableAmount = afterDiscount;
-  let taxAmount = 0;
-  let netAmount = afterDiscount;
-  if (taxMode === 'inclusive' && taxRate > 0) {
-    taxableAmount = amount(afterDiscount / (1 + taxRate / 100));
-    taxAmount = amount(afterDiscount - taxableAmount);
-  } else if (taxMode === 'exclusive' && taxRate > 0) {
-    taxAmount = amount(taxableAmount * taxRate / 100);
-    netAmount = amount(taxableAmount + taxAmount);
-  }
-
-  return {
-    quantity,
-    rate,
-    grossAmount: gross,
-    discountType,
-    discountRate,
-    discountAmount,
-    taxableAmount,
-    taxMode,
-    taxRate,
-    taxAmount,
-    netAmount
-  };
 }
 
 function rejectOPDBillDiscount(bill) {
@@ -594,7 +619,17 @@ function billPaymentHistory(bills = []) {
 }
 
 function billServiceItems(bill) {
-  return (bill.items || []).map((item) => {
+  const billItems = bill.items || [];
+  const billTotal = amount(bill.total_amount || billItems.reduce((sum, item) => sum + Number(item.net_amount || item.amount || 0), 0));
+  const billAllocation = bill.payer_allocation || {};
+  const allocationFields = [
+    'standard_amount', 'contracted_amount', 'eligible_amount', 'patient_liability',
+    'sponsor_liability', 'non_admissible_amount', 'contractual_adjustment',
+    'hospital_concession', 'package_absorbed'
+  ];
+  const billHasAllocationEvidence = allocationFields.some((field) => Math.abs(Number(billAllocation[field] || 0)) > 1e-9);
+
+  return billItems.map((item) => {
     const quantity = Number(item.quantity || 1);
     const gross = amount(item.gross_amount || (Number(item.unit_price || 0) * quantity) || item.amount);
     const discount = amount(item.discount_amount);
@@ -603,6 +638,22 @@ function billServiceItems(bill) {
     const net = amount(item.net_amount || item.amount || taxable + tax);
     const rawType = String(item.item_type || 'Other');
     const serviceType = ['Consultation', 'Procedure', 'Lab Test', 'Radiology', 'Purchase'].includes(rawType) ? rawType : 'Other';
+    const ratio = billTotal > 0 ? Math.max(0, net / billTotal) : (billItems.length ? 1 / billItems.length : 1);
+    const itemHasAllocationEvidence = allocationFields.some((field) => Math.abs(Number(item[field] || 0)) > 1e-9);
+    // Older bills sometimes persisted an all-zero item allocation while keeping the
+    // real payer split at bill level. Fall back proportionally only for that legacy
+    // shape; otherwise explicit item zeroes remain authoritative.
+    const useBillAllocationFallback = !itemHasAllocationEvidence && billHasAllocationEvidence;
+    const allocated = (field) => amount(Number(billAllocation[field] || 0) * ratio);
+    const allocationValue = (field, fallback = 0) => {
+      if (useBillAllocationFallback) return allocated(field);
+      if (item[field] !== undefined && item[field] !== null && item[field] !== '') {
+        const parsed = Number(item[field]);
+        if (Number.isFinite(parsed)) return amount(parsed);
+      }
+      return amount(fallback);
+    };
+
     return {
       description: item.description || 'OPD charge',
       charge_type: item.charge_type || rawType,
@@ -611,10 +662,15 @@ function billServiceItems(bill) {
       quantity,
       unit_price: amount(item.unit_price || (quantity ? gross / quantity : gross)),
       gross_amount: gross,
-      standard_amount: gross,
-      contracted_amount: gross,
-      sponsor_liability: 0,
-      patient_liability: net,
+      standard_amount: allocationValue('standard_amount', gross),
+      contracted_amount: allocationValue('contracted_amount', gross),
+      eligible_amount: allocationValue('eligible_amount', net),
+      patient_liability: allocationValue('patient_liability', net),
+      sponsor_liability: allocationValue('sponsor_liability', 0),
+      non_admissible_amount: allocationValue('non_admissible_amount', 0),
+      contractual_adjustment: allocationValue('contractual_adjustment', 0),
+      hospital_concession: allocationValue('hospital_concession', discount),
+      package_absorbed: allocationValue('package_absorbed', 0),
       discount_type: item.discount_type || 'fixed',
       discount_rate: Number(item.discount_rate || 0),
       discount_amount: discount,
@@ -697,6 +753,34 @@ async function issueOPDInvoice(patientId, payload, user) {
     const settlementDiscount = amount(bills.reduce((sum, bill) => sum + Number(bill.settlement_discount_amount || 0), 0));
     const creditNotes = amount(bills.reduce((sum, bill) => sum + Number(bill.credit_note_amount || 0), 0));
     const inheritedPayments = billPaymentHistory(bills);
+    const payerAllocation = bills.reduce((acc, bill) => {
+      const alloc = bill.payer_allocation || {};
+      acc.standard_amount = amount((acc.standard_amount || 0) + Number(alloc.standard_amount || bill.gross_amount || bill.subtotal || 0));
+      acc.contracted_amount = amount((acc.contracted_amount || 0) + Number(alloc.contracted_amount || bill.total_amount || 0));
+      acc.eligible_amount = amount((acc.eligible_amount || 0) + Number(alloc.eligible_amount || alloc.contracted_amount || bill.total_amount || 0));
+      acc.patient_liability = amount((acc.patient_liability || 0) + Number(alloc.patient_liability ?? bill.total_amount ?? 0));
+      acc.sponsor_liability = amount((acc.sponsor_liability || 0) + Number(alloc.sponsor_liability || 0));
+      acc.non_admissible_amount = amount((acc.non_admissible_amount || 0) + Number(alloc.non_admissible_amount || 0));
+      acc.contractual_adjustment = amount((acc.contractual_adjustment || 0) + Number(alloc.contractual_adjustment || 0));
+      acc.hospital_concession = amount((acc.hospital_concession || 0) + Number(alloc.hospital_concession || 0));
+      acc.package_absorbed = amount((acc.package_absorbed || 0) + Number(alloc.package_absorbed || 0));
+      acc.sponsor_paid_amount = amount((acc.sponsor_paid_amount || 0) + Number(alloc.sponsor_paid_amount || 0));
+      if (!acc.coverage_id && alloc.coverage_id) acc.coverage_id = alloc.coverage_id;
+      if (!acc.payer_id && alloc.payer_id) acc.payer_id = alloc.payer_id;
+      if (!acc.claim_id && alloc.claim_id) acc.claim_id = alloc.claim_id;
+      return acc;
+    }, {
+      standard_amount: 0,
+      contracted_amount: 0,
+      eligible_amount: 0,
+      patient_liability: 0,
+      sponsor_liability: 0,
+      non_admissible_amount: 0,
+      contractual_adjustment: 0,
+      hospital_concession: 0,
+      package_absorbed: 0,
+      sponsor_paid_amount: 0
+    });
     const invoiceNumber = await nextFinancialNumber({ documentType: 'INVOICE', hospitalId, session });
     const hospital = await Hospital.findById(hospitalId, null, sessionOptions(session)).lean();
     const now = operationNow();
@@ -719,6 +803,7 @@ async function issueOPDInvoice(patientId, payload, user) {
       issue_date: now,
       due_date: new Date(now.getTime() + (Number(payload.dueInDays ?? 7) * 86400000)),
       service_items: serviceItems,
+      payer_allocation: payerAllocation,
       gross_amount: gross,
       subtotal: gross,
       line_discount_total: lineDiscount,
@@ -745,7 +830,8 @@ async function issueOPDInvoice(patientId, payload, user) {
         aggregateScope: [...encounterKeys][0] !== 'CASH' ? 'OPD_APPOINTMENT' : 'OPD_PATIENT',
         appointmentId: [...encounterKeys][0] !== 'CASH' ? [...encounterKeys][0] : undefined,
         discountApprovalPending: false
-      }
+      },
+      ...clinicalFlagsFromServiceItems(serviceItems)
     });
     await invoice.save(sessionOptions(session));
     for (const bill of bills) {
@@ -844,15 +930,12 @@ async function syncOPDInvoiceFromBills(invoiceId, hospitalId, session = null) {
     appointmentId: encounterKeys.size === 1 && onlyEncounterKey !== 'CASH' ? onlyEncounterKey : undefined,
     discountApprovalPending
   };
+  Object.assign(invoice, clinicalFlagsFromServiceItems(serviceItems));
   await invoice.save(sessionOptions(session));
   return invoice;
 }
 
-async function applyToBill(bill, paymentAmount, discountAmount, taxAdjustment, payload, receiptNumber, user, session) {
-  if (taxAdjustment) {
-    bill.tax_amount = amount(Number(bill.tax_amount || 0) + taxAdjustment);
-    bill.total_amount = amount(Number(bill.total_amount || 0) + taxAdjustment);
-  }
+async function applyToBill(bill, paymentAmount, discountAmount, payload, receiptNumber, user, session) {
   if (discountAmount) {
     bill.settlement_discount_amount = amount(Number(bill.settlement_discount_amount || 0) + discountAmount);
     bill.discount_reason = payload.settlementDiscountReason;
@@ -899,60 +982,40 @@ async function previewOPDPayment(patientId, payload, user) {
     }
     invoiceFilter._id = payload.invoiceId;
   }
+  let billResolvedInvoice = null;
   if (payload.billId) {
-    const requestedBill = await Bill.findOne({ _id: payload.billId, hospital_id: hospitalId, patient_id: patient._id }).lean();
-    if (payload.appointmentId && requestedBill && appointmentIdFromBillSource(requestedBill) !== id(payload.appointmentId)) {
-      throw financialError('The selected bill does not belong to this appointment.', 409, 'OPD_ENCOUNTER_MISMATCH');
-    }
-    if (requestedBill?.status === 'Discount Pending Approval' || requestedBill?.discount_approval?.status === 'PENDING') {
-      throw financialError('This bill is waiting for discount approval. Collect the final payment after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
-    }
-    billFilter._id = payload.billId;
+    const resolved = await resolveRequestedBillToInvoice({
+      billId: payload.billId,
+      hospitalId,
+      patientId: patient._id,
+      appointmentId: payload.appointmentId
+    });
+    billResolvedInvoice = resolved.invoice;
+    if (billResolvedInvoice) invoiceFilter._id = billResolvedInvoice._id;
+    else billFilter._id = payload.billId;
   }
-  let invoices = payload.billId ? [] : await Invoice.find(invoiceFilter).sort({ issue_date: 1 });
+  let invoices = (payload.billId && !billResolvedInvoice) ? [] : await Invoice.find(invoiceFilter).sort({ issue_date: 1 });
   invoices = await scopeInvoicesToAppointment(invoices, payload.appointmentId, { hospitalId, patientId: patient._id });
   invoices = await excludePendingDiscountInvoices(invoices, { hospitalId, patientId: patient._id });
-  const bills = payload.invoiceId ? [] : await Bill.find(billFilter).sort({ generated_at: 1 });
+  const bills = (payload.invoiceId || billResolvedInvoice) ? [] : await Bill.find(billFilter).sort({ generated_at: 1 });
   if (!invoices.length && !bills.length) throw financialError('No outstanding OPD bill or invoice was found', 409, 'NO_OUTSTANDING_DOCUMENT');
 
-  if (taxAdjustment !== 0 && invoices.length + bills.length !== 1) {
-    throw financialError(
-      'Select one bill or invoice for a tax adjustment',
-      400,
-      'TAX_ADJUSTMENT_DOCUMENT_REQUIRED'
-    );
-  }
-
   if (taxAdjustment !== 0) {
-    const taxTarget = invoices[0] || bills[0];
-    const currentTax = amount(invoices.length ? taxTarget.tax : taxTarget.tax_amount);
-    if (taxAdjustment < 0 && Math.abs(taxAdjustment) > currentTax + 0.01) {
-      throw financialError(
-        `Tax reduction cannot exceed the current tax amount of ₹${currentTax.toFixed(2)}`,
-        400,
-        'TAX_REDUCTION_EXCEEDS_DOCUMENT_TAX',
-        { maximumReduction: currentTax }
-      );
-    }
-    if (amount(Number(taxTarget.total || taxTarget.total_amount || 0) + taxAdjustment) < 0) {
-      throw financialError(
-        'Tax adjustment cannot make the document total negative',
-        400,
-        'INVALID_TAX_ADJUSTMENT'
-      );
-    }
+    throw financialError(
+      'Tax is finalised during charge/invoice creation. Payment collection cannot rewrite tax on a financial document.',
+      409,
+      'PAYMENT_TAX_ADJUSTMENT_NOT_ALLOWED'
+    );
   }
 
   const outstandingBefore = amount(
     invoices.reduce((sum, row) => sum + Number(row.balance_due || 0), 0) +
     bills.reduce((sum, row) => sum + Number(row.balance_due || 0), 0)
   );
-  const effectiveOutstanding = amount(outstandingBefore + taxAdjustment);
-  if (effectiveOutstanding < 0) throw financialError('Tax adjustment cannot reduce outstanding below zero', 400, 'INVALID_TAX_ADJUSTMENT');
-  if (discountRequested > effectiveOutstanding + 0.01) {
-    throw financialError('Settlement discount cannot exceed outstanding amount', 400, 'DISCOUNT_EXCEEDS_OUTSTANDING', { maximumAllowed: effectiveOutstanding });
+  if (discountRequested > outstandingBefore + 0.01) {
+    throw financialError('Settlement discount cannot exceed outstanding amount', 400, 'DISCOUNT_EXCEEDS_OUTSTANDING', { maximumAllowed: outstandingBefore });
   }
-  const netPayable = amount(Math.max(0, effectiveOutstanding - discountRequested));
+  const netPayable = amount(Math.max(0, outstandingBefore - discountRequested));
   const amountApplied = amount(Math.min(netPayable, Math.max(0, amountAppliedRequested)));
   const overpayment = amount(Math.max(0, amountAppliedRequested - netPayable));
   const changeReturned = payload.overpaymentDisposition === 'RETURN_CHANGE' ? overpayment : 0;
@@ -1025,15 +1088,32 @@ async function recordOPDPayment(patientId, payload, user) {
     const discountRequested = amount(payload.settlementDiscountAmount);
     const taxAdjustment = amount(payload.taxAdjustmentAmount);
     if (requestedAmount < 0 || discountRequested < 0) throw financialError('Amounts cannot be negative');
-    if (requestedAmount <= 0 && discountRequested <= 0 && taxAdjustment === 0) throw financialError('Enter a payment, discount or tax adjustment');
+    if (requestedAmount <= 0 && discountRequested <= 0) throw financialError('Enter a payment or settlement discount');
     if (discountRequested > 0 && !String(payload.settlementDiscountReason || '').trim()) throw financialError('Settlement discount reason is required');
-    if (taxAdjustment !== 0 && !String(payload.taxAdjustmentReason || '').trim()) throw financialError('Tax adjustment reason is required');
+    if (taxAdjustment !== 0) {
+      throw financialError(
+        'Tax is finalised during charge/invoice creation. Payment collection cannot rewrite tax on a financial document.',
+        409,
+        'PAYMENT_TAX_ADJUSTMENT_NOT_ALLOWED'
+      );
+    }
     const paymentMethod = payload.paymentMethod || 'Cash';
     if (!PAYMENT_METHODS.includes(paymentMethod)) throw financialError('Unsupported payment method');
 
     if (payload.idempotencyKey) {
-      const existing = await FinancialTransaction.findOne({ idempotencyKey: { $regex: new RegExp(`^${String(payload.idempotencyKey).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?::|$)`) } }, null, sessionOptions(session));
-      if (existing) return { receiptNumber: existing.transactionNumber, alreadyExists: true };
+      const idempotencyPattern = new RegExp(`^${String(payload.idempotencyKey).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?::|$)`);
+      const existingTransactions = await FinancialTransaction.find(
+        { idempotencyKey: { $regex: idempotencyPattern } },
+        null,
+        sessionOptions(session)
+      ).sort({ createdAt: 1 });
+      if (existingTransactions.length) {
+        return {
+          receiptNumber: existingTransactions[0].transactionNumber,
+          transactions: existingTransactions,
+          alreadyExists: true
+        };
+      }
     }
 
     const invoiceFilter = {
@@ -1070,33 +1150,24 @@ async function recordOPDPayment(patientId, payload, user) {
       }
       invoiceFilter._id = payload.invoiceId;
     }
+    let billResolvedInvoice = null;
     if (payload.billId) {
-      const requestedBill = await Bill.findOne({ _id: payload.billId, hospital_id: hospitalId, patient_id: patient._id }, null, sessionOptions(session));
-      if (payload.appointmentId && requestedBill && appointmentIdFromBillSource(requestedBill) !== id(payload.appointmentId)) {
-        throw financialError('The selected bill does not belong to this appointment.', 409, 'OPD_ENCOUNTER_MISMATCH');
-      }
-      if (requestedBill?.status === 'Discount Pending Approval' || requestedBill?.discount_approval?.status === 'PENDING') {
-        throw financialError('This bill is waiting for discount approval. Collect the final payment after the approval decision is posted.', 409, 'DISCOUNT_APPROVAL_PENDING');
-      }
-      billFilter._id = payload.billId;
+      const resolved = await resolveRequestedBillToInvoice({
+        billId: payload.billId,
+        hospitalId,
+        patientId: patient._id,
+        appointmentId: payload.appointmentId,
+        session
+      });
+      billResolvedInvoice = resolved.invoice;
+      if (billResolvedInvoice) invoiceFilter._id = billResolvedInvoice._id;
+      else billFilter._id = payload.billId;
     }
-    let invoices = payload.billId ? [] : await Invoice.find(invoiceFilter, null, sessionOptions(session)).sort({ issue_date: 1 });
+    let invoices = (payload.billId && !billResolvedInvoice) ? [] : await Invoice.find(invoiceFilter, null, sessionOptions(session)).sort({ issue_date: 1 });
     invoices = await scopeInvoicesToAppointment(invoices, payload.appointmentId, { hospitalId, patientId: patient._id, session });
     invoices = await excludePendingDiscountInvoices(invoices, { hospitalId, patientId: patient._id, session });
-    let bills = payload.invoiceId ? [] : await Bill.find(billFilter, null, sessionOptions(session)).sort({ generated_at: 1 });
-    if (!invoices.length && !bills.length) throw financialError('No outstanding OPD bill or invoice was found', 409);
-    if (taxAdjustment !== 0 && invoices.length + bills.length !== 1) throw financialError('Select one bill or invoice for a tax adjustment');
-    if (taxAdjustment !== 0) {
-      const taxTarget = invoices[0] || bills[0];
-      const currentTax = amount(invoices.length ? taxTarget.tax : taxTarget.tax_amount);
-      if (taxAdjustment < 0 && Math.abs(taxAdjustment) > currentTax + 0.01) {
-        throw financialError(`Tax reduction cannot exceed the current tax amount of ₹${currentTax.toFixed(2)}`);
-      }
-      if (amount(Number(taxTarget.total || taxTarget.total_amount || 0) + taxAdjustment) < 0) {
-        throw financialError('Tax adjustment cannot make the document total negative');
-      }
-    }
-
+    let bills = (payload.invoiceId || billResolvedInvoice) ? [] : await Bill.find(billFilter, null, sessionOptions(session)).sort({ generated_at: 1 });
+    if (!invoices.length && !bills.length) throw financialError('No outstanding OPD bill or invoice was found', 409, 'NO_OUTSTANDING_DOCUMENT');
     const outstandingBefore = amount(
       invoices.reduce((sum, row) => sum + Number(row.balance_due || 0), 0) +
       bills.reduce((sum, row) => sum + Number(row.balance_due || 0), 0)
@@ -1119,16 +1190,8 @@ async function recordOPDPayment(patientId, payload, user) {
         }
       });
     }
-    if (taxAdjustment !== 0 && !_hasActionPermission(user, 'tax_override')) {
-      throw financialError('Tax adjustment requires dedicated tax override permission', 403, 'TAX_OVERRIDE_PERMISSION_REQUIRED');
-    }
-    if (taxAdjustment !== 0 && !String(payload.taxAdjustmentReason || payload.notes || '').trim()) {
-      throw financialError('Tax adjustment reason is required', 400, 'TAX_OVERRIDE_REASON_REQUIRED');
-    }
-    const effectiveOutstanding = amount(outstandingBefore + taxAdjustment);
-    if (effectiveOutstanding < 0) throw financialError('Tax adjustment cannot reduce the outstanding amount below zero');
-    if (discountRequested > effectiveOutstanding + 0.01) throw financialError('Settlement discount cannot exceed outstanding amount');
-    if (requestedAmount > effectiveOutstanding - discountRequested + 0.01) throw financialError(
+    if (discountRequested > outstandingBefore + 0.01) throw financialError('Settlement discount cannot exceed outstanding amount');
+    if (requestedAmount > outstandingBefore - discountRequested + 0.01) throw financialError(
       'Payment cannot exceed outstanding amount after discount', 409, 'PAYMENT_EXCEEDS_NET_PAYABLE',
       { maximumAllowed: settlementPreview.maximumAllowed, effectiveOutstanding: settlementPreview.netPayable, suggestedAmount: settlementPreview.suggestedAmount }
     );
@@ -1136,7 +1199,6 @@ async function recordOPDPayment(patientId, payload, user) {
     const receiptNumber = await nextFinancialNumber({ documentType: 'RECEIPT', hospitalId, session });
     let remainingDiscount = discountRequested;
     let remainingPayment = requestedAmount;
-    let remainingTax = taxAdjustment;
     const transactions = [];
 
     if (paymentMethod === 'OPDAdvance' && requestedAmount > 0) {
@@ -1160,19 +1222,14 @@ async function recordOPDPayment(patientId, payload, user) {
     for (const row of documents) {
       const document = row.document;
       const due = amount(document.balance_due);
-      const taxPart = remainingTax !== 0 ? remainingTax : 0;
-      remainingTax = 0;
-      const discountPart = amount(Math.min(Math.max(0, due + taxPart), remainingDiscount));
+      const discountPart = amount(Math.min(Math.max(0, due), remainingDiscount));
       remainingDiscount = amount(remainingDiscount - discountPart);
-      const availableAfterDiscount = amount(Math.max(0, due + taxPart - discountPart));
+      const availableAfterDiscount = amount(Math.max(0, due - discountPart));
       const paymentPart = amount(Math.min(availableAfterDiscount, remainingPayment));
       remainingPayment = amount(remainingPayment - paymentPart);
 
+      let documentAllocations = [];
       if (row.type === 'invoice') {
-        if (taxPart) {
-          document.tax = amount(Number(document.tax || 0) + taxPart);
-          document.total = amount(Number(document.total || 0) + taxPart);
-        }
         if (discountPart) {
           document.settlement_discount_amount = amount(Number(document.settlement_discount_amount || 0) + discountPart);
           document.discount_details = { type: 'fixed', reason: payload.settlementDiscountReason, approved_by: payload.discountApprovedBy || user?._id, approved_at: operationNow() };
@@ -1198,30 +1255,36 @@ async function recordOPDPayment(patientId, payload, user) {
 
         let billPayment = paymentPart;
         let billDiscount = discountPart;
-        let billTax = taxPart;
+        documentAllocations = [];
         const linkedBills = await linkedBillsForInvoice(document, session);
         for (const linkedBill of linkedBills) {
           const linkedDue = amount(linkedBill.balance_due);
-          const applyTax = billTax; billTax = 0;
-          const applyDiscount = amount(Math.min(linkedDue + applyTax, billDiscount));
+          const applyDiscount = amount(Math.min(linkedDue, billDiscount));
           billDiscount = amount(billDiscount - applyDiscount);
-          const applyPayment = amount(Math.min(Math.max(0, linkedDue + applyTax - applyDiscount), billPayment));
+          const applyPayment = amount(Math.min(Math.max(0, linkedDue - applyDiscount), billPayment));
           billPayment = amount(billPayment - applyPayment);
-          await applyToBill(linkedBill, applyPayment, applyDiscount, applyTax, payload, receiptNumber, user, session);
+          if (applyPayment > 0) {
+            documentAllocations.push({ documentType: 'Bill', documentId: linkedBill._id, amount: applyPayment });
+          }
+          await applyToBill(linkedBill, applyPayment, applyDiscount, payload, receiptNumber, user, session);
+        }
+        if (paymentPart > 0 && !documentAllocations.length) {
+          documentAllocations.push({ documentType: 'Invoice', documentId: document._id, amount: paymentPart });
         }
       } else {
-        await applyToBill(document, paymentPart, discountPart, taxPart, payload, receiptNumber, user, session);
+        documentAllocations = paymentPart > 0
+          ? [{ documentType: 'Bill', documentId: document._id, amount: paymentPart }]
+          : [];
+        await applyToBill(document, paymentPart, discountPart, payload, receiptNumber, user, session);
       }
 
       if (paymentPart > 0) {
-        const receiptSummary = payload.receiptSummary && typeof payload.receiptSummary === 'object'
-          ? {
-              originalAmount: amount(payload.receiptSummary.originalAmount),
-              discountAmount: amount(payload.receiptSummary.discountAmount),
-              discountPercent: Number(payload.receiptSummary.discountPercent || 0),
-              netPayable: amount(payload.receiptSummary.netPayable)
-            }
-          : null;
+        const receiptSummary = {
+          originalAmount: due,
+          discountAmount: discountPart,
+          discountPercent: due > 0 ? amount((discountPart / due) * 100) : 0,
+          netPayable: availableAfterDiscount
+        };
         const usesAdvance = paymentMethod === 'OPDAdvance';
         const externalReceived = usesAdvance ? 0 : paymentPart;
         const transaction = new FinancialTransaction({
@@ -1242,10 +1305,11 @@ async function recordOPDPayment(patientId, payload, user) {
           cashFlowClass: usesAdvance ? 'WALLET_UTILISATION' : 'EXTERNAL_COLLECTION',
           balanceAfter: amount(availableAfterDiscount - paymentPart),
           paymentBreakdown: [{ method: paymentMethod, amount: paymentPart, reference: payload.reference }],
+          documentAllocations,
           sourceModule: 'OPD', sourceId: patient._id, status: 'POSTED', remarks: payload.notes,
           createdBy: user?._id,
           idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:${row.type}:${document._id}` : undefined,
-          metadata: receiptSummary ? { receiptSummary, externalReceived } : { externalReceived }
+          metadata: { receiptSummary, externalReceived }
         });
         await transaction.save(sessionOptions(session));
         transactions.push(transaction);
@@ -1260,7 +1324,15 @@ async function recordOPDPayment(patientId, payload, user) {
           paymentMethod: 'Adjustment', receiptType: 'Adjustment', amountBeforeSettlement: outstandingBefore,
           settlementDiscountAmount: discountPart, settlementDiscountReason: payload.settlementDiscountReason,
           settlementDiscountApprovedBy: payload.discountApprovedBy || user?._id,
+          // A settlement concession reduces receivable liability but does not
+          // represent money entering the hospital. Be explicit instead of
+          // relying on FinancialTransaction's external-money defaults.
+          externalMoneyMovement: false,
+          cashFlowClass: 'NON_CASH_ADJUSTMENT',
+          amountTendered: 0,
+          amountApplied: 0,
           amountReceived: 0, balanceAfter: amount(availableAfterDiscount - paymentPart),
+          documentAllocations: [{ documentType: row.type === 'invoice' ? 'Invoice' : 'Bill', documentId: document._id, amount: discountPart }],
           sourceModule: 'OPD', sourceId: patient._id, status: 'POSTED', remarks: payload.settlementDiscountReason,
           createdBy: user?._id,
           idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:discount:${row.type}:${document._id}` : undefined
@@ -1268,26 +1340,9 @@ async function recordOPDPayment(patientId, payload, user) {
         await adjustment.save(sessionOptions(session));
         transactions.push(adjustment);
       }
-      if (taxPart !== 0) {
-        const taxTransaction = new FinancialTransaction({
-          hospitalId, patientId: patient._id,
-          billId: row.type === 'bill' ? document._id : document.bill_id,
-          invoiceId: row.type === 'invoice' ? document._id : undefined,
-          transactionNumber: receiptNumber,
-          transactionType: 'ADJUSTMENT', direction: taxPart > 0 ? 'DEBIT' : 'CREDIT', amount: Math.abs(taxPart),
-          paymentMethod: 'Adjustment', receiptType: 'Adjustment', amountBeforeSettlement: outstandingBefore,
-          taxAdjustmentAmount: taxPart, amountReceived: 0,
-          balanceAfter: amount(availableAfterDiscount - paymentPart),
-          sourceModule: 'OPD', sourceId: patient._id, status: 'POSTED', remarks: payload.taxAdjustmentReason,
-          createdBy: user?._id,
-          idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:tax:${row.type}:${document._id}` : undefined
-        });
-        await taxTransaction.save(sessionOptions(session));
-        transactions.push(taxTransaction);
-      }
-      if (remainingPayment <= 0 && remainingDiscount <= 0 && remainingTax === 0) break;
+      if (remainingPayment <= 0 && remainingDiscount <= 0) break;
     }
-    if (remainingPayment > 0.01 || remainingDiscount > 0.01 || Math.abs(remainingTax) > 0.01) {
+    if (remainingPayment > 0.01 || remainingDiscount > 0.01) {
       throw financialError('The requested settlement could not be fully allocated. Refresh the workspace and try again.', 409);
     }
 
@@ -1325,7 +1380,7 @@ async function recordOPDPayment(patientId, payload, user) {
       amountTendered: settlementPreview.amountTendered,
       changeReturned,
       advanceCreated,
-      receiptSummary: payload.receiptSummary || null,
+      receiptSummary: transactions.find((transaction) => transaction.metadata?.receiptSummary)?.metadata?.receiptSummary || null,
       alreadyExists: false
     };
   });
@@ -1377,37 +1432,89 @@ async function refundOPDAdvance(patientId, payload, user) {
   const refund = amount(payload.amount);
   if (refund <= 0) throw financialError('Refund amount must be greater than zero');
   if (!String(payload.reason || '').trim()) throw financialError('Refund reason is required');
+  const paymentMethod = payload.paymentMethod || 'Cash';
+  if (!EXTERNAL_PAYMENT_METHODS.has(paymentMethod)) {
+    throw financialError('Advance refunds must use an external refund method such as Cash, Card, UPI or Bank');
+  }
+
   return runTransaction(async (session) => {
     const { patient, hospitalId } = await findPatient(patientId, user, session);
     if (payload.idempotencyKey) {
-      const existing = await FinancialTransaction.findOne({ idempotencyKey: payload.idempotencyKey }, null, sessionOptions(session));
-      if (existing) return { refundNumber: existing.transactionNumber, transaction: existing, advanceBalance: existing.balanceAfter, alreadyExists: true };
+      const existing = await FinancialTransaction.findOne({
+        hospitalId,
+        idempotencyKey: payload.idempotencyKey,
+        transactionType: 'ADVANCE_REFUND'
+      }, null, sessionOptions(session));
+      if (existing) {
+        return {
+          refundNumber: existing.transactionNumber,
+          transaction: existing,
+          advanceBalance: existing.balanceAfter,
+          alreadyExists: true
+        };
+      }
     }
+
     const opening = await getOPDAdvanceBalance({ hospitalId, patientId: patient._id, session });
-    if (refund > opening + 0.01) throw financialError(`Refund cannot exceed available OPD advance of ₹${opening.toFixed(2)}`, 409);
+    if (refund > opening + 0.01) {
+      throw financialError(`Refund cannot exceed available OPD advance of ₹${opening.toFixed(2)}`, 409);
+    }
     const refundNumber = await nextFinancialNumber({ documentType: 'ADVANCE_REFUND', hospitalId, session });
     const balanceAfter = amount(opening - refund);
+
     await PatientAdvanceLedger.create([{
-      hospitalId, patientId: patient._id, walletType: 'OPD_SHARED', transactionType: 'REFUND_PAID',
-      direction: 'DEBIT', amount: refund, openingBalance: opening, paymentMethod: payload.paymentMethod || 'Cash',
-      referenceNumber: refundNumber, documentType: 'Refund', sourceModule: 'OPD', sourceId: patient._id,
-      balanceAfter, notes: payload.reason.trim(), createdBy: user?._id,
+      hospitalId,
+      patientId: patient._id,
+      walletType: 'OPD_SHARED',
+      transactionType: 'REFUND_PAID',
+      direction: 'DEBIT',
+      amount: refund,
+      openingBalance: opening,
+      paymentMethod,
+      referenceNumber: refundNumber,
+      documentType: 'Refund',
+      sourceModule: 'OPD',
+      sourceId: patient._id,
+      balanceAfter,
+      notes: payload.reason.trim(),
+      createdBy: user?._id,
       idempotencyKey: payload.idempotencyKey
     }], sessionOptions(session));
+
     const transaction = new FinancialTransaction({
-      hospitalId, patientId: patient._id, transactionNumber: refundNumber, transactionType: 'ADVANCE_REFUND',
-      direction: 'DEBIT', amount: refund, paymentMethod: payload.paymentMethod || 'Cash', paymentReference: payload.reference,
-      receiptType: 'Refund', balanceAfter, sourceModule: 'OPD', sourceId: patient._id, status: 'POSTED',
-      remarks: payload.reason.trim(), createdBy: user?._id, idempotencyKey: payload.idempotencyKey,
-      metadata: { walletType: 'OPD_SHARED' }
+      hospitalId,
+      patientId: patient._id,
+      transactionNumber: refundNumber,
+      transactionType: 'ADVANCE_REFUND',
+      direction: 'DEBIT',
+      amount: refund,
+      paymentMethod,
+      paymentReference: payload.reference,
+      receiptType: 'Refund',
+      amountReceived: 0,
+      amountTendered: 0,
+      amountApplied: 0,
+      externalMoneyMovement: true,
+      cashFlowClass: 'REFUND',
+      balanceAfter,
+      sourceModule: 'OPD',
+      sourceId: patient._id,
+      status: 'POSTED',
+      remarks: payload.reason.trim(),
+      createdBy: user?._id,
+      idempotencyKey: payload.idempotencyKey,
+      metadata: { walletType: 'OPD_SHARED', walletOpeningBalance: opening, walletBalanceAfter: balanceAfter }
     });
     await transaction.save(sessionOptions(session));
-    return { refundNumber, transaction, advanceBalance: balanceAfter };
+    return { refundNumber, transaction, advanceBalance: balanceAfter, alreadyExists: false };
   });
 }
 
 module.exports = {
   calculateLineAmounts,
+  billServiceItems,
+  clinicalFlagsFromServiceItems,
+  resolveRequestedBillToInvoice,
   rejectOPDBillDiscount,
   getPatientWorkspace,
   syncOPDInvoiceFromBills,

@@ -18,6 +18,8 @@ const Pharmacy = require('../models/Pharmacy');
 const Procedure = require('../models/Procedure');
 const Doctor = require('../models/Doctor');
 const Appointment = require('../models/Appointment');
+const Invoice = require('../models/Invoice');
+const Bill = require('../models/Bill');
 const SafetyPolicy = require('../models/SafetyPolicy');
 const { generatePrescriptionPdf, generateBlankPrescriptionOnePagePdf } = require('../services/clinicalPdf.service');
 const fileStorage = require('../services/fileStorage.service');
@@ -809,32 +811,74 @@ exports.createPrescription = async (req, res) => {
 // The PDF is not persisted as a prescription record; it is intended for walk-in/manual prescribing.
 const downloadBlankPrescriptionPdfByAppointment = async (req, res, { onePage = false } = {}) => {
   try {
-    const appointment = await Appointment.findById(req.params.appointmentId)
+    const userHospitalId = req.user?.hospital_id?._id || req.user?.hospital_id;
+    const isSuperAdmin = req.user?.role === 'mediqliq_super_admin';
+    let appointment = await Appointment.findById(req.params.appointmentId)
       .populate(
         'patient_id',
-        'salutation first_name middle_name last_name patientId uhid phone dob gender address city state zipCode registered_at patient_type occupation nationality father_name fatherName marital_status maritalStatus mother_name motherName'
+        'salutation first_name middle_name last_name patientId uhid phone dob gender address city state zipCode registered_at patient_type occupation nationality father_name fatherName husband_name husbandName guardian_name guardianName marital_status maritalStatus mother_name motherName emergency_contact emergency_phone'
       )
       .populate({
         path: 'doctor_id',
-        select: 'firstName lastName specialization department',
+        select: 'firstName lastName specialization department education degree qualifications',
         populate: { path: 'department', select: 'name' }
       })
+      .populate('department_id', 'name')
       .populate('hospital_id')
       .lean();
+
+    if (!appointment) {
+      // Fallback: in case an invoice or bill id was passed
+      const invoiceDoc = await Invoice.findOne({
+        _id: req.params.appointmentId,
+        ...(!isSuperAdmin && userHospitalId ? { hospital_id: userHospitalId } : {})
+      }).select('appointment_id').lean();
+      if (invoiceDoc?.appointment_id) {
+        appointment = await Appointment.findById(invoiceDoc.appointment_id)
+          .populate(
+            'patient_id',
+            'salutation first_name middle_name last_name patientId uhid phone dob gender address city state zipCode registered_at patient_type occupation nationality father_name fatherName husband_name husbandName guardian_name guardianName marital_status maritalStatus mother_name motherName emergency_contact emergency_phone'
+          )
+          .populate({
+            path: 'doctor_id',
+            select: 'firstName lastName specialization department education degree qualifications',
+            populate: { path: 'department', select: 'name' }
+          })
+          .populate('department_id', 'name')
+          .populate('hospital_id')
+          .lean();
+      }
+    }
 
     if (!appointment) {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
     const appointmentHospitalId = appointment.hospital_id?._id || appointment.hospital_id;
-    const userHospitalId = req.user?.hospital_id?._id || req.user?.hospital_id;
-    const isSuperAdmin = req.user?.role === 'mediqliq_super_admin';
 
     if (
       !isSuperAdmin &&
       (!userHospitalId || String(appointmentHospitalId) !== String(userHospitalId))
     ) {
       return res.status(403).json({ error: 'Cross-hospital access denied' });
+    }
+
+    // Lookup receipt/invoice number
+    let receiptNumber = '';
+    const invoice = await Invoice.findOne({ appointment_id: appointment._id, hospital_id: appointmentHospitalId })
+      .sort({ created_at: -1, createdAt: -1 })
+      .select('invoice_number receipt_number')
+      .lean();
+    if (invoice) {
+      receiptNumber = invoice.receipt_number || invoice.invoice_number || '';
+    } else {
+      const bill = await Bill.findOne({ appointment_id: appointment._id, hospital_id: appointmentHospitalId })
+        .sort({ created_at: -1, createdAt: -1 })
+        .select('bill_number billNumber receipt_number receiptNumber invoice_number')
+        .lean();
+      if (bill) {
+        receiptNumber = bill.receipt_number || bill.receiptNumber || bill.bill_number || bill.billNumber || bill.invoice_number || '';
+      }
     }
 
     const patient = {
@@ -855,11 +899,16 @@ const downloadBlankPrescriptionPdfByAppointment = async (req, res, { onePage = f
       is_blank_manual_form: true,
       patient_id: patient,
       doctor_id: appointment.doctor_id || {},
+      department_id: appointment.department_id || appointment.doctor_id?.department || null,
       appointment_id: {
         _id: appointment._id,
         token: appointment.token || '',
-        appointment_date: appointment.appointment_date
+        op_number: appointment.op_number || appointment.token || `OP-${appointmentReference}`,
+        serial_number: appointment.serial_number || '',
+        appointment_date: appointment.appointment_date,
+        start_time: appointment.start_time
       },
+      receipt_number: receiptNumber,
       source_type: sourceType,
       issue_date:
         appointment.start_time ||

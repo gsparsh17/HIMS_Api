@@ -3,6 +3,7 @@ const FinancialTransaction = require('../models/FinancialTransaction');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const IPDAdmission = require('../models/IPDAdmission');
 const { money } = require('../utils/financeNumbers');
+const { transactionExternalAmount, transactionAppliedAmount } = require('./financeInvariant.service');
 
 const REVENUE_EXCLUDED_TYPES = ['IPD Payment', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'Credit Note'];
 
@@ -28,10 +29,10 @@ function resolveDateRange(query = {}) {
 }
 
 function tenantCondition(hospitalId, field = 'hospital_id') {
-  if (!hospitalId) return {};
-  // Existing historic documents may not have the tenant field; they remain visible
-  // until the optional migration script backfills them.
-  return { $or: [{ [field]: hospitalId }, { [field]: { $exists: false } }, { [field]: null }] };
+  // Finance/MIS must never pull unscoped historic rows into an arbitrary tenant.
+  // Legacy null hospital rows are surfaced by reconciliation and should be repaired
+  // explicitly rather than silently included in every hospital's revenue.
+  return hospitalId ? { [field]: hospitalId } : {};
 }
 
 function issuedInvoiceFilter({ from, to, hospitalId, invoiceType, patientId, admissionId } = {}) {
@@ -39,7 +40,7 @@ function issuedInvoiceFilter({ from, to, hospitalId, invoiceType, patientId, adm
     issue_date: { $gte: from, $lte: to },
     invoice_type: { $nin: REVENUE_EXCLUDED_TYPES },
     is_deleted: { $ne: true },
-    status: { $ne: 'Cancelled' },
+    status: { $nin: ['Cancelled', 'Draft'] },
     document_stage: { $ne: 'VOID' },
     // IPD-consolidated Pharmacy invoices are sub-ledger documents. The same
     // patient liability is recognised on the IPD invoice, so generic hospital
@@ -57,13 +58,17 @@ function issuedInvoiceFilter({ from, to, hospitalId, invoiceType, patientId, adm
   return filter;
 }
 
-function transactionFilter({ from, to, hospitalId, admissionId } = {}) {
+function transactionFilter({ from, to, hospitalId, admissionId, patientId } = {}) {
   const filter = {
-    createdAt: { $gte: from, $lte: to },
+    $or: [
+      { postedAt: { $gte: from, $lte: to } },
+      { postedAt: { $exists: false }, createdAt: { $gte: from, $lte: to } }
+    ],
     status: 'POSTED',
     ...tenantCondition(hospitalId, 'hospitalId')
   };
   if (admissionId) filter.admissionId = admissionId;
+  if (patientId) filter.patientId = patientId;
   return filter;
 }
 
@@ -94,9 +99,28 @@ function groupRows(rows, keyFn, valueFn) {
   return [...groups.values()].sort((left, right) => right.netRevenue - left.netRevenue || right.collected - left.collected);
 }
 
+function invoicePayerValues(invoice = {}) {
+  const allocation = invoice.payer_allocation || {};
+  const hasCoverage = Boolean(allocation.coverage_id || allocation.payer_id);
+  const sponsorLiability = money(allocation.sponsor_liability || 0);
+  const sponsorPaid = money(allocation.sponsor_paid_amount || 0);
+  const patientLiability = hasCoverage
+    ? money(allocation.patient_liability || 0)
+    : money(invoice.total || 0);
+  return {
+    patientLiability,
+    sponsorLiability,
+    sponsorPaid,
+    sponsorOutstanding: money(Math.max(0, sponsorLiability - sponsorPaid)),
+    patientOutstanding: money(invoice.balance_due || 0),
+    sponsored: hasCoverage && sponsorLiability > 0
+  };
+}
+
 function invoiceRevenueValues(invoice) {
   const billed = money(invoice.total);
   const credits = money(invoice.credit_note_total || 0);
+  const payer = invoicePayerValues(invoice);
   return {
     count: 1,
     gross: money(invoice.gross_amount ?? invoice.subtotal ?? invoice.total),
@@ -105,15 +129,23 @@ function invoiceRevenueValues(invoice) {
     billed,
     credits,
     netRevenue: money(billed - credits),
-    outstanding: money(invoice.balance_due)
+    outstanding: money(invoice.balance_due),
+    patientBilled: payer.patientLiability,
+    sponsorBilled: payer.sponsorLiability,
+    patientOutstanding: payer.patientOutstanding,
+    sponsorOutstanding: payer.sponsorOutstanding,
+    sponsorPaid: payer.sponsorPaid
   };
 }
 
 function transactionValues(transaction) {
-  const kind = transaction.transactionType;
+  const kind = String(transaction.transactionType || '').toUpperCase();
+  const externalAmount = transactionExternalAmount(transaction);
   return {
     count: 1,
-    collected: ['RECEIPT', 'ADVANCE_DEPOSIT', 'ADVANCE_UTILISATION', 'SETTLEMENT'].includes(kind) && transaction.direction === 'CREDIT' ? money(transaction.amount) : 0,
+    collected: kind === 'RECEIPT' ? externalAmount : 0,
+    advanceReceived: kind === 'ADVANCE_DEPOSIT' ? externalAmount : 0,
+    advanceUtilised: kind === 'ADVANCE_UTILISATION' ? transactionAppliedAmount(transaction) : 0,
     refunds: ['REFUND', 'ADVANCE_REFUND'].includes(kind) && transaction.direction === 'DEBIT' ? money(transaction.amount) : 0
   };
 }
@@ -128,7 +160,7 @@ async function loadReportingData(query = {}, user) {
       .populate({ path: 'admission_id', select: 'admissionNumber departmentId primaryDoctorId paymentType sponsorType sponsorName', populate: [{ path: 'departmentId', select: 'name' }, { path: 'primaryDoctorId', select: 'firstName lastName name' }] })
       .sort({ issue_date: -1, created_at: -1 })
       .lean(),
-    FinancialTransaction.find(transactionFilter({ from, to, hospitalId, admissionId: query.admissionId }))
+    FinancialTransaction.find(transactionFilter({ from, to, hospitalId, admissionId: query.admissionId, patientId: query.patientId }))
       .populate('patientId', 'first_name last_name patientId')
       .populate('invoiceId', 'invoice_number invoice_type')
       .sort({ createdAt: -1 })
@@ -145,14 +177,25 @@ function overviewFromData(data) {
   const tax = money(invoices.reduce((sum, invoice) => sum + (Number(invoice.tax) || 0), 0));
   const credits = money(invoices.reduce((sum, invoice) => sum + (Number(invoice.credit_note_total) || 0), 0));
   const netRevenue = money(grossRevenue - credits);
-  const receipts = transactions.filter((transaction) => ['RECEIPT', 'SETTLEMENT'].includes(transaction.transactionType) && transaction.direction === 'CREDIT');
-  const advances = transactions.filter((transaction) => transaction.transactionType === 'ADVANCE_DEPOSIT' && transaction.direction === 'CREDIT');
-  const advanceUtilised = transactions.filter((transaction) => transaction.transactionType === 'ADVANCE_UTILISATION' && transaction.direction === 'CREDIT');
-  const refunds = transactions.filter((transaction) => ['REFUND', 'ADVANCE_REFUND'].includes(transaction.transactionType) && transaction.direction === 'DEBIT');
-  const collection = money(receipts.reduce((sum, item) => sum + item.amount, 0));
+  const receipts = transactions.filter((transaction) => String(transaction.transactionType || '').toUpperCase() === 'RECEIPT' && transaction.direction === 'CREDIT');
+  const advances = transactions.filter((transaction) => String(transaction.transactionType || '').toUpperCase() === 'ADVANCE_DEPOSIT' && transaction.direction === 'CREDIT');
+  const advanceUtilised = transactions.filter((transaction) => String(transaction.transactionType || '').toUpperCase() === 'ADVANCE_UTILISATION' && transaction.direction === 'CREDIT');
+  const refunds = transactions.filter((transaction) => ['REFUND', 'ADVANCE_REFUND'].includes(String(transaction.transactionType || '').toUpperCase()) && transaction.direction === 'DEBIT');
+  const collection = money(receipts.reduce((sum, item) => sum + transactionExternalAmount(item), 0));
+  const advancesReceived = money(advances.reduce((sum, item) => sum + transactionExternalAmount(item), 0));
   const refundsTotal = money(refunds.reduce((sum, item) => sum + item.amount, 0));
-  const netCollection = money(collection - refundsTotal);
+  const netCollection = money(collection + advancesReceived - refundsTotal);
   const outstanding = money(invoices.reduce((sum, invoice) => sum + (Number(invoice.balance_due) || 0), 0));
+  const payerTotals = invoices.reduce((totals, invoice) => {
+    const payer = invoicePayerValues(invoice);
+    totals.patientBilled = money(totals.patientBilled + payer.patientLiability);
+    totals.sponsorBilled = money(totals.sponsorBilled + payer.sponsorLiability);
+    totals.patientOutstanding = money(totals.patientOutstanding + payer.patientOutstanding);
+    totals.sponsorOutstanding = money(totals.sponsorOutstanding + payer.sponsorOutstanding);
+    totals.sponsorPaid = money(totals.sponsorPaid + payer.sponsorPaid);
+    if (payer.sponsored) totals.sponsoredInvoiceCount += 1;
+    return totals;
+  }, { patientBilled: 0, sponsorBilled: 0, patientOutstanding: 0, sponsorOutstanding: 0, sponsorPaid: 0, sponsoredInvoiceCount: 0 });
 
   const dailyRows = groupRows(invoices, (invoice) => isoDay(invoice.issue_date), invoiceRevenueValues)
     .map((row) => ({ ...row, date: row.key }))
@@ -170,11 +213,18 @@ function overviewFromData(data) {
       creditNotes: credits,
       netRevenue,
       collection,
-      advancesReceived: money(advances.reduce((sum, item) => sum + item.amount, 0)),
-      advanceUtilised: money(advanceUtilised.reduce((sum, item) => sum + item.amount, 0)),
+      advancesReceived,
+      advanceUtilised: money(advanceUtilised.reduce((sum, item) => sum + transactionAppliedAmount(item), 0)),
       refunds: refundsTotal,
       netCollection,
+      netCashCollection: netCollection,
       outstanding,
+      patientBilled: payerTotals.patientBilled,
+      sponsorBilled: payerTotals.sponsorBilled,
+      patientOutstanding: payerTotals.patientOutstanding,
+      sponsorOutstanding: payerTotals.sponsorOutstanding,
+      sponsorPaid: payerTotals.sponsorPaid,
+      sponsoredInvoiceCount: payerTotals.sponsoredInvoiceCount,
       invoiceCount: invoices.length,
       receiptCount: receipts.length,
       averageInvoiceValue: invoices.length ? money(grossRevenue / invoices.length) : 0
@@ -203,25 +253,37 @@ function invoiceRegisterRows(invoices) {
     creditNotes: money(invoice.credit_note_total),
     paid: money(invoice.amount_paid),
     due: money(invoice.balance_due),
+    patientLiability: invoicePayerValues(invoice).patientLiability,
+    sponsorLiability: invoicePayerValues(invoice).sponsorLiability,
+    sponsorPaid: invoicePayerValues(invoice).sponsorPaid,
+    sponsorDue: invoicePayerValues(invoice).sponsorOutstanding,
     status: invoice.status
   }));
 }
 
 function collectionRows(transactions) {
   return transactions
-    .filter((transaction) => ['RECEIPT', 'ADVANCE_DEPOSIT', 'ADVANCE_UTILISATION', 'SETTLEMENT', 'REFUND', 'ADVANCE_REFUND'].includes(transaction.transactionType))
-    .map((transaction) => ({
-      date: rowDate(transaction.createdAt),
-      receiptNumber: transaction.transactionNumber,
-      type: transaction.transactionType,
-      patient: transaction.patientId ? `${transaction.patientId.first_name || ''} ${transaction.patientId.last_name || ''}`.trim() || transaction.patientId.patientId : '',
-      invoiceNumber: transaction.invoiceId?.invoice_number || '',
-      paymentMethod: transaction.paymentMethod,
-      reference: transaction.paymentReference || '',
-      credit: transaction.direction === 'CREDIT' ? money(transaction.amount) : 0,
-      debit: transaction.direction === 'DEBIT' ? money(transaction.amount) : 0,
-      status: transaction.status
-    }));
+    .filter((transaction) => ['RECEIPT', 'ADVANCE_DEPOSIT', 'ADVANCE_UTILISATION', 'SETTLEMENT', 'CREDIT_NOTE', 'REFUND', 'ADVANCE_REFUND'].includes(String(transaction.transactionType || '').toUpperCase()))
+    .map((transaction) => {
+      const type = String(transaction.transactionType || '').toUpperCase();
+      const external = transactionExternalAmount(transaction);
+      const applied = transactionAppliedAmount(transaction);
+      const isRefund = ['REFUND', 'ADVANCE_REFUND'].includes(type) && transaction.direction === 'DEBIT';
+      return {
+        date: rowDate(transaction.postedAt || transaction.createdAt),
+        receiptNumber: transaction.transactionNumber,
+        type: transaction.transactionType,
+        patient: transaction.patientId ? `${transaction.patientId.first_name || ''} ${transaction.patientId.last_name || ''}`.trim() || transaction.patientId.patientId : '',
+        invoiceNumber: transaction.invoiceId?.invoice_number || '',
+        paymentMethod: transaction.paymentMethod,
+        reference: transaction.paymentReference || '',
+        externalReceived: external,
+        applied,
+        credit: !isRefund ? external : 0,
+        debit: isRefund ? money(transaction.amount) : 0,
+        status: transaction.status
+      };
+    });
 }
 
 async function getMISReport(reportKey, query, user) {
@@ -240,7 +302,7 @@ async function getMISReport(reportKey, query, user) {
       break;
     case 'collections':
       title = 'Collection Register';
-      columns = ['date', 'receiptNumber', 'type', 'patient', 'invoiceNumber', 'paymentMethod', 'reference', 'credit', 'debit', 'status'];
+      columns = ['date', 'receiptNumber', 'type', 'patient', 'invoiceNumber', 'paymentMethod', 'reference', 'externalReceived', 'applied', 'credit', 'debit', 'status'];
       rows = collectionRows(transactions);
       break;
     case 'outstanding':
@@ -250,7 +312,7 @@ async function getMISReport(reportKey, query, user) {
       break;
     case 'invoice-register':
       title = 'Invoice Register';
-      columns = ['date', 'invoiceNumber', 'type', 'patient', 'uhid', 'admissionNumber', 'gross', 'discount', 'tax', 'total', 'creditNotes', 'paid', 'due', 'status'];
+      columns = ['date', 'invoiceNumber', 'type', 'patient', 'uhid', 'admissionNumber', 'gross', 'discount', 'tax', 'total', 'patientLiability', 'sponsorLiability', 'sponsorPaid', 'sponsorDue', 'creditNotes', 'paid', 'due', 'status'];
       rows = invoiceRegisterRows(invoices);
       break;
     case 'discounts-refunds':

@@ -202,44 +202,16 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
   if (!encounterContext.appointmentId && encounterType === 'OPD') {
     encounterContext.appointmentId = appointmentIdFromSourceRows(rows);
   }
-  const globalDiscountType = payload.payment?.settlementDiscountType === 'percentage' ? 'percentage' : 'fixed';
-  const globalDiscountValue = Number(payload.payment?.settlementDiscountValue ?? (globalDiscountType === 'percentage' ? payload.payment?.settlementDiscountRate : payload.payment?.settlementDiscountAmount) ?? 0);
-  let remainingGlobalDiscount = globalDiscountType === 'fixed' ? Number(payload.payment?.settlementDiscountAmount ?? globalDiscountValue) : 0;
-
   for (const row of rows) {
-    const rowHasExplicitDiscount = (row.discountValue !== undefined && row.discountValue !== null && row.discountValue !== '') ||
-      (row.discountRate !== undefined && row.discountRate !== null && row.discountRate !== '') ||
-      (row.discountAmount !== undefined && row.discountAmount !== null && row.discountAmount !== '');
-
-    let rowDiscountType = row.discountType || (globalDiscountValue > 0 ? globalDiscountType : undefined);
-    let rowDiscountRate = row.discountRate;
-    let rowDiscountAmount = row.discountAmount;
-    let rowDiscountValue = row.discountValue;
-    let rowDiscountReason = row.discountReason;
-
-    if (!rowHasExplicitDiscount && globalDiscountValue > 0) {
-      if (globalDiscountType === 'percentage') {
-        rowDiscountType = 'percentage';
-        rowDiscountRate = globalDiscountValue;
-        rowDiscountValue = globalDiscountValue;
-        rowDiscountReason = payload.payment?.settlementDiscountReason || 'Payment settlement concession';
-      } else if (remainingGlobalDiscount > 0) {
-        const lineGross = round(Number(row.rate || 0) * Number(row.quantity || 1));
-        const lineAllocated = Math.min(lineGross, remainingGlobalDiscount);
-        remainingGlobalDiscount = Math.max(0, remainingGlobalDiscount - lineAllocated);
-        rowDiscountType = 'fixed';
-        rowDiscountAmount = lineAllocated;
-        rowDiscountValue = lineAllocated;
-        rowDiscountReason = payload.payment?.settlementDiscountReason || 'Payment settlement concession';
-      }
-    }
-
+    // Charge-time discounts/taxes belong to the service row. Payment-time
+    // settlement concessions are deliberately NOT folded into line pricing;
+    // they remain separate settlement transactions after invoice issuance.
     const requestedAdjustments = {
-      discountType: rowDiscountType,
-      discountRate: rowDiscountRate,
-      discountAmount: rowDiscountAmount,
-      discountValue: rowDiscountValue,
-      discountReason: rowDiscountReason,
+      discountType: row.discountType,
+      discountRate: row.discountRate,
+      discountAmount: row.discountAmount,
+      discountValue: row.discountValue,
+      discountReason: row.discountReason,
       taxMode: row.taxMode,
       taxRate: row.taxRate,
       taxReason: row.taxReason
@@ -631,9 +603,11 @@ function previewPayment(totals, payment, encounterType) {
   const taxAdjustment = round(payment.taxAdjustmentAmount);
   const discount = round(payment.settlementDiscountAmount);
   const outstandingBefore = totals.payableNow;
-  const lineDiscountAlreadyApplied = Number(totals.lineDiscount || 0);
-  const residualDiscount = Math.max(0, round(discount - lineDiscountAlreadyApplied));
-  const netPayable = round(Math.max(0, outstandingBefore + taxAdjustment - residualDiscount));
+  // Charge-time line discounts are already reflected in payableNow. A settlement
+  // concession is a separate collection-time adjustment and must not be netted
+  // against the line discount again.
+  const residualDiscount = discount;
+  const netPayable = round(Math.max(0, outstandingBefore - residualDiscount));
   const warnings = [];
 
   if (discount > 0 && !String(payment.settlementDiscountReason || '').trim()) {
@@ -1076,35 +1050,10 @@ async function previewDeskCheckout(payload, user) {
   const totals = previewTotals(decoratedRows);
   const payment = previewPayment(totals, payload.payment, encounterType);
 
-  // Settlement discount is distributed into canonical service rows so the
-  // invoice snapshot and print documents retain line-level discount evidence.
-  // For the Desk editor, however, percentage/fixed settlement input must be
-  // calculated from the server-priced amount *before that settlement discount*
-  // (while preserving any explicit line discounts, payer allocation and normal
-  // tax policy). Re-price once without the global settlement discount when one
-  // is present so the browser never has to guess this base from cart gross.
-  const settlementDiscountInput = Number(
-    payload.payment?.settlementDiscountValue
-      ?? payload.payment?.settlementDiscountRate
-      ?? payload.payment?.settlementDiscountAmount
-      ?? 0
-  );
-  let settlementAdjustmentBase = totals.payableNow;
-  if (payload.payment?.collectNow && settlementDiscountInput > 0) {
-    const baselinePayment = {
-      ...(payload.payment || {}),
-      settlementDiscountValue: 0,
-      settlementDiscountRate: 0,
-      settlementDiscountAmount: 0
-    };
-    const baselineRows = await authoritativeCart({
-      user,
-      cart: payload.serviceCart,
-      encounterType,
-      payload: { ...payload, payment: baselinePayment }
-    });
-    settlementAdjustmentBase = previewTotals(baselineRows).payableNow;
-  }
+  // Settlement adjustments are evaluated against the already-priced patient
+  // liability. They must not be re-applied to service lines or change the
+  // historical invoice snapshot.
+  const settlementAdjustmentBase = totals.payableNow;
 
   const globalFinancialPolicy = await loadFinancialPolicy(userHospitalId(user));
   const settlementPolicy = {
@@ -1113,11 +1062,18 @@ async function previewDeskCheckout(payload, user) {
     adjustmentBase: round(settlementAdjustmentBase)
   };
 
-  if (payment?.taxAdjustment && !settlementPolicy.canAdjustTax) {
+  if (payment?.taxAdjustment) {
+    if (!settlementPolicy.canAdjustTax) {
+      throw checkoutError(
+        'Manual tax adjustment requires tax_override permission',
+        403,
+        'TAX_OVERRIDE_PERMISSION_REQUIRED'
+      );
+    }
     throw checkoutError(
-      'Manual tax adjustment requires tax_override permission',
-      403,
-      'TAX_OVERRIDE_PERMISSION_REQUIRED'
+      'Tax must be finalised on service lines before invoice issuance. Payment collection cannot rewrite tax on an issued invoice.',
+      409,
+      'ISSUED_INVOICE_TAX_IMMUTABLE'
     );
   }
 
@@ -1565,7 +1521,12 @@ async function commitDeskCheckout(payload, user) {
             admissionId: admission._id,
             chargeType: typeMap[row.serviceType] || 'Miscellaneous',
             serviceType: String(row.serviceType || '').toLowerCase(),
-            internalServiceId: row.masterId,
+            // Preserve the authoritative catalog identity into commit. Without
+            // internalServiceModel the pricing engine cannot resolve the master
+            // rate from internalServiceId and can silently quote zero while the
+            // Desk preview correctly showed the real tariff.
+            internalServiceModel: row.internalServiceModel,
+            internalServiceId: row.internalServiceId || row.masterId,
             externalCode: row.code,
             description: row.name,
             quantity: row.quantity,
@@ -1659,30 +1620,11 @@ async function commitDeskCheckout(payload, user) {
     let committedPayment = preview.payment;
 
     if (preview.encounterType === 'OPD' && payload.payment?.collectNow && invoiceIds.length && !hasDiscountPendingApproval) {
-      const receiptOriginalAmount = round(preview.totals?.standardAmount ?? preview.totals?.gross ?? 0);
-      const receiptDiscountAmount = round(preview.totals?.discountAmount ?? preview.totals?.lineDiscount ?? 0);
-      const receiptDiscountPercent = receiptOriginalAmount > 0
-        ? round((receiptDiscountAmount / receiptOriginalAmount) * 100)
-        : 0;
-      const receiptNetPayable = round(
-        preview.payment?.netPayable
-          ?? preview.totals?.requiredNow
-          ?? preview.totals?.payableNow
-          ?? preview.totals?.net
-          ?? Math.max(0, receiptOriginalAmount - receiptDiscountAmount)
-      );
       const paymentPayload = {
         ...payload.payment,
-        receiptSummary: {
-          originalAmount: receiptOriginalAmount,
-          discountAmount: receiptDiscountAmount,
-          discountPercent: receiptDiscountPercent,
-          netPayable: receiptNetPayable
-        },
-        settlementDiscountAmount: 0,
-        settlementDiscountValue: 0,
-        settlementDiscountRate: 0,
-        discountAmount: 0,
+        // Settlement discount remains a settlement adjustment; it is never
+        // converted into a service-line discount.
+        settlementDiscountAmount: round(preview.payment?.settlementDiscount || 0),
         invoiceId: invoiceIds[0],
         amount: preview.payment.amountApplied,
         amountApplied: preview.payment.amountApplied,
@@ -1709,15 +1651,14 @@ async function commitDeskCheckout(payload, user) {
       const reference = payload.payment.reference || '';
       const collectionAmount = round(preview.payment?.collectionAmount || 0);
       // Use the issued document as the final authority because coverage pricing
-      // can make patient liability lower than the cart's gross estimate. Apply
-      // payment-time tax first and settlement discount second, matching the
-      // finance service's accounting order.
+      // can make patient liability lower than the cart estimate. Tax is already
+      // finalised before invoice issuance; settlement concession is applied only
+      // against the issued outstanding amount.
       const issuedOutstanding = round(issuedIPDInvoice?.balance_due || 0);
-      const taxAdjustmentAmount = round(preview.payment?.taxAdjustment || 0);
       const settlementDiscountAmount = round(preview.payment?.residualSettlementDiscount ?? preview.payment?.settlementDiscount ?? 0);
       const adjustedOutstanding = round(Math.max(
         0,
-        issuedOutstanding + taxAdjustmentAmount - settlementDiscountAmount
+        issuedOutstanding - settlementDiscountAmount
       ));
       const amountApplied = round(Math.min(collectionAmount, adjustedOutstanding));
       const advanceCreated = round(Math.max(0, collectionAmount - amountApplied));
@@ -1736,16 +1677,13 @@ async function commitDeskCheckout(payload, user) {
       // advance, leaving the new invoice unpaid and due.
       if (
         issuedIPDInvoice?._id &&
-        (amountApplied > 0 || settlementDiscountAmount > 0 || taxAdjustmentAmount !== 0)
+        (amountApplied > 0 || settlementDiscountAmount > 0)
       ) {
         const settlement = await ipdFinancial.recordIPDPayment(admission._id, {
           invoiceId: issuedIPDInvoice._id,
           amount: amountApplied,
           settlementDiscountAmount,
           settlementDiscountReason: payload.payment.settlementDiscountReason || '',
-          taxAdjustmentAmount,
-          taxAdjustmentReason: payload.payment.taxAdjustmentReason || '',
-          adjustmentReason: payload.payment.taxAdjustmentReason || '',
           paymentMethod,
           reference,
           sourceModule: 'IPD',
@@ -1953,6 +1891,13 @@ async function commitDeskCheckout(payload, user) {
       documents,
       totals: preview.totals,
       payment: committedPayment,
+      rows: preview.rows,
+      preview: {
+        totals: preview.totals,
+        rows: preview.rows,
+        encounterType: preview.encounterType
+      },
+      serviceCart: payload.serviceCart || [],
       warnings: preview.warnings
     };
 

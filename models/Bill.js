@@ -446,10 +446,13 @@ billSchema.pre('save', function (next) {
   const patientBase = this.payer_allocation?.coverage_id
     ? Number(this.payer_allocation?.patient_liability || 0)
     : Number(this.total_amount || 0);
+  // Refunds reverse collected money; credit notes reduce the underlying
+  // liability. Track both so Bill remains a faithful projection of its Invoice.
   this.balance_due = Math.max(
     0,
     patientBase -
-      this.paid_amount -
+      this.paid_amount +
+      Number(this.refund_amount || 0) -
       Number(this.settlement_discount_amount || 0) -
       Number(this.credit_note_amount || 0)
   );

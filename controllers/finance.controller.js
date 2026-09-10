@@ -7,6 +7,8 @@ const financialProjection = require('../services/financialProjection.service');
 const pharmacyFinanceProjection = require('../services/pharmacyFinanceProjection.service');
 const financialPolicy = require('../services/financialPolicy.service');
 const { assertUserHospital } = require('../utils/hospitalScope');
+const { transactionPrintEnvelope } = require('../services/financeDocument.service');
+const Appointment = require('../models/Appointment');
 
 function sendError(res, error) {
   console.error('Finance module error:', error);
@@ -84,6 +86,16 @@ exports.resolveFinancialPolicy = async (req, res) => {
     });
     res.json({ success: true, data: result });
   } catch (error) { sendError(res, error); }
+};
+
+
+exports.getTransactionPrintData = async (req, res) => {
+  try {
+    const hospitalId = assertUserHospital(req.user);
+    const data = await transactionPrintEnvelope({ transactionIdOrNumber: req.params.transactionId, hospitalId });
+    if (!data) return res.status(404).json({ success: false, error: 'Financial transaction not found' });
+    return res.json({ success: true, data });
+  } catch (error) { return sendError(res, error); }
 };
 
 exports.getCanonicalKpis = async (req, res) => {
@@ -260,14 +272,14 @@ exports.refundIPDAdvance = async (req, res) => {
 exports.createCreditNote = async (req, res) => {
   try {
     const result = await financial.createCreditNote(req.params.invoiceId, req.body, req.user);
-    res.status(201).json({ success: true, message: 'Credit note created successfully', ...result });
+    res.status(result.alreadyExists ? 200 : 201).json({ success: true, message: result.alreadyExists ? 'Existing credit note returned' : 'Credit note created successfully', ...result });
   } catch (error) { sendError(res, error); }
 };
 
 exports.refundInvoice = async (req, res) => {
   try {
     const result = await financial.refundInvoice(req.params.invoiceId, req.body, req.user);
-    res.status(201).json({ success: true, message: 'Refund posted successfully', ...result });
+    res.status(result.alreadyExists ? 200 : 201).json({ success: true, message: result.alreadyExists ? 'Existing refund returned' : 'Refund posted successfully', ...result });
   } catch (error) { sendError(res, error); }
 };
 
@@ -276,6 +288,49 @@ exports.finaliseIPDClearance = async (req, res) => {
     const result = await financial.finaliseFinancialClearance(req.params.admissionId, req.body, req.user);
     res.json({ success: true, message: result.clearance.ready ? 'Financial clearance completed' : 'Financial exception recorded', ...result });
   } catch (error) { sendError(res, error); }
+};
+
+exports.getOPDAppointmentFinance = async (req, res) => {
+  try {
+    const hospitalId = assertUserHospital(req.user);
+    const appointment = await Appointment.findOne({
+      _id: req.params.appointmentId,
+      hospital_id: hospitalId,
+      is_active: { $ne: false }
+    })
+      .populate('patient_id', 'salutation first_name middle_name last_name patientId uhid phone dob gender')
+      .populate('doctor_id', 'firstName lastName specialization department')
+      .populate('department_id', 'name code')
+      .lean();
+    if (!appointment) return res.status(404).json({ success: false, error: 'Appointment not found in this hospital' });
+
+    const patientId = appointment.patient_id?._id || appointment.patient_id;
+    const workspace = await billingPatient.getPatientBillingDetails({
+      hospitalId,
+      patientId,
+      appointmentId: appointment._id,
+      admissionId: null
+    });
+    const activeInvoices = (workspace.invoices || []).filter((invoice) =>
+      invoice.document_stage !== 'VOID' && invoice.document_stage !== 'CREDIT_NOTE' && invoice.status !== 'Cancelled'
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        encounter: appointment,
+        patient: workspace.patient,
+        charges: workspace.charges || [],
+        bills: workspace.bills || [],
+        invoices: activeInvoices,
+        invoice: activeInvoices.length === 1 ? activeInvoices[0] : null,
+        transactions: workspace.transactions || [],
+        ledger: workspace.ledgerEntries || [],
+        outstanding: Number(workspace.summary?.outstandingAmount || 0),
+        totals: workspace.summary || {}
+      }
+    });
+  } catch (error) { return sendError(res, error); }
 };
 
 exports.getPatientWorkspace = async (req, res) => {

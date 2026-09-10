@@ -1,9 +1,10 @@
+const { operationNow } = require('../utils/operationTimeContext');
 const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
 const { getTemplate, matchTemplate, normalizeLabTestName } = require('./labReportTemplate.service');
 const { formatMedication } = require('../utils/medicationDisplay');
-const { formatDoctorName } = require('../utils/documentFormatters');
+const { formatDoctorName, resolveDepartmentName } = require('../utils/documentFormatters');
 const { getHospitalPrintIdentity } = require('./hospitalPrintIdentity.service');
 
 const mm = (value) => value * 2.834645669;
@@ -1276,53 +1277,262 @@ function generatePrescriptionPdf({ res, prescription, hospital, vitals }) {
   doc.end();
 }
 
+function formatOpSlipDateTime(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const day = d.getDate();
+  const month = months[d.getMonth()];
+  const year = d.getFullYear();
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12;
+  return `${day} ${month} ${year} ${hours}:${minutes}${ampm}`;
+}
+
+function drawUnderlinedField(doc, { label, value, x, y, width, labelWidth, fontSize = 8.5 }) {
+  doc.save();
+  doc.font('Helvetica-Bold').fontSize(fontSize).fillColor(COLORS.ink);
+  const labelText = `${label}`;
+  const colonText = ' :- ';
+  
+  doc.text(labelText, x, y, { lineBreak: false });
+  const actualLabelWidth = labelWidth || doc.widthOfString(labelText);
+  const colonX = x + actualLabelWidth;
+  doc.text(colonText, colonX, y, { lineBreak: false });
+  
+  const valueX = colonX + doc.widthOfString(colonText) + 2;
+  const valueWidth = Math.max(20, (x + width) - valueX);
+  
+  const valStr = (value || '').toString().trim();
+  doc.font('Helvetica-Bold').fontSize(fontSize).fillColor(COLORS.ink);
+  if (valStr) {
+    doc.text(valStr, valueX, y, { width: valueWidth, lineBreak: false, ellipsis: true });
+  }
+  
+  const lineY = y + fontSize + 2.5;
+  doc.moveTo(valueX, lineY).lineTo(x + width, lineY).lineWidth(0.65).strokeColor(COLORS.ink).stroke();
+  doc.restore();
+}
+
 function generateBlankPrescriptionOnePagePdf({ res, prescription, hospital }) {
-  const filename = `${prescription.prescription_number || 'blank-prescription'}-one-page.pdf`;
+  const appointment = prescription.appointment_id || {};
+  const patient = prescription.patient_id || {};
+  const doctor = prescription.doctor_id || {};
+
+  const opReference =
+    appointment.op_number ||
+    appointment.token ||
+    appointment.serial_number ||
+    (appointment._id ? `OP-${String(appointment._id).slice(-8).toUpperCase()}` : '') ||
+    'OP-SLIP';
+
+  const filename = `${opReference}-op-slip.pdf`;
   configureResponse(res, filename);
   const doc = createDocument();
   doc.pipe(res);
-  // The one-page option keeps the canonical page-two treatment/medication layout,
-  // but must also carry the patient/encounter header that normally lives on page one.
-  // This keeps it a true single-page prescription without losing identification details.
-  drawCompactPrescriptionHeader(doc, prescription, hospital);
-  drawSinglePagePrescriptionPatientHeader(doc, prescription);
 
-  const primaryDiagnosis = text(prescription.diagnosis);
-  const differentialDiagnosis = text(prescription.provisional_diagnosis);
-  const diagnoses = [
-    primaryDiagnosis ? `Primary: ${primaryDiagnosis}` : '',
-    differentialDiagnosis && differentialDiagnosis.toLowerCase() !== primaryDiagnosis.toLowerCase()
-      ? `Differential / additional: ${differentialDiagnosis}`
-      : ''
-  ].filter(Boolean).join('\n');
-  drawCompactField(doc, 'DIAGNOSIS', diagnoses, mm(11));
-  drawCompactField(doc, 'TREATMENT PLAN', prescription.treatment_plan || prescription.notes, mm(9));
+  const leftMargin = PAGE.margin; // 28.35
+  const rightMargin = PAGE.width - PAGE.margin; // 566.93
+  const usableWidth = PAGE.width - PAGE.margin * 2; // 538.58
 
-  const left = PAGE.margin;
-  const width = PAGE.width - PAGE.margin * 2;
-  const titleY = doc.y;
-  doc.rect(left, titleY, width, mm(7)).fillAndStroke(COLORS.panel, COLORS.ink);
-  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(8).text(
-    'MEDICATION ADVISED:', left + 4, titleY + mm(1.8), { width: width - 8, lineBreak: false }
+  // 1. Resolve Data Fields
+  const opDate = formatOpSlipDateTime(
+    prescription.issue_date || appointment.start_time || appointment.appointment_date || operationNow()
   );
-  doc.y += mm(7);
-  drawMedicationTable(doc, prescription.items || []);
+  const opNo =
+    appointment.op_number ||
+    (appointment.token ? (String(appointment.token).startsWith('OP-') ? appointment.token : `OP-${appointment.token}`) : '') ||
+    (appointment._id ? `OP-${String(appointment._id).slice(-11).toUpperCase()}` : 'OP-N/A');
 
-  const signatureY = Math.min(doc.y + mm(5), CONTENT_BOTTOM - mm(18));
-  const doctorName = formatDoctorName(prescription.doctor_id) || 'Consultant';
-  doc.moveTo(left + mm(7), signatureY + mm(6)).lineTo(left + mm(70), signatureY + mm(6))
-    .lineWidth(0.5).strokeColor(COLORS.ink).stroke();
-  doc.fillColor(COLORS.ink).font('Helvetica-Bold').fontSize(7.5).text(doctorName, left + mm(7), signatureY + mm(8), {
-    width: mm(65), align: 'center', height: mm(5), ellipsis: true
-  });
-  doc.font('Helvetica').fontSize(6.5).text('CONSULTANT', left + mm(7), signatureY + mm(13), {
-    width: mm(65), align: 'center'
-  });
-  doc.font('Helvetica-Bold').fontSize(7).text(
-    `DATE & TIME: ${formatDate(prescription.issue_date, true)}`,
-    left + width - mm(82), signatureY + mm(8), { width: mm(82), align: 'right' }
+  const uhidNo =
+    patient.uhid ||
+    patient.patientId ||
+    (patient._id ? `UD-${String(patient._id).slice(-11).toUpperCase()}` : 'UD-N/A');
+
+  const patientName =
+    [patient.salutation, patient.first_name, patient.middle_name, patient.last_name]
+      .filter(Boolean)
+      .map((s) => String(s).trim())
+      .filter(Boolean)
+      .join(' ') ||
+    patient.name ||
+    '-';
+
+  const isFemale = String(patient.gender || '').toLowerCase() === 'female';
+  const isMarried = ['married', 'widowed', 'divorced'].includes(
+    String(patient.marital_status || patient.maritalStatus || '').toLowerCase()
   );
-  addPageFooters(doc, 'Computer-generated clinical document', { blueRule: true });
+  const husbandName = patient.husband_name || patient.husbandName;
+  const fatherName = patient.father_name || patient.fatherName;
+  const guardianName =
+    patient.guardian_name || patient.guardianName || patient.emergency_contact_name || patient.emergency_contact;
+
+  let relationLabel = 'Husband';
+  let relationValue = '';
+  if (husbandName) {
+    relationLabel = 'Husband';
+    relationValue = husbandName;
+  } else if (fatherName) {
+    relationLabel = 'Father';
+    relationValue = fatherName;
+  } else if (isFemale && isMarried) {
+    relationLabel = 'Husband';
+    relationValue = guardianName || '-';
+  } else {
+    relationLabel = 'Father';
+    relationValue = guardianName || fatherName || '-';
+  }
+
+  const departmentName =
+    resolveDepartmentName(
+      prescription.department_id,
+      appointment.department_id,
+      doctor.department,
+      doctor.specialization
+    ) || 'ORTHOPEDICS';
+
+  const address =
+    [patient.address, patient.city, patient.state].filter(Boolean).join(', ') || patient.address || '-';
+
+  // Age & Gender
+  let ageStr = '';
+  if (patient.age) {
+    ageStr = `${patient.age} Y`;
+  } else if (patient.dob) {
+    const d = new Date(patient.dob);
+    if (!Number.isNaN(d.getTime())) {
+      const diff = Math.floor((operationNow().getTime() - d.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+      ageStr = `${diff} Y`;
+    }
+  }
+  const genderStr = patient.gender
+    ? patient.gender.charAt(0).toUpperCase() + patient.gender.slice(1)
+    : '';
+  const ageSex = [ageStr, genderStr].filter(Boolean).join('/') || '-';
+
+  const mobileNo = patient.phone || patient.emergency_phone || '-';
+  const tokenNo =
+    appointment.token ||
+    (appointment.serial_number ? `NOR. - ${appointment.serial_number}` : '-');
+  const receiptNo =
+    prescription.receipt_number ||
+    (appointment.token ? String(appointment.token).replace(/\D/g, '') : '-');
+
+  // Consultant Name with Degrees
+  const docBaseName = formatDoctorName(doctor) || 'Dr. Consultant';
+  const degrees = doctor.education || doctor.degree || doctor.qualifications || doctor.specialization || '';
+  const consultantName = degrees ? `${docBaseName} (${degrees})` : docBaseName;
+
+  // --- DRAWING THE OP SLIP CANVAS ---
+
+  // 1. Unified Single Header (Logo on Left, Hospital info & "OP Slip" in Center, Meta on Right)
+  const headerY = 24;
+  const logoSize = 46;
+  const hName = hospitalName(hospital).toUpperCase();
+  const hAddress = hospitalAddress(hospital);
+  const hPhone = hospital?.phone || hospital?.contact || hospital?.mobile || '';
+  const contactText = [hPhone ? `Phone: ${hPhone}` : '', hospital?.email ? `Email: ${hospital.email}` : ''].filter(Boolean).join(' | ');
+
+  // Left: Hospital Logo
+  drawHospitalLogo(doc, hospital, leftMargin, headerY, logoSize);
+
+  // Right Meta details (OP Date, OP No, UHID No)
+  const metaRightX = 350;
+  const metaWidth = rightMargin - metaRightX;
+  drawUnderlinedField(doc, { label: 'OP Date', value: opDate, x: metaRightX, y: headerY, width: metaWidth, labelWidth: 48, fontSize: 8.5 });
+  drawUnderlinedField(doc, { label: 'OP No', value: opNo, x: metaRightX, y: headerY + 18, width: metaWidth, labelWidth: 48, fontSize: 8.5 });
+  drawUnderlinedField(doc, { label: 'UHID No', value: uhidNo, x: metaRightX, y: headerY + 36, width: metaWidth, labelWidth: 48, fontSize: 8.5 });
+
+  // Center: Hospital Name, Address, Contact, and "OP Slip"
+  const centerX = leftMargin + logoSize + 8;
+  const centerWidth = metaRightX - centerX - 8;
+
+  doc.font('Helvetica-Bold').fontSize(13).fillColor(COLORS.ink)
+    .text(hName, centerX, headerY + 1, { width: centerWidth, align: 'center', ellipsis: true });
+
+  if (hAddress) {
+    doc.font('Helvetica').fontSize(7.5).fillColor(COLORS.muted)
+      .text(hAddress, centerX, headerY + 17, { width: centerWidth, align: 'center', ellipsis: true });
+  }
+
+  if (contactText) {
+    doc.font('Helvetica').fontSize(7.5).fillColor(COLORS.ink)
+      .text(contactText, centerX, headerY + 27, { width: centerWidth, align: 'center', ellipsis: true });
+  }
+
+  // Centered "OP Slip" heading directly above divider
+  doc.font('Helvetica-Bold').fontSize(13).fillColor(COLORS.ink)
+    .text('OP Slip', centerX, headerY + 44, { width: centerWidth, align: 'center', lineBreak: false });
+
+  // 2. First Horizontal Solid Divider
+  const divider1Y = headerY + 62;
+  doc.moveTo(leftMargin, divider1Y).lineTo(rightMargin, divider1Y).lineWidth(1.2).strokeColor(COLORS.ink).stroke();
+
+  // 3. Dual Barcodes
+  const barcodeY = divider1Y + 5;
+  const barcodeWidth = 220;
+  const barcodeHeight = 22;
+  drawBarcode(doc, opNo, leftMargin, barcodeY, barcodeWidth, barcodeHeight, false);
+  drawBarcode(doc, uhidNo, 335, barcodeY, barcodeWidth, barcodeHeight, false);
+
+  // 4. Patient Details Block (4 Rows with underlines)
+  const pY0 = barcodeY + barcodeHeight + 10;
+  const rowGap = 18;
+  const col1Width = 245;
+  const col2X = 285;
+  const subcol1Width = 138;
+  const subcol2X = col2X + subcol1Width + 8;
+  const subcol2Width = rightMargin - subcol2X;
+
+  // Row 1: Patient Name | Age/Sex | Mobile No
+  drawUnderlinedField(doc, { label: 'Patient Name', value: patientName, x: leftMargin, y: pY0, width: col1Width, labelWidth: 68 });
+  drawUnderlinedField(doc, { label: 'Age/Sex', value: ageSex, x: col2X, y: pY0, width: subcol1Width, labelWidth: 46 });
+  drawUnderlinedField(doc, { label: 'Mobile No', value: mobileNo, x: subcol2X, y: pY0, width: subcol2Width, labelWidth: 50 });
+
+  // Row 2: Husband/Father | Token No | Receipt No
+  drawUnderlinedField(doc, { label: relationLabel, value: relationValue, x: leftMargin, y: pY0 + rowGap, width: col1Width, labelWidth: 68 });
+  drawUnderlinedField(doc, { label: 'Token No', value: tokenNo, x: col2X, y: pY0 + rowGap, width: subcol1Width, labelWidth: 46 });
+  drawUnderlinedField(doc, { label: 'Receipt No', value: receiptNo, x: subcol2X, y: pY0 + rowGap, width: subcol2Width, labelWidth: 50 });
+
+  // Row 3: Department | Consultant
+  drawUnderlinedField(doc, { label: 'Department', value: departmentName, x: leftMargin, y: pY0 + rowGap * 2, width: col1Width, labelWidth: 68 });
+  drawUnderlinedField(doc, { label: 'Consultant', value: consultantName, x: col2X, y: pY0 + rowGap * 2, width: rightMargin - col2X, labelWidth: 58 });
+
+  // Row 4: Address
+  drawUnderlinedField(doc, { label: 'Address', value: address, x: leftMargin, y: pY0 + rowGap * 3, width: col1Width, labelWidth: 68 });
+
+  // 5. Second Horizontal Solid Divider
+  const divider2Y = pY0 + rowGap * 4 + 4;
+  doc.moveTo(leftMargin, divider2Y).lineTo(rightMargin, divider2Y).lineWidth(1.2).strokeColor(COLORS.ink).stroke();
+
+  // 6. Main Body: Vertical Dividing Line
+  const mainSplitX = 148;
+  const bottomY = PAGE.height - PAGE.margin;
+  doc.moveTo(mainSplitX, divider2Y).lineTo(mainSplitX, bottomY).lineWidth(1.0).strokeColor(COLORS.ink).stroke();
+
+  // 8. Left Column: Vitals checklist
+  const vitalsLabels = ['BP', 'SPO2', 'Pulse', 'RR', 'RBS', 'Temp', 'Height', 'Weight (kg)'];
+  let vy = divider2Y + 16;
+  vitalsLabels.forEach((vLabel) => {
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COLORS.ink);
+    doc.text(vLabel, leftMargin, vy, { lineBreak: false });
+    doc.text(':-', leftMargin + 65, vy, { lineBreak: false });
+    vy += 22;
+  });
+
+  // 9. Right Column: Stylized Rx Symbol
+  doc.save();
+  const rxX = mainSplitX + 10;
+  const rxY = divider2Y + 10;
+  doc.font('Times-Bold').fontSize(26).fillColor(COLORS.ink).text('R', rxX, rxY, { lineBreak: false });
+  doc.font('Times-Bold').fontSize(16).fillColor(COLORS.ink).text('x', rxX + 16, rxY + 8, { lineBreak: false });
+  doc.restore();
+
+  // End single-page document (strictly 1 page, no extra footers to match the exact physical OP slip)
   doc.end();
 }
 

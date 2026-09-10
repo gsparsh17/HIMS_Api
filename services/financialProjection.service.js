@@ -1,6 +1,15 @@
 const Invoice = require('../models/Invoice');
 const FinancialTransaction = require('../models/FinancialTransaction');
 const IPDCharge = require('../models/IPDCharge');
+const {
+  canonicalInvoiceLines,
+  lineGross,
+  lineNet,
+  lineServiceSource,
+  expectedInvoiceBalance,
+  transactionAppliedAmount,
+  transactionExternalAmount
+} = require('./financeInvariant.service');
 
 const money = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const EXCLUDED_INVOICE_TYPES = ['IPD Payment', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'Credit Note'];
@@ -29,15 +38,22 @@ function invoiceEncounterSource(invoice) {
   return 'OPD';
 }
 
-function invoiceServiceSource(invoice) {
+function invoiceServiceSources(invoice) {
+  const lineSources = Array.from(new Set(canonicalInvoiceLines(invoice).map(lineServiceSource).filter(Boolean)));
+  if (lineSources.length) return lineSources;
   const type = String(invoice.invoice_type || invoice.type || '').toLowerCase();
-  if (type.includes('lab')) return 'Lab';
-  if (type.includes('radiology') || type.includes('imaging') || type.includes('x-ray')) return 'Radiology';
-  if (type.includes('procedure') || type.includes('surgery') || type.includes('ot')) return 'Procedure';
-  if (type.includes('appointment') || type.includes('consult')) return 'Appointment';
-  if (type.includes('bed') || type.includes('room')) return 'Bed';
-  if (type.includes('pharmacy')) return 'Pharmacy';
-  return invoiceEncounterSource(invoice);
+  if (type.includes('lab')) return ['Lab'];
+  if (type.includes('radiology') || type.includes('imaging') || type.includes('x-ray')) return ['Radiology'];
+  if (type.includes('procedure') || type.includes('surgery') || type.includes('ot')) return ['Procedure'];
+  if (type.includes('appointment') || type.includes('consult')) return ['Appointment'];
+  if (type.includes('bed') || type.includes('room')) return ['Bed'];
+  if (type.includes('pharmacy')) return ['Pharmacy'];
+  return [invoiceEncounterSource(invoice)];
+}
+
+function invoiceServiceSource(invoice) {
+  const sources = invoiceServiceSources(invoice);
+  return sources.length === 1 ? sources[0] : 'Mixed';
 }
 
 function textId(value) {
@@ -89,7 +105,7 @@ function applyInvoiceFilters(invoices, query = {}) {
     const total = Number(invoice.total || 0);
     if (query.patientType && query.patientType !== 'all' && encounter !== query.patientType) return false;
     if (query.encounterSource && query.encounterSource !== 'all' && encounter !== query.encounterSource) return false;
-    if (query.serviceSource && query.serviceSource !== 'all' && service !== query.serviceSource) return false;
+    if (query.serviceSource && query.serviceSource !== 'all' && !invoiceServiceSources(invoice).includes(query.serviceSource)) return false;
     if (query.invoiceType && query.invoiceType !== 'all' && invoice.invoice_type !== query.invoiceType) return false;
     if (query.status && query.status !== 'all' && invoice.status !== query.status) return false;
     if (query.doctorId && query.doctorId !== 'all' && doctor.id !== String(query.doctorId)) return false;
@@ -184,6 +200,9 @@ function invoiceRow(invoice) {
 
 function transactionRow(tx) {
   const txDate = tx.postedAt || tx.createdAt || tx.date || tx.transactionDate;
+  const type = String(tx.transactionType || '').toUpperCase();
+  const externalAmount = transactionExternalAmount(tx);
+  const appliedAmount = transactionAppliedAmount(tx);
   return {
     id: tx._id,
     date: txDate,
@@ -193,15 +212,20 @@ function transactionRow(tx) {
     direction: tx.direction,
     paymentMethod: tx.paymentMethod || 'Unspecified',
     amount: money(tx.amount),
-    amountTendered: money(tx.amountTendered ?? tx.amount),
-    amountApplied: money(tx.amountApplied ?? tx.amount),
+    externalAmount,
+    appliedAmount,
+    refundAmount: type === 'REFUND' || type === 'ADVANCE_REFUND' ? money(tx.amount) : 0,
+    amountTendered: money(tx.amountTendered ?? externalAmount),
+    amountApplied: appliedAmount,
     changeReturned: money(tx.changeReturned || 0),
     advanceCreated: money(tx.advanceCreated || 0),
     externalMoneyMovement: tx.externalMoneyMovement !== false,
+    cashFlowClass: tx.cashFlowClass || '',
     patientId: textId(tx.patientId || tx.patient_id),
     invoiceId: textId(tx.invoiceId || tx.invoice_id),
     billId: textId(tx.billId || tx.bill_id),
-    notes: tx.notes || tx.description || ''
+    documentAllocations: tx.documentAllocations || [],
+    notes: tx.notes || tx.description || tx.remarks || ''
   };
 }
 
@@ -243,14 +267,53 @@ function monthKey(date, timezone = 'Asia/Kolkata') {
   return day ? day.slice(0, 7) : '';
 }
 
+function serviceRowsForInvoice(invoice) {
+  const parent = invoiceRow(invoice);
+  const lines = canonicalInvoiceLines(invoice);
+  if (!lines.length) return [{ ...parent, service: parent.serviceSource, invoiceId: parent.id, lineGross: parent.gross, lineNet: parent.netRevenue }];
+  const totalLineNet = money(lines.reduce((sum, line) => sum + lineNet(line), 0));
+  return lines.map((line, index) => {
+    const net = lineNet(line);
+    const gross = lineGross(line);
+    const weight = totalLineNet > 0 ? net / totalLineNet : 1 / lines.length;
+    return {
+      invoiceId: parent.id,
+      lineId: textId(line._id || line.charge_id || line.chargeId) || `${textId(parent.id)}:${index}`,
+      service: lineServiceSource(line),
+      grossBilled: gross,
+      netRevenue: money(net - (parent.creditNotes * weight)),
+      outstanding: money(parent.outstanding * weight),
+      doctorCommission: money(parent.doctorCommission * weight),
+      hospitalShare: money((net - (parent.creditNotes * weight)) - (parent.doctorCommission * weight))
+    };
+  });
+}
+
+function groupServiceRows(rows) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const key = row.service || 'Other';
+    if (!groups.has(key)) groups.set(key, { service: key, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0, doctorCommission: 0, hospitalShare: 0, _invoiceIds: new Set() });
+    const target = groups.get(key);
+    target.grossBilled = money(target.grossBilled + Number(row.grossBilled || 0));
+    target.netRevenue = money(target.netRevenue + Number(row.netRevenue || 0));
+    target.outstanding = money(target.outstanding + Number(row.outstanding || 0));
+    target.doctorCommission = money(target.doctorCommission + Number(row.doctorCommission || 0));
+    target.hospitalShare = money(target.hospitalShare + Number(row.hospitalShare || 0));
+    target._invoiceIds.add(String(row.invoiceId || ''));
+  });
+  return [...groups.values()].map((row) => ({ ...row, invoiceCount: row._invoiceIds.size, _invoiceIds: undefined })).sort((a, b) => b.netRevenue - a.netRevenue);
+}
+
 function project(data) {
   const invoiceRows = data.invoices.map(invoiceRow);
+  const serviceRows = data.invoices.flatMap(serviceRowsForInvoice);
   const allTransactions = data.transactions.map(transactionRow);
-  const externalCredits = data.transactions.filter(externalCredit).map(transactionRow);
-  const refunds = data.transactions.filter(refundDebit).map(transactionRow);
-  const receipts = externalCredits.filter((tx) => ['RECEIPT', 'SETTLEMENT'].includes(tx.transactionType));
-  const advances = externalCredits.filter((tx) => tx.transactionType === 'ADVANCE_DEPOSIT');
-  const advanceUsed = allTransactions.filter((tx) => tx.transactionType === 'ADVANCE_UTILISATION');
+  const externalCredits = allTransactions.filter((tx) => tx.direction === 'CREDIT' && tx.externalAmount > 0);
+  const refunds = allTransactions.filter((tx) => ['REFUND', 'ADVANCE_REFUND'].includes(String(tx.transactionType || '').toUpperCase()) && tx.direction === 'DEBIT');
+  const receipts = externalCredits.filter((tx) => String(tx.transactionType || '').toUpperCase() === 'RECEIPT');
+  const advances = externalCredits.filter((tx) => String(tx.transactionType || '').toUpperCase() === 'ADVANCE_DEPOSIT');
+  const advanceUsed = allTransactions.filter((tx) => String(tx.transactionType || '').toUpperCase() === 'ADVANCE_UTILISATION');
 
   const summary = {
     grossBilled: sumRows(invoiceRows, 'gross'),
@@ -258,11 +321,11 @@ function project(data) {
     tax: sumRows(invoiceRows, 'tax'),
     creditNotes: sumRows(invoiceRows, 'creditNotes'),
     netRevenue: sumRows(invoiceRows, 'netRevenue'),
-    collections: sumRows(receipts, 'amount'),
-    advancesReceived: sumRows(advances, 'amount'),
-    advanceUtilised: sumRows(advanceUsed, 'amount'),
-    refunds: sumRows(refunds, 'amount'),
-    netCashCollection: money(sumRows(receipts, 'amount') + sumRows(advances, 'amount') - sumRows(refunds, 'amount')),
+    collections: sumRows(receipts, 'externalAmount'),
+    advancesReceived: sumRows(advances, 'externalAmount'),
+    advanceUtilised: sumRows(advanceUsed, 'appliedAmount'),
+    refunds: sumRows(refunds, 'refundAmount'),
+    netCashCollection: money(sumRows(receipts, 'externalAmount') + sumRows(advances, 'externalAmount') - sumRows(refunds, 'refundAmount')),
     outstanding: sumRows(invoiceRows, 'outstanding'),
     unbilledProduction: money((data.unbilledCharges || []).reduce((s, row) => s + Number(row.netAmount ?? row.totalAmount ?? row.amount ?? 0), 0)),
     invoiceCount: invoiceRows.length,
@@ -273,16 +336,14 @@ function project(data) {
   const bySource = group(invoiceRows, (r) => r.encounterSource, (source) => ({ source, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0 }), (a, r) => {
     a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1;
   });
-  const byService = group(invoiceRows, (r) => r.serviceSource, (service) => ({ service, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0, doctorCommission: 0, hospitalShare: 0 }), (a, r) => {
-    a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.doctorCommission = money(a.doctorCommission + r.doctorCommission); a.hospitalShare = money(a.hospitalShare + r.hospitalShare); a.invoiceCount += 1;
-  });
+  const byService = groupServiceRows(serviceRows);
   const byDoctor = group(invoiceRows, (r) => r.doctorId || r.doctorName, (key) => ({ doctorId: '', doctorName: key, netRevenue: 0, doctorCommission: 0, hospitalShare: 0, outstanding: 0, invoiceCount: 0 }), (a, r) => {
     a.doctorId ||= r.doctorId; a.doctorName = r.doctorName; a.netRevenue = money(a.netRevenue + r.netRevenue); a.doctorCommission = money(a.doctorCommission + r.doctorCommission); a.hospitalShare = money(a.hospitalShare + r.hospitalShare); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1;
   }).sort((a, b) => b.netRevenue - a.netRevenue);
   const byDepartment = group(invoiceRows, (r) => r.departmentId || r.departmentName, (key) => ({ departmentId: '', departmentName: key, netRevenue: 0, doctorCommission: 0, hospitalShare: 0, outstanding: 0, invoiceCount: 0 }), (a, r) => {
     a.departmentId ||= r.departmentId; a.departmentName = r.departmentName; a.netRevenue = money(a.netRevenue + r.netRevenue); a.doctorCommission = money(a.doctorCommission + r.doctorCommission); a.hospitalShare = money(a.hospitalShare + r.hospitalShare); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1;
   }).sort((a, b) => b.netRevenue - a.netRevenue);
-  const paymentMethods = group(externalCredits, (r) => r.paymentMethod, (paymentMethod) => ({ paymentMethod, amount: 0, count: 0 }), (a, r) => { a.amount = money(a.amount + r.amount); a.count += 1; }).sort((a, b) => b.amount - a.amount);
+  const paymentMethods = group(externalCredits, (r) => r.paymentMethod, (paymentMethod) => ({ paymentMethod, amount: 0, count: 0 }), (a, r) => { a.amount = money(a.amount + r.externalAmount); a.count += 1; }).sort((a, b) => b.amount - a.amount);
   const daily = group(invoiceRows, (r) => dayKey(r.date, data.range?.timezone) || 'Unknown', (date) => ({ date, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0, collections: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.date.localeCompare(b.date));
   const dailyMap = new Map(daily.map((row) => [row.date, row]));
   receipts.forEach((row) => {
@@ -293,12 +354,12 @@ function project(data) {
       dailyMap.set(date, item);
       daily.push(item);
     }
-    dailyMap.get(date).collections = money(dailyMap.get(date).collections + row.amount);
+    dailyMap.get(date).collections = money(dailyMap.get(date).collections + row.externalAmount);
   });
   daily.sort((a, b) => a.date.localeCompare(b.date));
   const monthly = group(invoiceRows, (r) => monthKey(r.date, data.range?.timezone) || 'Unknown', (month) => ({ month, grossBilled: 0, netRevenue: 0, outstanding: 0, invoiceCount: 0 }), (a, r) => { a.grossBilled = money(a.grossBilled + r.gross); a.netRevenue = money(a.netRevenue + r.netRevenue); a.outstanding = money(a.outstanding + r.outstanding); a.invoiceCount += 1; }).sort((a, b) => a.month.localeCompare(b.month));
 
-  return { range: data.range, summary, bySource, byService, byDoctor, byDepartment, paymentMethods, daily, monthly, invoiceRows, transactionRows: allTransactions };
+  return { range: data.range, summary, bySource, byService, byDoctor, byDepartment, paymentMethods, daily, monthly, invoiceRows, serviceRows, transactionRows: allTransactions };
 }
 
 function paginate(rows, query = {}) {
@@ -331,7 +392,7 @@ async function getReport(reportKey, query, user) {
   if (reportKey === 'reconciliation') {
     const anomalies = [];
     data.invoices.forEach((invoice) => {
-      const expected = money((invoice.total || 0) - (invoice.amount_paid || 0) - (invoice.credit_note_total || 0));
+      const expected = expectedInvoiceBalance(invoice);
       if (Math.abs(expected - money(invoice.balance_due || 0)) > 0.02) anomalies.push({ type: 'INVOICE_BALANCE_MISMATCH', invoiceId: invoice._id, invoiceNumber: invoice.invoice_number, expected, actual: money(invoice.balance_due || 0) });
     });
     return { ...common, rows: anomalies };
@@ -341,4 +402,4 @@ async function getReport(reportKey, query, user) {
   throw error;
 }
 
-module.exports = { parseHospitalRange, getKpis, getReport, project, dayKey, monthKey, invoiceRow, transactionRow };
+module.exports = { parseHospitalRange, getKpis, getReport, project, dayKey, monthKey, invoiceRow, transactionRow, invoiceServiceSources, serviceRowsForInvoice, groupServiceRows };

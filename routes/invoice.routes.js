@@ -39,6 +39,7 @@ router.get('/export', viewBilling, invoiceController.exportInvoices);
 router.get('/type/:type', viewBilling, invoiceController.getInvoicesByType);
 
 router.get('/:id/download', viewBilling, invoiceController.downloadInvoicePDF);
+router.get('/:id/print-data', viewBilling, invoiceController.getInvoicePrintData);
 router.get('/:id', viewBilling, invoiceController.getInvoiceById);
 router.put('/:id/payment', manageBilling, requireAnyActionPermission(['billing_edit', 'settlement']), invoiceController.updateInvoicePayment);
 

@@ -7,6 +7,7 @@ const Patient = require('../models/Patient');
 const Supplier = require('../models/Supplier');
 const Pharmacy = require('../models/Pharmacy');
 const Bill = require('../models/Bill');
+const FinancialTransaction = require('../models/FinancialTransaction');
 const Sale = require('../models/Sale');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const LabRequest = require('../models/LabRequest');
@@ -18,6 +19,7 @@ const PDFDocument = require('pdfkit');
 const { default: mongoose } = require('mongoose');
 const { requestHospitalId } = require('../utils/hospitalScope');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
+const { invoicePrintEnvelope } = require('../services/financeDocument.service');
 const {
   COMPUTER_GENERATED_BILL_EN,
   COMPUTER_GENERATED_BILL_HI,
@@ -52,152 +54,16 @@ function invoiceDateRange(startDate, endDate) {
 
 // Generate invoice for procedures (using procedure_requests from prescription)
 exports.generateProcedureInvoice = async (req, res) => {
-  try {
-    const {
-      prescription_id,
-      patient_id,
-      appointment_id,
-      procedure_request_ids,  // Array of _id from prescription.procedure_requests
-      additional_services = [],
-      discount = 0,
-      notes,
-      payment_method
-    } = req.body;
-
-    if (!procedure_request_ids || procedure_request_ids.length === 0) {
-      return res.status(400).json({
-        message: 'Invoice must contain at least one procedure.'
-      });
-    }
-
-    const prescription = await Prescription.findById(prescription_id)
-      .populate('patient_id')
-      .populate('doctor_id');
-
-    if (!prescription) {
-      return res.status(404).json({ error: 'Prescription not found' });
-    }
-
-    const selectedProcedures = (prescription.procedure_requests || []).filter(proc =>
-      procedure_request_ids.includes(proc._id.toString())
-    );
-
-    if (selectedProcedures.length === 0) {
-      return res.status(400).json({ error: 'No procedures found in prescription' });
-    }
-
-    let procedureSubtotal = 0;
-    const procedureItems = [];
-
-    for (const proc of selectedProcedures) {
-      let unitPrice = proc.cost || 0;
-      if (unitPrice === 0 && proc.procedure_code) {
-        const procedureMaster = await Procedure.findOne({ code: proc.procedure_code });
-        unitPrice = procedureMaster?.base_price || 0;
-      }
-
-      const totalPrice = unitPrice;
-      procedureSubtotal += totalPrice;
-
-      procedureItems.push({
-        procedure_code: proc.procedure_code,
-        procedure_name: proc.procedure_name,
-        quantity: 1,
-        unit_price: unitPrice,
-        total_price: totalPrice,
-        tax_rate: 0,
-        tax_amount: 0,
-        prescription_id: prescription_id,
-        procedure_request_id: proc._id,
-        status: proc.status || 'Pending',
-        scheduled_date: proc.scheduled_date
-      });
-    }
-
-    const serviceSubtotal = additional_services.reduce((sum, service) =>
-      sum + (service.unit_price * service.quantity), 0);
-
-    const subtotal = procedureSubtotal + serviceSubtotal;
-    const total = subtotal - discount;
-
-    const serviceItems = additional_services.map(service => ({
-      description: service.description,
-      quantity: service.quantity,
-      unit_price: service.unit_price,
-      total_price: service.unit_price * service.quantity,
-      tax_rate: service.tax_rate || 0,
-      tax_amount: service.tax_amount || 0,
-      service_type: service.service_type || 'Other',
-      prescription_id: prescription_id
-    }));
-
-    const invoice = new Invoice({
-      hospital_id: requestHospitalId(req),
-      invoice_type: 'Procedure',
-      patient_id: patient_id || prescription.patient_id._id,
-      customer_type: 'Patient',
-      customer_name: `${prescription.patient_id.first_name} ${prescription.patient_id.last_name}`,
-      customer_phone: prescription.patient_id.phone,
-      procedure_items: procedureItems,
-      service_items: serviceItems,
-      subtotal: subtotal,
-      discount: discount,
-      tax: 0,
-      total: total,
-      status: 'Issued',
-      payment_method: payment_method || 'Pending',
-      notes: notes,
-      created_by: req.user?._id,
-      prescription_id: prescription_id,
-      appointment_id: appointment_id,
-      has_procedures: true,
-      procedures_status: 'Pending',
-      issue_date: operationNow(),
-      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    });
-
-    await invoice.save();
-
-    // Update prescription procedure_requests billing status
-    for (const proc of selectedProcedures) {
-      const procIndex = prescription.procedure_requests.findIndex(
-        p => p._id.toString() === proc._id.toString()
-      );
-      if (procIndex !== -1) {
-        prescription.procedure_requests[procIndex].is_billed = true;
-        prescription.procedure_requests[procIndex].invoice_id = invoice._id;
-      }
-    }
-    await prescription.save();
-
-    const requestIds = selectedProcedures.map(p => p.request_id).filter(id => id);
-    if (requestIds.length > 0) {
-      await ProcedureRequest.updateMany(
-        { _id: { $in: requestIds } },
-        { is_billed: true, invoiceId: invoice._id }
-      );
-    }
-
-    const populatedInvoice = await Invoice.findById(invoice._id)
-      .populate('patient_id', 'first_name last_name phone')
-      .populate('prescription_id', 'prescription_number diagnosis')
-      .populate('appointment_id', 'appointment_date type')
-      .populate('procedure_items.performed_by', 'firstName lastName');
-
-    res.status(201).json({
-      success: true,
-      message: 'Procedure invoice created successfully',
-      invoice: populatedInvoice,
-      procedures_billed: selectedProcedures.length
-    });
-
-  } catch (err) {
-    console.error('Error generating procedure invoice:', err);
-    res.status(400).json({ error: err.message });
-  }
+  return res.status(409).json({
+    success: false,
+    code: 'SOURCE_FINANCE_REQUIRED',
+    error: 'Procedure invoices are no longer created directly from browser/request totals. Post the clinical source charge through source-finance and issue the canonical patient invoice.',
+    canonicalChargeEndpoint: '/api/source-finance/:sourceModule/:sourceId/charge',
+    canonicalOpdInvoiceEndpoint: '/api/finance/patients/:patientId/invoices',
+    canonicalIpdInvoiceEndpoint: '/api/finance/ipd/:admissionId/invoices'
+  });
 };
 
-// Get procedure invoices
 exports.getProcedureInvoices = async (req, res) => {
   try {
     const {
@@ -345,7 +211,7 @@ exports.getInvoicesWithProcedures = async (req, res) => {
       end_date
     } = req.query;
 
-    const filter = { has_procedures: true };
+    const filter = invoiceScope(req, { has_procedures: true });
 
     if (procedures_status) filter.procedures_status = procedures_status;
     if (status) filter.status = status;
@@ -396,146 +262,16 @@ exports.getInvoicesWithProcedures = async (req, res) => {
 
 // Generate invoice for lab tests
 exports.generateLabTestInvoice = async (req, res) => {
-  try {
-    const {
-      prescription_id,
-      patient_id,
-      appointment_id,
-      lab_test_request_ids,
-      additional_services = [],
-      discount = 0,
-      notes,
-      payment_method
-    } = req.body;
-
-    if (!lab_test_request_ids || lab_test_request_ids.length === 0) {
-      return res.status(400).json({
-        message: 'Invoice must contain at least one lab test.'
-      });
-    }
-
-    const prescription = await Prescription.findById(prescription_id)
-      .populate('patient_id')
-      .populate('doctor_id');
-
-    if (!prescription) {
-      return res.status(404).json({ error: 'Prescription not found' });
-    }
-
-    const selectedLabTests = (prescription.lab_test_requests || []).filter(test =>
-      lab_test_request_ids.includes(test._id.toString())
-    );
-
-    if (selectedLabTests.length === 0) {
-      return res.status(400).json({ error: 'No lab tests found in prescription' });
-    }
-
-    let labSubtotal = 0;
-    const labTestItems = [];
-
-    for (const test of selectedLabTests) {
-      let unitPrice = test.cost || 0;
-      if (unitPrice === 0 && test.lab_test_code) {
-        const labTestMaster = await LabTest.findOne({ code: test.lab_test_code });
-        unitPrice = labTestMaster?.base_price || 0;
-      }
-
-      const totalPrice = unitPrice;
-      labSubtotal += totalPrice;
-
-      labTestItems.push({
-        lab_test_code: test.lab_test_code,
-        lab_test_name: test.lab_test_name,
-        quantity: 1,
-        unit_price: unitPrice,
-        total_price: totalPrice,
-        tax_rate: 0,
-        tax_amount: 0,
-        prescription_id: prescription_id,
-        lab_test_request_id: test._id,
-        status: test.priority === 'Stat' ? 'Urgent' : 'Pending',
-        scheduled_date: test.scheduled_date
-      });
-    }
-
-    const serviceSubtotal = additional_services.reduce((sum, s) => sum + (s.unit_price * s.quantity), 0);
-    const subtotal = labSubtotal + serviceSubtotal;
-    const total = subtotal - discount;
-
-    const serviceItems = additional_services.map(service => ({
-      description: service.description,
-      quantity: service.quantity,
-      unit_price: service.unit_price,
-      total_price: service.unit_price * service.quantity,
-      tax_rate: service.tax_rate || 0,
-      tax_amount: service.tax_amount || 0,
-      service_type: service.service_type || 'Other',
-      prescription_id: prescription_id
-    }));
-
-    const invoice = new Invoice({
-      hospital_id: requestHospitalId(req),
-      invoice_type: 'Lab Test',
-      patient_id: patient_id || prescription.patient_id._id,
-      customer_type: 'Patient',
-      customer_name: `${prescription.patient_id.first_name} ${prescription.patient_id.last_name}`,
-      customer_phone: prescription.patient_id.phone,
-      lab_test_items: labTestItems,
-      service_items: serviceItems,
-      subtotal: subtotal,
-      discount: discount,
-      tax: 0,
-      total: total,
-      status: 'Issued',
-      payment_method: payment_method || 'Pending',
-      notes: notes,
-      created_by: req.user?._id,
-      prescription_id: prescription_id,
-      appointment_id: appointment_id,
-      has_lab_tests: true,
-      lab_tests_status: 'Pending',
-      issue_date: operationNow(),
-      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    });
-
-    await invoice.save();
-
-    for (const test of selectedLabTests) {
-      const testIndex = prescription.lab_test_requests.findIndex(t => t._id.toString() === test._id.toString());
-      if (testIndex !== -1) {
-        prescription.lab_test_requests[testIndex].is_billed = true;
-        prescription.lab_test_requests[testIndex].invoice_id = invoice._id;
-      }
-    }
-    await prescription.save();
-
-    const requestIds = selectedLabTests.map(t => t.request_id).filter(id => id);
-    if (requestIds.length > 0) {
-      await LabRequest.updateMany(
-        { _id: { $in: requestIds } },
-        { is_billed: true, invoiceId: invoice._id }
-      );
-    }
-
-    const populatedInvoice = await Invoice.findById(invoice._id)
-      .populate('patient_id', 'first_name last_name phone')
-      .populate('prescription_id', 'prescription_number diagnosis')
-      .populate('appointment_id', 'appointment_date type')
-      .populate('lab_test_items.performed_by', 'firstName lastName');
-
-    res.status(201).json({
-      success: true,
-      message: 'Lab test invoice created successfully',
-      invoice: populatedInvoice,
-      lab_tests_billed: selectedLabTests.length
-    });
-  } catch (err) {
-    console.error('Error generating lab test invoice:', err);
-    res.status(400).json({ error: err.message });
-  }
+  return res.status(409).json({
+    success: false,
+    code: 'SOURCE_FINANCE_REQUIRED',
+    error: 'Lab invoices are no longer created directly from browser/request totals. Post the clinical source charge through source-finance and issue the canonical patient invoice.',
+    canonicalChargeEndpoint: '/api/source-finance/:sourceModule/:sourceId/charge',
+    canonicalOpdInvoiceEndpoint: '/api/finance/patients/:patientId/invoices',
+    canonicalIpdInvoiceEndpoint: '/api/finance/ipd/:admissionId/invoices'
+  });
 };
 
-// Get lab test invoices
 exports.getLabTestInvoices = async (req, res) => {
   try {
     const {
@@ -690,7 +426,7 @@ exports.getInvoicesWithLabTests = async (req, res) => {
       end_date
     } = req.query;
 
-    const filter = { has_lab_tests: true };
+    const filter = invoiceScope(req, { has_lab_tests: true });
 
     if (lab_tests_status) filter.lab_tests_status = lab_tests_status;
     if (status) filter.status = status;
@@ -741,148 +477,16 @@ exports.getInvoicesWithLabTests = async (req, res) => {
 
 // Generate invoice for radiology tests
 exports.generateRadiologyInvoice = async (req, res) => {
-  try {
-    const {
-      prescription_id,
-      patient_id,
-      appointment_id,
-      radiology_request_ids,
-      additional_services = [],
-      discount = 0,
-      notes,
-      payment_method
-    } = req.body;
-
-    if (!radiology_request_ids || radiology_request_ids.length === 0) {
-      return res.status(400).json({
-        message: 'Invoice must contain at least one radiology test.'
-      });
-    }
-
-    const prescription = await Prescription.findById(prescription_id)
-      .populate('patient_id')
-      .populate('doctor_id');
-
-    if (!prescription) {
-      return res.status(404).json({ error: 'Prescription not found' });
-    }
-
-    const selectedRadiology = (prescription.radiology_test_requests || []).filter(rad =>
-      radiology_request_ids.includes(rad._id.toString())
-    );
-
-    if (selectedRadiology.length === 0) {
-      return res.status(400).json({ error: 'No radiology tests found in prescription' });
-    }
-
-    let radiologySubtotal = 0;
-    const radiologyItems = [];
-
-    for (const rad of selectedRadiology) {
-      let unitPrice = rad.cost || 0;
-      if (unitPrice === 0 && rad.imaging_test_code) {
-        const imagingTest = await ImagingTest.findOne({ code: rad.imaging_test_code });
-        unitPrice = imagingTest?.base_price || 0;
-      }
-
-      const totalPrice = unitPrice;
-      radiologySubtotal += totalPrice;
-
-      radiologyItems.push({
-        imaging_test_code: rad.imaging_test_code,
-        imaging_test_name: rad.imaging_test_name,
-        category: rad.category,
-        quantity: 1,
-        unit_price: unitPrice,
-        total_price: totalPrice,
-        tax_rate: 0,
-        tax_amount: 0,
-        prescription_id: prescription_id,
-        radiology_request_id: rad._id,
-        status: rad.priority === 'Emergency' ? 'Urgent' : (rad.priority === 'Urgent' ? 'Urgent' : 'Pending'),
-        scheduled_date: rad.scheduled_date
-      });
-    }
-
-    const serviceSubtotal = additional_services.reduce((sum, s) => sum + (s.unit_price * s.quantity), 0);
-    const subtotal = radiologySubtotal + serviceSubtotal;
-    const total = subtotal - discount;
-
-    const serviceItems = additional_services.map(service => ({
-      description: service.description,
-      quantity: service.quantity,
-      unit_price: service.unit_price,
-      total_price: service.unit_price * service.quantity,
-      tax_rate: service.tax_rate || 0,
-      tax_amount: service.tax_amount || 0,
-      service_type: service.service_type || 'Other',
-      prescription_id: prescription_id
-    }));
-
-    const invoice = new Invoice({
-      hospital_id: requestHospitalId(req),
-      invoice_type: 'Radiology',
-      patient_id: patient_id || prescription.patient_id._id,
-      customer_type: 'Patient',
-      customer_name: `${prescription.patient_id.first_name} ${prescription.patient_id.last_name}`,
-      customer_phone: prescription.patient_id.phone,
-      radiology_items: radiologyItems,
-      service_items: serviceItems,
-      subtotal: subtotal,
-      discount: discount,
-      tax: 0,
-      total: total,
-      status: 'Issued',
-      payment_method: payment_method || 'Pending',
-      notes: notes,
-      created_by: req.user?._id,
-      prescription_id: prescription_id,
-      appointment_id: appointment_id,
-      has_radiology: true,
-      radiology_status: 'Pending',
-      issue_date: operationNow(),
-      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    });
-
-    await invoice.save();
-
-    for (const rad of selectedRadiology) {
-      const radIndex = prescription.radiology_test_requests.findIndex(r => r._id.toString() === rad._id.toString());
-      if (radIndex !== -1) {
-        prescription.radiology_test_requests[radIndex].is_billed = true;
-        prescription.radiology_test_requests[radIndex].invoice_id = invoice._id;
-      }
-    }
-    await prescription.save();
-
-    const requestIds = selectedRadiology.map(r => r.request_id).filter(id => id);
-    if (requestIds.length > 0) {
-      await RadiologyRequest.updateMany(
-        { _id: { $in: requestIds } },
-        { is_billed: true, invoiceId: invoice._id }
-      );
-    }
-
-    const populatedInvoice = await Invoice.findById(invoice._id)
-      .populate('patient_id', 'first_name last_name phone')
-      .populate('prescription_id', 'prescription_number diagnosis')
-      .populate('appointment_id', 'appointment_date type')
-      .populate('radiology_items.performed_by', 'firstName lastName')
-      .populate('radiology_items.reported_by', 'firstName lastName');
-
-    res.status(201).json({
-      success: true,
-      message: 'Radiology invoice created successfully',
-      invoice: populatedInvoice,
-      radiology_billed: selectedRadiology.length
-    });
-  } catch (err) {
-    console.error('Error generating radiology invoice:', err);
-    res.status(400).json({ error: err.message });
-  }
+  return res.status(409).json({
+    success: false,
+    code: 'SOURCE_FINANCE_REQUIRED',
+    error: 'Radiology invoices are no longer created directly from browser/request totals. Post the clinical source charge through source-finance and issue the canonical patient invoice.',
+    canonicalChargeEndpoint: '/api/source-finance/:sourceModule/:sourceId/charge',
+    canonicalOpdInvoiceEndpoint: '/api/finance/patients/:patientId/invoices',
+    canonicalIpdInvoiceEndpoint: '/api/finance/ipd/:admissionId/invoices'
+  });
 };
 
-// Get radiology invoices
 exports.getRadiologyInvoices = async (req, res) => {
   try {
     const {
@@ -1042,7 +646,7 @@ exports.getInvoicesWithRadiology = async (req, res) => {
       end_date
     } = req.query;
 
-    const filter = { has_radiology: true };
+    const filter = invoiceScope(req, { has_radiology: true });
 
     if (radiology_status) filter.radiology_status = radiology_status;
     if (status) filter.status = status;
@@ -1146,8 +750,7 @@ exports.getPharmacyMonthlyRevenue = async (req, res) => {
     const result = await Invoice.aggregate([
       {
         $match: {
-          invoice_type: 'Pharmacy',
-          status: 'Paid',
+          ...invoiceScope(req, { invoice_type: 'Pharmacy', status: 'Paid' }),
           issue_date: { $gte: startOfMonth, $lte: endOfMonth }
         }
       },
@@ -1179,8 +782,7 @@ exports.getPharmacyDailyRevenue = async (req, res) => {
     const result = await Invoice.aggregate([
       {
         $match: {
-          invoice_type: 'Pharmacy',
-          status: 'Paid',
+          ...invoiceScope(req, { invoice_type: 'Pharmacy', status: 'Paid' }),
           issue_date: { $gte: startOfDay, $lte: endOfDay }
         }
       },
@@ -1439,6 +1041,7 @@ exports.getAllInvoices = async (req, res) => {
           },
           admission_id: 1,
           bill_id: 1,
+          bill_ids: 1,
           document_stage: 1,
           customer_name: 1,
           customer_phone: 1,
@@ -1465,14 +1068,44 @@ exports.getAllInvoices = async (req, res) => {
   }
 };
 
+// Canonical patient-facing invoice print data. All print surfaces consume the
+// same server envelope so browsers never reconstruct accounting totals.
+exports.getInvoicePrintData = async (req, res) => {
+  try {
+    const data = await invoicePrintEnvelope({
+      invoiceId: req.params.id,
+      hospitalId: requestHospitalId(req)
+    });
+    if (!data) return res.status(404).json({ error: 'Invoice not found' });
+    return res.json({ success: true, data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
 // Get invoice by ID
 exports.getInvoiceById = async (req, res) => {
   try {
     const invoice = await Invoice.findOne(invoiceScope(req, { _id: req.params.id }))
       .populate('patient_id')
-      .populate('appointment_id')
-      .populate('admission_id')
+      .populate({
+        path: 'appointment_id',
+        populate: [
+          { path: 'doctor_id', select: 'firstName lastName specialization phone department' },
+          { path: 'department_id', select: 'name code' }
+        ]
+      })
+      .populate({
+        path: 'admission_id',
+        populate: [
+          { path: 'primaryDoctorId', select: 'firstName lastName specialization' },
+          { path: 'departmentId', select: 'name code' },
+          { path: 'wardId', select: 'name wardNumber' },
+          { path: 'bedId', select: 'bedNumber roomNumber' }
+        ]
+      })
       .populate('bill_id')
+      .populate('bill_ids')
       .populate('sale_id')
       .populate('prescription_id');
 
@@ -1492,361 +1125,41 @@ exports.getInvoiceById = async (req, res) => {
 // It also handles deferred payments and advance consumption.
 exports.updateInvoicePayment = async (req, res) => {
   try {
-    const { amount, method, reference, collected_by } = req.body;
-    const invoiceId = req.params.id;
-    // Validate input
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ error: 'Invalid payment amount' });
-    }
+    const { amount, method, reference } = req.body;
+    const { recordPharmacyOutstandingPayment } = require('../services/pharmacyTransaction.service');
 
-    const invoice = await Invoice.findOne(invoiceScope(req, { _id: invoiceId }));
-    if (!invoice) {
-      return res.status(404).json({ error: 'Invoice not found' });
-    }
+    // Compatibility route only. Non-Pharmacy invoices must use the encounter
+    // settlement APIs; Pharmacy outstanding collection is delegated to one
+    // transactional service instead of mutating Invoice/Sale/Bill independently.
+    const result = await recordPharmacyOutstandingPayment({
+      invoiceId: req.params.id,
+      amount,
+      paymentMethod: method,
+      reference,
+      notes: req.body.notes,
+      idempotencyKey: req.body.idempotencyKey || req.get?.('Idempotency-Key')
+    }, req);
 
-    // Pharmacy may keep an issued sub-ledger Invoice while collection is
-    // explicitly transferred to IPD Finance. Resolve the linked Sale before
-    // mutating any document and hard-stop this generic legacy payment endpoint
-    // when IPD owns collection. This closes the double-collection path where a
-    // Pharmacy cashier could otherwise settle the sub-ledger invoice and the
-    // same medicines would still appear on the final IPD invoice.
-    let linkedSale = null;
-    if (invoice.sale_id) {
-      linkedSale = await Sale.findById(invoice.sale_id);
-    }
-    if (!linkedSale && invoice.prescription_id) {
-      linkedSale = await Sale.findOne({ prescription_id: invoice.prescription_id });
-    }
-    if (!linkedSale && invoice.bill_id) {
-      const linkedBill = await Bill.findById(invoice.bill_id);
-      if (linkedBill) linkedSale = await Sale.findOne({ bill_id: linkedBill._id });
-    }
-    const collectionOwnedByIpd =
-      invoice.collection_owner === 'IPD' ||
-      invoice.collection_mode === 'IPD_CONSOLIDATED' ||
-      invoice.collection_transferred_to_ipd === true ||
-      linkedSale?.billing_owner === 'IPD' ||
-      linkedSale?.collection_mode === 'IPD_CONSOLIDATED';
-    if (collectionOwnedByIpd) {
-      return res.status(409).json({
-        error: 'This Pharmacy document is settled through IPD Billing. Counter payment is blocked.',
-        code: 'PHARMACY_COLLECTION_OWNED_BY_IPD',
-        collectionOwner: 'IPD'
-      });
-    }
-
-    // Check if payment amount exceeds balance due
-    if (amount > invoice.balance_due) {
-      return res.status(400).json({
-        error: `Payment amount (${amount}) exceeds balance due (${invoice.balance_due})`
-      });
-    }
-
-    const isAdvancePayment = ['IPDAdvance', 'PharmacyAdvance'].includes(method);
-    const isCashPayment = ['Cash', 'UPI', 'Card', 'Bank Transfer'].includes(method);
-
-    // ========== 1. UPDATE INVOICE ==========
-    invoice.payment_history = invoice.payment_history || [];
-
-    // ========== FIX: Convert collected_by to ObjectId if it's a valid ObjectId, otherwise store as string ==========
-    // Check if collected_by is a valid ObjectId string (24 hex characters)
-    const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(collected_by);
-    const collectedById = isValidObjectId ? collected_by : null;
-    const collectedByName = !isValidObjectId ? (collected_by || req.user?.name || 'Pharmacy Staff') : 'Pharmacy Staff';
-
-    // If collected_by is an email or name, try to find the user
-    let collectedByObjectId = null;
-    if (collected_by && !isValidObjectId) {
-      try {
-        // Try to find user by email or name
-        const User = require('../models/User');
-        let user = await User.findOne({
-          $or: [
-            { email: collected_by },
-            { username: collected_by },
-            {
-              $and: [
-                { first_name: collected_by.split(' ')[0] },
-                { last_name: collected_by.split(' ').slice(1).join(' ') || '' }
-              ]
-            }
-          ]
-        });
-        if (user) {
-          collectedByObjectId = user._id;
-        }
-      } catch (userErr) {
-        console.log('Could not find user by name/email, storing as string');
-      }
-    } else if (isValidObjectId) {
-      collectedByObjectId = collected_by;
-    }
-
-    // If we have an ObjectId, use it; otherwise store as string in a separate field
-    // or use the user ID from request
-    const finalCollectedBy = collectedByObjectId || req.user?._id || req.user?.id || null;
-    const finalCollectedByName = collectedByName || req.user?.name || 'Pharmacy Staff';
-
-    invoice.payment_history.push({
-      amount: amount,
-      method: method,
-      reference: reference || '',
-      // Store the ObjectId if available, otherwise the name will be stored as a fallback
-      // If your schema expects ObjectId, we need to ensure we only pass ObjectId
-      collected_by: finalCollectedBy || finalCollectedByName, // Use ObjectId if available, otherwise string
-      collected_by_name: finalCollectedByName, // Always store name as separate field if schema has it
-      date: operationNow(),
-      status: 'Completed'
-    });
-
-    invoice.amount_paid = (invoice.amount_paid || 0) + amount;
-    invoice.balance_due = Math.max(0, invoice.total - invoice.amount_paid);
-
-    if (invoice.balance_due <= 0) {
-      invoice.status = 'Paid';
-    } else if (invoice.amount_paid > 0) {
-      invoice.status = 'Partial';
-    } else {
-      invoice.status = 'Pending';
-    }
-
-    await invoice.save();
-    console.log(`✅ Invoice ${invoice.invoice_number} updated. Balance due: ${invoice.balance_due}`);
-
-    // ========== 2. UPDATE ASSOCIATED SALE ==========
-    let sale = linkedSale;
-    if (!sale && invoice.sale_id) {
-      sale = await Sale.findById(invoice.sale_id);
-    }
-
-    if (!sale && invoice.prescription_id) {
-      sale = await Sale.findOne({ prescription_id: invoice.prescription_id });
-    }
-
-    if (!sale && invoice.bill_id) {
-      const bill = await Bill.findById(invoice.bill_id);
-      if (bill) {
-        sale = await Sale.findOne({ bill_id: bill._id });
-      }
-    }
-
-    if (sale) {
-      console.log(`Updating associated sale: ${sale.sale_number}`);
-
-      // Update sale payment
-      sale.amount_paid = (sale.amount_paid || 0) + amount;
-      sale.balance_due = Math.max(0, (sale.balance_due || 0) - amount);
-
-      // If this is a deferred payment, clear the deferred flag
-      if (sale.payment_deferred === true) {
-        if (sale.balance_due <= 0) {
-          sale.payment_deferred = false;
-          sale.status = 'Completed';
-          sale.settled_at = operationNow();
-        } else {
-          sale.status = 'Partially Paid';
-        }
-      } else {
-        sale.status = sale.balance_due <= 0 ? 'Completed' : 'Partially Paid';
-      }
-
-      // Add payment to sale
-      sale.payments = sale.payments || [];
-      sale.payments.push({
-        method: method,
-        amount: amount,
-        reference: reference || '',
-        date: operationNow(),
-        collected_by: finalCollectedByName || 'Pharmacy Staff'
-      });
-
-      await sale.save();
-      console.log(`✅ Sale ${sale.sale_number} updated. Balance due: ${sale.balance_due}`);
-    }
-
-    // ========== 3. UPDATE ASSOCIATED BILL ==========
-    let bill = null;
-    if (invoice.bill_id) {
-      bill = await Bill.findById(invoice.bill_id);
-    }
-
-    if (!bill && invoice.sale_id) {
-      bill = await Bill.findOne({ sale_id: invoice.sale_id });
-    }
-
-    if (bill) {
-      console.log(`Updating associated bill: ${bill._id}`);
-
-      // Update bill payment
-      bill.paid_amount = (bill.paid_amount || 0) + amount;
-      bill.balance_due = Math.max(0, (bill.total_amount || 0) - bill.paid_amount);
-
-      // Add payment to bill
-      bill.payments = bill.payments || [];
-      bill.payments.push({
-        method: method,
-        amount: amount,
-        reference: reference || '',
-        date: operationNow(),
-        collected_by: finalCollectedByName || 'Pharmacy Staff'
-      });
-
-      // Update bill status
-      if (bill.balance_due <= 0) {
-        bill.status = 'Paid';
-        bill.paid_at = operationNow();
-      } else if (bill.paid_amount > 0) {
-        bill.status = 'Partially Paid';
-      } else {
-        bill.status = 'Pending';
-      }
-
-      await bill.save();
-      console.log(`✅ Bill updated. Balance due: ${bill.balance_due}`);
-    }
-
-    // ========== 4. UPDATE PATIENT BALANCE ==========
-    let patientId = invoice.patient_id || sale?.patient_id;
-    let admissionId = sale?.admission_id || invoice.admission_id;
-    if (patientId) {
-      // Update patient pharmacy outstanding balance
-      const updateAmount = isAdvancePayment ? 0 : -amount;
-
-      await Patient.findByIdAndUpdate(patientId, {
-        $inc: {
-          pharmacy_outstanding_balance: updateAmount,
-          ...(isAdvancePayment ? { pharmacy_advance_balance: -amount } : {})
-        },
-        last_pharmacy_transaction: operationNow()
-      });
-      console.log(`✅ Patient ${patientId} balance updated`);
-    }
-
-    // ========== 5. CREATE PHARMACY LEDGER ENTRY ==========
-    try {
-      const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
-
-      // Determine the direction based on payment method
-      const direction = isAdvancePayment ? 'NON_CASH' : 'IN';
-
-      await PharmacyLedgerEntry.create({
-        hospitalId: invoice.hospital_id || req.user?.hospital_id,
-        pharmacyId: invoice.pharmacy_id,
-        entryType: isAdvancePayment ? 'ADVANCE_USED' : 'OUTSTANDING_PAYMENT',
-        direction: direction,
-        amount: amount,
-        paymentMethod: method,
-        patientId: patientId,
-        admissionId: admissionId,
-        saleId: sale?._id,
-        invoiceId: invoice._id,
-        billId: bill?._id,
-        notes: `Payment collected for invoice ${invoice.invoice_number}. Reference: ${reference || 'N/A'}`,
-        createdBy: finalCollectedBy || req.user?._id || req.user?.id || 'System'
-      });
-      console.log(`✅ Pharmacy ledger entry created`);
-    } catch (ledgerError) {
-      console.error('Error creating pharmacy ledger entry:', ledgerError);
-      // Don't fail the whole operation if ledger creation fails
-    }
-
-    // ========== 6. CONSUME ADVANCE PAYMENT ==========
-    if (isAdvancePayment && sale) {
-      try {
-        const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
-        const walletType = method === 'PharmacyAdvance' ? 'PHARMACY_IPD' : 'IPD_SHARED';
-
-        // Get current balance
-        const currentBalance = await PatientAdvanceLedger.findOne({
-          patientId: sale.patient_id || invoice.patient_id,
-          admissionId: sale.admission_id,
-          walletType: walletType
-        }).sort({ createdAt: -1 });
-
-        const currentAmount = currentBalance?.balanceAfter || 0;
-        const balanceAfter = currentAmount - amount;
-
-        // Create advance ledger entry
-        await PatientAdvanceLedger.create({
-          hospitalId: invoice.hospital_id || req.user?.hospital_id,
-          patientId: sale.patient_id || invoice.patient_id,
-          admissionId: sale.admission_id,
-          walletType: walletType,
-          transactionType: 'PHARMACY_SALE_DEBIT',
-          direction: 'DEBIT',
-          amount: amount,
-          paymentMethod: method,
-          referenceNumber: reference || invoice.invoice_number,
-          sourceModule: 'Pharmacy',
-          sourceId: sale._id,
-          balanceAfter: Math.max(0, balanceAfter),
-          notes: `Payment for ${sale.sale_number || invoice.invoice_number}`,
-          createdBy: finalCollectedBy || req.user?._id
-        });
-        console.log(`✅ Advance ledger entry created for ${method}`);
-      } catch (advanceError) {
-        console.error('Error creating advance ledger entry:', advanceError);
-      }
-    }
-
-    // ========== 7. UPDATE IPD CHARGE ==========
-    if (sale && sale.admission_id && sale.patient_id) {
-      try {
-        const IPDCharge = require('../models/IPDCharge');
-        const ipdCharge = await IPDCharge.findOne({
-          admissionId: sale.admission_id,
-          sourceId: sale._id,
-          sourceModule: 'Pharmacy'
-        });
-
-        if (ipdCharge && !ipdCharge.isBilled && sale.balance_due <= 0) {
-          ipdCharge.isBilled = true;
-          ipdCharge.billedAt = operationNow();
-          await ipdCharge.save();
-          console.log(`✅ IPD charge marked as billed`);
-        }
-      } catch (chargeError) {
-        console.error('Error updating IPD charge:', chargeError);
-      }
-    }
-
-    // ========== 8. UPDATE OUTSTANDING BALANCE FOR DEFERRED PAYMENTS ==========
-    if (sale && sale.payment_deferred === false && sale.balance_due <= 0) {
-      // If sale was deferred and is now fully paid, update patient outstanding
-      if (patientId) {
-        await Patient.findByIdAndUpdate(patientId, {
-          $inc: { pharmacy_outstanding_balance: 0 }, // Already handled above
-          last_pharmacy_transaction: operationNow()
-        });
-      }
-    }
-
-    // ========== 9. FETCH UPDATED INVOICE ==========
-    const updatedInvoice = await Invoice.findById(invoice._id)
-      .populate('patient_id', 'first_name last_name patientId uhid phone')
-      .populate('prescription_id', 'prescription_number')
-      .populate('bill_id', 'bill_number total_amount paid_amount balance_due');
-
-    res.json({
+    return res.json({
       success: true,
-      message: 'Payment updated successfully',
-      invoice: updatedInvoice,
-      saleUpdated: !!sale,
-      billUpdated: !!bill,
-      newBalanceDue: invoice.balance_due,
-      status: invoice.status
+      message: result.alreadyExists ? 'Payment already recorded' : 'Payment recorded successfully',
+      receiptNumber: result.receiptNumber,
+      transaction: result.transaction,
+      invoice: result.invoice,
+      bill: result.bill,
+      sale: result.sale,
+      balance_due: result.balanceAfter,
+      alreadyExists: result.alreadyExists
     });
-
   } catch (err) {
     console.error('Error updating invoice payment:', err);
-    res.status(400).json({
+    return res.status(err.statusCode || 500).json({
       error: err.message,
-      details: err.stack
+      code: err.code
     });
   }
 };
 
-// Get invoices by type
 exports.getInvoicesByType = async (req, res) => {
   try {
     const { type } = req.params;
