@@ -384,6 +384,10 @@ const billSchema = new mongoose.Schema({
   },
   patient_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   admission_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Immutable encounter context used when an OPD Desk checkout is not backed by
+  // an Appointment document (for example direct lab/radiology/procedure billing).
+  // Keeps doctor/department labels available to invoices and receipts.
+  encounter_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   hospital_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   print_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   idempotency_key: { type: String, trim: true },

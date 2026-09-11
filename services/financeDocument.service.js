@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const Invoice = require('../models/Invoice');
 const Bill = require('../models/Bill');
 const FinancialTransaction = require('../models/FinancialTransaction');
+const Doctor = require('../models/Doctor');
+const Department = require('../models/Department');
 const {
   canonicalInvoiceLines,
   invoiceLineTotals,
@@ -11,6 +13,61 @@ const {
   money,
   idOf
 } = require('./financeInvariant.service');
+
+
+async function resolveEncounterSnapshot(invoice, hospitalId) {
+  if (!invoice) return null;
+
+  const snapshot = { ...(invoice.encounter_snapshot || invoice.encounterSnapshot || {}) };
+  const lines = Array.isArray(invoice.service_items) ? invoice.service_items : [];
+  const sourceSnapshots = lines.map((line) => line?.source_snapshot || line?.sourceSnapshot || {}).filter(Boolean);
+  const policyContexts = sourceSnapshots
+    .map((source) => source?.financialPolicy?.context || source?.financial_policy?.context || null)
+    .filter(Boolean);
+
+  const firstSourceEncounter = sourceSnapshots.find((source) => source?.encounterSnapshot || source?.encounter_snapshot);
+  const sourceEncounter = firstSourceEncounter?.encounterSnapshot || firstSourceEncounter?.encounter_snapshot || {};
+  const firstPolicyContext = policyContexts[0] || {};
+
+  const doctorId = snapshot.doctorId || snapshot.doctor_id || sourceEncounter.doctorId || sourceEncounter.doctor_id || null;
+  const departmentId = snapshot.departmentId || snapshot.department_id || sourceEncounter.departmentId || sourceEncounter.department_id || firstPolicyContext.departmentId || firstPolicyContext.department_id || null;
+
+  let doctorName = snapshot.doctorName || snapshot.doctor_name || sourceEncounter.doctorName || sourceEncounter.doctor_name || '';
+  let departmentName = snapshot.departmentName || snapshot.department_name || sourceEncounter.departmentName || sourceEncounter.department_name || '';
+  let departmentCode = snapshot.departmentCode || snapshot.department_code || sourceEncounter.departmentCode || sourceEncounter.department_code || '';
+
+  if (!doctorName && doctorId && mongoose.Types.ObjectId.isValid(doctorId)) {
+    const doctor = await Doctor.findOne({ _id: doctorId, hospitalId, is_deleted: { $ne: true } })
+      .select('firstName lastName name')
+      .lean();
+    if (doctor) {
+      const rawName = doctor.name || [doctor.firstName, doctor.lastName].filter(Boolean).join(' ');
+      doctorName = rawName ? (String(rawName).trim().toLowerCase().startsWith('dr') ? String(rawName).trim() : `Dr. ${String(rawName).trim()}`) : '';
+    }
+  }
+
+  if ((!departmentName || !departmentCode) && departmentId && mongoose.Types.ObjectId.isValid(departmentId)) {
+    const department = await Department.findOne({ _id: departmentId, hospitalId, is_deleted: { $ne: true } })
+      .select('name code')
+      .lean();
+    if (department) {
+      departmentName = departmentName || department.name || '';
+      departmentCode = departmentCode || department.code || '';
+    }
+  }
+
+  if (!Object.keys(snapshot).length && !doctorId && !departmentId && !doctorName && !departmentName) return null;
+
+  return {
+    ...snapshot,
+    encounterType: snapshot.encounterType || snapshot.encounter_type || firstPolicyContext.encounterType || 'OPD',
+    doctorId: doctorId || undefined,
+    doctorName: doctorName || undefined,
+    departmentId: departmentId || undefined,
+    departmentName: departmentName || undefined,
+    departmentCode: departmentCode || undefined
+  };
+}
 
 async function invoicePrintEnvelope({ invoiceId, hospitalId }) {
   const invoice = await Invoice.findOne({ _id: invoiceId, hospital_id: hospitalId, is_deleted: { $ne: true } })
@@ -38,6 +95,8 @@ async function invoicePrintEnvelope({ invoiceId, hospitalId }) {
   if (!invoice) return null;
   const lines = canonicalInvoiceLines(invoice);
   const lineTotals = invoiceLineTotals(invoice);
+  const encounterSnapshot = await resolveEncounterSnapshot(invoice, hospitalId);
+  if (encounterSnapshot) invoice.encounter_snapshot = encounterSnapshot;
   const transactions = await FinancialTransaction.find({
     hospitalId,
     patientId: invoice.patient_id?._id || invoice.patient_id,
@@ -56,6 +115,7 @@ async function invoicePrintEnvelope({ invoiceId, hospitalId }) {
     patient: invoice.patient_id,
     appointment: invoice.appointment_id || null,
     admission: invoice.admission_id || null,
+    encounterSnapshot: encounterSnapshot || null,
     lines,
     amounts: {
       gross: Number(invoice.gross_amount ?? invoice.subtotal ?? 0),
@@ -98,7 +158,7 @@ async function transactionPrintEnvelope({ transactionIdOrNumber, hospitalId }) {
     .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone dob dobPrecision ageEntrySource enteredAgeYears enteredAgeMonths enteredAgeDays ageAsOf age gender address city state zipCode village district tehsil emergency_contact emergency_phone emergency_relationship')
     .populate({
       path: 'invoiceId',
-      select: 'invoice_number invoice_type total amount_paid balance_due status patient_snapshot hospital_snapshot admission_snapshot appointment_id admission_id doctor_id doctorName doctor_name',
+      select: 'invoice_number invoice_type total amount_paid balance_due status patient_snapshot hospital_snapshot admission_snapshot encounter_snapshot appointment_id admission_id doctor_id doctorName doctor_name settlement_discount_amount line_discount_total bill_discount_total discount gross_amount subtotal tax rounding_adjustment service_items',
       populate: [
         {
           path: 'appointment_id',
@@ -135,6 +195,11 @@ async function transactionPrintEnvelope({ transactionIdOrNumber, hospitalId }) {
     .lean();
 
   if (!transaction) return null;
+
+  const encounterSnapshot = transaction.invoiceId
+    ? await resolveEncounterSnapshot(transaction.invoiceId, hospitalId)
+    : null;
+  if (encounterSnapshot && transaction.invoiceId) transaction.invoiceId.encounter_snapshot = encounterSnapshot;
 
   const allocationRows = [];
   const invoiceAllocationIds = (transaction.documentAllocations || []).filter((row) => row.documentType === 'Invoice').map((row) => row.documentId).filter(Boolean);
@@ -173,6 +238,7 @@ async function transactionPrintEnvelope({ transactionIdOrNumber, hospitalId }) {
     invoice: transaction.invoiceId || null,
     bill: transaction.billId || null,
     admission: transaction.admissionId || null,
+    encounterSnapshot: encounterSnapshot || null,
     adjustmentDocument,
     allocations: allocationRows,
     amounts: {

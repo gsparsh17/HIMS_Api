@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const Doctor = require('../models/Doctor');
+const Department = require('../models/Department');
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDCharge = require('../models/IPDCharge');
 const DeskCheckout = require('../models/DeskCheckout');
@@ -158,11 +159,28 @@ function normalizeCart(cart, encounterType) {
       throw checkoutError(`Invalid billing intent on row ${index + 1}`);
     }
 
+    const discountType = String(row.discountType || row.discount_type || 'percentage').toLowerCase() === 'fixed'
+      ? 'fixed'
+      : 'percentage';
+    const rawDiscountValue = discountType === 'fixed'
+      ? (row.discountAmount ?? row.discount_amount ?? row.discountValue ?? row.discount_value)
+      : (row.discountRate ?? row.discount_rate ?? row.discountValue ?? row.discount_value);
+    const normalizedDiscountValue = rawDiscountValue === '' || rawDiscountValue === null || rawDiscountValue === undefined
+      ? undefined
+      : Math.max(0, Number(rawDiscountValue || 0));
+
     return {
       ...row,
       quantity,
       rate,
       billingIntent: intent,
+      discountType,
+      // Keep the UI-friendly alias and canonical amount/rate fields in sync.
+      // This prevents a fixed-value Desk discount from reaching policy
+      // evaluation with only its type/reason while losing the numeric value.
+      discountValue: normalizedDiscountValue,
+      discountAmount: discountType === 'fixed' ? normalizedDiscountValue : undefined,
+      discountRate: discountType === 'percentage' ? normalizedDiscountValue : undefined,
       gross: round(quantity * rate)
     };
   });
@@ -242,7 +260,7 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
         const basePatientLiability = round(snapAmounts.patientLiability ?? canonicalCharge.patientLiability ?? contractedAmount);
         const baseSponsorLiability = round(snapAmounts.sponsorLiability ?? canonicalCharge.sponsorLiability ?? 0);
         const alreadyInvoiced = Boolean(canonicalCharge.isBilled || canonicalCharge.status === 'INVOICED' || canonicalCharge.invoiceId || canonicalCharge.billId);
-        const explicitAdjustment = [rowDiscountRate, rowDiscountAmount, rowDiscountValue, row.taxRate]
+        const explicitAdjustment = [row.discountRate, row.discountAmount, row.discountValue, row.taxRate]
           .some((value) => value !== undefined && value !== null && value !== '' && Number(value) !== 0)
           || Boolean(row.taxMode && row.taxMode !== 'exempt');
 
@@ -702,6 +720,36 @@ function normalizeEncounterContext(context = {}) {
     appointmentId: idOf(context.appointmentId || context.appointment_id),
     doctorId: idOf(context.doctorId || context.doctor_id || context.primaryDoctorId),
     departmentId: idOf(context.departmentId || context.department_id)
+  };
+}
+
+async function resolveDeskEncounterSnapshot({ hospitalId, context = {} }) {
+  const normalized = normalizeEncounterContext(context);
+  const [doctor, department] = await Promise.all([
+    normalized.doctorId
+      ? Doctor.findOne({ _id: normalized.doctorId, hospitalId, is_deleted: { $ne: true } })
+          .select('_id firstName lastName specialization department')
+          .lean()
+      : null,
+    normalized.departmentId
+      ? Department.findOne({ _id: normalized.departmentId, hospitalId, is_deleted: { $ne: true } })
+          .select('_id name code')
+          .lean()
+      : null
+  ]);
+
+  const doctorName = doctor
+    ? [doctor.firstName, doctor.lastName].filter(Boolean).join(' ').trim()
+    : '';
+
+  return {
+    encounterType: 'OPD',
+    appointmentId: normalized.appointmentId || null,
+    doctorId: doctor?._id || normalized.doctorId || null,
+    doctorName: doctorName ? `Dr. ${doctorName.replace(/^Dr\.?\s*/i, '')}` : '',
+    departmentId: department?._id || normalized.departmentId || doctor?.department || null,
+    departmentName: department?.name || '',
+    departmentCode: department?.code || ''
   };
 }
 
@@ -1388,6 +1436,10 @@ async function commitDeskCheckout(payload, user) {
       financialEncounterContext.doctorId = financialEncounterContext.doctorId || idOf(linkedAppointment.doctor_id);
       financialEncounterContext.departmentId = financialEncounterContext.departmentId || idOf(linkedAppointment.department_id);
     }
+    const deskEncounterSnapshot = preview.encounterType === 'OPD'
+      ? await resolveDeskEncounterSnapshot({ hospitalId, context: financialEncounterContext })
+      : null;
+
     const billIds = [];
     const chargeIds = [];
     const invoiceIds = [];
@@ -1441,6 +1493,8 @@ async function commitDeskCheckout(payload, user) {
           taxRate: row.requestedAdjustments?.taxRate,
           overrideReason: row.overrideReason,
           departmentId: financialEncounterContext.departmentId,
+          doctorId: financialEncounterContext.doctorId,
+          encounterSnapshot: deskEncounterSnapshot,
           appointmentId: financialEncounterContext.appointmentId || undefined,
           sourceModule: row.sourceModule,
           sourceId,
@@ -1576,6 +1630,7 @@ async function commitDeskCheckout(payload, user) {
     if (preview.encounterType === 'OPD' && billIds.length && payload.issueInvoice !== false && !hasDiscountPendingApproval) {
       const issued = await patientFinancial.issueOPDInvoice(patient._id, {
         billIds,
+        encounterSnapshot: deskEncounterSnapshot,
         idempotencyKey: `${idempotencyKey}:INVOICE`
       }, user);
 

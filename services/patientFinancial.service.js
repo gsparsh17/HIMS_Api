@@ -440,6 +440,15 @@ async function addOPDCharge(patientId, payload, user) {
       notes: payload.notes,
       idempotency_key: payload.idempotencyKey,
       patient_snapshot: patient.toObject ? patient.toObject() : patient,
+      encounter_snapshot: {
+        encounterType: 'OPD',
+        appointmentId: appointmentId || payload.encounterSnapshot?.appointmentId || null,
+        doctorId: payload.encounterSnapshot?.doctorId || payload.doctorId || null,
+        doctorName: payload.encounterSnapshot?.doctorName || '',
+        departmentId: payload.encounterSnapshot?.departmentId || payload.departmentId || null,
+        departmentName: payload.encounterSnapshot?.departmentName || '',
+        departmentCode: payload.encounterSnapshot?.departmentCode || ''
+      },
       hospital_snapshot: hospital || {},
       payer_allocation: {
         coverage_id: coverage?._id,
@@ -501,6 +510,12 @@ async function addOPDCharge(patientId, payload, user) {
           sourceLineKey: payload.sourceLineKey || undefined,
           taxExemptionReason: payload.taxExemptionReason || '',
           createdFrom: payload.createdFrom || 'OPDRevenueWorkspace',
+          encounterSnapshot: payload.encounterSnapshot || {
+            encounterType: 'OPD',
+            appointmentId: appointmentId || null,
+            doctorId: payload.doctorId || null,
+            departmentId: payload.departmentId || null
+          },
           pricingResultType: quote.resultType,
           fallbackReason: quote.fallbackReason,
           financialPolicy: policy.policySnapshot,
@@ -784,6 +799,10 @@ async function issueOPDInvoice(patientId, payload, user) {
     const invoiceNumber = await nextFinancialNumber({ documentType: 'INVOICE', hospitalId, session });
     const hospital = await Hospital.findById(hospitalId, null, sessionOptions(session)).lean();
     const now = operationNow();
+    const billEncounterSnapshot = bills
+      .map((bill) => bill.encounter_snapshot || bill.items?.find((item) => item?.source_snapshot?.encounterSnapshot)?.source_snapshot?.encounterSnapshot)
+      .find((snapshot) => snapshot && (snapshot.doctorId || snapshot.doctorName || snapshot.departmentId || snapshot.departmentName));
+    const encounterSnapshot = payload.encounterSnapshot || billEncounterSnapshot || {};
     const invoice = new Invoice({
       hospital_id: hospitalId,
       invoice_number: invoiceNumber,
@@ -824,6 +843,18 @@ async function issueOPDInvoice(patientId, payload, user) {
       idempotency_key: payload.idempotencyKey,
       created_by: user?._id,
       patient_snapshot: patient.toObject ? patient.toObject() : patient,
+      encounter_snapshot: {
+        encounterType: encounterSnapshot.encounterType || 'OPD',
+        appointmentId: encounterSnapshot.appointmentId || (() => {
+          const linkedAppointmentId = [...encounterKeys][0];
+          return linkedAppointmentId && linkedAppointmentId !== 'CASH' ? linkedAppointmentId : null;
+        })(),
+        doctorId: encounterSnapshot.doctorId || null,
+        doctorName: encounterSnapshot.doctorName || '',
+        departmentId: encounterSnapshot.departmentId || null,
+        departmentName: encounterSnapshot.departmentName || '',
+        departmentCode: encounterSnapshot.departmentCode || ''
+      },
       hospital_snapshot: hospital || {},
       print_snapshot: {
         billNumbers: bills.map((bill) => bill.bill_number),
@@ -921,6 +952,13 @@ async function syncOPDInvoiceFromBills(invoiceId, hospitalId, session = null) {
   invoice.balance_due = amount(Math.max(0, total - paid - settlementDiscount - creditNotes));
   invoice.invoice_type = serviceItems.some((item) => item.service_type !== 'Consultation') ? 'Mixed' : 'Appointment';
   invoice.appointment_id = onlyEncounterKey && onlyEncounterKey !== 'CASH' ? onlyEncounterKey : undefined;
+  const existingEncounterSnapshot = invoice.encounter_snapshot?.toObject?.() || invoice.encounter_snapshot || {};
+  if (!(existingEncounterSnapshot.doctorId || existingEncounterSnapshot.doctorName || existingEncounterSnapshot.departmentId || existingEncounterSnapshot.departmentName)) {
+    const billEncounterSnapshot = bills
+      .map((bill) => bill.encounter_snapshot || bill.items?.find((item) => item?.source_snapshot?.encounterSnapshot)?.source_snapshot?.encounterSnapshot)
+      .find((snapshot) => snapshot && (snapshot.doctorId || snapshot.doctorName || snapshot.departmentId || snapshot.departmentName));
+    if (billEncounterSnapshot) invoice.encounter_snapshot = billEncounterSnapshot;
+  }
   const discountApprovalPending = bills.some(isDiscountApprovalPendingBill);
   invoice.status = invoice.balance_due <= 0 ? 'Paid' : paid > 0 ? 'Partial' : 'Pending';
   invoice.print_snapshot = {

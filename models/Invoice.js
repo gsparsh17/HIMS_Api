@@ -781,6 +781,9 @@ const invoiceSchema = new mongoose.Schema({
   },
   patient_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   admission_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Captures OPD encounter context for Desk service-only invoices where there
+  // is intentionally no Appointment record to populate at print time.
+  encounter_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   hospital_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
   print_snapshot: { type: mongoose.Schema.Types.Mixed, default: {} },
 
