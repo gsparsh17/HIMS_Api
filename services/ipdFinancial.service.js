@@ -9,6 +9,7 @@ const Bill = require('../models/Bill');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const FinancialTransaction = require('../models/FinancialTransaction');
 const ApprovalRequest = require('../models/ApprovalRequest');
+const ClaimCase = require('../models/ClaimCase');
 const DischargeSummary = require('../models/DischargeSummary');
 const Sale = require('../models/Sale');
 const { money, nextFinancialNumber } = require('../utils/financeNumbers');
@@ -290,13 +291,25 @@ async function financialPrintSnapshots(admission, session) {
       middleName: patient.middle_name,
       lastName: patient.last_name,
       dob: patient.dob,
+      dobPrecision: patient.dobPrecision,
+      ageEntrySource: patient.ageEntrySource,
+      enteredAgeYears: patient.enteredAgeYears,
+      enteredAgeMonths: patient.enteredAgeMonths,
+      enteredAgeDays: patient.enteredAgeDays,
+      ageAsOf: patient.ageAsOf,
       age: patient.age,
       gender: patient.gender,
       phone: patient.phone,
       address: patient.address,
       city: patient.city,
       state: patient.state,
-      guardianName: patient.guardianName || patient.father_name || patient.husband_name
+      zipCode: patient.zipCode,
+      village: patient.village,
+      district: patient.district,
+      tehsil: patient.tehsil,
+      emergency_contact: patient.emergency_contact,
+      emergency_phone: patient.emergency_phone,
+      emergency_relationship: patient.emergency_relationship
     } : { id: admission.patientId },
     admissionSnapshot: {
       id: admission._id,
@@ -304,7 +317,7 @@ async function financialPrintSnapshots(admission, session) {
       admissionDate: admission.admissionDate,
       dischargeDate: admission.dischargeDate,
       admissionType: admission.admissionType,
-      dischargeType: admission.dischargeType || admission.status,
+      dischargeType: admission.dischargeType,
       primaryDoctorId: admission.primaryDoctorId,
       wardId: admission.wardId,
       roomId: admission.roomId,
@@ -828,7 +841,7 @@ async function listBillingAdmissions(user, query = {}) {
   }
 
   const admissions = await IPDAdmission.find({ hospitalId, _id: { $in: ids } })
-    .populate('patientId', 'first_name last_name patientId phone age gender')
+    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone dob dobPrecision ageEntrySource enteredAgeYears enteredAgeMonths enteredAgeDays ageAsOf age gender address city state zipCode village district tehsil emergency_contact emergency_phone emergency_relationship')
     .populate('primaryDoctorId', 'firstName lastName specialization')
     .populate('departmentId', 'name')
     .populate('wardId', 'name wardName')
@@ -855,7 +868,7 @@ async function getRunningBill(admissionId, user, options = {}) {
     _id: admissionId,
     hospitalId: snapshot.admission.hospitalId
   })
-    .populate('patientId', 'first_name last_name patientId phone age gender')
+    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone dob dobPrecision ageEntrySource enteredAgeYears enteredAgeMonths enteredAgeDays ageAsOf age gender address city state zipCode village district tehsil emergency_contact emergency_phone emergency_relationship')
     .populate('primaryDoctorId', 'firstName lastName specialization')
     .populate('departmentId', 'name')
     .populate('wardId', 'name wardName')
@@ -922,7 +935,17 @@ async function getRunningBill(admissionId, user, options = {}) {
     return result;
   }, {});
 
-  const billedCharges = snapshot.ipdCharges.filter((charge) => charge.isBilled);
+  const reversedBilledCharges = await IPDCharge.find({
+    hospitalId: admission.hospitalId,
+    admissionId,
+    isBilled: true,
+    status: 'REVERSED',
+    ...(snapshot.includePharmacyInIpd ? {} : { sourceModule: { $ne: 'Pharmacy' } })
+  }).sort({ chargeDate: 1, createdAt: 1 }).lean();
+  const billedCharges = [
+    ...snapshot.ipdCharges.filter((charge) => charge.isBilled),
+    ...reversedBilledCharges
+  ].sort((a, b) => new Date(a.chargeDate || a.createdAt || 0) - new Date(b.chargeDate || b.createdAt || 0));
   const pharmacyMirrorCharges = snapshot.pharmacyMirrorCharges;
 
   return {
@@ -932,6 +955,9 @@ async function getRunningBill(admissionId, user, options = {}) {
       admissionNumber: admission.admissionNumber,
       shipNumber: admission.shipNumber,
       admissionDate: admission.admissionDate,
+      dischargeDate: admission.dischargeDate,
+      dischargeType: admission.dischargeType,
+      admissionType: admission.admissionType,
       status: admission.status,
       financialClearanceStatus: admission.financialClearanceStatus,
       chargeFreeze: admission.chargeFreeze || { status: 'open' },
@@ -993,8 +1019,9 @@ async function getRunningBill(admissionId, user, options = {}) {
     pharmacyMirrorCharges,
     pharmacyMirrorSummary: groupChargeSummary(pharmacyMirrorCharges),
     billedSummary: {
-      total: sumCharges(billedCharges),
-      count: billedCharges.length
+      total: sumCharges(billedCharges.filter((charge) => charge.status !== 'REVERSED')),
+      count: billedCharges.filter((charge) => charge.status !== 'REVERSED').length,
+      reversedCount: billedCharges.filter((charge) => charge.status === 'REVERSED').length
     },
     invoices: snapshot.ipdInvoices,
     pharmacyInvoices: snapshot.pharmacyInvoices,
@@ -1568,6 +1595,243 @@ async function overrideUnbilledChargeRate(admissionId, chargeId, payload = {}, u
     overrideReason: payload.reason ?? payload.overrideReason,
     notes: payload.notes
   }, user);
+}
+
+async function reverseInvoicedCharge(admissionId, chargeId, payload = {}, user) {
+  const reason = String(payload.reason || '').trim();
+  if (!reason) {
+    const error = new Error('Reversal reason is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const result = await runFinancialTransaction(async (session) => {
+    const admission = await findAdmission(admissionId, session, user);
+    const charge = await IPDCharge.findOne({
+      _id: chargeId,
+      hospitalId: admission.hospitalId,
+      admissionId
+    }, null, sessionOptions(session));
+
+    if (!charge) {
+      const error = new Error('Charge not found');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (charge.status === 'REVERSED' || charge.reversalCreditNoteId) {
+      const creditNote = charge.reversalCreditNoteId
+        ? await Invoice.findById(charge.reversalCreditNoteId, null, sessionOptions(session))
+        : null;
+      const invoice = charge.invoiceId
+        ? await Invoice.findById(charge.invoiceId, null, sessionOptions(session))
+        : null;
+      return { charge, invoice, creditNote, alreadyExists: true, draftClaimIds: [] };
+    }
+
+    if (!charge.isBilled || charge.status !== 'INVOICED' || !charge.invoiceId) {
+      const error = new Error('Only an invoiced charge can be reversed. Void an unbilled charge instead.');
+      error.statusCode = 409;
+      error.code = 'CHARGE_NOT_INVOICED';
+      throw error;
+    }
+
+    const invoice = await Invoice.findOne({
+      _id: charge.invoiceId,
+      hospital_id: admission.hospitalId,
+      admission_id: admission._id
+    }, null, sessionOptions(session));
+    if (!invoice || invoice.document_stage === 'VOID') {
+      const error = new Error('The issued invoice for this charge is not available for reversal');
+      error.statusCode = 409;
+      error.code = 'INVOICE_NOT_REVERSIBLE';
+      throw error;
+    }
+
+    const invoiceLine = (invoice.service_items || []).find((line) =>
+      String(line.charge_id || '') === String(charge._id)
+    );
+    if (!invoiceLine) {
+      const error = new Error('This charge could not be matched to its issued invoice line');
+      error.statusCode = 409;
+      error.code = 'INVOICE_LINE_NOT_FOUND';
+      throw error;
+    }
+
+    const patientAmount = money(
+      invoiceLine.net_amount ?? invoiceLine.total_price ?? charge.patientLiability ?? charge.netAmount ?? 0
+    );
+    const sponsorAmount = money(charge.sponsorLiability ?? charge.pricingSnapshot?.amounts?.sponsorLiability ?? 0);
+
+    const claimRows = sponsorAmount > 0
+      ? await ClaimCase.find({
+          hospitalId: admission.hospitalId,
+          admissionId: admission._id,
+          'lines.chargeId': charge._id,
+          status: { $nin: ['cancelled', 'closed'] }
+        }, null, sessionOptions(session)).select('_id status')
+      : [];
+    const lockedClaim = claimRows.find((claim) => !['draft', 'documents_pending', 'ready'].includes(String(claim.status || '')));
+    if (lockedClaim) {
+      const error = new Error('This sponsored charge is already part of a submitted/adjudicated claim. Correct or reopen the claim before reversing the charge.');
+      error.statusCode = 409;
+      error.code = 'CHARGE_IN_SUBMITTED_CLAIM';
+      error.details = { claimId: lockedClaim._id, status: lockedClaim.status };
+      throw error;
+    }
+
+    let creditResult = null;
+    if (patientAmount > 0) {
+      creditResult = await createCreditNoteInSession(invoice, {
+        amount: patientAmount,
+        reason: `Charge reversal — ${charge.description}: ${reason}`,
+        idempotencyKey: payload.idempotencyKey
+          ? `${payload.idempotencyKey}:credit-note`
+          : `ipd-charge-reversal:${charge._id}:credit-note`
+      }, user, session);
+    }
+
+    let sponsorCreditPosted = 0;
+    if (sponsorAmount > 0) {
+      const coverage = await activeCoverage(admission.hospitalId, admission._id, session);
+      const payerId = coverage?.payerId?._id || coverage?.payerId;
+      if (!coverage || !payerId) {
+        const error = new Error('Active sponsor coverage is required to reverse the sponsor liability for this charge');
+        error.statusCode = 409;
+        error.code = 'REVERSAL_COVERAGE_REQUIRED';
+        throw error;
+      }
+
+      // Some payer policies recognise receivable only at claim submission. Do
+      // not create an orphan credit before any receivable exists. If invoice
+      // issue already recognised the sponsor balance, reverse only the
+      // remaining recognised amount for this invoice/coverage.
+      const sponsorRows = await SponsorLedgerEntry.find({
+        hospitalId: admission.hospitalId,
+        admissionId: admission._id,
+        coverageId: coverage._id,
+        invoiceId: invoice._id
+      }, null, sessionOptions(session)).select('debit credit');
+      const recognisedOutstanding = money(Math.max(0, sponsorRows.reduce(
+        (sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0),
+        0
+      )));
+      sponsorCreditPosted = money(Math.min(sponsorAmount, recognisedOutstanding));
+
+      if (sponsorCreditPosted > 0) {
+        await claimService.appendLedger({
+          hospitalId: admission.hospitalId,
+          payerId,
+          encounterType: 'IPD',
+          admissionId: admission._id,
+          patientId: admission.patientId,
+          coverageId: coverage._id,
+          invoiceId: invoice._id,
+          chargeId: charge._id,
+          entryType: 'credit_adjustment',
+          credit: sponsorCreditPosted,
+          reference: invoice.invoice_number,
+          reason: `Invoiced charge reversal: ${reason}`,
+          sourceType: 'reversal',
+          sourceId: charge._id,
+          idempotencyKey: payload.idempotencyKey
+            ? `${payload.idempotencyKey}:sponsor-credit`
+            : `ipd-charge-reversal:${charge._id}:sponsor-credit`,
+          createdBy: user?._id,
+          session
+        });
+      }
+    }
+
+    await reverseCoverageUtilization({
+      hospitalId: admission.hospitalId,
+      sourceType: 'IPDCharge',
+      sourceId: charge._id,
+      userId: user?._id,
+      reason,
+      session
+    });
+    await reversePackageUtilization({
+      hospitalId: admission.hospitalId,
+      sourceType: 'IPDCharge',
+      sourceId: charge._id,
+      userId: user?._id,
+      reason,
+      session
+    });
+
+    charge.status = 'REVERSED';
+    charge.reversedAt = operationNow();
+    charge.reversedBy = user?._id;
+    charge.reversalReason = reason;
+    charge.reversalCreditNoteId = creditResult?.creditNote?._id;
+    charge.reversalAmount = patientAmount;
+    charge.reversalSponsorAmount = sponsorAmount;
+    await charge.save(sessionOptions(session));
+
+    if (!['Discharged', 'Cancelled'].includes(String(admission.status || '')) &&
+        ['cleared', 'exception_approved'].includes(String(admission.financialClearanceStatus || ''))) {
+      admission.financialClearanceStatus = 'in_progress';
+      admission.financialClearedAt = undefined;
+      admission.financialClearedBy = undefined;
+      await admission.save(sessionOptions(session));
+    }
+
+    return {
+      charge,
+      invoice,
+      creditNote: creditResult?.creditNote || null,
+      sponsorCreditPosted,
+      alreadyExists: false,
+      draftClaimIds: claimRows.map((claim) => claim._id)
+    };
+  });
+
+  const claimRefreshFailures = [];
+  for (const claimId of result.draftClaimIds || []) {
+    try {
+      await claimService.refreshClaim({
+        hospitalId: result.charge.hospitalId,
+        claimId,
+        user
+      });
+    } catch (error) {
+      claimRefreshFailures.push({ claimId, message: error.message });
+    }
+  }
+
+  const snapshot = await calculateAdmissionFinancials(admissionId, { user });
+  const originalInvoice = await Invoice.findById(result.invoice?._id || result.charge.invoiceId);
+  const patientBase = originalInvoice?.payer_allocation?.coverage_id
+    ? money(originalInvoice?.payer_allocation?.patient_liability || 0)
+    : money(originalInvoice?.total || 0);
+  const effectiveLiability = money(Math.max(
+    0,
+    patientBase -
+      Number(originalInvoice?.settlement_discount_amount || 0) -
+      Number(originalInvoice?.credit_note_total || 0)
+  ));
+  const effectiveCollected = money(Math.max(
+    0,
+    Number(originalInvoice?.amount_paid || 0) - Number(originalInvoice?.refunded_amount || 0)
+  ));
+  const overpaymentAmount = money(Math.max(0, effectiveCollected - effectiveLiability));
+
+  return {
+    charge: result.charge,
+    invoice: originalInvoice || result.invoice,
+    creditNote: result.creditNote,
+    sponsorCreditPosted: result.sponsorCreditPosted || 0,
+    alreadyExists: result.alreadyExists,
+    overpaymentAmount,
+    refundRecommended: overpaymentAmount > 0,
+    claimRefreshFailures,
+    summary: {
+      patientReceivable: snapshot.patientReceivable,
+      sponsorReceivable: snapshot.sponsorReceivable,
+      unbilledTotal: snapshot.unbilledTotal
+    }
+  };
 }
 
 async function generateBedCharge(admissionId, payload, user) {
@@ -2162,7 +2426,7 @@ async function syncIPDClinicalFinancialClearance(admissionId, user) {
       admissionId,
       sourceModule: { $in: ['LabRequest', 'RadiologyRequest', 'ProcedureRequest', 'OTRequest'] },
       sourceId: { $ne: null },
-      status: { $nin: ['VOIDED', 'CANCELLED'] }
+      status: { $nin: ['VOIDED', 'CANCELLED', 'REVERSED'] }
     }).select('sourceModule sourceId').lean();
     if (!sourceRows.length) return;
     const { getSourceFinancialStatus } = require('./chargePosting.service');
@@ -3820,6 +4084,7 @@ module.exports = {
   generateBedCharge,
   applyDiscount,
   voidCharge,
+  reverseInvoicedCharge,
   previewIPDInvoice,
   issueIPDInvoice,
   recordIPDPayment,

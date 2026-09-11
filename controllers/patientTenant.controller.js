@@ -545,7 +545,7 @@ exports.updatePatient = async (req, res) => {
       'salutation', 'first_name', 'middle_name', 'last_name', 'patient_image',
       'email', 'phone', 'dob', 'gender', 'blood_group', 'patient_type',
       'address', 'city', 'state', 'zipCode', 'village', 'district', 'tehsil',
-      'emergency_contact', 'emergency_phone', 'medical_history', 'allergies',
+      'emergency_contact', 'emergency_phone', 'emergency_relationship', 'medical_history', 'allergies',
       'medications', 'sponsor_type', 'sponsor_name', 'sponsor_policy_number',
       'sponsor_valid_until', 'insurance_provider_id',
       'insurance_coverage_percentage', 'paymentPreference', 'identityDocuments'

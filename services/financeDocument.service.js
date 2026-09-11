@@ -95,7 +95,7 @@ async function transactionPrintEnvelope({ transactionIdOrNumber, hospitalId }) {
     status: { $in: ['POSTED', 'REVERSED'] },
     ...selector
   })
-    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone dob gender')
+    .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone dob dobPrecision ageEntrySource enteredAgeYears enteredAgeMonths enteredAgeDays ageAsOf age gender address city state zipCode village district tehsil emergency_contact emergency_phone emergency_relationship')
     .populate({
       path: 'invoiceId',
       select: 'invoice_number invoice_type total amount_paid balance_due status patient_snapshot hospital_snapshot admission_snapshot appointment_id admission_id doctor_id doctorName doctor_name',
@@ -110,7 +110,7 @@ async function transactionPrintEnvelope({ transactionIdOrNumber, hospitalId }) {
         },
         {
           path: 'admission_id',
-          select: 'admissionNumber admissionDate status wardId bedId roomId primaryDoctorId departmentId',
+          select: 'admissionNumber admissionDate dischargeDate dischargeType admissionType status wardId bedId roomId primaryDoctorId departmentId',
           populate: [
             { path: 'primaryDoctorId', select: 'firstName lastName specialization' },
             { path: 'departmentId', select: 'name code' },
@@ -123,7 +123,7 @@ async function transactionPrintEnvelope({ transactionIdOrNumber, hospitalId }) {
     .populate('billId', 'bill_number total_amount paid_amount balance_due status')
     .populate({
       path: 'admissionId',
-      select: 'admissionNumber admissionDate status wardId bedId roomId primaryDoctorId departmentId',
+      select: 'admissionNumber admissionDate dischargeDate dischargeType admissionType status wardId bedId roomId primaryDoctorId departmentId',
       populate: [
         { path: 'primaryDoctorId', select: 'firstName lastName specialization' },
         { path: 'departmentId', select: 'name code' },

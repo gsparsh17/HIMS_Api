@@ -223,6 +223,24 @@ exports.voidIPDCharge = async (req, res) => {
   } catch (error) { sendError(res, error); }
 };
 
+exports.reverseInvoicedIPDCharge = async (req, res) => {
+  try {
+    const result = await financial.reverseInvoicedCharge(
+      req.params.admissionId,
+      req.params.chargeId,
+      req.body,
+      req.user
+    );
+    res.status(result.alreadyExists ? 200 : 201).json({
+      success: true,
+      message: result.alreadyExists
+        ? 'Charge reversal already exists'
+        : 'Invoiced charge reversed successfully',
+      ...result
+    });
+  } catch (error) { sendError(res, error); }
+};
+
 exports.generateBedCharge = async (req, res) => {
   try {
     const result = await financial.generateBedCharge(req.params.admissionId, req.body, req.user);

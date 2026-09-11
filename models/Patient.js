@@ -94,6 +94,12 @@ const patientSchema = new mongoose.Schema({
   emergency_phone: {
     type: String
   },
+  // Optional generic relationship for the relative/guardian/emergency contact.
+  // This intentionally avoids separate father/husband/guardian fields.
+  emergency_relationship: {
+    type: String,
+    trim: true
+  },
   medical_history: {
     type: String
   },

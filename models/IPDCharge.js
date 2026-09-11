@@ -22,7 +22,7 @@ const ipdChargeSchema = new mongoose.Schema({
     required: true
   },
   adjustmentType: { type: String, enum: ['CHARGE', 'DISCOUNT', 'TAX', 'WAIVER'], default: 'CHARGE' },
-  status: { type: String, enum: ['ACTIVE', 'INVOICED', 'VOIDED', 'CANCELLED'], default: 'ACTIVE', index: true },
+  status: { type: String, enum: ['ACTIVE', 'INVOICED', 'VOIDED', 'CANCELLED', 'REVERSED'], default: 'ACTIVE', index: true },
   description: { type: String, required: true, trim: true },
   quantity: { type: Number, default: 1, min: 1 },
   rate: { type: Number, default: 0, min: 0 },
@@ -105,6 +105,15 @@ const ipdChargeSchema = new mongoose.Schema({
   voidedAt: Date,
   voidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   voidReason: String,
+  // Issued invoice rows are never physically deleted. A mistaken invoiced
+  // charge is reversed with an auditable credit-note/ledger adjustment and
+  // the operational charge is retained as REVERSED for traceability.
+  reversedAt: Date,
+  reversedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  reversalReason: { type: String, trim: true },
+  reversalCreditNoteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+  reversalAmount: { type: Number, default: 0, min: 0 },
+  reversalSponsorAmount: { type: Number, default: 0, min: 0 },
   addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   notes: { type: String, trim: true },
   pricingSnapshot: {
