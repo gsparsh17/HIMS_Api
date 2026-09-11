@@ -1323,11 +1323,49 @@ async function adjustExistingUnbilledCharge(chargeId, payload = {}, user) {
   // Desk retry never compounds an already-applied discount.
   const snapshot = charge.pricingSnapshot || {};
   const snapshotAmounts = snapshot.amounts || {};
-  const contractedAmount = money(
+  let contractedAmount = money(
     snapshotAmounts.contracted ?? charge.contractedAmount ?? charge.grossAmount ?? (Number(charge.rate || 0) * Number(charge.quantity || 1))
   );
-  const basePatientLiability = money(snapshotAmounts.patientLiability ?? charge.patientLiability ?? contractedAmount);
-  const baseSponsorLiability = money(snapshotAmounts.sponsorLiability ?? charge.sponsorLiability ?? 0);
+  let basePatientLiability = money(snapshotAmounts.patientLiability ?? charge.patientLiability ?? contractedAmount);
+  let baseSponsorLiability = money(snapshotAmounts.sponsorLiability ?? charge.sponsorLiability ?? 0);
+
+  // Finance users may override the unit rate of any ACTIVE/unbilled IPD charge,
+  // including Lab/Radiology/Procedure lines. The original tariff snapshot and
+  // every override are retained; invoiced rows remain immutable.
+  const hasManualRate = payload.manualRate !== undefined && payload.manualRate !== null && payload.manualRate !== '';
+  let manualRate;
+  let manualRateReason;
+  let previousContractedAmount;
+  if (hasManualRate) {
+    if (String(snapshot.resultType || '').toLowerCase() === 'package_included' || snapshot.packageEpisodeId) {
+      const error = new Error('Package-included charges cannot be manually repriced; use the package/coverage repricing workflow');
+      error.statusCode = 409;
+      error.code = 'IPD_PACKAGE_CHARGE_RATE_LOCKED';
+      throw error;
+    }
+    if (!_hasActionPermission(user, 'pricing_override')) {
+      const error = new Error('Manual IPD charge rate override requires pricing_override permission');
+      error.statusCode = 403;
+      throw error;
+    }
+    manualRate = assertAmount(payload.manualRate, 'Rate');
+    manualRateReason = String(payload.overrideReason || payload.reason || '').trim();
+    if (!manualRateReason) {
+      const error = new Error('Rate override reason is required');
+      error.statusCode = 400;
+      error.code = 'IPD_RATE_OVERRIDE_REASON_REQUIRED';
+      throw error;
+    }
+
+    previousContractedAmount = contractedAmount;
+    const newContractedAmount = money(manualRate * Number(charge.quantity || 1));
+    const allocationBase = money(basePatientLiability + baseSponsorLiability);
+    const sponsorRatio = allocationBase > 0 ? Number(baseSponsorLiability || 0) / allocationBase : 0;
+    baseSponsorLiability = money(newContractedAmount * sponsorRatio);
+    basePatientLiability = money(newContractedAmount - baseSponsorLiability);
+    contractedAmount = newContractedAmount;
+  }
+
   const coverage = await activeCoverage(admission.hospitalId, admission._id);
   const policy = await resolveFinancialPolicy({
     hospitalId: admission.hospitalId,
@@ -1344,18 +1382,37 @@ async function adjustExistingUnbilledCharge(chargeId, payload = {}, user) {
     sponsorLiability: baseSponsorLiability,
     contractedAmount,
     adjustments: {
-      discountType: payload.discountType,
-      discountRate: payload.discountRate,
-      discountAmount: payload.discountAmount ?? payload.discount,
+      // A pure rate override must preserve an already-approved discount/tax
+      // configuration instead of silently resetting it.
+      discountType: payload.discountType ?? (hasManualRate ? charge.discountType : undefined),
+      discountRate: payload.discountRate ?? (hasManualRate ? charge.discountRate : undefined),
+      discountAmount: payload.discountAmount ?? payload.discount ?? (hasManualRate && charge.discountType !== 'percentage' ? charge.discountAmount : undefined),
       discountValue: payload.discountValue,
-      discountReason: payload.discountReason,
-      taxMode: payload.taxMode,
-      taxRate: payload.taxRate,
-      taxReason: payload.taxReason
+      discountReason: payload.discountReason ?? (hasManualRate ? charge.discountReason : undefined),
+      taxMode: payload.taxMode ?? (hasManualRate ? charge.taxMode : undefined),
+      taxRate: payload.taxRate ?? (hasManualRate ? charge.taxRate : undefined),
+      taxReason: payload.taxReason ?? (hasManualRate ? charge.taxExemptionReason : undefined)
     },
     overrideReason: payload.overrideReason
   });
   const adjusted = policy.amounts;
+
+  if (hasManualRate) {
+    const now = operationNow();
+    const originalRate = money(charge.rate || 0);
+    charge.rateOverrideHistory = Array.isArray(charge.rateOverrideHistory) ? charge.rateOverrideHistory : [];
+    charge.rateOverrideHistory.push({
+      previousRate: originalRate,
+      newRate: manualRate,
+      quantity: Number(charge.quantity || 1),
+      previousContractedAmount: money(previousContractedAmount || 0),
+      newContractedAmount: contractedAmount,
+      reason: manualRateReason,
+      overriddenBy: user?._id,
+      overriddenAt: now
+    });
+    charge.rate = manualRate;
+  }
 
   charge.discountType = adjusted.discountType;
   charge.discountRate = adjusted.discountRate;
@@ -1378,10 +1435,35 @@ async function adjustExistingUnbilledCharge(chargeId, payload = {}, user) {
   // Sponsored charges are intentionally not overwritten from netAmount by the
   // model hook, so updating only the top-level aliases would lose the Desk
   // discount on save and make approval/collection totals inconsistent.
+  const existingSnapshot = snapshot?.toObject?.() || snapshot || {};
+  const existingSnapshotAmounts = snapshotAmounts?.toObject?.() || snapshotAmounts || {};
+  const standardAmount = money(existingSnapshotAmounts.hospitalStandard ?? charge.standardAmount ?? previousContractedAmount ?? contractedAmount);
   charge.pricingSnapshot = {
-    ...(snapshot?.toObject?.() || snapshot || {}),
+    ...existingSnapshot,
+    ...(hasManualRate ? {
+      resultType: 'manual_override',
+      fallbackReason: undefined,
+      inputs: {
+        ...(existingSnapshot.inputs || {}),
+        manualOverride: {
+          rate: manualRate,
+          reason: manualRateReason,
+          overriddenBy: user?._id,
+          overriddenAt: operationNow()
+        }
+      },
+      explanation: [
+        ...(Array.isArray(existingSnapshot.explanation) ? existingSnapshot.explanation : []),
+        `Manual rate override from ₹${money(charge.rateOverrideHistory?.[charge.rateOverrideHistory.length - 1]?.previousRate || 0)} to ₹${manualRate}: ${manualRateReason}`
+      ]
+    } : {}),
     amounts: {
-      ...(snapshotAmounts?.toObject?.() || snapshotAmounts || {}),
+      ...existingSnapshotAmounts,
+      ...(hasManualRate ? {
+        contracted: contractedAmount,
+        eligible: contractedAmount,
+        hospitalAdjustment: money(standardAmount - contractedAmount)
+      } : {}),
       patientLiability: adjusted.patientLiability,
       sponsorLiability: adjusted.sponsorLiability,
       hospitalConcession: charge.hospitalConcessionAmount
@@ -1471,6 +1553,21 @@ async function adjustExistingUnbilledCharge(chargeId, payload = {}, user) {
 
   await calculateAdmissionFinancials(admission._id, { user });
   return charge;
+}
+
+async function overrideUnbilledChargeRate(admissionId, chargeId, payload = {}, user) {
+  const scopedCharge = await IPDCharge.findOne({ _id: chargeId, admissionId }).select('_id admissionId');
+  if (!scopedCharge) {
+    const error = new Error('IPD charge not found for this admission');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return adjustExistingUnbilledCharge(chargeId, {
+    manualRate: payload.rate ?? payload.manualRate,
+    overrideReason: payload.reason ?? payload.overrideReason,
+    notes: payload.notes
+  }, user);
 }
 
 async function generateBedCharge(admissionId, payload, user) {
@@ -3719,6 +3816,7 @@ module.exports = {
   getFinanceWorkspace,
   addManualCharge,
   adjustExistingUnbilledCharge,
+  overrideUnbilledChargeRate,
   generateBedCharge,
   applyDiscount,
   voidCharge,

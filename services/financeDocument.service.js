@@ -96,9 +96,41 @@ async function transactionPrintEnvelope({ transactionIdOrNumber, hospitalId }) {
     ...selector
   })
     .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone dob gender')
-    .populate('invoiceId', 'invoice_number invoice_type total amount_paid balance_due status patient_snapshot hospital_snapshot admission_snapshot appointment_id admission_id')
+    .populate({
+      path: 'invoiceId',
+      select: 'invoice_number invoice_type total amount_paid balance_due status patient_snapshot hospital_snapshot admission_snapshot appointment_id admission_id doctor_id doctorName doctor_name',
+      populate: [
+        {
+          path: 'appointment_id',
+          select: 'appointment_id doctor_id department_id appointment_date',
+          populate: [
+            { path: 'doctor_id', select: 'firstName lastName specialization phone department' },
+            { path: 'department_id', select: 'name code' }
+          ]
+        },
+        {
+          path: 'admission_id',
+          select: 'admissionNumber admissionDate status wardId bedId roomId primaryDoctorId departmentId',
+          populate: [
+            { path: 'primaryDoctorId', select: 'firstName lastName specialization' },
+            { path: 'departmentId', select: 'name code' },
+            { path: 'wardId', select: 'name wardNumber' },
+            { path: 'bedId', select: 'bedNumber roomNumber' }
+          ]
+        }
+      ]
+    })
     .populate('billId', 'bill_number total_amount paid_amount balance_due status')
-    .populate('admissionId', 'admissionNumber admissionDate status wardId bedId roomId primaryDoctorId departmentId')
+    .populate({
+      path: 'admissionId',
+      select: 'admissionNumber admissionDate status wardId bedId roomId primaryDoctorId departmentId',
+      populate: [
+        { path: 'primaryDoctorId', select: 'firstName lastName specialization' },
+        { path: 'departmentId', select: 'name code' },
+        { path: 'wardId', select: 'name wardNumber' },
+        { path: 'bedId', select: 'bedNumber roomNumber' }
+      ]
+    })
     .populate('createdBy', 'name firstName lastName email')
     .lean();
 

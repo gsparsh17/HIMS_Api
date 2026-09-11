@@ -719,7 +719,8 @@ exports.getEmployees = async (req, res) => {
 
 exports.getEmployeeById = async (req, res) => {
   try {
-    const employee = await HRStaffProfile.findById(req.params.id)
+    const hospitalId = await resolveHospitalId(req);
+    const employee = await HRStaffProfile.findOne({ _id: req.params.id, hospital_id: hospitalId })
       .populate('user_id', 'name email role is_active modulePermissions dashboard_access enforceModulePermissions')
       .populate('department', 'name')
       .populate('shift')
@@ -747,11 +748,11 @@ exports.getEmployeeById = async (req, res) => {
 
 exports.updateEmployee = async (req, res) => {
   try {
-    const employee = await HRStaffProfile.findById(req.params.id);
+    const hospitalId = await resolveHospitalId(req);
+    const employee = await HRStaffProfile.findOne({ _id: req.params.id, hospital_id: hospitalId });
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
     const body = req.body;
-    const hospitalId = await resolveHospitalId(req);
     const departmentId = (body.department || body.department_name) ? await ensureDepartment(body, hospitalId) : employee.department;
     const fullName = body.full_name || body.fullName || employee.full_name;
     const { firstName, lastName } = splitName(fullName);
@@ -767,7 +768,7 @@ exports.updateEmployee = async (req, res) => {
     await employee.save();
 
     if (employee.user_id) {
-      const user = await User.findById(employee.user_id);
+      const user = await User.findOne({ _id: employee.user_id, hospital_id: hospitalId });
       if (user) {
         user.name = employee.full_name;
         if (body.email) user.email = body.email;
@@ -805,12 +806,15 @@ async function assertLoginPermissionsWithinEntitlements(hospitalId, permissions)
 
 exports.setEmployeeLogin = async (req, res) => {
   try {
-    const employee = await HRStaffProfile.findById(req.params.id);
+    const hospitalId = await resolveHospitalId(req);
+    const employee = await HRStaffProfile.findOne({ _id: req.params.id, hospital_id: hospitalId });
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
+    // Login linking is tenant-scoped on both profile id and email. Never attach
+    // a user from another hospital simply because the email matches.
     let user = employee.user_id
-      ? await User.findById(employee.user_id)
-      : await User.findOne({ email: employee.email });
+      ? await User.findOne({ _id: employee.user_id, hospital_id: hospitalId })
+      : await User.findOne({ email: employee.email, hospital_id: hospitalId });
 
     const role = String(
       req.body.role || roleFromStaffType(employee.staff_type, employee.designation)
@@ -840,7 +844,7 @@ exports.setEmployeeLogin = async (req, res) => {
           )
         : defaultFeaturePermissions(role, { grantedBy: getUserId(req) });
 
-    await assertLoginPermissionsWithinEntitlements(employee.hospital_id || req.user?.hospital_id, modulePermissions);
+    await assertLoginPermissionsWithinEntitlements(hospitalId, modulePermissions);
 
     if (user) {
       user.name = employee.full_name;
@@ -869,7 +873,7 @@ exports.setEmployeeLogin = async (req, res) => {
         is_active: req.body.is_active !== undefined
           ? Boolean(req.body.is_active)
           : true,
-        hospital_id: employee.hospital_id,
+        hospital_id: hospitalId,
         modulePermissions,
         enforceModulePermissions: hasExplicitPermissionSelection,
         dashboard_access: dashboardAccessFromFeatures(modulePermissions)

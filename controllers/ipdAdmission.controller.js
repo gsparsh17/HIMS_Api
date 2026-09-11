@@ -46,6 +46,8 @@ const { dateKeyInTimeZone, ensureAdmissionDailyCharges } = require('../services/
 const HospitalCharges2026 = require('../models/HospitalCharges');
 const { resolveFinancialPolicy: resolveAdmissionFinancialPolicy2026 } = require('../services/financialPolicy.service');
 const ipdFinancial2026 = require('../services/ipdFinancial.service');
+const { reverseCoverageUtilization } = require('../services/coverageUtilization.service');
+const { reversePackageUtilization } = require('../services/packageAdjudication.service');
 
 function activeAdmissionFilter2026() {
   return {
@@ -1420,6 +1422,157 @@ exports.getNurseDashboardData = async (req, res) => {
   }
 };
 
+async function cancelAdmissionRecord2026({ req, hospitalId, admissionId, reason }) {
+  const cancellationReason = String(reason || '').trim();
+  if (!cancellationReason) {
+    const error = new Error('Cancellation reason is required');
+    error.statusCode = 400;
+    error.code = 'IPD_CANCELLATION_REASON_REQUIRED';
+    throw error;
+  }
+
+  const session = await mongoose.startSession();
+  let cancelledAdmission;
+  let cancelledChargeIds = [];
+  try {
+    await session.withTransaction(async () => {
+      const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId }).session(session);
+      if (!admission) {
+        const error = new Error('Admission not found');
+        error.statusCode = 404;
+        throw error;
+      }
+      if (admission.status === 'Cancelled') {
+        cancelledAdmission = admission;
+        return;
+      }
+      if (!['Admitted', 'Under Treatment'].includes(admission.status)) {
+        const error = new Error('Admission can be cancelled only before the discharge workflow has progressed');
+        error.statusCode = 409;
+        error.code = 'IPD_CANCELLATION_STAGE_LOCKED';
+        throw error;
+      }
+
+      const cancelledAt = operationNow();
+      admission.status = 'Cancelled';
+      // Cancellation is a retained terminal record, not a soft-delete. Keeping
+      // it active makes it visible under the Terminated filter for audit/MRD.
+      admission.is_active = true;
+      admission.cancellationReason = cancellationReason;
+      admission.cancelledAt = cancelledAt;
+      admission.cancelledBy = req.user?._id || null;
+      admission.dischargeReason = cancellationReason;
+      admission.updatedBy = req.user?._id;
+      await admission.save({ session });
+
+      // Unbilled operational rows must not remain collectible after an admission
+      // is cancelled. Issued invoices/posted receipts are deliberately retained
+      // and must be corrected through the normal credit/refund workflow.
+      const cancellableCharges = await IPDCharge.find({
+        hospitalId,
+        admissionId: admission._id,
+        isBilled: false,
+        $or: [
+          { status: { $exists: false } },
+          { status: 'ACTIVE' }
+        ]
+      }).select('_id').session(session).lean();
+      cancelledChargeIds = cancellableCharges.map((row) => row._id);
+      if (cancelledChargeIds.length) {
+        await IPDCharge.updateMany(
+          { _id: { $in: cancelledChargeIds }, hospitalId, admissionId: admission._id },
+          {
+            $set: {
+              status: 'VOIDED',
+              voidReason: `Admission cancelled: ${cancellationReason}`,
+              voidedBy: req.user?._id || null,
+              voidedAt: cancelledAt
+            }
+          },
+          { session }
+        );
+      }
+
+      await IPDAccommodationSegment2026.updateMany(
+        { hospitalId, admissionId: admission._id, status: 'active' },
+        { $set: { status: 'voided', endedAt: cancelledAt } },
+        { session }
+      );
+
+      if (admission.bedId) {
+        await Bed.updateOne(
+          { _id: admission.bedId, hospitalId, currentAdmissionId: admission._id },
+          { $set: { status: 'Available', currentAdmissionId: null, reservedTransferId: null } },
+          { session }
+        );
+      }
+
+      await Patient.updateOne(
+        { _id: admission.patientId, hospitalId },
+        { $pull: { active_admissions: { admission_id: admission._id } } },
+        { session }
+      );
+      const patient = await Patient.findOne({ _id: admission.patientId, hospitalId })
+        .select('active_admissions patient_type')
+        .session(session);
+      if (patient) {
+        patient.patient_type = (patient.active_admissions || []).length ? 'ipd' : 'opd';
+        await patient.save({ session, validateBeforeSave: false });
+      }
+
+      await appendDomainEvent({
+        req,
+        eventType: 'ipd.admission.cancelled',
+        entityType: 'IPDAdmission',
+        entityId: admission._id,
+        hospitalId,
+        patientId: admission.patientId,
+        encounterId: admission._id,
+        afterSummary: { status: 'Cancelled', cancelledAt, cancellationReason },
+        reasonCode: cancellationReason,
+        session
+      });
+
+      cancelledAdmission = admission;
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  // Reverse any payer/package utilisation represented by the unbilled lines we
+  // just voided. These ledgers are retained as reversals, never deleted.
+  if (cancelledChargeIds.length) {
+    const reversals = await Promise.allSettled(cancelledChargeIds.flatMap((chargeId) => [
+      reverseCoverageUtilization({
+        hospitalId,
+        sourceType: 'IPDCharge',
+        sourceId: chargeId,
+        userId: req.user?._id,
+        reason: `Admission cancelled: ${cancellationReason}`
+      }),
+      reversePackageUtilization({
+        hospitalId,
+        sourceType: 'IPDCharge',
+        sourceId: chargeId,
+        userId: req.user?._id,
+        reason: `Admission cancelled: ${cancellationReason}`
+      })
+    ]));
+    const failed = reversals.filter((row) => row.status === 'rejected');
+    if (failed.length) console.warn(`IPD cancellation committed but ${failed.length} coverage/package reversal(s) failed`);
+  }
+
+  // Refresh projections after the unbilled rows have been voided. This does not
+  // erase issued invoices, payments or advances; those remain auditable.
+  try {
+    await ipdFinancial2026.calculateAdmissionFinancials(admissionId, { user: req.user });
+  } catch (projectionError) {
+    console.warn('IPD cancellation committed but finance projection refresh failed:', projectionError.message);
+  }
+
+  return cancelledAdmission;
+}
+
 // Update admission status
 exports.updateAdmissionStatus = async (req, res) => {
   try {
@@ -1433,6 +1586,20 @@ exports.updateAdmissionStatus = async (req, res) => {
 
     if (!admission) {
       return res.status(404).json({ error: 'Admission not found' });
+    }
+
+    if (status === 'Cancelled') {
+      const cancelledAdmission = await cancelAdmissionRecord2026({
+        req,
+        hospitalId,
+        admissionId: admission._id,
+        reason
+      });
+      return res.json({
+        success: true,
+        message: 'Admission cancelled successfully',
+        admission: cancelledAdmission
+      });
     }
 
     if (status === 'Discharged') {
@@ -1533,81 +1700,29 @@ exports.updateAdmissionStatus = async (req, res) => {
   }
 };
 
-// Delete admission (cancellation)
+// Delete endpoint retained for backward compatibility. It performs the same
+// retained cancellation as PATCH /admissions/:id/status; no admission row is
+// physically deleted or hidden from the Terminated list.
 exports.deleteAdmission = async (req, res) => {
   try {
     const hospitalId = requireAdmissionHospitalId(req);
+    const admission = await IPDAdmission.findOne({ _id: req.params.id, hospitalId });
+    if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
-    const admission = await IPDAdmission.findOne({
-      _id: req.params.id,
+    const cancelledAdmission = await cancelAdmissionRecord2026({
+      req,
       hospitalId,
-      is_active: { $ne: false }
+      admissionId: admission._id,
+      reason: req.body?.reason || 'Admission cancelled by user'
     });
-
-    if (!admission) {
-      return res.status(404).json({ error: 'Admission not found' });
-    }
-
-    if (!['Admitted', 'Under Treatment'].includes(admission.status)) {
-      return res.status(409).json({
-        error: 'Cannot cancel admission after discharge workflow has progressed'
-      });
-    }
-
-    const reason = String(req.body?.reason || 'Admission cancelled by user').trim();
-    admission.status = 'Cancelled';
-    admission.is_active = false;
-    admission.deleted_at = operationNow();
-    admission.deleted_by = req.user?._id || null;
-    admission.deletion_reason = reason;
-    admission.updatedBy = req.user?._id;
-    await admission.save();
-
-    await Promise.all([
-      admission.bedId
-        ? Bed.updateOne(
-          {
-            _id: admission.bedId,
-            hospitalId,
-            currentAdmissionId: admission._id
-          },
-          {
-            $set: {
-              status: 'Available',
-              currentAdmissionId: null,
-              reservedTransferId: null
-            }
-          }
-        )
-        : null,
-      IPDAccommodationSegment2026.updateMany(
-        {
-          hospitalId,
-          admissionId: admission._id,
-          status: 'active'
-        },
-        {
-          $set: {
-            status: 'voided',
-            endedAt: operationNow()
-          }
-        }
-      ),
-      Patient.updateOne(
-        { _id: admission.patientId, hospitalId },
-        {
-          $pull: { active_admissions: { admission_id: admission._id } },
-          $set: { patient_type: 'opd' }
-        }
-      )
-    ]);
 
     return res.json({
       success: true,
-      message: 'Admission cancelled successfully'
+      message: 'Admission cancelled successfully',
+      admission: cancelledAdmission
     });
   } catch (error) {
-    return res.status(error.statusCode || 500).json({ error: error.message });
+    return res.status(error.statusCode || 500).json({ error: error.message, code: error.code });
   }
 };
 

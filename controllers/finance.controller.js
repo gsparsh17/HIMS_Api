@@ -203,6 +203,19 @@ exports.addIPDCharge = async (req, res) => {
   } catch (error) { sendError(res, error); }
 };
 
+exports.overrideIPDChargeRate = async (req, res) => {
+  try {
+    const charge = await financial.overrideUnbilledChargeRate(
+      req.params.admissionId,
+      req.params.chargeId,
+      req.body,
+      req.user
+    );
+    const runningBill = await financial.getRunningBill(req.params.admissionId, req.user);
+    res.json({ success: true, message: 'Unbilled charge rate updated successfully', charge, runningBill });
+  } catch (error) { sendError(res, error); }
+};
+
 exports.voidIPDCharge = async (req, res) => {
   try {
     const charge = await financial.voidCharge(req.params.admissionId, req.params.chargeId, req.body, req.user);

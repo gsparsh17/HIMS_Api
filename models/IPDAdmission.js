@@ -254,6 +254,12 @@ const ipdAdmissionSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  cancellationReason: {
+    type: String,
+    trim: true
+  },
+  cancelledAt: { type: Date },
+  cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   // Canonical discharge outcome used by clinical summaries and final finance documents.
   // Historical status values (DAMA/Expired/etc.) remain readable through controller
   // normalization but new writes use this stable vocabulary.

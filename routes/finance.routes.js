@@ -43,7 +43,8 @@ router.get('/ipd/:admissionId/ledger', finance.getFinancialLedger);
 router.get('/ipd/:admissionId/clearance', finance.getFinancialClearance);
 
 router.post('/ipd/:admissionId/charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.addIPDCharge);
-router.patch('/ipd/:admissionId/charges/:chargeId/void', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('pricing_override'), finance.voidIPDCharge);
+router.patch('/ipd/:admissionId/charges/:chargeId/rate', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('pricing_override'), finance.overrideIPDChargeRate);
+router.patch('/ipd/:admissionId/charges/:chargeId/void', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['billing_delete_charge', 'pricing_override']), finance.voidIPDCharge);
 router.post('/ipd/:admissionId/bed-charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.generateBedCharge);
 router.post('/ipd/:admissionId/discounts', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['billing_apply_discount', 'discount_override']), finance.applyIPDDiscount);
 router.post('/ipd/:admissionId/invoices', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['billing_create', 'billing_finalize']), finance.issueIPDInvoice);

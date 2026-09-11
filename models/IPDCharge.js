@@ -26,6 +26,18 @@ const ipdChargeSchema = new mongoose.Schema({
   description: { type: String, required: true, trim: true },
   quantity: { type: Number, default: 1, min: 1 },
   rate: { type: Number, default: 0, min: 0 },
+  // Every manual rate change on an unbilled charge is retained for audit.
+  // Issued/invoiced charges remain immutable and must use credit/refund flows.
+  rateOverrideHistory: [{
+    previousRate: { type: Number, min: 0 },
+    newRate: { type: Number, min: 0 },
+    quantity: { type: Number, min: 1 },
+    previousContractedAmount: { type: Number, min: 0 },
+    newContractedAmount: { type: Number, min: 0 },
+    reason: { type: String, trim: true },
+    overriddenBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    overriddenAt: { type: Date, default: operationNow }
+  }],
 
   // Calculated line amounts. `amount` remains the legacy gross amount alias.
   grossAmount: { type: Number, default: 0, min: 0 },
