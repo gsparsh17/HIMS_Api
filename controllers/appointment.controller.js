@@ -2272,12 +2272,13 @@ exports.updateAppointment = async (req, res) => {
   }
 };
 
-async function getAppointmentFinancialCancellationState({ hospitalId, appointmentId }) {
+async function getAppointmentFinancialCancellationState({ hospitalId, appointmentId, session = null }) {
+  const queryOptions = session ? { session } : {};
   const bills = await Bill.find({
     hospital_id: hospitalId,
     appointment_id: appointmentId,
     is_deleted: { $ne: true }
-  }).select('_id bill_number invoice_id invoice_ids document_stage status total_amount paid_amount refund_amount settlement_discount_amount credit_note_amount').lean();
+  }, null, queryOptions).select('_id bill_number invoice_id invoice_ids document_stage status total_amount paid_amount refund_amount settlement_discount_amount credit_note_amount payer_allocation').lean();
 
   const billIds = bills.map((row) => row._id);
   const invoiceOr = [{ appointment_id: appointmentId }];
@@ -2291,10 +2292,16 @@ async function getAppointmentFinancialCancellationState({ hospitalId, appointmen
     document_stage: { $nin: ['DRAFT', 'VOID', 'CREDIT_NOTE'] },
     invoice_type: { $ne: 'Credit Note' },
     $or: invoiceOr
-  }).select('invoice_number total amount_paid refunded_amount advance_transferred_amount settlement_discount_amount credit_note_total status document_stage').lean();
+  }, null, queryOptions).select('invoice_number total amount_paid refunded_amount advance_transferred_amount settlement_discount_amount credit_note_total status document_stage payer_allocation').lean();
 
   const invoiceStates = invoices.map((invoice) => {
     const invoiceTotal = Number(invoice.total || 0);
+    const allocation = invoice.payer_allocation || {};
+    const hasCoverage = Boolean(allocation.coverage_id || allocation.payer_id);
+    const patientLiability = hasCoverage ? Number(allocation.patient_liability || 0) : invoiceTotal;
+    const sponsorLiability = Number(allocation.sponsor_liability || 0);
+    const sponsorPaid = Number(allocation.sponsor_paid_amount || 0);
+    const sponsorCredited = Number(allocation.sponsor_credit_amount || 0);
     const settlementDiscount = Number(invoice.settlement_discount_amount || 0);
     const creditNotes = Number(invoice.credit_note_total || 0);
     const amountPaid = Number(invoice.amount_paid || 0);
@@ -2304,17 +2311,23 @@ async function getAppointmentFinancialCancellationState({ hospitalId, appointmen
       invoiceId: invoice._id,
       invoiceNumber: invoice.invoice_number,
       invoiceTotal,
+      patientLiability,
+      sponsorLiability,
+      sponsorPaid,
+      sponsorCredited,
       settlementDiscount,
       creditNoteTotal: creditNotes,
       amountPaid,
       refundedAmount: refunded,
       advanceTransferredAmount: advanceTransferred,
-      remainingCreditRequired: Math.max(0, Number((invoiceTotal - settlementDiscount - creditNotes).toFixed(2))),
+      remainingCreditRequired: Math.max(0, Number((patientLiability - settlementDiscount - creditNotes).toFixed(2))),
+      sponsorReversalRequired: Math.max(0, Number((sponsorLiability - sponsorPaid - sponsorCredited).toFixed(2))),
       refundableCollected: Math.max(0, Number((amountPaid - refunded - advanceTransferred).toFixed(2)))
     };
   });
 
   const remainingCreditRequired = Number(invoiceStates.reduce((sum, row) => sum + row.remainingCreditRequired, 0).toFixed(2));
+  const sponsorReversalRequired = Number(invoiceStates.reduce((sum, row) => sum + row.sponsorReversalRequired, 0).toFixed(2));
   const refundableCollected = Number(invoiceStates.reduce((sum, row) => sum + row.refundableCollected, 0).toFixed(2));
   const refundedAmount = Number(invoiceStates.reduce((sum, row) => sum + row.refundedAmount, 0).toFixed(2));
   const advanceTransferredAmount = Number(invoiceStates.reduce((sum, row) => sum + row.advanceTransferredAmount, 0).toFixed(2));
@@ -2334,13 +2347,16 @@ async function getAppointmentFinancialCancellationState({ hospitalId, appointmen
     standalonePaidBills,
     standaloneBillCollected,
     remainingCreditRequired,
+    sponsorReversalRequired,
     refundableCollected,
     refundedAmount,
     advanceTransferredAmount,
-    resolved: remainingCreditRequired <= 0.01 && refundableCollected <= 0.01 && standaloneBillCollected <= 0.01
+    resolved: remainingCreditRequired <= 0.01
+      && sponsorReversalRequired <= 0.01
+      && refundableCollected <= 0.01
+      && standaloneBillCollected <= 0.01
   };
 }
-
 
 function financePermissionError(message, code, details = {}) {
   const error = new Error(message);
@@ -2356,7 +2372,8 @@ async function resolveAppointmentFinanceInline({
   state,
   financialAction,
   reason,
-  user
+  user,
+  session = null
 }) {
   if (state.resolved) return { state, summary: null };
   if (!financialAction || typeof financialAction !== 'object') return { state, summary: null };
@@ -2389,6 +2406,14 @@ async function resolveAppointmentFinanceInline({
     );
   }
 
+  if (Number(state.sponsorReversalRequired || 0) > 0.01 && !_hasActionPermission(user, 'claim_manage')) {
+    throw financePermissionError(
+      'Claim-management permission is required to reverse sponsor liability, coverage/package utilisation and an editable claim during sponsored appointment cancellation.',
+      'OPD_CANCELLATION_SPONSOR_PERMISSION_REQUIRED',
+      { requiredAction: 'claim_manage', sponsorReversalRequired: state.sponsorReversalRequired }
+    );
+  }
+
   // Some legacy OPD rows were paid before a canonical Invoice was issued.
   // Convert only those paid Bills into canonical invoices first so the same
   // credit/refund/advance ledger is used for the entire cancellation flow.
@@ -2407,14 +2432,14 @@ async function resolveAppointmentFinanceInline({
         billIds: [standaloneBill.billId],
         notes: reasonText,
         idempotencyKey: `${rootKey}:bill:${standaloneBill.billId}:invoice`
-      }, user);
+      }, user, { session });
     }
-    state = await getAppointmentFinancialCancellationState({ hospitalId, appointmentId: appointment._id });
+    state = await getAppointmentFinancialCancellationState({ hospitalId, appointmentId: appointment._id, session });
   }
 
   // Refund/advance authority is intentionally not enough to waive an unpaid
-  // balance. If any liability will remain after resolving collected money,
-  // keep the existing pricing_override requirement for the extra credit note.
+  // balance. If any patient liability will remain after resolving collected
+  // money, retain pricing_override for that additional patient credit.
   const unpaidCreditRequired = Number((state.invoices || []).reduce((sum, invoice) => {
     const liability = Number(invoice.remainingCreditRequired || 0);
     const collected = Number(invoice.refundableCollected || 0);
@@ -2422,7 +2447,7 @@ async function resolveAppointmentFinanceInline({
   }, 0).toFixed(2));
   if (unpaidCreditRequired > 0.01 && !_hasActionPermission(user, 'pricing_override')) {
     throw financePermissionError(
-      'Pricing override permission is required to credit the unpaid portion of the appointment before cancellation.',
+      'Pricing override permission is required to credit the unpaid patient portion of the appointment before cancellation.',
       'OPD_CANCELLATION_CREDIT_PERMISSION_REQUIRED',
       { requiredAction: 'pricing_override', unpaidCreditRequired }
     );
@@ -2433,6 +2458,9 @@ async function resolveAppointmentFinanceInline({
     creditNoteAmount: 0,
     refundAmount: 0,
     advanceAmount: 0,
+    sponsorReversalAmount: 0,
+    sponsorLedgerCredit: 0,
+    claimsCancelled: [],
     transactionNumbers: [],
     creditNoteNumbers: []
   };
@@ -2446,7 +2474,7 @@ async function resolveAppointmentFinanceInline({
       paymentMethod: financialAction.paymentMethod,
       reference: financialAction.reference,
       idempotencyKey: `${rootKey}:invoice:${invoiceState.invoiceId}:collection:${disposition.toLowerCase()}`
-    }, user);
+    }, user, { session });
 
     if (resolution.creditNote) {
       summary.creditNoteAmount += Number(resolution.creditNote.total || 0);
@@ -2457,7 +2485,21 @@ async function resolveAppointmentFinanceInline({
     if (disposition === 'ADVANCE') summary.advanceAmount += Number(resolution.amountResolved || 0);
   }
 
-  state = await getAppointmentFinancialCancellationState({ hospitalId, appointmentId: appointment._id });
+  state = await getAppointmentFinancialCancellationState({ hospitalId, appointmentId: appointment._id, session });
+
+  for (const invoiceState of state.invoices || []) {
+    if (Number(invoiceState.sponsorReversalRequired || 0) <= 0.01) continue;
+    const sponsorResult = await ipdFinancial.reverseOPDSponsorExposureForCancellation(invoiceState.invoiceId, {
+      appointmentId: appointment._id,
+      reason: reasonText,
+      idempotencyKey: `${rootKey}:invoice:${invoiceState.invoiceId}:sponsor-reversal`
+    }, user, { session });
+    summary.sponsorReversalAmount += Number(sponsorResult.sponsorReversalAmount || 0);
+    summary.sponsorLedgerCredit += Number(sponsorResult.sponsorLedgerCredit || 0);
+    summary.claimsCancelled.push(...(sponsorResult.claimsCancelled || []));
+  }
+
+  state = await getAppointmentFinancialCancellationState({ hospitalId, appointmentId: appointment._id, session });
 
   for (const invoiceState of state.invoices || []) {
     const remaining = Number(invoiceState.remainingCreditRequired || 0);
@@ -2466,7 +2508,7 @@ async function resolveAppointmentFinanceInline({
       amount: remaining,
       reason: reasonText,
       idempotencyKey: `${rootKey}:invoice:${invoiceState.invoiceId}:unpaid-credit`
-    }, user);
+    }, user, { session });
     if (result.creditNote) {
       summary.creditNoteAmount += Number(result.creditNote.total || 0);
       if (result.creditNote.invoice_number) summary.creditNoteNumbers.push(result.creditNote.invoice_number);
@@ -2477,10 +2519,13 @@ async function resolveAppointmentFinanceInline({
   summary.creditNoteAmount = Number(summary.creditNoteAmount.toFixed(2));
   summary.refundAmount = Number(summary.refundAmount.toFixed(2));
   summary.advanceAmount = Number(summary.advanceAmount.toFixed(2));
+  summary.sponsorReversalAmount = Number(summary.sponsorReversalAmount.toFixed(2));
+  summary.sponsorLedgerCredit = Number(summary.sponsorLedgerCredit.toFixed(2));
+  summary.claimsCancelled = Array.from(new Set(summary.claimsCancelled.filter(Boolean)));
   summary.transactionNumbers = Array.from(new Set(summary.transactionNumbers.filter(Boolean)));
   summary.creditNoteNumbers = Array.from(new Set(summary.creditNoteNumbers.filter(Boolean)));
 
-  state = await getAppointmentFinancialCancellationState({ hospitalId, appointmentId: appointment._id });
+  state = await getAppointmentFinancialCancellationState({ hospitalId, appointmentId: appointment._id, session });
   return { state, summary };
 }
 
@@ -2492,7 +2537,7 @@ exports.cancelAppointment = async (req, res) => {
     if (!reason) return res.status(400).json({ error: 'Cancellation reason is required' });
 
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Appointment not found' });
-    const appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } });
+    let appointment = await Appointment.findOne({ _id: req.params.id, hospital_id: hospitalId, is_active: { $ne: false } });
     if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
     if (appointment.status === 'Completed') {
       return res.status(409).json({ error: 'A completed appointment cannot be cancelled' });
@@ -2512,91 +2557,130 @@ exports.cancelAppointment = async (req, res) => {
       });
     }
 
-    let financialResolution = await getAppointmentFinancialCancellationState({
-      hospitalId,
-      appointmentId: appointment._id
-    });
+    let financialResolution = null;
     let financialAdjustmentSummary = null;
+    let linkedBills = [];
+    let cancelledAt = null;
+    const cancellationSession = await mongoose.startSession();
+    try {
+      await cancellationSession.withTransaction(async () => {
+        // Re-read under the transaction so finance reversal and the lifecycle
+        // state change commit together. A crash can no longer leave an active
+        // appointment whose finance was already reversed.
+        appointment = await Appointment.findOne({
+          _id: req.params.id,
+          hospital_id: hospitalId,
+          is_active: { $ne: false }
+        }).session(cancellationSession);
+        if (!appointment) {
+          const error = new Error('Appointment not found');
+          error.statusCode = 404;
+          throw error;
+        }
+        if (appointment.status === 'Completed') {
+          const error = new Error('A completed appointment cannot be cancelled');
+          error.statusCode = 409;
+          throw error;
+        }
+        if (appointment.status === 'Cancelled') {
+          const error = new Error('Appointment is already cancelled');
+          error.statusCode = 409;
+          throw error;
+        }
 
-    if (!financialResolution.resolved && req.body.financialAction) {
-      const inlineResolution = await resolveAppointmentFinanceInline({
-        hospitalId,
-        appointment,
-        state: financialResolution,
-        financialAction: req.body.financialAction,
-        reason,
-        user: req.user
+        financialResolution = await getAppointmentFinancialCancellationState({
+          hospitalId,
+          appointmentId: appointment._id,
+          session: cancellationSession
+        });
+
+        if (!financialResolution.resolved && req.body.financialAction) {
+          const inlineResolution = await resolveAppointmentFinanceInline({
+            hospitalId,
+            appointment,
+            state: financialResolution,
+            financialAction: req.body.financialAction,
+            reason,
+            user: req.user,
+            session: cancellationSession
+          });
+          financialResolution = inlineResolution.state;
+          financialAdjustmentSummary = inlineResolution.summary;
+        }
+
+        if (!financialResolution.resolved) {
+          const error = new Error('This appointment has financial documents that must be resolved before cancellation. You can complete the credit/refund/advance/sponsor adjustment in this cancellation dialog.');
+          error.statusCode = 409;
+          error.code = 'OPD_FINANCIAL_REVERSAL_REQUIRED';
+          error.details = {
+            remainingCreditRequired: financialResolution.remainingCreditRequired,
+            sponsorReversalRequired: financialResolution.sponsorReversalRequired,
+            refundableCollected: financialResolution.refundableCollected,
+            standaloneBillCollected: financialResolution.standaloneBillCollected,
+            refundedAmount: financialResolution.refundedAmount,
+            advanceTransferredAmount: financialResolution.advanceTransferredAmount,
+            invoices: financialResolution.invoices,
+            standalonePaidBills: financialResolution.standalonePaidBills
+          };
+          throw error;
+        }
+
+        cancelledAt = operationNow();
+
+        linkedBills = await Bill.find({
+          appointment_id: appointment._id,
+          hospital_id: hospitalId,
+          is_deleted: { $ne: true }
+        }).session(cancellationSession);
+        for (const linkedBill of linkedBills) {
+          linkedBill.status = 'Cancelled';
+          await linkedBill.save({ session: cancellationSession });
+        }
+
+        appointment.status = 'Cancelled';
+        appointment.cancellationReason = reason;
+        appointment.cancelledAt = cancelledAt;
+        appointment.cancelledBy = req.user?._id;
+        const cancellationRefundAmount = Number(financialAdjustmentSummary?.refundAmount || 0);
+        appointment.cancellationRefund = {
+          refundRequested: cancellationRefundAmount > 0,
+          refundAmount: cancellationRefundAmount,
+          refundMethod: cancellationRefundAmount > 0 ? (req.body.financialAction?.paymentMethod || 'Cash') : undefined,
+          refundReason: cancellationRefundAmount > 0 ? `Appointment cancellation: ${reason}` : undefined,
+          refundReceiptNumber: cancellationRefundAmount > 0 ? financialAdjustmentSummary?.transactionNumbers?.[0] : undefined,
+          refundedAt: cancellationRefundAmount > 0 ? cancelledAt : undefined,
+          refundedBy: cancellationRefundAmount > 0 ? req.user?._id : undefined
+        };
+        appointment.cancellationFinance = {
+          disposition: financialAdjustmentSummary?.disposition || 'NONE',
+          creditNoteAmount: Number(financialAdjustmentSummary?.creditNoteAmount || 0),
+          refundAmount: cancellationRefundAmount,
+          advanceAmount: Number(financialAdjustmentSummary?.advanceAmount || 0),
+          sponsorReversalAmount: Number(financialAdjustmentSummary?.sponsorReversalAmount || 0),
+          sponsorLedgerCredit: Number(financialAdjustmentSummary?.sponsorLedgerCredit || 0),
+          claimsCancelled: financialAdjustmentSummary?.claimsCancelled || [],
+          transactionNumbers: financialAdjustmentSummary?.transactionNumbers || [],
+          creditNoteNumbers: financialAdjustmentSummary?.creditNoteNumbers || [],
+          adjustedAt: financialAdjustmentSummary ? cancelledAt : undefined,
+          adjustedBy: financialAdjustmentSummary ? req.user?._id : undefined
+        };
+        appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
+        appointment.lifecycleTimestamps.cancelledAt = cancelledAt;
+        appointment.cancellationHistory = appointment.cancellationHistory || [];
+        appointment.cancellationHistory.push({
+          reason,
+          cancelledAt,
+          cancelledBy: req.user?._id
+        });
+
+        await appointment.save({ session: cancellationSession });
       });
-      financialResolution = inlineResolution.state;
-      financialAdjustmentSummary = inlineResolution.summary;
+    } finally {
+      await cancellationSession.endSession();
     }
 
-    if (!financialResolution.resolved) {
-      return res.status(409).json({
-        success: false,
-        code: 'OPD_FINANCIAL_REVERSAL_REQUIRED',
-        error: 'This appointment has financial documents that must be resolved before cancellation. You can complete the credit/refund/advance adjustment in this cancellation dialog.',
-        financialResolution: {
-          remainingCreditRequired: financialResolution.remainingCreditRequired,
-          refundableCollected: financialResolution.refundableCollected,
-          standaloneBillCollected: financialResolution.standaloneBillCollected,
-          refundedAmount: financialResolution.refundedAmount,
-          advanceTransferredAmount: financialResolution.advanceTransferredAmount,
-          invoices: financialResolution.invoices,
-          standalonePaidBills: financialResolution.standalonePaidBills
-        },
-        inlineFinancialResolution: true
-      });
-    }
-
-    const cancelledAt = operationNow();
-
-    // Bills are retained as historical projections. Only mark the appointment's
-    // linked Bill rows cancelled after every issued invoice is financially
-    // neutralised through canonical adjustments.
-    const linkedBills = await Bill.find({
-      appointment_id: appointment._id,
-      hospital_id: hospitalId,
-      is_deleted: { $ne: true }
-    });
-    for (const linkedBill of linkedBills) {
-      linkedBill.status = 'Cancelled';
-      await linkedBill.save();
-    }
-
-    appointment.status = 'Cancelled';
-    appointment.cancellationReason = reason;
-    appointment.cancelledAt = cancelledAt;
-    appointment.cancelledBy = req.user?._id;
-    const cancellationRefundAmount = Number(financialAdjustmentSummary?.refundAmount || 0);
-    appointment.cancellationRefund = {
-      refundRequested: cancellationRefundAmount > 0,
-      refundAmount: cancellationRefundAmount,
-      refundMethod: cancellationRefundAmount > 0 ? (req.body.financialAction?.paymentMethod || 'Cash') : undefined,
-      refundReason: cancellationRefundAmount > 0 ? `Appointment cancellation: ${reason}` : undefined,
-      refundReceiptNumber: cancellationRefundAmount > 0 ? financialAdjustmentSummary?.transactionNumbers?.[0] : undefined,
-      refundedAt: cancellationRefundAmount > 0 ? cancelledAt : undefined,
-      refundedBy: cancellationRefundAmount > 0 ? req.user?._id : undefined
-    };
-    appointment.cancellationFinance = {
-      disposition: financialAdjustmentSummary?.disposition || 'NONE',
-      creditNoteAmount: Number(financialAdjustmentSummary?.creditNoteAmount || 0),
-      refundAmount: cancellationRefundAmount,
-      advanceAmount: Number(financialAdjustmentSummary?.advanceAmount || 0),
-      transactionNumbers: financialAdjustmentSummary?.transactionNumbers || [],
-      creditNoteNumbers: financialAdjustmentSummary?.creditNoteNumbers || [],
-      adjustedAt: financialAdjustmentSummary ? cancelledAt : undefined,
-      adjustedBy: financialAdjustmentSummary ? req.user?._id : undefined
-    };
-    appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
-    appointment.lifecycleTimestamps.cancelledAt = cancelledAt;
-    appointment.cancellationHistory.push({
-      reason,
-      cancelledAt,
-      cancelledBy: req.user?._id
-    });
-
-    await appointment.save();
+    // Calendar, queue and notifications are operational side effects. Finance +
+    // appointment status are already committed atomically; these may safely retry.
     await removeAppointmentFromCalendar(appointment);
 
     let queueShift = null;
@@ -2652,6 +2736,7 @@ exports.cancelAppointment = async (req, res) => {
       cancellationFinance: appointment.cancellationFinance,
       financialResolution: {
         remainingCreditRequired: 0,
+        sponsorReversalRequired: 0,
         refundableCollected: 0,
         refundedAmount: financialResolution.refundedAmount,
         advanceTransferredAmount: financialResolution.advanceTransferredAmount,
@@ -2670,6 +2755,15 @@ exports.cancelAppointment = async (req, res) => {
       queueShiftWarning
     });
   } catch (error) {
+    if (error.code === 'OPD_FINANCIAL_REVERSAL_REQUIRED') {
+      return res.status(error.statusCode || 409).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+        financialResolution: error.details,
+        inlineFinancialResolution: true
+      });
+    }
     return res.status(error.statusCode || 500).json({ success: false, error: error.message, code: error.code, details: error.details });
   }
 };

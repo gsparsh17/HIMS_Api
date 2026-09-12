@@ -350,16 +350,41 @@ async function scanCollections(hospitalId, { invoices, bills, archivedInvoices =
       }
     }
     if (type === 'REFUND') {
-      const creditNoteId = idOf(tx.metadata?.creditNoteId || tx.sourceId);
+      const creditNoteId = idOf(tx.metadata?.creditNoteId);
       const creditTransactionId = idOf(tx.metadata?.creditTransactionId);
       const creditDocument = creditNoteId ? invoiceMap.get(creditNoteId) : null;
       const creditTransaction = creditTransactionId
         ? transactions.find((row) => idOf(row._id) === creditTransactionId && row.status === 'POSTED' && String(row.transactionType || '').toUpperCase() === 'CREDIT_NOTE')
-        : transactions.find((row) => row.status === 'POSTED' && String(row.transactionType || '').toUpperCase() === 'CREDIT_NOTE' && idOf(row.sourceId) === creditNoteId);
-      if (!creditDocument || !creditTransaction || !near(creditTransaction.amount, tx.amount)) {
+        : (creditNoteId
+          ? transactions.find((row) => row.status === 'POSTED' && String(row.transactionType || '').toUpperCase() === 'CREDIT_NOTE' && idOf(row.sourceId) === creditNoteId)
+          : null);
+
+      const hasLifecycleMetadata = tx.metadata?.existingLiabilityCreditApplied !== undefined
+        || tx.metadata?.newCreditAmountCreated !== undefined;
+      const existingCreditApplied = hasLifecycleMetadata
+        ? money(tx.metadata?.existingLiabilityCreditApplied || 0)
+        : 0;
+      // Legacy refunds always created one equal Credit Note. Preserve that
+      // interpretation when the newer lifecycle metadata is absent.
+      const newCreditCreated = hasLifecycleMetadata
+        ? money(tx.metadata?.newCreditAmountCreated || 0)
+        : money(creditTransaction?.amount || 0);
+      const liabilityCreditCoverage = money(existingCreditApplied + newCreditCreated);
+      const newCreditLinkValid = newCreditCreated <= 0.001
+        || Boolean(creditDocument && creditTransaction && near(creditTransaction.amount, newCreditCreated));
+      if (!newCreditLinkValid || !near(liabilityCreditCoverage, tx.amount)) {
         results.push(issue('REFUND_WITHOUT_CREDIT_NOTE', 'CRITICAL', 'FinancialTransaction', tx._id,
-          'Invoice refund is not paired with an equal posted credit-note document/transaction.',
-          { transactionNumber: tx.transactionNumber, refundAmount: money(tx.amount), creditNoteId, creditTransactionId: creditTransaction?._id, creditAmount: money(creditTransaction?.amount) }));
+          'Invoice refund is not fully covered by existing liability credit plus any newly posted Credit Note.',
+          {
+            transactionNumber: tx.transactionNumber,
+            refundAmount: money(tx.amount),
+            existingLiabilityCreditApplied: existingCreditApplied,
+            newCreditAmountCreated: newCreditCreated,
+            liabilityCreditCoverage,
+            creditNoteId,
+            creditTransactionId: creditTransaction?._id,
+            creditAmount: money(creditTransaction?.amount)
+          }));
       }
     }
     const requiresAllocation = ['RECEIPT', 'ADVANCE_UTILISATION', 'SETTLEMENT', 'CREDIT_NOTE', 'REFUND'].includes(type)

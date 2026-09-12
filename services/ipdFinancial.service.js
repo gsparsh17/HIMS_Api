@@ -19,6 +19,7 @@ const { activatePackageEpisode, recordPackageUtilization, reversePackageUtilizat
 const { activeCoverage } = require('./coverage.service');
 const { replaceCoverageUtilization, reverseCoverageUtilization } = require('./coverageUtilization.service');
 const SponsorLedgerEntry = require('../models/SponsorLedgerEntry');
+const CoverageUtilization = require('../models/CoverageUtilization');
 const claimService = require('./claim.service');
 const Hospital = require('../models/Hospital');
 const { userHospitalId } = require('../utils/hospitalScope');
@@ -434,16 +435,15 @@ function isPharmacyControlledInvoice(invoice) {
   );
 }
 
-async function runFinancialTransaction(work) {
-  const session = await mongoose.startSession();
+async function runFinancialTransaction(work, existingSession = null) {
+  if (existingSession) return work(existingSession);
 
+  const session = await mongoose.startSession();
   try {
     let result;
-
     await session.withTransaction(async () => {
       result = await work(session);
     });
-
     return result;
   } finally {
     await session.endSession();
@@ -3195,6 +3195,65 @@ async function refundAdvance(admissionId, payload, user) {
 }
 
 
+function patientLiabilityBase(invoice = {}) {
+  const allocation = invoice.payer_allocation || {};
+  const hasCoverage = Boolean(allocation.coverage_id || allocation.payer_id);
+  return money(hasCoverage ? Number(allocation.patient_liability || 0) : Number(invoice.total || 0));
+}
+
+function rawPatientBalance(invoice = {}) {
+  return money(
+    patientLiabilityBase(invoice) -
+    Number(invoice.amount_paid || 0) +
+    Number(invoice.refunded_amount || 0) +
+    Number(invoice.advance_transferred_amount || 0) -
+    Number(invoice.settlement_discount_amount || 0) -
+    Number(invoice.credit_note_total || 0)
+  );
+}
+
+function refundCreditRequirement(invoice, refundAmount) {
+  const requested = money(refundAmount);
+  // A prior Credit Note is reusable for a later cash refund only when it has
+  // driven the raw patient balance below zero. Credit already consumed to clear
+  // an unpaid balance is not available to fund a refund.
+  const existingExcessCredit = money(Math.max(0, -rawPatientBalance(invoice)));
+  const existingCreditApplied = money(Math.min(requested, existingExcessCredit));
+  const newCreditRequired = money(Math.max(0, requested - existingCreditApplied));
+  return { existingExcessCredit, existingCreditApplied, newCreditRequired };
+}
+
+async function allocateSponsorCreditAcrossBills(invoice, adjustmentAmount, session) {
+  const linkedBillIds = Array.from(new Set([
+    ...(invoice?.bill_ids || []),
+    ...(invoice?.bill_id ? [invoice.bill_id] : [])
+  ].map((value) => String(value)).filter(Boolean)));
+  if (!linkedBillIds.length || adjustmentAmount <= 0) return [];
+
+  const linkedBills = await Bill.find(
+    { _id: { $in: linkedBillIds }, hospital_id: invoice.hospital_id, is_deleted: { $ne: true } },
+    null,
+    sessionOptions(session)
+  ).sort({ generated_at: 1, createdAt: 1 });
+
+  let remaining = money(adjustmentAmount);
+  const allocations = [];
+  for (const linkedBill of linkedBills) {
+    if (remaining <= 0.001) break;
+    const sponsorLiability = money(linkedBill.payer_allocation?.sponsor_liability || 0);
+    const priorSponsorCredit = money(linkedBill.payer_allocation?.sponsor_credit_amount || 0);
+    const capacity = money(Math.max(0, sponsorLiability - priorSponsorCredit));
+    const applied = money(Math.min(capacity, remaining));
+    if (applied <= 0) continue;
+    linkedBill.payer_allocation = linkedBill.payer_allocation || {};
+    linkedBill.payer_allocation.sponsor_credit_amount = money(priorSponsorCredit + applied);
+    await linkedBill.save(sessionOptions(session));
+    allocations.push({ documentType: 'Bill', documentId: linkedBill._id, amount: applied });
+    remaining = money(remaining - applied);
+  }
+  return allocations;
+}
+
 async function allocateInvoiceAdjustmentAcrossBills(invoice, adjustmentAmount, field, session) {
   const linkedBillIds = Array.from(new Set([
     ...(invoice?.bill_ids || []),
@@ -3214,7 +3273,15 @@ async function allocateInvoiceAdjustmentAcrossBills(invoice, adjustmentAmount, f
     if (remaining <= 0.001) break;
     let capacity = 0;
     if (field === 'credit_note_amount') {
-      capacity = money(Math.max(0, Number(linkedBill.total_amount || 0) - Number(linkedBill.credit_note_amount || 0)));
+      const billPatientBase = linkedBill.payer_allocation?.coverage_id
+        ? Number(linkedBill.payer_allocation?.patient_liability || 0)
+        : Number(linkedBill.total_amount || 0);
+      capacity = money(Math.max(
+        0,
+        billPatientBase -
+          Number(linkedBill.settlement_discount_amount || 0) -
+          Number(linkedBill.credit_note_amount || 0)
+      ));
     } else if (field === 'refund_amount') {
       capacity = money(Math.max(0, Number(linkedBill.paid_amount || 0) - Number(linkedBill.refund_amount || 0)));
     } else {
@@ -3300,18 +3367,27 @@ async function createCreditNoteInSession(invoice, payload, user, session) {
     throw error;
   }
 
-  // Settlement discounts and credit notes both reduce the patient's recognised
-  // liability. Never allow a later credit note to exceed what remains after
-  // settlement concessions have already been posted.
+  // Generic Credit Notes are patient-liability adjustments. A sponsor-covered
+  // amount must be reversed through the claim/sponsor ledger workflow instead.
+  const patientBase = patientLiabilityBase(invoice);
   const eligible = money(Math.max(
     0,
-    Number(invoice.total || 0) -
+    patientBase -
       Number(invoice.settlement_discount_amount || 0) -
       Number(invoice.credit_note_total || 0)
   ));
   if (amount > eligible + 0.01) {
-    const error = new Error('Credit note amount exceeds the eligible invoice value');
+    const covered = Boolean(invoice.payer_allocation?.coverage_id || invoice.payer_allocation?.payer_id);
+    const error = new Error(covered
+      ? `Patient credit note exceeds the remaining patient liability of ₹${eligible.toFixed(2)}. Reverse sponsor liability through the claim/sponsor workflow.`
+      : 'Credit note amount exceeds the eligible invoice value');
     error.statusCode = 400;
+    error.code = covered ? 'PATIENT_CREDIT_EXCEEDS_LIABILITY' : 'CREDIT_NOTE_EXCEEDS_ELIGIBLE_VALUE';
+    error.details = {
+      patientLiability: patientBase,
+      remainingPatientCreditEligible: eligible,
+      sponsorLiability: money(invoice.payer_allocation?.sponsor_liability || 0)
+    };
     throw error;
   }
 
@@ -3320,6 +3396,8 @@ async function createCreditNoteInSession(invoice, payload, user, session) {
     : null;
   const hospitalId = invoice.hospital_id || hospitalIdFor(admission, user);
   const noteNumber = await nextFinancialNumber({ documentType: 'CREDIT_NOTE', hospitalId, session });
+  const originalPrintSnapshot = invoice.print_snapshot?.toObject?.() || invoice.print_snapshot || {};
+  const originalAllocation = invoice.payer_allocation?.toObject?.() || invoice.payer_allocation || {};
 
   const creditNote = new Invoice({
     hospital_id: hospitalId,
@@ -3346,6 +3424,23 @@ async function createCreditNoteInSession(invoice, payload, user, session) {
     created_by: user?._id,
     patient_snapshot: invoice.patient_snapshot,
     hospital_snapshot: invoice.hospital_snapshot,
+    encounter_snapshot: invoice.encounter_snapshot,
+    admission_snapshot: invoice.admission_snapshot,
+    print_snapshot: {
+      ...originalPrintSnapshot,
+      adjustmentOfInvoiceId: invoice._id,
+      adjustmentOfInvoiceNumber: invoice.invoice_number,
+      adjustmentType: 'PATIENT_CREDIT_NOTE'
+    },
+    payer_allocation: (originalAllocation.coverage_id || originalAllocation.payer_id) ? {
+      coverage_id: originalAllocation.coverage_id,
+      payer_id: originalAllocation.payer_id,
+      claim_id: originalAllocation.claim_id,
+      patient_liability: amount,
+      sponsor_liability: 0,
+      sponsor_paid_amount: 0,
+      sponsor_credit_amount: 0
+    } : undefined,
     service_items: [{
       description: `Credit note against ${invoice.invoice_number}: ${payload.reason.trim()}`,
       quantity: 1,
@@ -3365,10 +3460,6 @@ async function createCreditNoteInSession(invoice, payload, user, session) {
   });
   await creditNote.save(sessionOptions(session));
 
-  // Credit Notes are Invoice documents that intentionally retain the original
-  // Bill references for auditability. Keep that relationship bidirectional
-  // without replacing Bill.invoice_id, which remains the issued payment-authority
-  // Invoice. The adjustment document is appended only to Bill.invoice_ids.
   await ensureAdjustmentInvoiceBillReverseLinks(creditNote, invoice, session);
 
   invoice.credit_note_total = money(Number(invoice.credit_note_total || 0) + amount);
@@ -3406,14 +3497,18 @@ async function createCreditNoteInSession(invoice, payload, user, session) {
     remarks: payload.reason.trim(),
     createdBy: user?._id,
     idempotencyKey: payload.idempotencyKey,
-    metadata: { creditNoteInvoiceId: creditNote._id }
+    metadata: {
+      creditNoteInvoiceId: creditNote._id,
+      liabilitySide: 'PATIENT',
+      originalInvoiceId: invoice._id
+    }
   });
   await transaction.save(sessionOptions(session));
 
   return { creditNote, originalInvoice: invoice, transaction, alreadyExists: false };
 }
 
-async function createCreditNote(invoiceId, payload, user) {
+async function createCreditNote(invoiceId, payload, user, options = {}) {
   const result = await runFinancialTransaction(async (session) => {
     const invoice = await Invoice.findById(invoiceId, null, sessionOptions(session));
     if (!invoice) {
@@ -3422,15 +3517,15 @@ async function createCreditNote(invoiceId, payload, user) {
       throw error;
     }
     return createCreditNoteInSession(invoice, payload, user, session);
-  });
+  }, options.session);
 
-  if (result.originalInvoice?.admission_id) {
+  if (!options.session && result.originalInvoice?.admission_id) {
     await calculateAdmissionFinancials(result.originalInvoice.admission_id, { user });
   }
   return result;
 }
 
-async function refundInvoice(invoiceId, payload, user) {
+async function refundInvoice(invoiceId, payload, user, options = {}) {
   const refundAmount = assertAmount(payload.amount, 'Refund amount');
   const refundMethod = payload.paymentMethod || 'Cash';
   if (!EXTERNAL_PAYMENT_METHODS.has(refundMethod)) {
@@ -3472,6 +3567,10 @@ async function refundInvoice(invoiceId, payload, user) {
           transaction: existing,
           creditNote: creditNoteId ? await Invoice.findById(creditNoteId, null, sessionOptions(session)) : null,
           originalInvoice: invoice,
+          creditCoverage: {
+            existingCreditApplied: money(existing.metadata?.existingLiabilityCreditApplied || 0),
+            newCreditRequired: money(existing.metadata?.newCreditAmountCreated || 0)
+          },
           alreadyExists: true
         };
       }
@@ -3484,16 +3583,15 @@ async function refundInvoice(invoiceId, payload, user) {
       throw error;
     }
 
-    // A refund always carries an equal credit note so the patient's liability and
-    // the external cash reversal remain separate, auditable events. They are
-    // committed in the SAME MongoDB transaction: never persist a credit without
-    // its refund (or vice versa) because a network/database failure occurred.
+    const creditCoverage = refundCreditRequirement(invoice, refundAmount);
     const creditKey = payload.idempotencyKey ? `${payload.idempotencyKey}:credit` : undefined;
-    const credit = await createCreditNoteInSession(invoice, {
-      amount: refundAmount,
-      reason: payload.reason,
-      idempotencyKey: creditKey
-    }, user, session);
+    const credit = creditCoverage.newCreditRequired > 0.001
+      ? await createCreditNoteInSession(invoice, {
+          amount: creditCoverage.newCreditRequired,
+          reason: payload.reason,
+          idempotencyKey: creditKey
+        }, user, session)
+      : null;
 
     const hospitalId = invoice.hospital_id;
     const refundNumber = await nextFinancialNumber({ documentType: 'REFUND', hospitalId, session });
@@ -3527,7 +3625,7 @@ async function refundInvoice(invoiceId, payload, user) {
       externalMoneyMovement: true,
       cashFlowClass: 'REFUND',
       sourceModule: 'Billing',
-      sourceId: credit.creditNote?._id,
+      sourceId: credit?.creditNote?._id || invoice._id,
       remarks: payload.reason.trim(),
       createdBy: user?._id,
       idempotencyKey: payload.idempotencyKey,
@@ -3535,28 +3633,31 @@ async function refundInvoice(invoiceId, payload, user) {
         ? billRefundAllocations
         : [{ documentType: 'Invoice', documentId: invoice._id, amount: refundAmount }],
       metadata: {
-        creditNoteNumber: credit.creditNote?.invoice_number,
-        creditNoteId: credit.creditNote?._id,
-        creditTransactionId: credit.transaction?._id
+        creditNoteNumber: credit?.creditNote?.invoice_number,
+        creditNoteId: credit?.creditNote?._id,
+        creditTransactionId: credit?.transaction?._id,
+        existingLiabilityCreditApplied: creditCoverage.existingCreditApplied,
+        newCreditAmountCreated: creditCoverage.newCreditRequired,
+        liabilityCreditCoverage: refundAmount
       }
     });
     await transaction.save(sessionOptions(session));
 
     return {
-      creditNote: credit.creditNote,
+      creditNote: credit?.creditNote || null,
       originalInvoice: invoice,
       refundNumber,
       transaction,
+      creditCoverage,
       alreadyExists: false
     };
-  });
+  }, options.session);
 
-  if (result.originalInvoice?.admission_id) {
+  if (!options.session && result.originalInvoice?.admission_id) {
     await calculateAdmissionFinancials(result.originalInvoice.admission_id, { user });
   }
   return result;
 }
-
 
 /**
  * Resolve the collected portion of an OPD invoice while cancelling the
@@ -3571,7 +3672,7 @@ async function refundInvoice(invoiceId, payload, user) {
  * note so the controller can enforce the stronger pricing_override permission
  * for writing off unpaid liability.
  */
-async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {}, user) {
+async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {}, user, options = {}) {
   const disposition = String(payload.disposition || '').trim().toUpperCase();
   if (!['REFUND', 'ADVANCE'].includes(disposition)) {
     const error = new Error('Cancellation collection disposition must be REFUND or ADVANCE');
@@ -3627,6 +3728,10 @@ async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {
         creditNote: existingCreditId ? await Invoice.findById(existingCreditId, null, sessionOptions(session)) : null,
         transaction: existingMoney,
         amountResolved: money(existingMoney.amount || 0),
+        creditCoverage: {
+          existingCreditApplied: money(existingMoney.metadata?.existingLiabilityCreditApplied || 0),
+          newCreditRequired: money(existingMoney.metadata?.newCreditAmountCreated || 0)
+        },
         disposition,
         alreadyExists: true
       };
@@ -3644,21 +3749,16 @@ async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {
         creditNote: null,
         transaction: null,
         amountResolved: 0,
+        creditCoverage: { existingCreditApplied: 0, newCreditRequired: 0 },
         disposition,
         alreadyExists: false
       };
     }
 
-    const remainingLiability = money(Math.max(
-      0,
-      Number(invoice.total || 0) -
-      Number(invoice.settlement_discount_amount || 0) -
-      Number(invoice.credit_note_total || 0)
-    ));
-    const creditForCollected = money(Math.min(collectedAvailable, remainingLiability));
-    const credit = creditForCollected > 0
+    const creditCoverage = refundCreditRequirement(invoice, collectedAvailable);
+    const credit = creditCoverage.newCreditRequired > 0.001
       ? await createCreditNoteInSession(invoice, {
-          amount: creditForCollected,
+          amount: creditCoverage.newCreditRequired,
           reason,
           idempotencyKey: `${rootKey}:credit`
         }, user, session)
@@ -3701,7 +3801,7 @@ async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {
         externalMoneyMovement: true,
         cashFlowClass: 'REFUND',
         sourceModule: 'OPD',
-        sourceId: invoice.appointment_id || invoice._id,
+        sourceId: credit?.creditNote?._id || invoice.appointment_id || invoice._id,
         remarks: reason,
         createdBy: user?._id,
         idempotencyKey: moneyKey,
@@ -3713,7 +3813,10 @@ async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {
           disposition: 'REFUND',
           creditNoteId: credit?.creditNote?._id,
           creditNoteNumber: credit?.creditNote?.invoice_number,
-          creditAmountCreated: creditForCollected
+          creditTransactionId: credit?.transaction?._id,
+          existingLiabilityCreditApplied: creditCoverage.existingCreditApplied,
+          newCreditAmountCreated: creditCoverage.newCreditRequired,
+          liabilityCreditCoverage: collectedAvailable
         }
       });
       await transaction.save(sessionOptions(session));
@@ -3724,6 +3827,7 @@ async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {
         transaction,
         refundNumber,
         amountResolved: collectedAvailable,
+        creditCoverage,
         disposition,
         alreadyExists: false
       };
@@ -3797,7 +3901,10 @@ async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {
         walletBalanceAfter: balanceAfter,
         creditNoteId: credit?.creditNote?._id,
         creditNoteNumber: credit?.creditNote?.invoice_number,
-        creditAmountCreated: creditForCollected
+        creditTransactionId: credit?.transaction?._id,
+        existingLiabilityCreditApplied: creditCoverage.existingCreditApplied,
+        newCreditAmountCreated: creditCoverage.newCreditRequired,
+        liabilityCreditCoverage: collectedAvailable
       }
     });
     await transaction.save(sessionOptions(session));
@@ -3809,12 +3916,200 @@ async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {
       advanceNumber,
       advanceBalance: balanceAfter,
       amountResolved: collectedAvailable,
+      creditCoverage,
       disposition,
       alreadyExists: false
     };
-  });
+  }, options.session);
 
   return result;
+}
+
+async function reverseOPDSponsorExposureForCancellation(invoiceId, payload = {}, user, options = {}) {
+  const reason = String(payload.reason || '').trim();
+  if (!reason) {
+    const error = new Error('Sponsor reversal reason is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return runFinancialTransaction(async (session) => {
+    const invoice = await Invoice.findById(invoiceId, null, sessionOptions(session));
+    if (!invoice) {
+      const error = new Error('Invoice not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    const scopedHospitalId = userHospitalId(user);
+    if (scopedHospitalId && String(invoice.hospital_id) !== String(scopedHospitalId)) {
+      const error = new Error('Invoice not found in this hospital');
+      error.statusCode = 404;
+      throw error;
+    }
+    if (invoice.admission_id) {
+      const error = new Error('IPD sponsor exposure cannot be reversed through OPD cancellation');
+      error.statusCode = 409;
+      error.code = 'OPD_CANCELLATION_IPD_INVOICE_BLOCKED';
+      throw error;
+    }
+    if (payload.appointmentId && invoice.appointment_id && String(payload.appointmentId) !== String(invoice.appointment_id)) {
+      const error = new Error('Invoice does not belong to the appointment being cancelled');
+      error.statusCode = 409;
+      error.code = 'OPD_ENCOUNTER_MISMATCH';
+      throw error;
+    }
+
+    const allocation = invoice.payer_allocation || {};
+    const sponsorLiability = money(allocation.sponsor_liability || 0);
+    const sponsorPaid = money(allocation.sponsor_paid_amount || 0);
+    const sponsorCredited = money(allocation.sponsor_credit_amount || 0);
+    const sponsorToReverse = money(Math.max(0, sponsorLiability - sponsorPaid - sponsorCredited));
+    if (sponsorToReverse <= 0.001) {
+      return { sponsorReversalAmount: 0, sponsorLedgerCredit: 0, claimsCancelled: [], alreadyResolved: true };
+    }
+    if (sponsorPaid > 0.001) {
+      const error = new Error('Sponsor money has already been settled against this invoice. Reverse/correct the sponsor settlement before cancelling the appointment.');
+      error.statusCode = 409;
+      error.code = 'SPONSOR_SETTLEMENT_REVERSAL_REQUIRED';
+      error.details = { sponsorLiability, sponsorPaid, sponsorCredited, sponsorToReverse };
+      throw error;
+    }
+
+    const appointmentId = invoice.appointment_id || payload.appointmentId;
+    const claimFilter = {
+      hospitalId: invoice.hospital_id,
+      encounterType: 'OPD',
+      appointmentId,
+      status: { $nin: ['cancelled', 'closed'] }
+    };
+    if (allocation.coverage_id) claimFilter.coverageId = allocation.coverage_id;
+    const claims = appointmentId
+      ? await ClaimCase.find(claimFilter, null, sessionOptions(session))
+      : [];
+    const editableClaimStatuses = new Set(['draft', 'documents_pending', 'ready']);
+    const lockedClaims = claims.filter((claim) =>
+      !editableClaimStatuses.has(String(claim.status || '').toLowerCase()) ||
+      Number(claim.amounts?.sponsorPaidAmount || 0) > 0.001 ||
+      (claim.settlements || []).some((row) => Number(row.amount || 0) > 0.001)
+    );
+    if (lockedClaims.length) {
+      const error = new Error('The sponsor claim has already entered submission/adjudication/settlement. Correct or cancel it through the claim workflow before cancelling this appointment.');
+      error.statusCode = 409;
+      error.code = 'OPD_CANCELLATION_CLAIM_LOCKED';
+      error.details = {
+        claims: lockedClaims.map((claim) => ({ claimId: claim._id, claimNumber: claim.claimNumber, status: claim.status }))
+      };
+      throw error;
+    }
+
+    // A deduction/write-off/settlement is an explicit sponsor accounting event.
+    // Never hide it by automatically archiving/reversing the invoice.
+    const nonPrincipalEntries = await SponsorLedgerEntry.find({
+      hospitalId: invoice.hospital_id,
+      ...(appointmentId ? { appointmentId } : {}),
+      ...(allocation.coverage_id ? { coverageId: allocation.coverage_id } : {}),
+      entryType: { $in: ['settlement', 'deduction', 'write_off'] },
+      credit: { $gt: 0 }
+    }, null, sessionOptions(session)).lean();
+    if (nonPrincipalEntries.length) {
+      const error = new Error('Sponsor ledger already contains settlement/deduction/write-off activity. Resolve it explicitly before appointment cancellation.');
+      error.statusCode = 409;
+      error.code = 'SPONSOR_LEDGER_ADJUSTMENT_REQUIRES_RESOLUTION';
+      error.details = { ledgerEntryIds: nonPrincipalEntries.map((row) => row._id) };
+      throw error;
+    }
+
+    const invoiceLedger = await SponsorLedgerEntry.find({
+      hospitalId: invoice.hospital_id,
+      invoiceId: invoice._id
+    }, null, sessionOptions(session)).lean();
+    const recognisedOutstanding = money(Math.max(0, invoiceLedger.reduce(
+      (sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0),
+      0
+    )));
+    const ledgerCredit = money(Math.min(sponsorToReverse, recognisedOutstanding));
+    if (ledgerCredit > 0.001 && allocation.payer_id) {
+      await claimService.appendLedger({
+        hospitalId: invoice.hospital_id,
+        payerId: allocation.payer_id,
+        encounterType: 'OPD',
+        appointmentId,
+        patientId: invoice.patient_id,
+        coverageId: allocation.coverage_id,
+        claimId: allocation.claim_id,
+        invoiceId: invoice._id,
+        entryType: 'credit_adjustment',
+        credit: ledgerCredit,
+        reference: invoice.invoice_number,
+        reason,
+        sourceType: 'reversal',
+        sourceId: invoice._id,
+        idempotencyKey: String(payload.idempotencyKey || `appointment-cancel:${appointmentId}:invoice:${invoice._id}:sponsor-reversal`),
+        createdBy: user?._id,
+        session
+      });
+    }
+
+    // The appointment is being cancelled as a whole, so all active coverage and
+    // package utilization posted by its source lines must be reversed.
+    const utilisationRows = appointmentId
+      ? await CoverageUtilization.find({
+          hospitalId: invoice.hospital_id,
+          encounterType: 'OPD',
+          appointmentId,
+          status: 'active'
+        }, null, sessionOptions(session)).lean()
+      : [];
+    for (const row of utilisationRows) {
+      await reverseCoverageUtilization({
+        hospitalId: invoice.hospital_id,
+        sourceType: row.sourceType,
+        sourceId: row.sourceId,
+        sourceLineId: row.sourceLineId,
+        userId: user?._id,
+        reason,
+        session
+      });
+      await reversePackageUtilization({
+        hospitalId: invoice.hospital_id,
+        sourceType: row.sourceType,
+        sourceId: row.sourceId,
+        sourceLineId: row.sourceLineId,
+        userId: user?._id,
+        reason,
+        session
+      });
+    }
+
+    const claimsCancelled = [];
+    for (const claim of claims) {
+      claim.status = 'cancelled';
+      claim.cancelledAt = operationNow();
+      claim.cancelledBy = user?._id;
+      claim.cancellationReason = reason;
+      claim.closedAt = operationNow();
+      claim.closedBy = user?._id;
+      claim.updatedBy = user?._id;
+      claim.amounts = claim.amounts || {};
+      claim.amounts.outstandingSponsorAmount = 0;
+      claim.revision = Number(claim.revision || 0) + 1;
+      await claim.save(sessionOptions(session));
+      claimsCancelled.push(claim.claimNumber || String(claim._id));
+    }
+
+    invoice.payer_allocation = invoice.payer_allocation || {};
+    invoice.payer_allocation.sponsor_credit_amount = money(sponsorCredited + sponsorToReverse);
+    await invoice.save(sessionOptions(session));
+    await allocateSponsorCreditAcrossBills(invoice, sponsorToReverse, session);
+
+    return {
+      sponsorReversalAmount: sponsorToReverse,
+      sponsorLedgerCredit: ledgerCredit,
+      claimsCancelled,
+      utilizationRowsReversed: utilisationRows.length,
+      alreadyResolved: false
+    };
+  }, options.session);
 }
 
 async function getFinancialLedger(admissionId, user, options = {}) {
@@ -4362,6 +4657,7 @@ module.exports = {
   createCreditNote,
   refundInvoice,
   resolveOPDInvoiceCollectionForCancellation,
+  reverseOPDSponsorExposureForCancellation,
   getFinancialLedger,
   getFinancialClearance,
   finaliseFinancialClearance

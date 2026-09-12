@@ -241,7 +241,8 @@ function rejectOPDBillDiscount(bill) {
   return totalDelta;
 }
 
-async function runTransaction(work) {
+async function runTransaction(work, existingSession = null) {
+  if (existingSession) return work(existingSession);
   const session = await mongoose.startSession();
   try {
     let result;
@@ -386,6 +387,20 @@ async function addOPDCharge(patientId, payload, user) {
       overrideReason: payload.overrideReason
     });
     const adjusted = policy.amounts;
+    if (!coverage && Number(adjusted.netAmount || 0) <= 0.001) {
+      const zeroReason = String(payload.zeroChargeReason || payload.overrideReason || '').trim();
+      const explicitlyAuthorised = payload.allowZeroCharge === true
+        && _hasActionPermission(user, 'pricing_override')
+        && Boolean(zeroReason);
+      if (!explicitlyAuthorised) {
+        throw financialError(
+          'A self-pay billable service resolved to ₹0. Configure a valid tariff, or use an authorised zero-charge override with a reason.',
+          409,
+          'ZERO_SELF_PAY_CHARGE_BLOCKED',
+          { serviceCode: payload.serviceCode, chargeType: payload.chargeType, requiredAction: 'pricing_override' }
+        );
+      }
+    }
     quote.amounts = {
       ...quote.amounts,
       patientLiability: adjusted.patientLiability,
@@ -705,7 +720,7 @@ function billServiceItems(bill) {
   });
 }
 
-async function issueOPDInvoice(patientId, payload, user) {
+async function issueOPDInvoice(patientId, payload, user, options = {}) {
   return runTransaction(async (session) => {
     const { patient, hospitalId } = await findPatient(patientId, user, session);
     if (payload.idempotencyKey) {
@@ -873,7 +888,7 @@ async function issueOPDInvoice(patientId, payload, user) {
       await bill.save(sessionOptions(session));
     }
     return { invoice, bills, alreadyExists: false };
-  });
+  }, options.session);
 }
 
 async function linkedBillsForInvoice(invoice, session) {

@@ -13,6 +13,8 @@ const ProcedureRequest = require('../models/ProcedureRequest');
 const ImagingTest = require('../models/ImagingTest');
 const LabTest = require('../models/LabTest');
 const Procedure = require('../models/Procedure');
+const ClaimCase = require('../models/ClaimCase');
+const SponsorLedgerEntry = require('../models/SponsorLedgerEntry');
 const ipdFinancial = require('../services/ipdFinancial.service');
 const { syncLegacyInvoiceReceipt, makeChargeLineKey } = require('../services/legacyFinancialBridge.service');
 const { requestHospitalId } = require('../utils/hospitalScope');
@@ -77,7 +79,38 @@ async function issuedDeletionFinancialExposure(req, bill) {
     document_stage: 'ISSUED',
     invoice_type: { $ne: 'Credit Note' },
     $or: or
-  }).select('_id invoice_number total amount_paid refunded_amount advance_transferred_amount settlement_discount_amount credit_note_total balance_due status').lean();
+  }).select('_id invoice_number total amount_paid refunded_amount advance_transferred_amount settlement_discount_amount credit_note_total balance_due status payer_allocation appointment_id admission_id').lean();
+
+  const invoiceIds = invoices.map((invoice) => invoice._id);
+  const sponsorLedgerRows = invoiceIds.length
+    ? await SponsorLedgerEntry.find({ hospitalId, invoiceId: { $in: invoiceIds } })
+      .select('_id invoiceId claimId entryNumber entryType debit credit reference')
+      .lean()
+    : [];
+  const appointmentIds = invoices.map((row) => row.appointment_id).filter(Boolean);
+  const admissionIds = invoices.map((row) => row.admission_id).filter(Boolean);
+  const claimIds = invoices.map((row) => row.payer_allocation?.claim_id).filter(Boolean);
+  const claimOr = [];
+  if (appointmentIds.length) claimOr.push({ appointmentId: { $in: appointmentIds } });
+  if (admissionIds.length) claimOr.push({ admissionId: { $in: admissionIds } });
+  if (claimIds.length) claimOr.push({ _id: { $in: claimIds } });
+  const activeClaims = claimOr.length
+    ? await ClaimCase.find({
+        hospitalId,
+        status: { $nin: ['cancelled', 'closed'] },
+        $or: claimOr
+      }).select('_id claimNumber status appointmentId admissionId coverageId payerId amounts').lean()
+    : [];
+
+  const ledgerByInvoice = new Map();
+  sponsorLedgerRows.forEach((entry) => {
+    const key = String(entry.invoiceId || '');
+    const current = ledgerByInvoice.get(key) || { debit: 0, credit: 0, entries: [] };
+    current.debit += Number(entry.debit || 0);
+    current.credit += Number(entry.credit || 0);
+    current.entries.push(entry);
+    ledgerByInvoice.set(key, current);
+  });
 
   const rows = invoices.map((invoice) => {
     const unresolvedCollected = money(Math.max(
@@ -86,6 +119,19 @@ async function issuedDeletionFinancialExposure(req, bill) {
         Number(invoice.refunded_amount || 0) -
         Number(invoice.advance_transferred_amount || 0)
     ));
+    const allocation = invoice.payer_allocation || {};
+    const sponsorLiability = money(allocation.sponsor_liability || 0);
+    const sponsorPaid = money(allocation.sponsor_paid_amount || 0);
+    const sponsorCredited = money(allocation.sponsor_credit_amount || 0);
+    const sponsorContractOutstanding = money(Math.max(0, sponsorLiability - sponsorPaid - sponsorCredited));
+    const ledger = ledgerByInvoice.get(String(invoice._id));
+    const sponsorLedgerOutstanding = money(Math.max(0, Number(ledger?.debit || 0) - Number(ledger?.credit || 0)));
+    const unresolvedSponsor = money(Math.max(sponsorContractOutstanding, sponsorLedgerOutstanding));
+    const claims = activeClaims.filter((claim) =>
+      (invoice.appointment_id && String(claim.appointmentId || '') === String(invoice.appointment_id)) ||
+      (invoice.admission_id && String(claim.admissionId || '') === String(invoice.admission_id)) ||
+      (allocation.claim_id && String(claim._id) === String(allocation.claim_id))
+    );
     return {
       invoiceId: invoice._id,
       invoiceNumber: invoice.invoice_number,
@@ -95,27 +141,83 @@ async function issuedDeletionFinancialExposure(req, bill) {
       advanceTransferredAmount: money(invoice.advance_transferred_amount || 0),
       unresolvedCollected,
       balanceDue: money(invoice.balance_due || 0),
+      sponsorLiability,
+      sponsorPaid,
+      sponsorCredited,
+      sponsorLedgerOutstanding,
+      unresolvedSponsor,
+      activeClaims: claims.map((claim) => ({
+        claimId: claim._id,
+        claimNumber: claim.claimNumber,
+        status: claim.status,
+        sponsorPaidAmount: money(claim.amounts?.sponsorPaidAmount || 0),
+        outstandingSponsorAmount: money(claim.amounts?.outstandingSponsorAmount || 0)
+      })),
       status: invoice.status
     };
   });
 
   return {
     invoices: rows,
-    unresolvedCollected: money(rows.reduce((sum, row) => sum + row.unresolvedCollected, 0))
+    unresolvedCollected: money(rows.reduce((sum, row) => sum + row.unresolvedCollected, 0)),
+    unresolvedSponsor: money(rows.reduce((sum, row) => sum + row.unresolvedSponsor, 0)),
+    activeSponsorClaims: activeClaims.map((claim) => ({
+      claimId: claim._id,
+      claimNumber: claim.claimNumber,
+      status: claim.status,
+      sponsorPaidAmount: money(claim.amounts?.sponsorPaidAmount || 0),
+      outstandingSponsorAmount: money(claim.amounts?.outstandingSponsorAmount || 0)
+    }))
   };
 }
 
 async function requireIssuedDeletionFinanceResolved(req, res, bill) {
   const exposure = await issuedDeletionFinancialExposure(req, bill);
-  if (exposure.unresolvedCollected <= 0) return { ...exposure, allowed: true };
+  if (exposure.unresolvedCollected > 0) {
+    res.status(409).json({
+      success: false,
+      code: 'ISSUED_DOCUMENT_FINANCE_RESOLUTION_REQUIRED',
+      error: 'This issued document still has collected patient money allocated to it. Refund or move/reclassify the collection through the canonical finance workflow before emergency archival, then retry deletion.',
+      unresolvedCollected: exposure.unresolvedCollected,
+      unresolvedSponsor: exposure.unresolvedSponsor,
+      invoices: exposure.invoices,
+      requiredAction: 'refund_or_advance_resolution'
+    });
+    return { ...exposure, allowed: false };
+  }
+
+  const hasSponsorExposure = exposure.unresolvedSponsor > 0.01 || exposure.activeSponsorClaims.length > 0;
+  if (!hasSponsorExposure) return { ...exposure, allowed: true, sponsorOverride: false };
+
+  const sponsorOverride = req.body?.sponsorOverride === true;
+  const sponsorOverrideReason = String(req.body?.sponsorOverrideReason || '').trim();
+  const canOverrideSponsor = sponsorOverride
+    && sponsorOverrideReason
+    && _hasActionPermission(req.user, 'claim_manage');
+  if (canOverrideSponsor) {
+    return {
+      ...exposure,
+      allowed: true,
+      sponsorOverride: true,
+      sponsorOverrideReason,
+      sponsorOverrideBy: req.user?._id
+    };
+  }
 
   res.status(409).json({
     success: false,
-    code: 'ISSUED_DOCUMENT_FINANCE_RESOLUTION_REQUIRED',
-    error: 'This issued document still has collected money allocated to it. Refund or move/reclassify the collection through the canonical finance workflow before emergency archival, then retry deletion.',
+    code: 'ISSUED_DOCUMENT_SPONSOR_RESOLUTION_REQUIRED',
+    error: 'This issued document still has sponsor/insurance receivable or an active claim. Resolve the sponsor exposure first, or use an explicit sponsor override with claim-management authority for emergency archival.',
     unresolvedCollected: exposure.unresolvedCollected,
+    unresolvedSponsor: exposure.unresolvedSponsor,
+    activeSponsorClaims: exposure.activeSponsorClaims,
     invoices: exposure.invoices,
-    requiredAction: 'refund_or_advance_resolution'
+    requiredAction: 'resolve_sponsor_or_explicit_override',
+    sponsorOverrideRequirements: {
+      sponsorOverride: true,
+      sponsorOverrideReason: 'required',
+      requiredPermission: 'claim_manage'
+    }
   });
   return { ...exposure, allowed: false };
 }
@@ -618,6 +720,16 @@ async function createCanonicalAppointmentBilling(req, payload) {
       if (!description) throw Object.assign(new Error('Manual bill item description is required'), { statusCode: 400 });
     }
 
+    const allowZeroCharge = payload.allowZeroCharge === true
+      && _hasActionPermission(req.user, 'pricing_override')
+      && String(payload.zeroChargeReason || payload.overrideReason || '').trim();
+    if (Number(rate || 0) <= 0 && !allowZeroCharge) {
+      const error = new Error(`${description || chargeType || 'OPD service'} resolved to ₹0. Configure a valid tariff or use an authorised zero-charge override with a reason.`);
+      error.statusCode = 409;
+      error.code = 'ZERO_TARIFF_REQUIRES_OVERRIDE';
+      throw error;
+    }
+
     const lineQty = Math.max(1, Number(item.quantity || 1));
     const lineGross = rate * lineQty;
     let lineDiscountRate = 0;
@@ -666,6 +778,15 @@ async function createCanonicalAppointmentBilling(req, payload) {
 
   if (!created.length) {
     const defaultRate = Number(tariff.amount || 0);
+    const allowZeroCharge = payload.allowZeroCharge === true
+      && _hasActionPermission(req.user, 'pricing_override')
+      && String(payload.zeroChargeReason || payload.overrideReason || '').trim();
+    if (defaultRate <= 0 && !allowZeroCharge) {
+      const error = new Error('OPD Consultation resolved to ₹0. Configure a valid doctor tariff or use an authorised zero-charge override with a reason.');
+      error.statusCode = 409;
+      error.code = 'ZERO_TARIFF_REQUIRES_OVERRIDE';
+      throw error;
+    }
     let lineDiscountRate = 0;
     let lineDiscountAmount = 0;
     if (resolvedDiscountType === 'percentage') {
@@ -781,6 +902,12 @@ async function createCanonicalAppointmentBilling(req, payload) {
   const explicitPayment = payload.paymentAmount ?? payload.amountPaid ?? payload.paid_amount ?? payload.paidAmount;
   const isPaidOrPartial = ['paid', 'partially paid', 'partial', 'discount pending approval'].includes(String(payload.status || '').toLowerCase());
   const shouldCollect = explicitPayment !== undefined || isPaidOrPartial;
+  if (shouldCollect && !_hasActionPermission(req.user, 'settlement')) {
+    const error = new Error('Settlement permission is required when direct appointment billing also collects patient money.');
+    error.statusCode = 403;
+    error.code = 'SETTLEMENT_PERMISSION_REQUIRED';
+    throw error;
+  }
   let payment = null;
   if (shouldCollect && Number(invoice.balance_due || 0) > 0) {
     const amountToCollect = explicitPayment !== undefined
@@ -1439,8 +1566,9 @@ exports.adminDeleteBill = async (req, res) => {
         error: 'A detailed reason is required for emergency deletion of an issued Bill / Invoice.'
       });
     }
+    let financeResolution = null;
     if (issuedContext.isIssued) {
-      const financeResolution = await requireIssuedDeletionFinanceResolved(req, res, bill);
+      financeResolution = await requireIssuedDeletionFinanceResolved(req, res, bill);
       if (!financeResolution.allowed) return;
     }
 
@@ -1453,7 +1581,11 @@ exports.adminDeleteBill = async (req, res) => {
       bill_id: bill._id,
       patient_name: bill.patient_id ? 
         `${bill.patient_id.first_name} ${bill.patient_id.last_name}` : 'Unknown',
-      invoice_number: bill.invoice_id?.invoice_number
+      invoice_number: bill.invoice_id?.invoice_number,
+      sponsor_override: Boolean(financeResolution?.sponsorOverride),
+      sponsor_override_reason: financeResolution?.sponsorOverrideReason,
+      unresolved_sponsor_at_archive: money(financeResolution?.unresolvedSponsor || 0),
+      active_sponsor_claims_at_archive: financeResolution?.activeSponsorClaims || []
     };
 
     const archivedInvoiceCount = issuedContext.isIssued

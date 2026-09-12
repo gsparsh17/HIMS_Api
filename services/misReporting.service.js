@@ -104,6 +104,7 @@ function invoicePayerValues(invoice = {}) {
   const hasCoverage = Boolean(allocation.coverage_id || allocation.payer_id);
   const sponsorLiability = money(allocation.sponsor_liability || 0);
   const sponsorPaid = money(allocation.sponsor_paid_amount || 0);
+  const sponsorCredit = money(allocation.sponsor_credit_amount || 0);
   const patientLiability = hasCoverage
     ? money(allocation.patient_liability || 0)
     : money(invoice.total || 0);
@@ -111,7 +112,8 @@ function invoicePayerValues(invoice = {}) {
     patientLiability,
     sponsorLiability,
     sponsorPaid,
-    sponsorOutstanding: money(Math.max(0, sponsorLiability - sponsorPaid)),
+    sponsorCredit,
+    sponsorOutstanding: money(Math.max(0, sponsorLiability - sponsorPaid - sponsorCredit)),
     patientOutstanding: money(invoice.balance_due || 0),
     sponsored: hasCoverage && sponsorLiability > 0
   };
@@ -334,13 +336,15 @@ async function getMISReport(reportKey, query, user) {
     case 'department':
       title = 'Department-wise Revenue';
       columns = ['department', 'count', 'gross', 'discount', 'credits', 'netRevenue', 'outstanding'];
-      rows = groupRows(invoices, (invoice) => invoice.admission_id?.departmentId?.name || (invoice.invoice_type === 'Pharmacy' ? 'Pharmacy' : 'OPD / Unassigned'), invoiceRevenueValues)
+      rows = groupRows(invoices, (invoice) => invoice.encounter_snapshot?.departmentName || invoice.encounter_snapshot?.department || invoice.admission_id?.departmentId?.name || (invoice.invoice_type === 'Pharmacy' ? 'Pharmacy' : 'OPD / Unassigned'), invoiceRevenueValues)
         .map((row) => ({ department: row.key, ...row }));
       break;
     case 'doctor':
       title = 'Doctor-wise Revenue';
       columns = ['doctor', 'count', 'gross', 'discount', 'credits', 'netRevenue', 'outstanding'];
       rows = groupRows(invoices, (invoice) => {
+        const snapshotName = invoice.encounter_snapshot?.doctorName || invoice.encounter_snapshot?.consultantName;
+        if (snapshotName) return /^dr\.?\s/i.test(snapshotName) ? snapshotName : `Dr. ${snapshotName}`;
         const doctor = invoice.admission_id?.primaryDoctorId;
         return doctor ? `Dr. ${doctor.firstName || doctor.name || ''} ${doctor.lastName || ''}`.trim() : 'Unassigned';
       }, invoiceRevenueValues).map((row) => ({ doctor: row.key, ...row }));
