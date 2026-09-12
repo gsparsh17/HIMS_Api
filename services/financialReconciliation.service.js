@@ -312,10 +312,14 @@ async function scanDocuments(hospitalId, { invoices, bills, transactions }) {
   return results;
 }
 
-async function scanCollections(hospitalId, { invoices, bills, transactions }) {
+async function scanCollections(hospitalId, { invoices, bills, archivedInvoices = [], archivedBills = [], transactions }) {
   const results = [];
-  const invoiceMap = new Map(invoices.map((row) => [idOf(row._id), row]));
-  const billMap = new Map(bills.map((row) => [idOf(row._id), row]));
+  // Posted financial history is append-only. An administrator may emergency-
+  // archive an issued document after its money is fully resolved; that soft-
+  // deleted document still exists as the audit target for historical ledger
+  // transactions and must not be treated as a missing/orphan document.
+  const invoiceMap = new Map([...invoices, ...archivedInvoices].map((row) => [idOf(row._id), row]));
+  const billMap = new Map([...bills, ...archivedBills].map((row) => [idOf(row._id), row]));
 
   const duplicates = await FinancialTransaction.aggregate([
     { $match: { hospitalId: oid(hospitalId), status: 'POSTED' } },
@@ -556,12 +560,14 @@ async function persistIssues(hospitalId, runId, issues) {
 }
 
 async function loadScope(hospitalId) {
-  const [invoices, bills, transactions] = await Promise.all([
+  const [invoices, bills, archivedInvoices, archivedBills, transactions] = await Promise.all([
     Invoice.find({ hospital_id: hospitalId, is_deleted: { $ne: true } }).lean(),
     Bill.find({ hospital_id: hospitalId, is_deleted: { $ne: true } }).lean(),
+    Invoice.find({ hospital_id: hospitalId, is_deleted: true }).lean(),
+    Bill.find({ hospital_id: hospitalId, is_deleted: true }).lean(),
     FinancialTransaction.find({ hospitalId, status: 'POSTED' }).lean()
   ]);
-  return { invoices, bills, transactions };
+  return { invoices, bills, archivedInvoices, archivedBills, transactions };
 }
 
 async function runScan(hospitalId, { persist = true } = {}) {

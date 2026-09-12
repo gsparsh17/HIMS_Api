@@ -3300,7 +3300,15 @@ async function createCreditNoteInSession(invoice, payload, user, session) {
     throw error;
   }
 
-  const eligible = money(Math.max(0, Number(invoice.total || 0) - Number(invoice.credit_note_total || 0)));
+  // Settlement discounts and credit notes both reduce the patient's recognised
+  // liability. Never allow a later credit note to exceed what remains after
+  // settlement concessions have already been posted.
+  const eligible = money(Math.max(
+    0,
+    Number(invoice.total || 0) -
+      Number(invoice.settlement_discount_amount || 0) -
+      Number(invoice.credit_note_total || 0)
+  ));
   if (amount > eligible + 0.01) {
     const error = new Error('Credit note amount exceeds the eligible invoice value');
     error.statusCode = 400;

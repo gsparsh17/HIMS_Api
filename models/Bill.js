@@ -462,18 +462,25 @@ billSchema.pre('save', function (next) {
   );
 
   const protectedStatuses = ['Draft', 'Cancelled', 'Refunded', 'Partially Returned', 'Fully Returned'];
-  if (this.balance_due <= 0 && !['Cancelled', 'Refunded'].includes(this.status)) {
-    this.status = 'Paid';
-    this.paid_at = this.paid_at || operationNow();
-  } else if (
-    this.paid_amount > 0 ||
-    Number(this.settlement_discount_amount || 0) > 0 ||
-    Number(this.credit_note_amount || 0) > 0
-  ) {
-    this.status = 'Partially Paid';
-  } else if (!protectedStatuses.includes(this.status)) {
-    // Prevent an impossible Paid bill with zero collection and a positive balance.
-    this.status = 'Pending';
+  // Terminal/audit statuses are explicit business decisions. Do not let the
+  // automatic payment projection overwrite them merely because the historical
+  // Bill still carries paid/discount/credit amounts. This is especially
+  // important after a paid OPD appointment is financially reversed and then
+  // cancelled: the retained Bill must remain Cancelled, not Partially Paid.
+  if (!protectedStatuses.includes(this.status)) {
+    if (this.balance_due <= 0) {
+      this.status = 'Paid';
+      this.paid_at = this.paid_at || operationNow();
+    } else if (
+      this.paid_amount > 0 ||
+      Number(this.settlement_discount_amount || 0) > 0 ||
+      Number(this.credit_note_amount || 0) > 0
+    ) {
+      this.status = 'Partially Paid';
+    } else {
+      // Prevent an impossible Paid bill with zero collection and a positive balance.
+      this.status = 'Pending';
+    }
   }
 
   const linkedInvoiceIds = [

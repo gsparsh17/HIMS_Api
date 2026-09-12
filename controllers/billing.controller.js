@@ -62,6 +62,64 @@ async function issuedBillDeletionContext(req, bill) {
   };
 }
 
+async function issuedDeletionFinancialExposure(req, bill) {
+  const hospitalId = requestHospitalId(req);
+  const linkedIds = [
+    ...(bill?.invoice_ids || []),
+    ...(bill?.invoice_id ? [bill.invoice_id] : [])
+  ].map((value) => value?._id || value).filter(Boolean);
+  const or = [{ bill_id: bill._id }, { bill_ids: bill._id }];
+  if (linkedIds.length) or.push({ _id: { $in: linkedIds } });
+
+  const invoices = await Invoice.find({
+    hospital_id: hospitalId,
+    is_deleted: { $ne: true },
+    document_stage: 'ISSUED',
+    invoice_type: { $ne: 'Credit Note' },
+    $or: or
+  }).select('_id invoice_number total amount_paid refunded_amount advance_transferred_amount settlement_discount_amount credit_note_total balance_due status').lean();
+
+  const rows = invoices.map((invoice) => {
+    const unresolvedCollected = money(Math.max(
+      0,
+      Number(invoice.amount_paid || 0) -
+        Number(invoice.refunded_amount || 0) -
+        Number(invoice.advance_transferred_amount || 0)
+    ));
+    return {
+      invoiceId: invoice._id,
+      invoiceNumber: invoice.invoice_number,
+      total: money(invoice.total || 0),
+      amountPaid: money(invoice.amount_paid || 0),
+      refundedAmount: money(invoice.refunded_amount || 0),
+      advanceTransferredAmount: money(invoice.advance_transferred_amount || 0),
+      unresolvedCollected,
+      balanceDue: money(invoice.balance_due || 0),
+      status: invoice.status
+    };
+  });
+
+  return {
+    invoices: rows,
+    unresolvedCollected: money(rows.reduce((sum, row) => sum + row.unresolvedCollected, 0))
+  };
+}
+
+async function requireIssuedDeletionFinanceResolved(req, res, bill) {
+  const exposure = await issuedDeletionFinancialExposure(req, bill);
+  if (exposure.unresolvedCollected <= 0) return { ...exposure, allowed: true };
+
+  res.status(409).json({
+    success: false,
+    code: 'ISSUED_DOCUMENT_FINANCE_RESOLUTION_REQUIRED',
+    error: 'This issued document still has collected money allocated to it. Refund or move/reclassify the collection through the canonical finance workflow before emergency archival, then retry deletion.',
+    unresolvedCollected: exposure.unresolvedCollected,
+    invoices: exposure.invoices,
+    requiredAction: 'refund_or_advance_resolution'
+  });
+  return { ...exposure, allowed: false };
+}
+
 async function requireIssuedDeletionAuthority(req, res, bill) {
   const context = await issuedBillDeletionContext(req, bill);
   if (!context.isIssued) return { ...context, allowed: true };
@@ -1381,6 +1439,10 @@ exports.adminDeleteBill = async (req, res) => {
         error: 'A detailed reason is required for emergency deletion of an issued Bill / Invoice.'
       });
     }
+    if (issuedContext.isIssued) {
+      const financeResolution = await requireIssuedDeletionFinanceResolved(req, res, bill);
+      if (!financeResolution.allowed) return;
+    }
 
     const deletionInfo = {
       deleted_by: req.user?._id,
@@ -1575,6 +1637,10 @@ exports.reviewDeletionRequest = async (req, res) => {
         error: 'Approving deletion of an issued Bill / Invoice requires the "Emergency delete issued Bill / Invoice" permission.',
         requiredAction: 'billing_delete_issued_document'
       });
+    }
+    if (action === 'approve' && issuedContext.isIssued) {
+      const financeResolution = await requireIssuedDeletionFinanceResolved(req, res, bill);
+      if (!financeResolution.allowed) return;
     }
 
     bill.deletion_request.status = action === 'approve' ? 'approved' : 'rejected';
