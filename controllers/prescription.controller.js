@@ -26,6 +26,7 @@ const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requestHospitalId } = require('../utils/hospitalScope');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
+const { appendDomainEvent } = require('../services/auditEvent.service');
 
 async function attachAdmissionDetailsToPrescriptions(prescriptions, hospitalId, { includeWardCode = false } = {}) {
   const rows = prescriptions.map((prescription) =>
@@ -863,6 +864,21 @@ const downloadBlankPrescriptionPdfByAppointment = async (req, res, { onePage = f
       return res.status(403).json({ error: 'Cross-hospital access denied' });
     }
 
+    const issuedPrescription = await Prescription.findOne({
+      appointment_id: appointment._id,
+      hospitalId: appointmentHospitalId,
+      status: { $ne: 'Cancelled' },
+      is_active: { $ne: false }
+    }).select('_id prescription_number status').lean();
+    if (issuedPrescription) {
+      return res.status(409).json({
+        error: 'A digital prescription has already been issued for this appointment. Print the issued prescription instead.',
+        code: 'DIGITAL_PRESCRIPTION_ALREADY_ISSUED',
+        prescription_id: issuedPrescription._id,
+        prescription_number: issuedPrescription.prescription_number
+      });
+    }
+
     // Lookup receipt/invoice number
     let receiptNumber = '';
     const invoice = await Invoice.findOne({ appointment_id: appointment._id, hospital_id: appointmentHospitalId })
@@ -937,6 +953,16 @@ const downloadBlankPrescriptionPdfByAppointment = async (req, res, { onePage = f
     };
 
     const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
+    await appendDomainEvent({
+      req,
+      eventType: 'opd.prescription.blank_printed',
+      entityType: 'Appointment',
+      entityId: appointment._id,
+      hospitalId: appointmentHospitalId,
+      patientId: appointment.patient_id?._id || appointment.patient_id,
+      encounterId: appointment._id,
+      afterSummary: { layout: onePage ? 'ONE_PAGE' : 'TWO_PAGE', documentType: 'BLANK_PRESCRIPTION' }
+    }).catch((auditError) => console.warn('Blank prescription print audit warning:', auditError.message));
     const generator = onePage ? generateBlankPrescriptionOnePagePdf : generatePrescriptionPdf;
     return generator({
       res,

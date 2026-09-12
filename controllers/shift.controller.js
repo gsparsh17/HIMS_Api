@@ -4,12 +4,18 @@ const ShiftHandover = require('../models/ShiftHandover');
 const IPDAdmission = require('../models/IPDAdmission');
 const NursingNote = require('../models/NursingNote');
 const IPDVitals = require('../models/IPDVitals');
+const Hospital = require('../models/Hospital');
+const HRStaffProfile = require('../models/HRStaffProfile');
+const staffScheduleService = require('../services/staffSchedule.service');
+const { requireHospitalId } = require('../services/tenantScope.service');
+const { DEFAULT_HOSPITAL_TIME_ZONE, hospitalTimeParts, hospitalDateKey, hospitalDayBounds, parseHospitalDateTime, addDateKeyDays } = require('../utils/hospitalDateTime');
 
 // ========== BASIC SHIFT CRUD ==========
 
 exports.createShift = async (req, res) => {
   try {
-    const shift = new Shift(req.body);
+    const hospitalId = requireHospitalId(req);
+    const shift = new Shift({ ...req.body, hospitalId });
     await shift.save();
     res.status(201).json(shift);
   } catch (err) {
@@ -19,14 +25,15 @@ exports.createShift = async (req, res) => {
 
 exports.getAllShifts = async (req, res) => {
   try {
-    let shifts = await Shift.find({ is_active: { $ne: false } });
-    
-    // Auto-create default shifts if the collection is empty
+    const hospitalId = requireHospitalId(req);
+    let shifts = await Shift.find({ hospitalId, is_active: { $ne: false } }).sort({ start_time: 1 });
+    // Migration compatibility: if this hospital has not yet received scoped shifts,
+    // clone the familiar defaults rather than using another hospital's records.
     if (shifts.length === 0) {
       const defaultShifts = [
-        { name: 'Morning', start_time: '07:00', end_time: '15:00' },
-        { name: 'Evening', start_time: '15:00', end_time: '23:00' },
-        { name: 'Night', start_time: '23:00', end_time: '07:00' }
+        { hospitalId, name: 'Morning', start_time: '07:00', end_time: '15:00', spans_next_day: false },
+        { hospitalId, name: 'Evening', start_time: '15:00', end_time: '23:00', spans_next_day: false },
+        { hospitalId, name: 'Night', start_time: '23:00', end_time: '07:00', spans_next_day: true }
       ];
       shifts = await Shift.insertMany(defaultShifts);
     }
@@ -39,7 +46,8 @@ exports.getAllShifts = async (req, res) => {
 
 exports.updateShift = async (req, res) => {
   try {
-    const shift = await Shift.findOneAndUpdate({ _id: req.params.id, is_active: { $ne: false } }, req.body, { new: true });
+    const hospitalId = requireHospitalId(req);
+    const shift = await Shift.findOneAndUpdate({ _id: req.params.id, hospitalId, is_active: { $ne: false } }, req.body, { new: true, runValidators: true });
     res.json(shift);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -48,8 +56,9 @@ exports.updateShift = async (req, res) => {
 
 exports.deleteShift = async (req, res) => {
   try {
+    const hospitalId = requireHospitalId(req);
     const shift = await Shift.findOneAndUpdate(
-      { _id: req.params.id, is_active: { $ne: false } },
+      { _id: req.params.id, hospitalId, is_active: { $ne: false } },
       { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Shift archived by user').trim() } },
       { new: true }
     );
@@ -62,7 +71,8 @@ exports.deleteShift = async (req, res) => {
 
 exports.getShiftById = async (req, res) => {
   try {
-    const shift = await Shift.findOne({ _id: req.params.id, is_active: { $ne: false } });
+    const hospitalId = requireHospitalId(req);
+    const shift = await Shift.findOne({ _id: req.params.id, hospitalId, is_active: { $ne: false } });
     if (!shift) return res.status(404).json({ error: 'Shift not found' });
     res.json(shift);
   } catch (err) {
@@ -72,31 +82,98 @@ exports.getShiftById = async (req, res) => {
 
 // ========== SHIFT HANDOVER SYSTEM ==========
 
-/**
- * Determine current shift based on hour of day
- */
-const getCurrentShift = () => {
-  const hour = new Date().getHours();
-  if (hour >= 6 && hour < 14) return 'Morning';
-  if (hour >= 14 && hour < 22) return 'Evening';
-  return 'Night';
-};
+/** Resolve current/next named shift in the hospital timezone. */
+function wallMinutes(value) {
+  const [hour, minute] = String(value || '00:00').slice(0, 5).split(':').map(Number);
+  return hour * 60 + minute;
+}
 
-/**
- * Get the next shift name
- */
-const getNextShift = (current) => {
-  if (current === 'Morning') return 'Evening';
-  if (current === 'Evening') return 'Night';
-  return 'Morning';
-};
+function shiftContainsMinutes(shift, minute) {
+  const start = wallMinutes(shift.start_time);
+  const end = wallMinutes(shift.end_time);
+  const spans = Boolean(shift.spans_next_day) || end <= start;
+  return spans ? (minute >= start || minute < end) : (minute >= start && minute < end);
+}
 
-/**
- * Map shift name to the corresponding Shift document
- */
-const findShiftDoc = async (shiftName) => {
-  return Shift.findOne({ name: { $regex: new RegExp(`^${shiftName}$`, 'i') } });
-};
+async function getShiftContext(req) {
+  const hospitalId = requireHospitalId(req);
+  const hospital = await Hospital.findById(hospitalId).select('timezone').lean();
+  const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+  let shifts = await Shift.find({ hospitalId, is_active: { $ne: false } }).sort({ start_time: 1 }).lean();
+  if (!shifts.length) {
+    shifts = [
+      { name: 'Morning', start_time: '07:00', end_time: '15:00' },
+      { name: 'Evening', start_time: '15:00', end_time: '23:00' },
+      { name: 'Night', start_time: '23:00', end_time: '07:00', spans_next_day: true }
+    ];
+  }
+  const now = hospitalTimeParts(new Date(), timeZone);
+  const minute = Number(now.hour) * 60 + Number(now.minute);
+  const current = shifts.find((shift) => shiftContainsMinutes(shift, minute)) || shifts[0];
+  const ordered = [...shifts].sort((a, b) => wallMinutes(a.start_time) - wallMinutes(b.start_time));
+  const currentIndex = ordered.findIndex((shift) => String(shift._id || shift.name) === String(current?._id || current?.name));
+  const next = ordered[(currentIndex + 1 + ordered.length) % ordered.length] || current;
+  return { hospitalId, timeZone, current, next, shifts };
+}
+
+const findShiftDoc = async (hospitalId, shiftName) => Shift.findOne({
+  hospitalId,
+  is_active: { $ne: false },
+  name: { $regex: new RegExp(`^${shiftName}$`, 'i') }
+});
+
+function nextShiftStartInstant(shiftContext) {
+  const now = new Date();
+  const parts = hospitalTimeParts(now, shiftContext.timeZone);
+  const currentMinute = Number(parts.hour) * 60 + Number(parts.minute);
+  const nextStartMinute = wallMinutes(shiftContext.next?.start_time || '00:00');
+  let dateKey = hospitalDateKey(now, shiftContext.timeZone);
+  if (nextStartMinute <= currentMinute) dateKey = addDateKeyDays(dateKey, 1);
+  return parseHospitalDateTime(shiftContext.next?.start_time || '00:00', dateKey, shiftContext.timeZone);
+}
+
+async function staffProfileMapForStaff({ hospitalId, staffRows }) {
+  const ids = staffRows.map((row) => row._id).filter(Boolean);
+  if (!ids.length) return new Map();
+  const profiles = await HRStaffProfile.find({
+    hospital_id: hospitalId,
+    is_active: { $ne: false },
+    $or: [
+      { staff_id: { $in: ids } },
+      { source_model: 'Staff', source_id: { $in: ids } }
+    ]
+  }).select('_id staff_id source_id').lean();
+  const map = new Map();
+  for (const profile of profiles) {
+    if (profile.staff_id) map.set(String(profile.staff_id), profile);
+    if (profile.source_id) map.set(String(profile.source_id), profile);
+  }
+  return map;
+}
+
+async function nurseMatchesIncomingSchedule({ nurse, profile, shiftContext, nextShiftDoc, targetInstant }) {
+  if (profile?._id) {
+    try {
+      const scheduled = await staffScheduleService.isEmployeeScheduledAt({
+        hospitalId: shiftContext.hospitalId,
+        employeeId: profile._id,
+        instant: targetInstant
+      });
+      // When a weekly schedule is configured, it is authoritative. If it is not configured,
+      // preserve legacy single-shift behaviour below.
+      const schedule = await staffScheduleService.getEmployeeScheduleIntervals({
+        hospitalId: shiftContext.hospitalId,
+        employeeId: profile._id,
+        dateKey: hospitalDateKey(targetInstant, shiftContext.timeZone),
+        timeZone: shiftContext.timeZone
+      });
+      if (schedule.scheduleSource !== 'unconfigured') return scheduled;
+    } catch (error) {
+      console.warn('Nurse schedule resolution warning:', error.message);
+    }
+  }
+  return Boolean(nextShiftDoc && nurse.shift && String(nurse.shift._id || nurse.shift) === String(nextShiftDoc._id));
+}
 
 /**
  * Auto-assign incoming nurse based on:
@@ -107,23 +184,25 @@ const findShiftDoc = async (shiftName) => {
 exports.getAvailableNursesForHandover = async (req, res) => {
   try {
     const { outgoingNurseId } = req.params;
-    const currentShift = getCurrentShift();
-    const nextShiftName = getNextShift(currentShift);
-
-    // Find the Shift document that matches the next shift
-    const nextShiftDoc = await findShiftDoc(nextShiftName);
+    const shiftContext = await getShiftContext(req);
+    const currentShift = shiftContext.current?.name || 'Current';
+    const nextShiftName = shiftContext.next?.name || currentShift;
+    const nextShiftDoc = shiftContext.next?._id ? await Shift.findById(shiftContext.next._id) : null;
 
     // Fetch ALL hospital nurses (except outgoing) so user has full visibility
     const availableNurses = await Staff.find({
+      hospitalId: shiftContext.hospitalId,
       role: { $regex: /nurse/i },
       _id: { $ne: outgoingNurseId }
     }).populate('shift', 'name start_time end_time')
       .populate('department', 'name');
 
     // Count active (unacknowledged) handovers per nurse to determine workload
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayKey = hospitalDateKey(new Date(), shiftContext.timeZone);
+    const { start: today } = hospitalDayBounds(todayKey, shiftContext.timeZone);
 
+    const profileMap = await staffProfileMapForStaff({ hospitalId: shiftContext.hospitalId, staffRows: availableNurses });
+    const targetInstant = nextShiftStartInstant(shiftContext);
     const nurseWorkloads = await Promise.all(
       availableNurses.map(async (nurse) => {
         const activeHandovers = await ShiftHandover.countDocuments({
@@ -131,8 +210,13 @@ exports.getAvailableNursesForHandover = async (req, res) => {
           status: { $in: ['Submitted', 'Draft'] },
           handoverDate: { $gte: today }
         });
-        
-        const isNextShift = nextShiftDoc && nurse.shift && nurse.shift._id.toString() === nextShiftDoc._id.toString();
+        const isNextShift = await nurseMatchesIncomingSchedule({
+          nurse,
+          profile: profileMap.get(String(nurse._id)),
+          shiftContext,
+          nextShiftDoc,
+          targetInstant
+        });
 
         return {
           nurse: {
@@ -183,8 +267,10 @@ exports.getAvailableNursesForHandover = async (req, res) => {
  */
 exports.getHandoverPatientData = async (req, res) => {
   try {
-    // Get all active admissions
+    const hospitalId = requireHospitalId(req);
+    // Get all active admissions for this hospital only.
     const admissions = await IPDAdmission.find({
+      hospitalId,
       status: { $in: ['Admitted', 'Under Treatment'] }
     })
       .populate('patientId', 'first_name last_name gender dob patientId allergies')
@@ -266,8 +352,8 @@ exports.getHandoverPatientData = async (req, res) => {
     res.json({
       success: true,
       patients: patientData,
-      currentShift: getCurrentShift(),
-      nextShift: getNextShift(getCurrentShift())
+      currentShift: (await getShiftContext(req)).current?.name || '',
+      nextShift: (await getShiftContext(req)).next?.name || ''
     });
   } catch (err) {
     console.error('Error getting handover patient data:', err);
@@ -290,12 +376,13 @@ exports.createHandover = async (req, res) => {
       status
     } = req.body;
 
-    const currentShift = getCurrentShift();
-    const nextShift = getNextShift(currentShift);
+    const shiftContext = await getShiftContext(req);
+    const currentShift = shiftContext.current?.name || 'Current';
+    const nextShift = shiftContext.next?.name || currentShift;
 
     // Validate incoming nurse exists (no strict shift check — allows manual override)
     if (incomingNurseId) {
-      const incomingNurse = await Staff.findById(incomingNurseId);
+      const incomingNurse = await Staff.findOne({ _id: incomingNurseId, hospitalId: shiftContext.hospitalId, is_active: { $ne: false } });
       if (!incomingNurse) {
         return res.status(404).json({ error: 'Selected incoming nurse not found' });
       }
@@ -317,19 +404,30 @@ exports.createHandover = async (req, res) => {
 
     // If auto-assign, find best nurse
     if (!incomingNurseId) {
-      const nextShiftDoc = await findShiftDoc(nextShift);
+      const nextShiftDoc = await findShiftDoc(shiftContext.hospitalId, nextShift);
       if (nextShiftDoc) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const candidates = await Staff.find({
+        const todayKey = hospitalDateKey(new Date(), shiftContext.timeZone);
+        const { start: today } = hospitalDayBounds(todayKey, shiftContext.timeZone);
+        const allCandidates = await Staff.find({
+          hospitalId: shiftContext.hospitalId,
           role: { $regex: /nurse/i },
-          shift: nextShiftDoc._id,
           _id: { $ne: outgoingNurseId }
-        });
+        }).populate('shift', 'name start_time end_time');
+        const profileMap = await staffProfileMapForStaff({ hospitalId: shiftContext.hospitalId, staffRows: allCandidates });
+        const targetInstant = nextShiftStartInstant(shiftContext);
+        const candidates = [];
+        for (const nurse of allCandidates) {
+          if (await nurseMatchesIncomingSchedule({
+            nurse,
+            profile: profileMap.get(String(nurse._id)),
+            shiftContext,
+            nextShiftDoc,
+            targetInstant
+          })) candidates.push(nurse);
+        }
 
         if (candidates.length > 0) {
-          // Workload-based assignment
+          // Workload-based assignment among nurses who are actually scheduled for the incoming period.
           let bestNurse = candidates[0];
           let minHandovers = Infinity;
 

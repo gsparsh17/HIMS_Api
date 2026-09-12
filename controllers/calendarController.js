@@ -1,5 +1,7 @@
 const Calendar = require('../models/Calendar');
 const Appointment = require('../models/Appointment');
+const CalendarEvent = require('../models/CalendarEvent');
+const { requireHospitalId } = require('../services/tenantScope.service');
 const mongoose = require('mongoose');
 const {
   DEFAULT_HOSPITAL_TIME_ZONE,
@@ -152,65 +154,43 @@ exports.updateAppointmentStatus = async (req, res) => {
   }
 };
 
-// Add break for a doctor
+// Add break for a doctor. CalendarEvent is authoritative; the legacy embedded
+// calendar is updated when present for backwards-compatible screens.
 exports.addDoctorBreak = async (req, res) => {
   try {
-    const { doctorId, hospitalId, date, startTime, endTime, reason } = req.body;
-
+    const hospitalId = requireHospitalId(req);
+    const { doctorId, date, startTime, endTime, reason } = req.body;
     const calendar = await Calendar.findOne({ hospitalId });
-    if (!calendar) return res.status(404).json({ error: 'Calendar not found' });
-
-    const timeZone = calendar.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+    const timeZone = calendar?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
     const dateStr = hospitalDateKey(date, timeZone);
-    const day = calendar.days.find((d) => calendarDayKey(d, timeZone) === dateStr);
-    if (!day) return res.status(404).json({ error: 'Day not found in calendar' });
-
-    const doctor = day.doctors.find(d => d.doctorId.toString() === doctorId.toString());
-    if (!doctor) return res.status(404).json({ error: 'Doctor not found on this day' });
-
     const breakStart = parseHospitalDateTime(startTime, dateStr, timeZone);
     const breakEnd = parseHospitalDateTime(endTime, dateStr, timeZone);
-    const breakDuration = (breakEnd - breakStart) / 60000;
+    if (breakEnd <= breakStart) return res.status(400).json({ error: 'Break end time must be after start time' });
 
-    // 🚫 Prevent overlapping breaks
-    if (hasTimeConflict([], breakStart, breakEnd, doctor.breaks)) {
-      return res.status(400).json({ error: 'Break overlaps with existing break' });
-    }
+    const duplicate = await CalendarEvent.exists({
+      hospital_id: hospitalId, doctor_id: doctorId, date_key: dateStr, type: 'BREAK',
+      start_time: String(startTime).slice(0,5), end_time: String(endTime).slice(0,5), is_active: { $ne: false }
+    });
+    if (duplicate) return res.status(409).json({ error: 'This break already exists' });
 
-    doctor.breaks.push({
-      startTime: breakStart,
-      endTime: breakEnd,
-      reason: reason || 'Break'
+    const event = await CalendarEvent.create({
+      hospital_id: hospitalId, doctor_id: doctorId, date_key: dateStr, type: 'BREAK',
+      start_time: String(startTime).slice(0,5), end_time: String(endTime).slice(0,5), timezone: timeZone,
+      reason: reason || 'Break', created_by: req.user?._id, updated_by: req.user?._id
     });
 
-    // ⏱ Handle overlapping appointments
-    const overlappingAppointments = doctor.bookedAppointments.filter(appt =>
-      appt.startTime < breakEnd && appt.endTime > breakStart
-    );
-
-    for (const appt of overlappingAppointments) {
-      // Cancel overlapping appointments
-      appt.status = 'Cancelled';
-      await Appointment.findByIdAndUpdate(appt.appointmentId, { status: 'Cancelled' });
-    }
-
-    // Shift all appointments after the break
-    for (const appt of doctor.bookedAppointments) {
-      if (appt.startTime >= breakEnd) {
-        appt.startTime = new Date(appt.startTime.getTime() + breakDuration * 60000);
-        appt.endTime = new Date(appt.endTime.getTime() + breakDuration * 60000);
-
-        await Appointment.findByIdAndUpdate(appt.appointmentId, {
-          start_time: appt.startTime,
-          end_time: appt.endTime
-        });
+    if (calendar) {
+      const day = calendar.days.find((d) => calendarDayKey(d, timeZone) === dateStr);
+      const doctor = day?.doctors?.find((d) => d.doctorId.toString() === String(doctorId));
+      if (doctor && !hasTimeConflict([], breakStart, breakEnd, doctor.breaks)) {
+        doctor.breaks.push({ startTime: breakStart, endTime: breakEnd, reason: reason || 'Break' });
+        await calendar.save().catch((legacyError) => console.warn('Legacy calendar break sync warning:', legacyError.message));
       }
     }
 
-    await calendar.save();
-    res.json({ message: 'Break added, conflicts cancelled, and appointments shifted successfully' });
+    res.status(201).json({ message: 'Doctor break added', event });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 };
 

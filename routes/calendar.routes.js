@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const calendarEventController = require('../controllers/calendarEvent.controller');
 const {
   updateAppointmentStatus,
   addDoctorBreak,
@@ -16,6 +17,10 @@ const {
 
 // // Cancel a booking
 // router.patch('/cancel', cancelBooking);
+
+router.get('/events/list', calendarEventController.list);
+router.post('/events', calendarEventController.create);
+router.delete('/events/:id', calendarEventController.remove);
 
 // Update appointment status (Scheduled → InProgress → Completed → Cancelled)
 router.patch('/appointment/status', updateAppointmentStatus);

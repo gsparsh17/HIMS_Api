@@ -50,6 +50,12 @@ const hospitalSchema = new mongoose.Schema(
     city: { type: String, required: true, trim: true },
     state: { type: String, required: true, trim: true },
     timezone: { type: String, default: process.env.HOSPITAL_TIMEZONE || process.env.HOSPITAL_TIME_ZONE || 'Asia/Kolkata', trim: true },
+    opdWorkflowMode: {
+      type: String,
+      enum: ['DIGITAL_DOCTOR', 'PAPER_RECEPTION', 'HYBRID'],
+      default: 'HYBRID',
+      index: true
+    },
     email: { type: String, required: true, lowercase: true, trim: true },
     fireNOC: String,
     policyDetails: String,

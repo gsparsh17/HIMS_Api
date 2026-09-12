@@ -83,7 +83,8 @@ const ALLOWED_ACTIONS = new Set([
   'ipd_discharge_support',
   'ipd_discharge_override',
   'ipd_final_discharge',
-  'pharmacy_finance_access'
+  'pharmacy_finance_access',
+  'appointment_complete'
 ]);
 
 function normalizePermissions(rows, actor) {

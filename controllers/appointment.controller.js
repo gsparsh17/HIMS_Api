@@ -31,6 +31,7 @@ const patientFinancial = require('../services/patientFinancial.service');
 const ipdFinancial = require('../services/ipdFinancial.service');
 const { checkModuleAccess, _hasActionPermission } = require('../middlewares/auth');
 const scalableRead = require('../services/scalableRead.service');
+const staffScheduleService = require('../services/staffSchedule.service');
 const {
   DEFAULT_HOSPITAL_TIME_ZONE,
   hospitalDateKey,
@@ -126,6 +127,42 @@ async function recalculateAffectedCalendarQueues({ hospitalId, date, rows = [] }
 
 function startRoleAllowed(user) {
   return ['admin', 'mediqliq_super_admin', 'doctor'].includes(String(user?.role || '').toLowerCase());
+}
+
+function completionSourceForRole(role) {
+  const normalized = String(role || '').trim().toLowerCase();
+  if (normalized === 'doctor') return 'DOCTOR_DASHBOARD';
+  if (['registrar', 'receptionist', 'staff'].includes(normalized)) return 'FRONT_DESK';
+  if (['admin', 'mediqliq_super_admin'].includes(normalized)) return 'ADMIN';
+  return 'API';
+}
+
+async function assertCanCompleteAppointment({ req, appointment }) {
+  const role = String(req.user?.role || '').trim().toLowerCase();
+  if (['admin', 'mediqliq_super_admin', 'registrar', 'receptionist'].includes(role)) return true;
+  if (role === 'staff' && checkModuleAccess(req.user, 'registration_opd', 'manage')) return true;
+  if (_hasActionPermission(req.user, 'appointment_complete')) return true;
+  if (role === 'doctor') {
+    const doctor = await Doctor.findOne({
+      _id: appointment.doctor_id,
+      hospitalId: appointment.hospital_id,
+      user_id: req.user?._id,
+      is_active: { $ne: false }
+    }).select('_id').lean();
+    if (doctor) return true;
+  }
+  const error = new Error('You are not permitted to complete this appointment');
+  error.statusCode = 403;
+  error.code = 'APPOINTMENT_COMPLETE_FORBIDDEN';
+  throw error;
+}
+
+async function effectiveOpdWorkflowMode({ hospitalId, doctorId }) {
+  const [hospital, doctor] = await Promise.all([
+    Hospital.findById(hospitalId).select('opdWorkflowMode').lean(),
+    Doctor.findOne({ _id: doctorId, hospitalId }).select('opdWorkflowModeOverride').lean()
+  ]);
+  return doctor?.opdWorkflowModeOverride || hospital?.opdWorkflowMode || 'HYBRID';
 }
 
 async function guardConsultationStart({ hospitalId, appointment, doctorId, user }) {
@@ -323,6 +360,50 @@ async function removeAppointmentFromCalendar(appointment) {
   await calendar.save();
 }
 
+async function syncAppointmentToLegacyCalendar(appointment) {
+  try {
+    const calendar = await Calendar.findOne({ hospitalId: appointment.hospital_id });
+    if (!calendar) return false;
+    const timeZone = calendar.timezone || appointment.scheduled_timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+    const dateKey = appointment.appointment_date_key || hospitalDateKey(appointment.appointment_date, timeZone);
+    let day = calendar.days.find((row) => calendarDayKey(row, timeZone) === dateKey);
+    if (!day) {
+      calendar.days.push({
+        date: dateKeyToStorageDate(dateKey),
+        dateKey,
+        dayName: new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(new Date(`${dateKey}T12:00:00Z`)),
+        doctors: []
+      });
+      day = calendar.days[calendar.days.length - 1];
+    }
+    let doctorDay = day.doctors.find((row) => String(row.doctorId) === String(appointment.doctor_id));
+    if (!doctorDay) {
+      day.doctors.push({ doctorId: appointment.doctor_id, bookedAppointments: [], bookedPatients: [], breaks: [] });
+      doctorDay = day.doctors[day.doctors.length - 1];
+    }
+    if (appointment.type === 'time-based') {
+      const exists = doctorDay.bookedAppointments.some((row) => String(row.appointmentId) === String(appointment._id));
+      if (!exists) {
+        doctorDay.bookedAppointments.push({
+          startTime: appointment.start_time,
+          endTime: appointment.end_time,
+          duration: appointment.duration || 10,
+          appointmentId: appointment._id,
+          status: appointment.status === 'In Progress' ? 'InProgress' : appointment.status
+        });
+      }
+    } else {
+      const exists = doctorDay.bookedPatients.some((row) => String(row.appointmentId) === String(appointment._id));
+      if (!exists) doctorDay.bookedPatients.push({ patientId: appointment.patient_id, serialNumber: appointment.serial_number, appointmentId: appointment._id });
+    }
+    await calendar.save();
+    return true;
+  } catch (error) {
+    console.warn('Legacy calendar sync warning:', error.message);
+    return false;
+  }
+}
+
 async function updateCalendarAppointmentStatus(appointment, status) {
   const calendar = await Calendar.findOne({ hospitalId: appointment.hospital_id });
   if (!calendar) return false;
@@ -350,67 +431,55 @@ exports.checkAppointmentConflict = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
     const { doctorId, appointmentDate, startTime, duration = 10 } = req.query;
-    if (!doctorId || !appointmentDate) {
-      return res.status(400).json({ error: 'doctorId and appointmentDate are required' });
-    }
-    let dateStr;
-    try {
-      dateStr = hospitalDateKey(appointmentDate, DEFAULT_HOSPITAL_TIME_ZONE);
-    } catch (_error) {
-      return res.status(400).json({ error: 'Invalid appointmentDate' });
-    }
-    if (!mongoose.isValidObjectId(doctorId)
-      || !(await Doctor.exists({ _id: doctorId, hospitalId, is_active: { $ne: false } }))) {
+    if (!doctorId || !appointmentDate) return res.status(400).json({ error: 'doctorId and appointmentDate are required' });
+    const hospital = await Hospital.findById(hospitalId).select('timezone');
+    const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+    const dateStr = hospitalDateKey(appointmentDate, timeZone);
+    if (!mongoose.isValidObjectId(doctorId) || !(await Doctor.exists({ _id: doctorId, hospitalId, is_active: { $ne: false } }))) {
       return res.status(404).json({ error: 'Doctor not found for this hospital' });
     }
     const durationMinutes = Number(duration);
     if (!Number.isFinite(durationMinutes) || durationMinutes <= 0 || durationMinutes > 1440) {
       return res.status(400).json({ error: 'duration must be between 1 and 1440 minutes' });
     }
-
-    const calendar = await Calendar.findOne({ hospitalId });
-    if (!calendar) {
-      return res.json({ hasConflict: false, message: 'No calendar found' });
-    }
-
-    const timeZone = calendar.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
-    dateStr = hospitalDateKey(appointmentDate, timeZone);
-    const day = calendar.days.find((d) => calendarDayKey(d, timeZone) === dateStr);
-
-    if (!day) {
-      return res.json({ hasConflict: false, message: 'No schedule for this date' });
-    }
-
-    const doctor = day.doctors.find(d => d.doctorId.toString() === doctorId);
-    if (!doctor) {
-      return res.json({ hasConflict: false, message: 'Doctor not scheduled for this date' });
-    }
-
-    if (startTime) {
-      let start;
+    if (!startTime) {
       try {
-        start = parseHospitalDateTime(startTime, dateStr, timeZone);
-        assertInstantOnHospitalDate(start, dateStr, timeZone);
+        await staffScheduleService.assertDoctorWorkingDay({ hospitalId, doctorId, dateKey: dateStr });
+        return res.json({ hasConflict: false, message: 'Doctor is scheduled for this date' });
       } catch (error) {
-        return res.status(400).json({ error: error.message, code: error.code || 'VALIDATION_ERROR' });
+        return res.json({ hasConflict: true, message: error.message, code: error.code });
       }
-      const end = new Date(start.getTime() + durationMinutes * 60000);
-
-      const hasConflict = doctor.bookedAppointments.some(appt => {
-        const apptStart = new Date(appt.startTime);
-        const apptEnd = new Date(appt.endTime);
-        return (start < apptEnd && end > apptStart);
-      });
-
-      return res.json({
-        hasConflict,
-        message: hasConflict ? 'Time slot is already booked' : 'Time slot is available'
-      });
     }
-
-    res.json({ hasConflict: false });
+    const start = parseHospitalDateTime(startTime, dateStr, timeZone);
+    assertInstantOnHospitalDate(start, dateStr, timeZone);
+    const end = new Date(start.getTime() + durationMinutes * 60000);
+    try {
+      await staffScheduleService.assertDoctorAvailable({ hospitalId, doctorId, dateKey: dateStr, startTime: start, endTime: end });
+      return res.json({ hasConflict: false, message: 'Time slot is available' });
+    } catch (error) {
+      if (['SLOT_CONFLICT', 'OUTSIDE_DOCTOR_WORKING_HOURS', 'DOCTOR_ON_LEAVE'].includes(error.code)) {
+        return res.json({ hasConflict: true, message: error.message, code: error.code });
+      }
+      throw error;
+    }
   } catch (err) {
-    res.status(err.statusCode || 500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
+  }
+};
+
+exports.getDoctorAvailability = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const dateKey = req.query.date || new Date();
+    const result = await staffScheduleService.getDoctorAvailability({
+      hospitalId,
+      doctorId: req.params.doctorId,
+      dateKey,
+      slotMinutes: req.query.slotMinutes || 10
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.message, code: error.code });
   }
 };
 
@@ -479,7 +548,6 @@ exports.bulkCreateAppointments = async (req, res) => {
   const successfulImports = [];
   const failedImports = [];
   const syncLogs = [];
-  const calendarUpdates = new Map();
 
   const hospitalId = requireHospitalId(req);
   const hospital = await Hospital.findById(hospitalId);
@@ -491,7 +559,6 @@ exports.bulkCreateAppointments = async (req, res) => {
   const todayKey = hospitalTodayKey(timeZone);
 
   for (const appointmentData of appointmentsData) {
-    let calendarMutation = null;
     let appointmentSaved = false;
     try {
       if (!appointmentData || typeof appointmentData !== 'object') {
@@ -759,36 +826,10 @@ exports.bulkCreateAppointments = async (req, res) => {
         cancelledBy: requestedStatus === 'Cancelled' ? req.user?._id : undefined
       });
 
-      // Handle calendar for future appointments
+      // Validate future bookings against the authoritative working schedule. The Appointment
+      // collection is the booking source of truth; the legacy Calendar is updated only
+      // after a successful save for older screens that still read it.
       if (!isHistorical) {
-        // A Calendar document stores all dates for a hospital. Keep one shared
-        // in-memory instance so updates for different dates cannot overwrite
-        // each other when the batch is persisted.
-        const cacheKey = String(hospital._id);
-        let calendar = calendarUpdates.get(cacheKey);
-
-        if (!calendar) {
-          calendar = await Calendar.findOne({ hospitalId: hospital._id });
-          if (!calendar) {
-            failedImports.push({ localId: appointmentData.localId, reason: 'Hospital calendar is not configured.' });
-            continue;
-          }
-          calendarUpdates.set(cacheKey, calendar);
-        }
-
-        const calendarTimeZone = calendar.timezone || timeZone;
-        const day = calendar.days.find((d) => calendarDayKey(d, calendarTimeZone) === appointmentDateKey);
-        if (!day) {
-          failedImports.push({ localId: appointmentData.localId, reason: 'Appointment date is not available in the hospital calendar.' });
-          continue;
-        }
-
-        const docDay = day.doctors.find(d => d.doctorId.toString() === doctor._id.toString());
-        if (!docDay) {
-          failedImports.push({ localId: appointmentData.localId, reason: 'Doctor is not scheduled on the appointment date.' });
-          continue;
-        }
-
         if (appointment.type === 'time-based') {
           if (!appointmentData.start_time) {
             failedImports.push({ localId: appointmentData.localId, reason: 'start_time is required for time-based appointments.' });
@@ -803,40 +844,25 @@ exports.bulkCreateAppointments = async (req, res) => {
             continue;
           }
           const endTime = new Date(startTime.getTime() + appointment.duration * 60000);
-
-          if (hasTimeConflict(docDay.bookedAppointments, startTime, endTime, docDay.breaks)) {
-            failedImports.push({
-              localId: appointmentData.localId,
-              reason: 'Time slot conflict'
-            });
-            continue;
-          }
-
+          await staffScheduleService.assertDoctorAvailable({
+            hospitalId, doctorId: doctor._id, dateKey: appointmentDateKey, startTime, endTime
+          });
           appointment.start_time = startTime;
           appointment.end_time = endTime;
-
-          docDay.bookedAppointments.push({
-            startTime,
-            endTime,
-            duration: appointment.duration,
-            appointmentId: appointment._id,
-            status: appointment.status === 'In Progress' ? 'InProgress' : appointment.status
-          });
-          calendarMutation = { docDay, type: 'time-based', appointmentId: appointment._id };
-        } else if (appointment.type === 'number-based') {
-          const lastPatient = docDay.bookedPatients.sort((a, b) => b.serialNumber - a.serialNumber)[0];
-          const serialNumber = lastPatient ? lastPatient.serialNumber + 1 : 1;
-          appointment.serial_number = serialNumber;
-
-          docDay.bookedPatients.push({
-            patientId: appointment.patient_id,
-            serialNumber,
-            appointmentId: appointment._id
-          });
-          calendarMutation = { docDay, type: 'number-based', appointmentId: appointment._id };
+        } else {
+          await staffScheduleService.assertDoctorWorkingDay({ hospitalId, doctorId: doctor._id, dateKey: appointmentDateKey });
+          const lastNumberAppointment = await Appointment.findOne({
+            hospital_id: hospitalId,
+            doctor_id: doctor._id,
+            appointment_date_key: appointmentDateKey,
+            type: 'number-based',
+            status: { $ne: 'Cancelled' },
+            is_active: { $ne: false }
+          }).sort({ serial_number: -1 }).select('serial_number').lean();
+          appointment.serial_number = Number(lastNumberAppointment?.serial_number || 0) + 1;
         }
       } else {
-        // Historical appointment - set times if provided
+        // Historical appointment - preserve supplied clinical times without requiring a current schedule.
         if (appointment.type === 'time-based' && appointmentData.start_time) {
           let startTime;
           try {
@@ -911,6 +937,12 @@ exports.bulkCreateAppointments = async (req, res) => {
         throw coverageError;
       }
 
+      if (!isHistorical) {
+        await syncAppointmentToLegacyCalendar(appointment).catch((calendarError) =>
+          console.warn('Legacy calendar sync warning during bulk appointment import:', calendarError.message)
+        );
+      }
+
       successfulImports.push({
         localId: appointmentData.localId,
         serverId: appointment._id,
@@ -936,28 +968,12 @@ exports.bulkCreateAppointments = async (req, res) => {
       }
 
     } catch (err) {
-      if (calendarMutation && !appointmentSaved) {
-        if (calendarMutation.type === 'time-based') {
-          calendarMutation.docDay.bookedAppointments = calendarMutation.docDay.bookedAppointments.filter(
-            (row) => String(row.appointmentId) !== String(calendarMutation.appointmentId)
-          );
-        } else {
-          calendarMutation.docDay.bookedPatients = calendarMutation.docDay.bookedPatients.filter(
-            (row) => String(row.appointmentId) !== String(calendarMutation.appointmentId)
-          );
-        }
-      }
       console.error('Error processing appointment:', err);
       failedImports.push({
         localId: appointmentData.localId,
         reason: err.message
       });
     }
-  }
-
-  // Save all calendar updates
-  for (const calendar of calendarUpdates.values()) {
-    await calendar.save();
   }
 
   // Bulk insert sync logs
@@ -980,25 +996,46 @@ exports.bulkCreateAppointments = async (req, res) => {
 exports.completeAppointment = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
-    const appointment = await Appointment.findOneAndUpdate(
-      { _id: req.params.id, hospital_id: hospitalId },
-      {
-        status: 'Completed',
-        actual_end_time: operationNow(),
-        'lifecycleTimestamps.consultationEndedAt': operationNow()
-      },
-      { new: true }
-    );
-
-    if (!appointment) {
-      return res.status(404).json({ error: 'Appointment not found' });
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      hospital_id: hospitalId,
+      is_active: { $ne: false }
+    });
+    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
+    if (appointment.status === 'Cancelled') {
+      return res.status(409).json({ error: 'Cancelled appointments cannot be completed', code: 'APPOINTMENT_CANCELLED' });
     }
+
+    await assertCanCompleteAppointment({ req, appointment });
+    if (appointment.status === 'Completed') {
+      return res.json({ message: 'Appointment is already completed', appointment, idempotent: true });
+    }
+
+    const completedAt = operationNow();
+    const workflowMode = await effectiveOpdWorkflowMode({
+      hospitalId,
+      doctorId: appointment.doctor_id
+    });
+    appointment.status = 'Completed';
+    appointment.actual_end_time = completedAt;
+    appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
+    appointment.lifecycleTimestamps.consultationEndedAt = appointment.lifecycleTimestamps.consultationEndedAt || completedAt;
+    appointment.lifecycleTimestamps.checkoutCompletedAt = completedAt;
+    appointment.completion = {
+      completedBy: req.user?._id,
+      completedByRole: req.user?.role || '',
+      completedAt,
+      source: completionSourceForRole(req.user?.role),
+      workflowMode
+    };
+    await appointment.save();
 
     await updateCalendarAppointmentStatus(appointment, 'Completed');
     await recalculateQueue({
       hospitalId,
       departmentId: appointment.department_id,
-      date: appointment.appointment_date
+      date: appointment.appointment_date,
+      timeZone: appointment.scheduled_timezone || DEFAULT_HOSPITAL_TIME_ZONE
     });
 
     try {
@@ -1006,6 +1043,22 @@ exports.completeAppointment = async (req, res) => {
     } catch (salaryError) {
       console.error('Error calculating part-time salary:', salaryError);
     }
+
+    await appendDomainEvent({
+      req,
+      eventType: 'opd.appointment.completed',
+      entityType: 'Appointment',
+      entityId: appointment._id,
+      hospitalId,
+      patientId: appointment.patient_id,
+      encounterId: appointment._id,
+      afterSummary: {
+        status: 'Completed',
+        completedByRole: req.user?.role || '',
+        completionSource: appointment.completion?.source,
+        workflowMode
+      }
+    }).catch((auditError) => console.warn('Appointment completion audit warning:', auditError.message));
 
     await notifyAppointment(appointment, 'appointment_completed', req.user?._id, {
       subject: 'Appointment completed',
@@ -1017,7 +1070,7 @@ exports.completeAppointment = async (req, res) => {
       appointment
     });
   } catch (error) {
-    return res.status(400).json({ error: error.message });
+    return res.status(error.statusCode || 400).json({ error: error.message, code: error.code });
   }
 };
 
@@ -1157,9 +1210,40 @@ exports.getAppointmentsByPatientId = async (req, res) => {
       .skip((page - 1) * limit);
 
     const total = await Appointment.countDocuments(filter);
+    const appointmentIds = appointments.map((row) => row._id);
+    const prescriptions = appointmentIds.length
+      ? await Prescription.find({
+        appointment_id: { $in: appointmentIds },
+        hospitalId,
+        status: { $ne: 'Cancelled' },
+        is_active: { $ne: false }
+      })
+        .select('_id appointment_id prescription_number status issue_date')
+        .sort({ issue_date: -1 })
+        .lean()
+      : [];
+    const prescriptionByAppointment = new Map();
+    for (const prescription of prescriptions) {
+      const key = String(prescription.appointment_id);
+      if (!prescriptionByAppointment.has(key)) prescriptionByAppointment.set(key, prescription);
+    }
+    const appointmentRows = appointments.map((row) => {
+      const output = row.toObject();
+      const prescription = prescriptionByAppointment.get(String(row._id));
+      output.prescription_summary = prescription
+        ? {
+          has_prescription: true,
+          prescription_id: prescription._id,
+          prescription_number: prescription.prescription_number,
+          status: prescription.status,
+          issued_at: prescription.issue_date
+        }
+        : { has_prescription: false };
+      return output;
+    });
 
     res.json({
-      appointments,
+      appointments: appointmentRows,
       totalPages: Math.ceil(total / limit),
       currentPage: page,
       total
@@ -1283,14 +1367,6 @@ exports.createAppointment = async (req, res) => {
       startTime: parsedStartTime
     });
 
-    const calendar = await Calendar.findOne({ hospitalId });
-    if (!calendar) return res.status(404).json({ error: 'Calendar not found' });
-    const calendarTimeZone = calendar.timezone || timeZone;
-    const day = calendar.days.find((row) => calendarDayKey(row, calendarTimeZone) === dateKey);
-    if (!day) return res.status(404).json({ error: 'Date not found in calendar' });
-    const doctorDay = day.doctors.find((row) => row.doctorId.toString() === doctor_id.toString());
-    if (!doctorDay) return res.status(404).json({ error: 'Doctor not found on this date' });
-
     const appointment = new Appointment({
       hospital_id: hospitalId,
       patient_id: patient._id,
@@ -1356,32 +1432,26 @@ exports.createAppointment = async (req, res) => {
     if (appointment.type === 'time-based') {
       const startTime = parsedStartTime;
       const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
-      if (hasTimeConflict(doctorDay.bookedAppointments, startTime, endTime, doctorDay.breaks)) {
-        return res.status(409).json({
-          error: 'Time slot not available (conflict with appointment or break)',
-          code: 'SLOT_CONFLICT'
-        });
-      }
+      await staffScheduleService.assertDoctorAvailable({
+        hospitalId,
+        doctorId: doctor_id,
+        dateKey,
+        startTime,
+        endTime
+      });
       appointment.start_time = startTime;
       appointment.end_time = endTime;
-      doctorDay.bookedAppointments.push({
-        startTime,
-        endTime,
-        duration: durationMinutes,
-        appointmentId: appointment._id,
-        status: 'Scheduled'
-      });
     } else {
-      const serialNumber = doctorDay.bookedPatients.reduce(
-        (max, row) => Math.max(max, Number(row.serialNumber || 0)),
-        0
-      ) + 1;
-      appointment.serial_number = serialNumber;
-      doctorDay.bookedPatients.push({
-        patientId: appointment.patient_id,
-        serialNumber,
-        appointmentId: appointment._id
-      });
+      await staffScheduleService.assertDoctorWorkingDay({ hospitalId, doctorId: doctor_id, dateKey });
+      const latestSerial = await Appointment.findOne({
+        hospital_id: hospitalId,
+        doctor_id,
+        appointment_date_key: dateKey,
+        type: 'number-based',
+        status: { $ne: 'Cancelled' },
+        is_active: { $ne: false }
+      }).sort({ serial_number: -1 }).select('serial_number').lean();
+      appointment.serial_number = Number(latestSerial?.serial_number || 0) + 1;
     }
 
     await appointment.save();
@@ -1453,15 +1523,10 @@ exports.createAppointment = async (req, res) => {
       throw policyError;
     }
 
-    try {
-      await calendar.save();
-    } catch (calendarError) {
-      await Appointment.deleteOne({ _id: appointment._id, hospital_id: hospitalId }).catch(() => {});
-      if (encounterCoverage?._id) {
-        await AdmissionCoverage.deleteMany({ hospitalId, appointmentId: appointment._id }).catch(() => {});
-      }
-      throw calendarError;
-    }
+    // Appointment is the booking source of truth. The legacy Calendar is updated
+    // only for backwards-compatible screens and is never allowed to invalidate
+    // an otherwise valid appointment.
+    await syncAppointmentToLegacyCalendar(appointment);
 
     if (req.body.localId) {
       await OfflineSyncLog.updateOne(

@@ -6,6 +6,9 @@ const staffLeaveRequestSchema = new mongoose.Schema({
   leave_type: { type: String, enum: ['casual', 'sick', 'earned', 'maternity', 'paternity', 'unpaid', 'other'], default: 'casual' },
   start_date: { type: Date, required: true },
   end_date: { type: Date, required: true },
+  start_date_key: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+  end_date_key: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+  leave_timezone: { type: String, default: 'Asia/Kolkata' },
   total_days: { type: Number, default: 1, min: 0.5 },
   is_paid_leave: { type: Boolean, default: true },
   paid_days: { type: Number, default: 0, min: 0 },
@@ -20,9 +23,9 @@ const staffLeaveRequestSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 staffLeaveRequestSchema.pre('save', function(next) {
-  if (this.start_date && this.end_date) {
-    const start = new Date(this.start_date); start.setHours(0, 0, 0, 0);
-    const end = new Date(this.end_date); end.setHours(0, 0, 0, 0);
+  if (this.start_date_key && this.end_date_key) {
+    const start = new Date(`${this.start_date_key}T12:00:00.000Z`);
+    const end = new Date(`${this.end_date_key}T12:00:00.000Z`);
     const diff = Math.max(0, end.getTime() - start.getTime());
     this.total_days = Math.floor(diff / 86400000) + 1;
   }
@@ -30,6 +33,7 @@ staffLeaveRequestSchema.pre('save', function(next) {
 });
 
 staffLeaveRequestSchema.index({ employee_id: 1, start_date: -1 });
+staffLeaveRequestSchema.index({ employee_id: 1, start_date_key: 1, end_date_key: 1 });
 staffLeaveRequestSchema.index({ hospital_id: 1, status: 1 });
 
 module.exports = mongoose.model('StaffLeaveRequest', staffLeaveRequestSchema);

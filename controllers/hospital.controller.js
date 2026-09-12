@@ -8,7 +8,7 @@ const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.
 const HOSPITAL_PROFILE_FIELDS = new Set([
   'registryNo', 'hospitalName', 'logo', 'companyName', 'licenseNumber', 'name',
   'address', 'contact', 'pinCode', 'city', 'state', 'timezone', 'email', 'fireNOC',
-  'policyDetails', 'healthBima', 'additionalInfo', 'vitalsEnabled', 'vitalsController'
+  'policyDetails', 'healthBima', 'additionalInfo', 'vitalsEnabled', 'vitalsController', 'opdWorkflowMode'
 ]);
 
 function isPlatformAdmin(req) {
@@ -77,6 +77,9 @@ const updateHospitalDetails = async (req, res) => {
     }
     if (updateData.vitalsController && !['doctor', 'nurse', 'registrar'].includes(updateData.vitalsController)) {
       return res.status(400).json({ message: 'Invalid vitals controller. Must be doctor, nurse or registrar.' });
+    }
+    if (updateData.opdWorkflowMode && !['DIGITAL_DOCTOR', 'PAPER_RECEPTION', 'HYBRID'].includes(updateData.opdWorkflowMode)) {
+      return res.status(400).json({ message: 'Invalid OPD workflow mode.' });
     }
 
     if (req.file) {

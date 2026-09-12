@@ -32,7 +32,7 @@ router.get('/appointment/:appointmentId', billingController.getBillByAppointment
 router.get('/admission/:admissionId', billingController.getBillByAdmissionId);
 router.get('/:id/ledger', viewBilling, billingController.getBillLedger);
 
-router.post('/', blockLegacyIpdDirectBilling, billingController.createBill);
+router.post('/', manageBilling, requireActionPermission('billing_create'), blockLegacyIpdDirectBilling, billingController.createBill);
 router.get('/', viewBilling, billingController.getAllBills);
 router.get('/:id', viewBilling, billingController.getBillById);
 router.put('/:id', manageBilling, requireAnyActionPermission(['billing_edit', 'settlement']), billingController.updateBillStatus);

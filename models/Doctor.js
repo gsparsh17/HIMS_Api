@@ -21,6 +21,12 @@ const doctorSchema = new mongoose.Schema({
   experience: { type: Number },
   education: { type: String },
   shift: { type: String },
+  opdWorkflowModeOverride: {
+    type: String,
+    enum: ['DIGITAL_DOCTOR', 'PAPER_RECEPTION', 'HYBRID', null, ''],
+    default: undefined,
+    set: (value) => value || undefined
+  },
   emergencyContact: { type: String },
   emergencyPhone: { type: String },
   startDate: { type: Date },

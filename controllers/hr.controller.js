@@ -11,14 +11,23 @@ const HRStaffProfile = require('../models/HRStaffProfile');
 const StaffAttendance = require('../models/StaffAttendance');
 const StaffAvailability = require('../models/StaffAvailability');
 const StaffLeaveRequest = require('../models/StaffLeaveRequest');
+const StaffSchedule = require('../models/StaffSchedule');
+const staffScheduleService = require('../services/staffSchedule.service');
 const EmployeePayroll = require('../models/EmployeePayroll');
 const HRLeaveBalance = require('../models/HRLeaveBalance');
 const HRPayroll = require('../models/HRPayroll');
 const Invoice = require('../models/Invoice');
 const Appointment = require('../models/Appointment');
+const Hospital = require('../models/Hospital');
 const { syncAllExistingHRProfiles } = require('../services/hrProfileSync.service');
 const { requestHospitalId: resolveHospitalId } = require('../utils/hospitalScope');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
+const {
+  DEFAULT_HOSPITAL_TIME_ZONE,
+  hospitalDateKey,
+  dateKeyToStorageDate,
+  hospitalDayBounds
+} = require('../utils/hospitalDateTime');
 const {
   normalizeFeaturePermissions,
   defaultFeaturePermissions,
@@ -63,6 +72,39 @@ function startOfDay(value) {
   const d = value ? new Date(value) : new Date();
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+async function hospitalZoneFor(hospitalId) {
+  if (!hospitalId) return DEFAULT_HOSPITAL_TIME_ZONE;
+  const hospital = await Hospital.findById(hospitalId).select('timezone').lean();
+  return hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
+}
+
+async function attendanceDayContext(employee, req, value) {
+  const hospitalId = employee?.hospital_id || await resolveHospitalId(req);
+  const timezone = await hospitalZoneFor(hospitalId);
+  const dateKey = hospitalDateKey(value || new Date(), timezone);
+  return { hospitalId, timezone, dateKey, date: dateKeyToStorageDate(dateKey) };
+}
+
+function attendanceSegmentsPayload(rawSegments = []) {
+  if (!Array.isArray(rawSegments)) return [];
+  return rawSegments.map((segment) => ({
+    shift: segment.shift || segment.shift_id || undefined,
+    scheduled_start: segment.scheduled_start || segment.start || undefined,
+    scheduled_end: segment.scheduled_end || segment.end || undefined,
+    check_in: segment.check_in ? new Date(segment.check_in) : undefined,
+    check_out: segment.check_out ? new Date(segment.check_out) : undefined,
+    break_minutes: toNumber(segment.break_minutes, 0)
+  }));
+}
+
+function attendanceMinutesFromSegments(segments = []) {
+  return segments.reduce((sum, segment) => {
+    if (!segment.check_in || !segment.check_out) return sum;
+    const diff = Math.max(0, new Date(segment.check_out).getTime() - new Date(segment.check_in).getTime());
+    return sum + Math.max(0, Math.round(diff / 60000) - toNumber(segment.break_minutes, 0));
+  }, 0);
 }
 
 function roleFromStaffType(staffType, designation = '') {
@@ -653,6 +695,17 @@ exports.createEmployee = async (req, res) => {
 
     const linkedRecords = await syncRoleCollections({ body: { ...body, staff_type: staffType, full_name: fullName }, user, departmentId, profile });
 
+    let schedule = null;
+    if (body.weekly_schedule || body.weeklySchedule) {
+      schedule = await staffScheduleService.upsertScheduleForEmployee({
+        hospitalId,
+        employeeId: profile._id,
+        weekly: body.weekly_schedule || body.weeklySchedule,
+        timezone: body.timezone,
+        userId: getUserId(req)
+      });
+    }
+
     await StaffAvailability.create({
       employee_id: profile._id,
       user_id: user?._id,
@@ -668,7 +721,8 @@ exports.createEmployee = async (req, res) => {
       employee: profile,
       loginCreated: Boolean(user),
       user: user ? { _id: user._id, name: user.name, email: user.email, role: user.role, is_active: user.is_active } : null,
-      linkedRecords
+      linkedRecords,
+      weekly_schedule: schedule?.weekly || null
     });
   } catch (error) {
     console.error('Create employee error:', error);
@@ -711,7 +765,15 @@ exports.getEmployees = async (req, res) => {
       HRStaffProfile.countDocuments(filter)
     ]);
 
-    res.json({ employees, pagination: { total, page, limit, pages: Math.ceil(total / limit) } });
+    const schedules = await StaffSchedule.find({ hospital_id: hospitalId, employee_id: { $in: employees.map((row) => row._id) }, is_active: true }).lean();
+    const scheduleMap = new Map(schedules.map((row) => [String(row.employee_id), row]));
+    res.json({
+      employees: employees.map((employee) => ({
+        ...employee.toObject(),
+        weekly_schedule: scheduleMap.get(String(employee._id))?.weekly || null
+      })),
+      pagination: { total, page, limit, pages: Math.ceil(total / limit) }
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -740,6 +802,9 @@ exports.getEmployeeById = async (req, res) => {
         modulePermissions: effectiveMainFeaturePermissions(employee.user_id)
       };
     }
+    const schedule = await StaffSchedule.findOne({ hospital_id: hospitalId, employee_id: employee._id, is_active: true }).lean();
+    payload.weekly_schedule = schedule?.weekly || null;
+    payload.schedule_timezone = schedule?.timezone || null;
     res.json(payload);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -753,12 +818,16 @@ exports.updateEmployee = async (req, res) => {
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
     const body = req.body;
+    const weeklySchedule = body.weekly_schedule || body.weeklySchedule;
+    const employeeUpdate = { ...body };
+    delete employeeUpdate.weekly_schedule;
+    delete employeeUpdate.weeklySchedule;
     const departmentId = (body.department || body.department_name) ? await ensureDepartment(body, hospitalId) : employee.department;
     const fullName = body.full_name || body.fullName || employee.full_name;
     const { firstName, lastName } = splitName(fullName);
 
     Object.assign(employee, {
-      ...body,
+      ...employeeUpdate,
       full_name: fullName,
       first_name: firstName,
       last_name: lastName,
@@ -781,9 +850,16 @@ exports.updateEmployee = async (req, res) => {
 
     await syncRoleCollections({ body: { ...body, full_name: employee.full_name, email: employee.email, staff_type: employee.staff_type, designation: employee.designation, phone: employee.phone }, user: employee.user_id, departmentId, profile: employee });
 
+    let schedule = null;
+    if (weeklySchedule) {
+      schedule = await staffScheduleService.upsertScheduleForEmployee({
+        hospitalId, employeeId: employee._id, weekly: weeklySchedule, timezone: body.timezone, userId: getUserId(req)
+      });
+    }
+
     await employee.populate('user_id', 'name email role is_active modulePermissions dashboard_access');
     await employee.populate('department', 'name');
-    res.json({ message: 'Employee updated successfully', employee });
+    res.json({ message: 'Employee updated successfully', employee, weekly_schedule: schedule?.weekly || undefined });
   } catch (error) {
     console.error('Update employee error:', error);
     res.status(400).json({ error: error.message });
@@ -965,8 +1041,16 @@ exports.getDashboard = async (req, res) => {
     const hospitalId = await resolveHospitalId(req);
     await syncExistingToHR(hospitalId);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
-    const today = startOfDay(new Date());
-    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+    const timezone = await hospitalZoneFor(hospitalId);
+    const todayKey = hospitalDateKey(new Date(), timezone);
+    const { start: today, end: tomorrow } = hospitalDayBounds(todayKey, timezone);
+    const todayAttendanceMatch = {
+      ...filter,
+      $or: [
+        { attendance_date_key: todayKey },
+        { attendance_date_key: { $exists: false }, attendance_date: { $gte: today, $lt: tomorrow } }
+      ]
+    };
 
     const [
       totalEmployees,
@@ -985,7 +1069,7 @@ exports.getDashboard = async (req, res) => {
       HRStaffProfile.countDocuments({ ...filter, staff_type: 'nurse' }),
       HRStaffProfile.countDocuments({ ...filter, staff_type: { $nin: ['doctor', 'nurse'] } }),
       StaffAttendance.aggregate([
-        { $match: { ...filter, attendance_date: { $gte: today, $lt: tomorrow } } },
+        { $match: todayAttendanceMatch },
         { $group: { _id: '$status', count: { $sum: 1 } } }
       ]),
       HRStaffProfile.aggregate([
@@ -993,7 +1077,7 @@ exports.getDashboard = async (req, res) => {
         { $group: { _id: '$availability_status', count: { $sum: 1 } } }
       ]),
       StaffLeaveRequest.countDocuments({ ...filter, status: 'pending' }),
-      StaffAttendance.find({ ...filter, attendance_date: { $gte: today, $lt: tomorrow } })
+      StaffAttendance.find(todayAttendanceMatch)
         .populate('employee_id', 'full_name employee_code staff_type designation availability_status')
         .sort({ updatedAt: -1 })
         .limit(10)
@@ -1023,25 +1107,29 @@ exports.markAttendance = async (req, res) => {
     const employee = await HRStaffProfile.findById(req.body.employee_id || req.params.employeeId);
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
-    const date = startOfDay(req.body.attendance_date || req.body.date);
+    const day = await attendanceDayContext(employee, req, req.body.attendance_date || req.body.date);
     const checkIn = req.body.check_in ? new Date(req.body.check_in) : undefined;
     const checkOut = req.body.check_out ? new Date(req.body.check_out) : undefined;
     const breakMinutes = toNumber(req.body.break_minutes, 0);
+    const segments = attendanceSegmentsPayload(req.body.segments);
 
-    let totalMinutes = 0;
-    if (checkIn && checkOut) {
+    let totalMinutes = segments.length ? attendanceMinutesFromSegments(segments) : 0;
+    if (!segments.length && checkIn && checkOut) {
       const diff = Math.max(0, checkOut.getTime() - checkIn.getTime());
       totalMinutes = Math.max(0, Math.round(diff / 60000) - breakMinutes);
     }
 
     const attendance = await StaffAttendance.findOneAndUpdate(
-      { employee_id: employee._id, attendance_date: date },
+      { employee_id: employee._id, attendance_date_key: day.dateKey },
       {
         employee_id: employee._id,
         user_id: employee.user_id,
-        attendance_date: date,
-        check_in: checkIn,
-        check_out: checkOut,
+        attendance_date: day.date,
+        attendance_date_key: day.dateKey,
+        attendance_timezone: day.timezone,
+        check_in: checkIn || segments[0]?.check_in,
+        check_out: checkOut || segments.filter((row) => row.check_out).at(-1)?.check_out,
+        segments,
         break_minutes: breakMinutes,
         total_minutes: totalMinutes,
         status: req.body.status || 'present',
@@ -1050,7 +1138,7 @@ exports.markAttendance = async (req, res) => {
         location: req.body.location,
         remarks: req.body.remarks,
         approved_by: getUserId(req),
-        hospital_id: employee.hospital_id || await resolveHospitalId(req),
+        hospital_id: day.hospitalId,
         created_by: getUserId(req),
         updated_by: getUserId(req)
       },
@@ -1077,25 +1165,29 @@ exports.bulkMarkAttendance = async (req, res) => {
         results.push({ employee_id: record.employee_id, error: 'Employee not found' });
         continue;
       }
-      const date = startOfDay(record.attendance_date || record.date);
+      const day = await attendanceDayContext(employee, fakeReq, record.attendance_date || record.date);
       const checkIn = record.check_in ? new Date(record.check_in) : undefined;
       const checkOut = record.check_out ? new Date(record.check_out) : undefined;
       const breakMinutes = toNumber(record.break_minutes, 0);
+      const segments = attendanceSegmentsPayload(record.segments);
 
-      let totalMinutes = 0;
-      if (checkIn && checkOut) {
+      let totalMinutes = segments.length ? attendanceMinutesFromSegments(segments) : 0;
+      if (!segments.length && checkIn && checkOut) {
         const diff = Math.max(0, checkOut.getTime() - checkIn.getTime());
         totalMinutes = Math.max(0, Math.round(diff / 60000) - breakMinutes);
       }
 
       const attendance = await StaffAttendance.findOneAndUpdate(
-        { employee_id: employee._id, attendance_date: date },
+        { employee_id: employee._id, attendance_date_key: day.dateKey },
         {
           employee_id: employee._id,
           user_id: employee.user_id,
-          attendance_date: date,
-          check_in: checkIn,
-          check_out: checkOut,
+          attendance_date: day.date,
+          attendance_date_key: day.dateKey,
+          attendance_timezone: day.timezone,
+          check_in: checkIn || segments[0]?.check_in,
+          check_out: checkOut || segments.filter((row) => row.check_out).at(-1)?.check_out,
+          segments,
           break_minutes: breakMinutes,
           total_minutes: totalMinutes,
           status: record.status || 'present',
@@ -1104,7 +1196,7 @@ exports.bulkMarkAttendance = async (req, res) => {
           location: record.location,
           remarks: record.remarks,
           approved_by: getUserId(req),
-          hospital_id: employee.hospital_id || await resolveHospitalId(fakeReq),
+          hospital_id: day.hospitalId,
           created_by: getUserId(req),
           updated_by: getUserId(req)
         },
@@ -1124,28 +1216,31 @@ exports.checkIn = async (req, res) => {
   try {
     const employee = await HRStaffProfile.findById(req.body.employee_id || req.params.employeeId);
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
-    const date = startOfDay(req.body.date);
+    const day = await attendanceDayContext(employee, req, req.body.date);
     const now = req.body.check_in ? new Date(req.body.check_in) : new Date();
-    const attendance = await StaffAttendance.findOneAndUpdate(
-      { employee_id: employee._id, attendance_date: date },
-      {
-        $setOnInsert: {
-          employee_id: employee._id,
-          user_id: employee.user_id,
-          attendance_date: date,
-          hospital_id: employee.hospital_id || await resolveHospitalId(req),
-          created_by: getUserId(req)
-        },
-        $set: {
-          check_in: now,
-          status: req.body.status || 'present',
-          attendance_source: req.body.attendance_source || 'self',
-          location: req.body.location,
-          updated_by: getUserId(req)
-        }
-      },
-      { upsert: true, new: true, runValidators: true }
-    );
+    let attendance = await StaffAttendance.findOne({ employee_id: employee._id, attendance_date_key: day.dateKey });
+    if (!attendance) {
+      attendance = new StaffAttendance({
+        employee_id: employee._id, user_id: employee.user_id, attendance_date: day.date, attendance_date_key: day.dateKey,
+        attendance_timezone: day.timezone, hospital_id: day.hospitalId, created_by: getUserId(req), status: req.body.status || 'present',
+        attendance_source: req.body.attendance_source || 'self', segments: []
+      });
+    }
+    const openSegment = attendance.segments?.find((segment) => segment.check_in && !segment.check_out);
+    if (openSegment && !req.body.allowRetry) return res.status(409).json({ error: 'An attendance segment is already open', attendance });
+    if (!attendance.check_in) attendance.check_in = now;
+    attendance.check_out = undefined;
+    attendance.segments.push({
+      shift: req.body.shift || employee.shift,
+      scheduled_start: req.body.scheduled_start,
+      scheduled_end: req.body.scheduled_end,
+      check_in: now,
+      break_minutes: 0
+    });
+    attendance.status = req.body.status || attendance.status || 'present';
+    attendance.location = req.body.location || attendance.location;
+    attendance.updated_by = getUserId(req);
+    await attendance.save();
     res.json({ message: 'Checked in', attendance });
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -1156,11 +1251,16 @@ exports.checkOut = async (req, res) => {
   try {
     const employee = await HRStaffProfile.findById(req.body.employee_id || req.params.employeeId);
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
-    const date = startOfDay(req.body.date);
-    const attendance = await StaffAttendance.findOne({ employee_id: employee._id, attendance_date: date });
+    const day = await attendanceDayContext(employee, req, req.body.date);
+    const attendance = await StaffAttendance.findOne({ employee_id: employee._id, attendance_date_key: day.dateKey });
     if (!attendance) return res.status(404).json({ error: 'Check-in record not found' });
-    attendance.check_out = req.body.check_out ? new Date(req.body.check_out) : new Date();
-    attendance.break_minutes = toNumber(req.body.break_minutes, attendance.break_minutes);
+    const segment = [...(attendance.segments || [])].reverse().find((row) => row.check_in && !row.check_out);
+    if (!segment) return res.status(409).json({ error: 'No open attendance segment to check out' });
+    const now = req.body.check_out ? new Date(req.body.check_out) : new Date();
+    segment.check_out = now;
+    segment.break_minutes = toNumber(req.body.break_minutes, segment.break_minutes);
+    attendance.check_out = now;
+    attendance.break_minutes = (attendance.segments || []).reduce((sum, row) => sum + toNumber(row.break_minutes, 0), 0);
     attendance.remarks = req.body.remarks || attendance.remarks;
     attendance.updated_by = getUserId(req);
     await attendance.save();
@@ -1177,15 +1277,27 @@ exports.getAttendance = async (req, res) => {
     if (req.query.employee_id) filter.employee_id = req.query.employee_id;
     if (req.query.status) filter.status = req.query.status;
     if (req.query.startDate || req.query.endDate || req.query.date) {
-      filter.attendance_date = {};
+      const timezone = await hospitalZoneFor(hospitalId);
       if (req.query.date) {
-        const date = startOfDay(req.query.date);
-        const next = new Date(date); next.setDate(date.getDate() + 1);
-        filter.attendance_date.$gte = date;
-        filter.attendance_date.$lt = next;
+        const key = hospitalDateKey(req.query.date, timezone);
+        const bounds = hospitalDayBounds(key, timezone);
+        filter.$or = [
+          { attendance_date_key: key },
+          { attendance_date_key: { $exists: false }, attendance_date: { $gte: bounds.start, $lt: bounds.end } }
+        ];
       } else {
-        if (req.query.startDate) filter.attendance_date.$gte = startOfDay(req.query.startDate);
-        if (req.query.endDate) filter.attendance_date.$lte = startOfDay(req.query.endDate);
+        const startKey = req.query.startDate ? hospitalDateKey(req.query.startDate, timezone) : null;
+        const endKey = req.query.endDate ? hospitalDateKey(req.query.endDate, timezone) : null;
+        const keyRange = {};
+        if (startKey) keyRange.$gte = startKey;
+        if (endKey) keyRange.$lte = endKey;
+        const legacyRange = {};
+        if (startKey) legacyRange.$gte = hospitalDayBounds(startKey, timezone).start;
+        if (endKey) legacyRange.$lt = hospitalDayBounds(endKey, timezone).end;
+        filter.$or = [
+          { attendance_date_key: keyRange },
+          { attendance_date_key: { $exists: false }, attendance_date: legacyRange }
+        ];
       }
     }
 
@@ -1253,10 +1365,20 @@ exports.createLeaveRequest = async (req, res) => {
     const employee = await HRStaffProfile.findById(req.body.employee_id);
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
+    const hospitalId = employee.hospital_id || await resolveHospitalId(req);
+    const timezone = await hospitalZoneFor(hospitalId);
+    const startDateKey = hospitalDateKey(req.body.start_date, timezone);
+    const endDateKey = hospitalDateKey(req.body.end_date, timezone);
+
     const leave = await StaffLeaveRequest.create({
       ...req.body,
+      start_date: dateKeyToStorageDate(startDateKey),
+      end_date: dateKeyToStorageDate(endDateKey),
+      start_date_key: startDateKey,
+      end_date_key: endDateKey,
+      leave_timezone: timezone,
       user_id: employee.user_id,
-      hospital_id: employee.hospital_id || await resolveHospitalId(req),
+      hospital_id: hospitalId,
       created_by: getUserId(req)
     });
     await leave.populate('employee_id', 'full_name employee_code staff_type designation');
@@ -2393,13 +2515,27 @@ exports.getMyAttendance = async (req, res) => {
     const employee = await resolveSelfEmployee(req);
     const filter = { employee_id: employee._id, hospital_id: employee.hospital_id };
     if (req.query.startDate || req.query.endDate || req.query.date) {
-      filter.attendance_date = {};
+      const timezone = await hospitalZoneFor(employee.hospital_id);
       if (req.query.date) {
-        const day = startOfDay(req.query.date); const next = new Date(day); next.setDate(next.getDate() + 1);
-        filter.attendance_date.$gte = day; filter.attendance_date.$lt = next;
+        const key = hospitalDateKey(req.query.date, timezone);
+        const bounds = hospitalDayBounds(key, timezone);
+        filter.$or = [
+          { attendance_date_key: key },
+          { attendance_date_key: { $exists: false }, attendance_date: { $gte: bounds.start, $lt: bounds.end } }
+        ];
       } else {
-        if (req.query.startDate) filter.attendance_date.$gte = startOfDay(req.query.startDate);
-        if (req.query.endDate) { const end = startOfDay(req.query.endDate); end.setHours(23, 59, 59, 999); filter.attendance_date.$lte = end; }
+        const startKey = req.query.startDate ? hospitalDateKey(req.query.startDate, timezone) : null;
+        const endKey = req.query.endDate ? hospitalDateKey(req.query.endDate, timezone) : null;
+        const keyRange = {};
+        if (startKey) keyRange.$gte = startKey;
+        if (endKey) keyRange.$lte = endKey;
+        const legacyRange = {};
+        if (startKey) legacyRange.$gte = hospitalDayBounds(startKey, timezone).start;
+        if (endKey) legacyRange.$lt = hospitalDayBounds(endKey, timezone).end;
+        filter.$or = [
+          { attendance_date_key: keyRange },
+          { attendance_date_key: { $exists: false }, attendance_date: legacyRange }
+        ];
       }
     }
     const data = await StaffAttendance.find(filter).sort({ attendance_date: -1 }).limit(Math.min(366, Number(req.query.limit || 90)));
@@ -2410,18 +2546,27 @@ exports.getMyAttendance = async (req, res) => {
 exports.myCheckIn = async (req, res) => {
   try {
     const employee = await resolveSelfEmployee(req);
-    const date = startOfDay(req.body.date);
+    const day = await attendanceDayContext(employee, req, req.body.date);
     const now = req.body.check_in ? new Date(req.body.check_in) : new Date();
-    const existing = await StaffAttendance.findOne({ employee_id: employee._id, hospital_id: employee.hospital_id, attendance_date: date });
-    if (existing?.check_in && !req.body.allowRetry) return res.status(409).json({ success: false, error: 'Already checked in for this attendance day', data: existing });
-    const attendance = await StaffAttendance.findOneAndUpdate(
-      { employee_id: employee._id, hospital_id: employee.hospital_id, attendance_date: date },
-      {
-        $setOnInsert: { employee_id: employee._id, user_id: req.user._id, hospital_id: employee.hospital_id, attendance_date: date, created_by: req.user._id },
-        $set: { check_in: now, status: 'present', attendance_source: 'self', location: req.body.location, updated_by: req.user._id, reconciliation_status: 'not_required' }
-      },
-      { upsert: true, new: true, runValidators: true }
-    );
+    let attendance = await StaffAttendance.findOne({ employee_id: employee._id, hospital_id: employee.hospital_id, attendance_date_key: day.dateKey });
+    if (!attendance) {
+      attendance = new StaffAttendance({
+        employee_id: employee._id, user_id: req.user._id, hospital_id: employee.hospital_id, attendance_date: day.date,
+        attendance_date_key: day.dateKey, attendance_timezone: day.timezone, created_by: req.user._id, status: 'present',
+        attendance_source: 'self', segments: [], reconciliation_status: 'not_required'
+      });
+    }
+    const openSegment = attendance.segments?.find((segment) => segment.check_in && !segment.check_out);
+    if (openSegment && !req.body.allowRetry) return res.status(409).json({ success: false, error: 'Already checked in for the current duty segment', data: attendance });
+    if (!attendance.check_in) attendance.check_in = now;
+    attendance.check_out = undefined;
+    attendance.segments.push({
+      shift: req.body.shift || employee.shift, scheduled_start: req.body.scheduled_start, scheduled_end: req.body.scheduled_end,
+      check_in: now, break_minutes: 0
+    });
+    attendance.location = req.body.location || attendance.location;
+    attendance.updated_by = req.user._id;
+    await attendance.save();
     res.json({ success: true, message: 'Checked in', data: attendance });
   } catch (error) { selfError(res, error); }
 };
@@ -2429,12 +2574,16 @@ exports.myCheckIn = async (req, res) => {
 exports.myCheckOut = async (req, res) => {
   try {
     const employee = await resolveSelfEmployee(req);
-    const date = startOfDay(req.body.date);
-    const attendance = await StaffAttendance.findOne({ employee_id: employee._id, hospital_id: employee.hospital_id, attendance_date: date });
-    if (!attendance?.check_in) return res.status(404).json({ success: false, error: 'Check-in record not found' });
-    if (attendance.check_out && !req.body.allowRetry) return res.status(409).json({ success: false, error: 'Already checked out', data: attendance });
-    attendance.check_out = req.body.check_out ? new Date(req.body.check_out) : new Date();
-    attendance.break_minutes = toNumber(req.body.break_minutes, attendance.break_minutes);
+    const day = await attendanceDayContext(employee, req, req.body.date);
+    const attendance = await StaffAttendance.findOne({ employee_id: employee._id, hospital_id: employee.hospital_id, attendance_date_key: day.dateKey });
+    if (!attendance) return res.status(404).json({ success: false, error: 'Check-in record not found' });
+    const segment = [...(attendance.segments || [])].reverse().find((row) => row.check_in && !row.check_out);
+    if (!segment) return res.status(409).json({ success: false, error: 'No open attendance segment', data: attendance });
+    const now = req.body.check_out ? new Date(req.body.check_out) : new Date();
+    segment.check_out = now;
+    segment.break_minutes = toNumber(req.body.break_minutes, segment.break_minutes);
+    attendance.check_out = now;
+    attendance.break_minutes = (attendance.segments || []).reduce((sum, row) => sum + toNumber(row.break_minutes, 0), 0);
     attendance.remarks = req.body.remarks || attendance.remarks;
     attendance.updated_by = req.user._id;
     await attendance.save();
@@ -2455,12 +2604,18 @@ exports.getMyLeaves = async (req, res) => {
 exports.createMyLeave = async (req, res) => {
   try {
     const employee = await resolveSelfEmployee(req);
+    const timezone = await hospitalZoneFor(employee.hospital_id);
+    const startDateKey = hospitalDateKey(req.body.start_date, timezone);
+    const endDateKey = hospitalDateKey(req.body.end_date, timezone);
     const data = await StaffLeaveRequest.create({
       employee_id: employee._id,
       user_id: req.user._id,
       leave_type: req.body.leave_type,
-      start_date: req.body.start_date,
-      end_date: req.body.end_date,
+      start_date: dateKeyToStorageDate(startDateKey),
+      end_date: dateKeyToStorageDate(endDateKey),
+      start_date_key: startDateKey,
+      end_date_key: endDateKey,
+      leave_timezone: timezone,
       reason: req.body.reason,
       status: 'pending',
       hospital_id: employee.hospital_id,

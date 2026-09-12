@@ -18,6 +18,7 @@ router.post('/link-episode', appointmentController.linkAppointmentToEpisodeSugge
 
 router.get('/doctor/:doctorId/dashboard', appointmentController.getDoctorDashboardReadModel);
 router.get('/doctor/:doctorId/schedule', appointmentController.getDoctorScheduleReadModel);
+router.get('/doctor/:doctorId/availability', appointmentController.getDoctorAvailability);
 router.get('/doctor/:doctorId/patients', appointmentController.getDoctorPatientWorklist);
 router.get('/doctor/:doctorId/procedures/:date', appointmentController.getDoctorProceduresForDate);
 router.get('/doctor/:doctorId/today', appointmentController.getTodaysAppointmentsByDoctorId);

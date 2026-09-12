@@ -11,6 +11,9 @@ const {
 } = require('../utils/mainFeatureAccess');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 const { requireHospitalId: requireDoctorHospitalId } = require('../services/tenantScope.service');
+const StaffSchedule = require('../models/StaffSchedule');
+const HRStaffProfile = require('../models/HRStaffProfile');
+const staffScheduleService = require('../services/staffSchedule.service');
 
 // ✅ Create a new doctor
 exports.createDoctor = async (req, res) => {
@@ -51,8 +54,12 @@ exports.createDoctor = async (req, res) => {
       }
     }
 
+    const weeklySchedule = req.body.weekly_schedule || req.body.weeklySchedule;
+    const doctorPayload = { ...req.body };
+    delete doctorPayload.weekly_schedule;
+    delete doctorPayload.weeklySchedule;
     const data = {
-      ...req.body,
+      ...doctorPayload,
       hospitalId,
       dateOfBirth: req.body.dateOfBirth ? new Date(req.body.dateOfBirth) : undefined,
       startDate: req.body.startDate ? new Date(req.body.startDate) : undefined,
@@ -62,15 +69,14 @@ exports.createDoctor = async (req, res) => {
 
     const doctor = await Doctor.create(data);
     try {
-      await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+      const profile = await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+      if (weeklySchedule && profile) {
+        await staffScheduleService.upsertScheduleForEmployee({
+          hospitalId, employeeId: profile._id, weekly: weeklySchedule, userId: req.user?._id
+        });
+      }
     } catch (hrErr) {
-      console.warn('HR Profile auto-sync note on createDoctor:', hrErr.message);
-    }
-
-    try {
-      await addDoctorToCalendar(hospitalId, doctor);
-    } catch (error) {
-      console.error('Calendar sync failed:', error.message);
+      console.warn('HR Profile/schedule auto-sync note on createDoctor:', hrErr.message);
     }
 
     return res.status(201).json({
@@ -196,7 +202,16 @@ exports.getAllDoctors = async (req, res) => {
       .populate('user_id', 'name email role')
       .sort({ firstName: 1 });
 
-    return res.json(doctors);
+    const profiles = await HRStaffProfile.find({ hospital_id: hospitalId, doctor_id: { $in: doctors.map((row) => row._id) } }).select('_id doctor_id').lean();
+    const schedules = await StaffSchedule.find({ hospital_id: hospitalId, employee_id: { $in: profiles.map((row) => row._id) }, is_active: true }).lean();
+    const employeeByDoctor = new Map(profiles.map((row) => [String(row.doctor_id), String(row._id)]));
+    const scheduleByEmployee = new Map(schedules.map((row) => [String(row.employee_id), row]));
+    return res.json(doctors.map((doctor) => {
+      const output = doctor.toObject();
+      const employeeId = employeeByDoctor.get(String(doctor._id));
+      output.weekly_schedule = employeeId ? scheduleByEmployee.get(employeeId)?.weekly || null : null;
+      return output;
+    }));
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
@@ -216,7 +231,9 @@ exports.getDoctorById = async (req, res) => {
       return res.status(404).json({ error: 'Doctor not found' });
     }
 
-    return res.json(doctor);
+    const profile = await HRStaffProfile.findOne({ hospital_id: hospitalId, $or: [{ doctor_id: doctor._id }, { source_model: 'Doctor', source_id: doctor._id }] }).select('_id').lean();
+    const schedule = profile ? await StaffSchedule.findOne({ hospital_id: hospitalId, employee_id: profile._id, is_active: true }).lean() : null;
+    return res.json({ ...doctor.toObject(), weekly_schedule: schedule?.weekly || null });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
@@ -365,10 +382,14 @@ exports.updateDoctor = async (req, res) => {
     }
 
     delete req.body.hospitalId;
+    const weeklySchedule = req.body.weekly_schedule || req.body.weeklySchedule;
+    const doctorUpdate = { ...req.body };
+    delete doctorUpdate.weekly_schedule;
+    delete doctorUpdate.weeklySchedule;
 
     const doctor = await Doctor.findOneAndUpdate(
       { _id: req.params.id, hospitalId, is_active: { $ne: false } },
-      req.body,
+      doctorUpdate,
       { new: true, runValidators: true }
     );
 
@@ -376,7 +397,12 @@ exports.updateDoctor = async (req, res) => {
       return res.status(404).json({ error: 'Doctor not found' });
     }
 
-    await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+    const profile = await syncHRProfileFromSource('Doctor', doctor, { hospital_id: hospitalId });
+    if (weeklySchedule && profile) {
+      await staffScheduleService.upsertScheduleForEmployee({
+        hospitalId, employeeId: profile._id, weekly: weeklySchedule, userId: req.user?._id
+      });
+    }
 
     return res.json(doctor);
   } catch (error) {
@@ -568,11 +594,3 @@ exports.bulkCreateDoctors = async (req, res) => {
   }
 };
 
-// Helper function for bulk import
-async function addDoctorToCalendarForBulkImport(doctor) {
-  const hospitals = await Hospital.find();
-
-  for (const hospital of hospitals) {
-    await addDoctorToCalendar(hospital._id, doctor);
-  }
-}

@@ -10,6 +10,7 @@ const Vital = require('../models/Vital');
 const Staff = require('../models/Staff');
 const Hospital = require('../models/Hospital');
 const Bill = require('../models/Bill');
+const Prescription = require('../models/Prescription');
 const { hospitalDateKey, hospitalDayBounds, DEFAULT_HOSPITAL_TIME_ZONE } = require('../utils/hospitalDateTime');
 
 const ACTIVE_ADMISSION_STATUSES = [
@@ -562,15 +563,33 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
     { path: 'referral.departmentId', select: 'name' }
   ];
 
-  const [populatedRows, vitals] = await Promise.all([
+  const [populatedRows, vitals, prescriptions] = await Promise.all([
     rows.length ? Appointment.populate(rows, populatePaths) : Promise.resolve([]),
     ids.length ? Vital.find({ appointment_id: { $in: ids } })
       .select('_id appointment_id bp weight pulse spo2 temperature respiratory_rate random_blood_sugar height createdAt updatedAt')
-      .lean() : []
+      .lean() : [],
+    ids.length ? Prescription.find({ appointment_id: { $in: ids }, hospitalId: hospitalObjectId, status: { $ne: 'Cancelled' }, is_active: { $ne: false } })
+      .select('_id appointment_id prescription_number status issue_date').sort({ issue_date: -1 }).lean() : []
   ]);
   const vitalMap = new Map(vitals.map((vital) => [String(vital.appointment_id), vital]));
-  const rowMap = new Map(populatedRows.map((row) => [String(row._id), { ...row, vitals: vitalMap.get(String(row._id)) || null }]));
-  const attachRows = (source) => source.map((row) => rowMap.get(String(row._id)) || { ...row, vitals: vitalMap.get(String(row._id)) || null });
+  const prescriptionMap = new Map();
+  for (const prescription of prescriptions) {
+    const key = String(prescription.appointment_id);
+    if (!prescriptionMap.has(key)) prescriptionMap.set(key, prescription);
+  }
+  const decorate = (row) => {
+    const prescription = prescriptionMap.get(String(row._id));
+    return {
+      ...row,
+      vitals: vitalMap.get(String(row._id)) || null,
+      prescription_summary: prescription ? {
+        has_prescription: true, prescription_id: prescription._id, prescription_number: prescription.prescription_number,
+        status: prescription.status, issued_at: prescription.issue_date
+      } : { has_prescription: false }
+    };
+  };
+  const rowMap = new Map(populatedRows.map((row) => [String(row._id), decorate(row)]));
+  const attachRows = (source) => source.map((row) => rowMap.get(String(row._id)) || decorate(row));
 
   const filteredCounts = result.counts?.[0] || { total: 0, today: 0, pending: 0, upcoming: 0, completed: 0 };
   const counts = {

@@ -35,6 +35,13 @@ const appointmentSchema = new mongoose.Schema({
     enum: ['Scheduled', 'In Progress', 'Completed', 'Cancelled'],
     default: 'Scheduled'
   },
+  completion: {
+    completedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    completedByRole: { type: String, trim: true },
+    completedAt: Date,
+    source: { type: String, enum: ['FRONT_DESK', 'DOCTOR_DASHBOARD', 'ADMIN', 'API'] },
+    workflowMode: { type: String, enum: ['DIGITAL_DOCTOR', 'PAPER_RECEPTION', 'HYBRID'] }
+  },
   cancellationReason: {
     type: String,
     trim: true
@@ -178,6 +185,7 @@ const appointmentSchema = new mongoose.Schema({
     checkedInAt: Date,
     consultationStartedAt: Date,
     consultationEndedAt: Date,
+    checkoutCompletedAt: Date,
     cancelledAt: Date
   },
   queuePosition: { type: Number, min: 1 },

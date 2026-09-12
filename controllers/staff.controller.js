@@ -4,6 +4,7 @@ const Nurse = require('../models/Nurse');
 const OTStaff = require('../models/OTStaff');
 const { normalizeFeaturePermissions, defaultFeaturePermissions, dashboardAccessFromFeatures, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
+const staffScheduleService = require('../services/staffSchedule.service');
 
 const VALID_USER_ROLES = new Set([
   'mediqliq_super_admin',
@@ -259,6 +260,7 @@ exports.updateStaffLoginAccess = async (req, res) => {
 
 exports.createStaff = async (req, res) => {
   try {
+    const weeklySchedule = req.body.weekly_schedule || req.body.weeklySchedule;
     const {
       fullName,
       email,
@@ -392,12 +394,19 @@ exports.createStaff = async (req, res) => {
 
     // Await the most specific reverse HR link so nurse/OT roles are not flattened
     // back to generic Staff before the response is returned.
+    let hrProfile = null;
     if (linkedNurse) {
-      await syncHRProfileFromSource('Nurse', linkedNurse, { hospital_id: req.user?.hospital_id || undefined });
+      hrProfile = await syncHRProfileFromSource('Nurse', linkedNurse, { hospital_id: req.user?.hospital_id || undefined });
     } else if (linkedOTStaff) {
-      await syncHRProfileFromSource('OTStaff', linkedOTStaff, { hospital_id: req.user?.hospital_id || undefined });
+      hrProfile = await syncHRProfileFromSource('OTStaff', linkedOTStaff, { hospital_id: req.user?.hospital_id || undefined });
     } else {
-      await syncHRProfileFromSource('Staff', staff, { hospital_id: req.user?.hospital_id || undefined });
+      hrProfile = await syncHRProfileFromSource('Staff', staff, { hospital_id: req.user?.hospital_id || undefined });
+    }
+    if (hrProfile && Array.isArray(weeklySchedule) && weeklySchedule.some((day) => day?.enabled && day?.intervals?.length)) {
+      await staffScheduleService.upsertScheduleForEmployee({
+        hospitalId: hrProfile.hospital_id, employeeId: hrProfile._id, weekly: weeklySchedule,
+        userId: req.user?._id, source: 'manual'
+      });
     }
 
     res.status(201).json({
@@ -442,6 +451,7 @@ exports.getStaffById = async (req, res) => {
 
 exports.updateStaff = async (req, res) => {
   try {
+    const weeklySchedule = req.body.weekly_schedule || req.body.weeklySchedule;
     const {
       fullName,
       email,
@@ -453,6 +463,8 @@ exports.updateStaff = async (req, res) => {
     } = req.body;
 
     const updateData = { ...otherFields };
+    delete updateData.weekly_schedule;
+    delete updateData.weeklySchedule;
 
     if (fullName) {
       const [firstName, ...lastNameArr] = fullName.trim().split(' ');
@@ -617,9 +629,19 @@ exports.updateStaff = async (req, res) => {
       }
     }
 
+    const hrProfile = await syncHRProfileFromSource('Staff', staff, { hospital_id: req.user?.hospital_id || undefined });
+    let weeklyScheduleDoc = null;
+    if (hrProfile && Array.isArray(weeklySchedule)) {
+      weeklyScheduleDoc = await staffScheduleService.upsertScheduleForEmployee({
+        hospitalId: hrProfile.hospital_id, employeeId: hrProfile._id, weekly: weeklySchedule,
+        userId: req.user?._id, source: 'manual'
+      });
+    }
+
     res.json({
       message: 'Staff updated successfully',
-      staff
+      staff,
+      weekly_schedule: weeklyScheduleDoc?.weekly || undefined
     });
   } catch (err) {
     console.error('Update staff error:', err);

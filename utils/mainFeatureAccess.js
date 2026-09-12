@@ -222,6 +222,7 @@ const ROLE_ACTION_PRESET = Object.freeze({
   nurse: { ipd: ['transfer_complete', 'ipd_nursing_write', 'ipd_medication_write', 'ipd_discharge_support'] },
   staff: { ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support', 'billing_create'] },
   registrar: {
+    registration_opd: ['appointment_complete'],
     ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support', 'ipd_discharge_override', 'ipd_final_discharge'],
     billing_finance: [
       'settlement',
@@ -231,6 +232,7 @@ const ROLE_ACTION_PRESET = Object.freeze({
     ]
   },
   receptionist: {
+    registration_opd: ['appointment_complete'],
     ipd: ['transfer_reserve', 'ipd_admission_manage', 'ipd_discharge_support', 'ipd_discharge_override', 'ipd_final_discharge'],
     billing_finance: [
       'settlement',
