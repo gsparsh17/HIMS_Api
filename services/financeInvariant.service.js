@@ -621,6 +621,7 @@ function expectedInvoiceBalance(invoice = {}) {
     invoicePatientBase(invoice)
       - money(invoice.amount_paid ?? invoice.paid_amount ?? 0)
       + money(invoice.refunded_amount ?? invoice.refund_amount ?? 0)
+      + money(invoice.advance_transferred_amount ?? 0)
       - money(invoice.settlement_discount_amount ?? 0)
       - money(invoice.credit_note_total ?? invoice.credit_note_amount ?? 0)
   ));

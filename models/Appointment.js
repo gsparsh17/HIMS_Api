@@ -56,6 +56,16 @@ const appointmentSchema = new mongoose.Schema({
     refundedAt: Date,
     refundedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
+  cancellationFinance: {
+    disposition: { type: String, enum: ['NONE', 'REFUND', 'ADVANCE', 'MIXED'], default: 'NONE' },
+    creditNoteAmount: { type: Number, default: 0 },
+    refundAmount: { type: Number, default: 0 },
+    advanceAmount: { type: Number, default: 0 },
+    transactionNumbers: [{ type: String, trim: true }],
+    creditNoteNumbers: [{ type: String, trim: true }],
+    adjustedAt: Date,
+    adjustedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  },
   referral: {
     isReferred: { type: Boolean, default: false },
     referralNumber: { type: String, trim: true },

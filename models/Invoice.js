@@ -659,6 +659,10 @@ const invoiceSchema = new mongoose.Schema({
     settled_at: { type: Date, default: operationNow }
   }],
   refunded_amount: { type: Number, default: 0, min: 0 },
+  // Collected OPD money may be retained by the hospital as patient advance
+  // during appointment cancellation instead of leaving through an external refund.
+  // Keep this separate from refunded_amount so cash-flow reporting remains correct.
+  advance_transferred_amount: { type: Number, default: 0, min: 0 },
   linked_invoice_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   receipt_numbers: [{ type: String, trim: true }],
   idempotency_key: { type: String, trim: true },
@@ -931,7 +935,8 @@ invoiceSchema.pre('save', function (next) {
     0,
     patientBase -
       this.amount_paid +
-      Number(this.refunded_amount || 0) -
+      Number(this.refunded_amount || 0) +
+      Number(this.advance_transferred_amount || 0) -
       Number(this.settlement_discount_amount || 0) -
       Number(this.credit_note_total || 0)
   );

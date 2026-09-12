@@ -42,8 +42,8 @@ router.get('/:id/refund-receipt/:refundId', viewBilling, billingController.getRe
 router.post('/:id/discount-approval', manageBilling, requireAnyActionPermission(['discount_override', 'pricing_override']), billingController.reviewDiscountApproval);
 
 router.post('/:id/request-deletion', manageBilling, requireAnyActionPermission(['billing_delete_charge', 'refund']), billingController.requestBillDeletion);
-router.put('/:id/review-deletion', manageBilling, requireAnyActionPermission(['billing_delete_charge', 'refund']), billingController.reviewDeletionRequest);
-router.delete('/:id/admin-delete', manageBilling, isAdmin, billingController.adminDeleteBill);
-router.delete('/:id', manageBilling, requireAnyActionPermission(['billing_delete_charge', 'refund']), billingController.deleteBill);
+router.put('/:id/review-deletion', manageBilling, requireAnyActionPermission(['billing_delete_charge', 'refund', 'billing_delete_issued_document']), billingController.reviewDeletionRequest);
+router.delete('/:id/admin-delete', manageBilling, requireActionPermission('billing_delete_issued_document'), billingController.adminDeleteBill);
+router.delete('/:id', manageBilling, requireAnyActionPermission(['billing_delete_charge', 'refund', 'billing_delete_issued_document']), billingController.deleteBill);
 
 module.exports = router;

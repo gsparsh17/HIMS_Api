@@ -187,7 +187,7 @@ async function scanDocuments(hospitalId, { invoices, bills, transactions }) {
       if (!near(expectedBalance, invoice.balance_due)) {
         results.push(issue('INVOICE_BALANCE_MISMATCH', 'CRITICAL', 'Invoice', invoice._id,
           'Invoice balance does not reconcile from liability, payments, refunds, settlement discounts and credit notes.',
-          { invoiceNumber: invoice.invoice_number, expectedBalance, actualBalance: money(invoice.balance_due), amountPaid: money(invoice.amount_paid), refunded: money(invoice.refunded_amount), settlementDiscount: money(invoice.settlement_discount_amount), creditNotes: money(invoice.credit_note_total) },
+          { invoiceNumber: invoice.invoice_number, expectedBalance, actualBalance: money(invoice.balance_due), amountPaid: money(invoice.amount_paid), refunded: money(invoice.refunded_amount), advanceTransferred: money(invoice.advance_transferred_amount), settlementDiscount: money(invoice.settlement_discount_amount), creditNotes: money(invoice.credit_note_total) },
           { suggestedAction: 'Repair the projection only after confirming the posted transaction ledger.' }));
       }
 

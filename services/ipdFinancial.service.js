@@ -1813,7 +1813,7 @@ async function reverseInvoicedCharge(admissionId, chargeId, payload = {}, user) 
   ));
   const effectiveCollected = money(Math.max(
     0,
-    Number(originalInvoice?.amount_paid || 0) - Number(originalInvoice?.refunded_amount || 0)
+    Number(originalInvoice?.amount_paid || 0) - Number(originalInvoice?.refunded_amount || 0) - Number(originalInvoice?.advance_transferred_amount || 0)
   ));
   const overpaymentAmount = money(Math.max(0, effectiveCollected - effectiveLiability));
 
@@ -3469,7 +3469,7 @@ async function refundInvoice(invoiceId, payload, user) {
       }
     }
 
-    const refundable = money(Math.max(0, Number(invoice.amount_paid || 0) - Number(invoice.refunded_amount || 0)));
+    const refundable = money(Math.max(0, Number(invoice.amount_paid || 0) - Number(invoice.refunded_amount || 0) - Number(invoice.advance_transferred_amount || 0)));
     if (refundAmount > refundable + 0.01) {
       const error = new Error(`Refund amount exceeds the collected refundable amount of ₹${refundable.toFixed(2)}`);
       error.statusCode = 400;
@@ -3546,6 +3546,266 @@ async function refundInvoice(invoiceId, payload, user) {
   if (result.originalInvoice?.admission_id) {
     await calculateAdmissionFinancials(result.originalInvoice.admission_id, { user });
   }
+  return result;
+}
+
+
+/**
+ * Resolve the collected portion of an OPD invoice while cancelling the
+ * appointment, without forcing front-desk staff to leave the Desk screen.
+ *
+ * REFUND  -> money leaves the hospital through the selected external method.
+ * ADVANCE -> money remains with the hospital and is moved to the patient's
+ *            OPD shared advance wallet as a non-cash reclassification.
+ *
+ * Only the liability that corresponds to the collected amount is credited
+ * here. Any still-unpaid remainder is deliberately left for a separate credit
+ * note so the controller can enforce the stronger pricing_override permission
+ * for writing off unpaid liability.
+ */
+async function resolveOPDInvoiceCollectionForCancellation(invoiceId, payload = {}, user) {
+  const disposition = String(payload.disposition || '').trim().toUpperCase();
+  if (!['REFUND', 'ADVANCE'].includes(disposition)) {
+    const error = new Error('Cancellation collection disposition must be REFUND or ADVANCE');
+    error.statusCode = 400;
+    error.code = 'INVALID_CANCELLATION_FINANCIAL_DISPOSITION';
+    throw error;
+  }
+  const reason = String(payload.reason || '').trim();
+  if (!reason) {
+    const error = new Error('Financial adjustment reason is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const result = await runFinancialTransaction(async (session) => {
+    const invoice = await Invoice.findById(invoiceId, null, sessionOptions(session));
+    if (!invoice) {
+      const error = new Error('Invoice not found');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const scopedHospitalId = userHospitalId(user);
+    if (scopedHospitalId && String(invoice.hospital_id) !== String(scopedHospitalId)) {
+      const error = new Error('Invoice not found in this hospital');
+      error.statusCode = 404;
+      throw error;
+    }
+    if (invoice.admission_id) {
+      const error = new Error('IPD invoice collection cannot be moved through OPD appointment cancellation');
+      error.statusCode = 409;
+      error.code = 'OPD_CANCELLATION_IPD_INVOICE_BLOCKED';
+      throw error;
+    }
+    if (payload.appointmentId && invoice.appointment_id && String(invoice.appointment_id) !== String(payload.appointmentId)) {
+      const error = new Error('Invoice does not belong to the appointment being cancelled');
+      error.statusCode = 409;
+      error.code = 'OPD_ENCOUNTER_MISMATCH';
+      throw error;
+    }
+
+    const rootKey = String(payload.idempotencyKey || `appointment-cancel:${payload.appointmentId || 'unknown'}:invoice:${invoice._id}:${disposition.toLowerCase()}`);
+    const moneyKey = `${rootKey}:money`;
+    const existingMoney = await FinancialTransaction.findOne({
+      hospitalId: invoice.hospital_id,
+      idempotencyKey: moneyKey,
+      status: 'POSTED'
+    }, null, sessionOptions(session));
+    if (existingMoney) {
+      const existingCreditId = existingMoney.metadata?.creditNoteId;
+      return {
+        originalInvoice: invoice,
+        creditNote: existingCreditId ? await Invoice.findById(existingCreditId, null, sessionOptions(session)) : null,
+        transaction: existingMoney,
+        amountResolved: money(existingMoney.amount || 0),
+        disposition,
+        alreadyExists: true
+      };
+    }
+
+    const collectedAvailable = money(Math.max(
+      0,
+      Number(invoice.amount_paid || 0) -
+      Number(invoice.refunded_amount || 0) -
+      Number(invoice.advance_transferred_amount || 0)
+    ));
+    if (collectedAvailable <= 0) {
+      return {
+        originalInvoice: invoice,
+        creditNote: null,
+        transaction: null,
+        amountResolved: 0,
+        disposition,
+        alreadyExists: false
+      };
+    }
+
+    const remainingLiability = money(Math.max(
+      0,
+      Number(invoice.total || 0) -
+      Number(invoice.settlement_discount_amount || 0) -
+      Number(invoice.credit_note_total || 0)
+    ));
+    const creditForCollected = money(Math.min(collectedAvailable, remainingLiability));
+    const credit = creditForCollected > 0
+      ? await createCreditNoteInSession(invoice, {
+          amount: creditForCollected,
+          reason,
+          idempotencyKey: `${rootKey}:credit`
+        }, user, session)
+      : null;
+
+    if (disposition === 'REFUND') {
+      const refundMethod = payload.paymentMethod || 'Cash';
+      if (!EXTERNAL_PAYMENT_METHODS.has(refundMethod)) {
+        const error = new Error('Appointment cancellation refunds must use an external refund method such as Cash, Card, UPI or Bank');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const refundNumber = await nextFinancialNumber({ documentType: 'REFUND', hospitalId: invoice.hospital_id, session });
+      invoice.refunded_amount = money(Number(invoice.refunded_amount || 0) + collectedAvailable);
+      await invoice.save(sessionOptions(session));
+
+      const billRefundAllocations = await allocateInvoiceAdjustmentAcrossBills(
+        invoice,
+        collectedAvailable,
+        'refund_amount',
+        session
+      );
+
+      const transaction = new FinancialTransaction({
+        hospitalId: invoice.hospital_id,
+        patientId: invoice.patient_id,
+        billId: invoice.bill_id,
+        invoiceId: invoice._id,
+        transactionNumber: refundNumber,
+        transactionType: 'REFUND',
+        direction: 'DEBIT',
+        amount: collectedAvailable,
+        paymentMethod: refundMethod,
+        paymentReference: payload.reference,
+        receiptType: 'Refund',
+        amountReceived: 0,
+        amountTendered: 0,
+        amountApplied: 0,
+        externalMoneyMovement: true,
+        cashFlowClass: 'REFUND',
+        sourceModule: 'OPD',
+        sourceId: invoice.appointment_id || invoice._id,
+        remarks: reason,
+        createdBy: user?._id,
+        idempotencyKey: moneyKey,
+        documentAllocations: billRefundAllocations.length
+          ? billRefundAllocations
+          : [{ documentType: 'Invoice', documentId: invoice._id, amount: collectedAvailable }],
+        metadata: {
+          appointmentCancellation: true,
+          disposition: 'REFUND',
+          creditNoteId: credit?.creditNote?._id,
+          creditNoteNumber: credit?.creditNote?.invoice_number,
+          creditAmountCreated: creditForCollected
+        }
+      });
+      await transaction.save(sessionOptions(session));
+
+      return {
+        originalInvoice: invoice,
+        creditNote: credit?.creditNote || null,
+        transaction,
+        refundNumber,
+        amountResolved: collectedAvailable,
+        disposition,
+        alreadyExists: false
+      };
+    }
+
+    const advanceNumber = await nextFinancialNumber({ documentType: 'ADVANCE_RECEIPT', hospitalId: invoice.hospital_id, session });
+    const latestAdvance = await PatientAdvanceLedger.findOne({
+      hospitalId: invoice.hospital_id,
+      patientId: invoice.patient_id,
+      walletType: 'OPD_SHARED',
+      status: 'POSTED'
+    }, null, sessionOptions(session)).sort({ postedAt: -1, createdAt: -1 });
+    const openingBalance = money(latestAdvance?.balanceAfter || 0);
+    const balanceAfter = money(openingBalance + collectedAvailable);
+
+    await PatientAdvanceLedger.create([{
+      hospitalId: invoice.hospital_id,
+      patientId: invoice.patient_id,
+      walletType: 'OPD_SHARED',
+      transactionType: 'MANUAL_ADJUSTMENT',
+      direction: 'CREDIT',
+      amount: collectedAvailable,
+      openingBalance,
+      paymentMethod: 'Adjustment',
+      referenceNumber: advanceNumber,
+      documentType: 'Adjustment',
+      documentId: invoice._id,
+      sourceModule: 'OPD',
+      sourceId: invoice.appointment_id || invoice._id,
+      balanceAfter,
+      notes: reason,
+      createdBy: user?._id,
+      idempotencyKey: `${rootKey}:advance-ledger`,
+      transactionGroupId: rootKey,
+      presentationType: 'APPOINTMENT_CANCELLATION_TO_ADVANCE'
+    }], sessionOptions(session));
+
+    invoice.advance_transferred_amount = money(Number(invoice.advance_transferred_amount || 0) + collectedAvailable);
+    await invoice.save(sessionOptions(session));
+
+    const transaction = new FinancialTransaction({
+      hospitalId: invoice.hospital_id,
+      patientId: invoice.patient_id,
+      billId: invoice.bill_id,
+      invoiceId: invoice._id,
+      transactionNumber: advanceNumber,
+      transactionType: 'ADJUSTMENT',
+      direction: 'CREDIT',
+      amount: collectedAvailable,
+      paymentMethod: 'Adjustment',
+      paymentReference: payload.reference,
+      receiptType: 'Adjustment',
+      amountReceived: 0,
+      amountTendered: 0,
+      amountApplied: 0,
+      advanceCreated: collectedAvailable,
+      externalMoneyMovement: false,
+      cashFlowClass: 'NON_CASH_ADJUSTMENT',
+      balanceAfter,
+      sourceModule: 'OPD',
+      sourceId: invoice.appointment_id || invoice._id,
+      remarks: reason,
+      createdBy: user?._id,
+      idempotencyKey: moneyKey,
+      documentAllocations: [{ documentType: 'Invoice', documentId: invoice._id, amount: collectedAvailable }],
+      metadata: {
+        appointmentCancellation: true,
+        disposition: 'ADVANCE',
+        walletType: 'OPD_SHARED',
+        walletOpeningBalance: openingBalance,
+        walletBalanceAfter: balanceAfter,
+        creditNoteId: credit?.creditNote?._id,
+        creditNoteNumber: credit?.creditNote?.invoice_number,
+        creditAmountCreated: creditForCollected
+      }
+    });
+    await transaction.save(sessionOptions(session));
+
+    return {
+      originalInvoice: invoice,
+      creditNote: credit?.creditNote || null,
+      transaction,
+      advanceNumber,
+      advanceBalance: balanceAfter,
+      amountResolved: collectedAvailable,
+      disposition,
+      alreadyExists: false
+    };
+  });
+
   return result;
 }
 
@@ -4093,6 +4353,7 @@ module.exports = {
   refundAdvance,
   createCreditNote,
   refundInvoice,
+  resolveOPDInvoiceCollectionForCancellation,
   getFinancialLedger,
   getFinancialClearance,
   finaliseFinancialClearance

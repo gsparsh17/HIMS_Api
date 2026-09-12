@@ -69,6 +69,7 @@ const ALLOWED_ACTIONS = new Set([
   'billing_create',
   'billing_edit',
   'billing_delete_charge',
+  'billing_delete_issued_document',
   'billing_apply_discount',
   'billing_finalize',
   'billing_mode_override',

@@ -602,7 +602,7 @@ async function reverseSourceFinancials({ sourceModule, sourceId, reason, payment
     for (const invoice of status.invoices) {
       const remainingCredit = money(Math.max(0, Number(invoice.total || 0) - Number(invoice.credit_note_total || 0)));
       if (remainingCredit <= 0) continue;
-      const refundable = money(Math.max(0, Number(invoice.amount_paid || 0) - Number(invoice.refunded_amount || 0)));
+      const refundable = money(Math.max(0, Number(invoice.amount_paid || 0) - Number(invoice.refunded_amount || 0) - Number(invoice.advance_transferred_amount || 0)));
       const refundAmount = money(Math.min(refundable, remainingCredit));
       if (refundAmount > 0) {
         const refunded = await ipdFinancial.refundInvoice(invoice._id, {

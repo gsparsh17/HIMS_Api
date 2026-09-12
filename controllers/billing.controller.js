@@ -28,6 +28,105 @@ function billScope(req, extra = {}) {
   return { ...extra, hospital_id: requestHospitalId(req) };
 }
 
+async function findIssuedInvoiceLinkedToBill(req, bill) {
+  if (!bill) return null;
+  const hospitalId = requestHospitalId(req);
+  const linkedIds = [
+    ...(bill.invoice_ids || []),
+    ...(bill.invoice_id ? [bill.invoice_id] : [])
+  ].map((value) => value?._id || value).filter(Boolean);
+
+  const or = [
+    { bill_id: bill._id },
+    { bill_ids: bill._id }
+  ];
+  if (linkedIds.length) or.push({ _id: { $in: linkedIds } });
+
+  return Invoice.findOne({
+    hospital_id: hospitalId,
+    is_deleted: { $ne: true },
+    document_stage: { $in: ['ISSUED', 'CREDIT_NOTE'] },
+    $or: or
+  }).select('_id invoice_number document_stage invoice_type linked_invoice_id');
+}
+
+function canEmergencyDeleteIssuedDocument(req) {
+  return Boolean(_hasActionPermission(req.user, 'billing_delete_issued_document'));
+}
+
+async function issuedBillDeletionContext(req, bill) {
+  const issuedInvoice = await findIssuedInvoiceLinkedToBill(req, bill);
+  return {
+    issuedInvoice,
+    isIssued: Boolean(issuedInvoice || bill?.document_stage === 'INVOICED')
+  };
+}
+
+async function requireIssuedDeletionAuthority(req, res, bill) {
+  const context = await issuedBillDeletionContext(req, bill);
+  if (!context.isIssued) return { ...context, allowed: true };
+  if (canEmergencyDeleteIssuedDocument(req)) return { ...context, allowed: true };
+
+  res.status(403).json({
+    success: false,
+    code: 'ISSUED_DOCUMENT_DELETE_PERMISSION_REQUIRED',
+    error: 'Deleting an issued Bill / Invoice is an emergency authority. Ask an administrator or a user granted "Emergency delete issued Bill / Invoice" permission.',
+    requiredAction: 'billing_delete_issued_document',
+    billId: bill?._id,
+    invoiceId: context.issuedInvoice?._id || bill?.invoice_id || null,
+    invoiceNumber: context.issuedInvoice?.invoice_number || null
+  });
+  return { ...context, allowed: false };
+}
+
+async function archiveInvoicesLinkedToBill(req, bill, deletionInfo) {
+  const hospitalId = requestHospitalId(req);
+  const linkedIds = [
+    ...(bill.invoice_ids || []),
+    ...(bill.invoice_id ? [bill.invoice_id] : [])
+  ].map((value) => value?._id || value).filter(Boolean);
+
+  const or = [
+    { bill_id: bill._id },
+    { bill_ids: bill._id }
+  ];
+  if (linkedIds.length) or.push({ _id: { $in: linkedIds } });
+
+  const result = await Invoice.updateMany({
+    hospital_id: hospitalId,
+    is_deleted: { $ne: true },
+    $or: or
+  }, {
+    $set: {
+      is_deleted: true,
+      is_active: false,
+      deleted_at: deletionInfo.deleted_at,
+      deleted_by: deletionInfo.deleted_by,
+      deletion_reason: deletionInfo.deletion_reason
+    }
+  });
+
+  return Number(result.modifiedCount ?? result.nModified ?? 0);
+}
+
+async function markInvoicesLinkedToBillForDeletionRequest(req, bill, deletionRequestId) {
+  const hospitalId = requestHospitalId(req);
+  const linkedIds = [
+    ...(bill.invoice_ids || []),
+    ...(bill.invoice_id ? [bill.invoice_id] : [])
+  ].map((value) => value?._id || value).filter(Boolean);
+  const or = [{ bill_id: bill._id }, { bill_ids: bill._id }];
+  if (linkedIds.length) or.push({ _id: { $in: linkedIds } });
+
+  return Invoice.updateMany({
+    hospital_id: hospitalId,
+    is_deleted: { $ne: true },
+    $or: or
+  }, deletionRequestId
+    ? { $set: { deletion_request_id: deletionRequestId } }
+    : { $unset: { deletion_request_id: 1 } });
+}
+
 function buildOpdLedgerEntries(bill, invoice) {
   const documentTotal = money(invoice?.total ?? bill?.total_amount);
   const documentDate = bill?.generated_at || bill?.createdAt || invoice?.issue_date || invoice?.createdAt;
@@ -706,6 +805,14 @@ exports.createBill = async (req, res) => {
       });
     }
 
+    if (['Partially Paid', 'Partial'].includes(String(status || '').trim())) {
+      return res.status(400).json({
+        success: false,
+        code: 'PARTIAL_PAYMENT_REQUIRES_LEDGER',
+        error: 'Do not set Partially Paid manually. Create the invoice as Pending, then record the actual partial amount through the canonical payment workflow.'
+      });
+    }
+
     const hospitalId = requestHospitalId(req);
 
     // Remaining direct /billing use is a genuine Finance manual-adjustment path.
@@ -1265,11 +1372,21 @@ exports.adminDeleteBill = async (req, res) => {
       return res.status(404).json({ error: 'Bill not found' });
     }
 
+    const issuedContext = await requireIssuedDeletionAuthority(req, res, bill);
+    if (!issuedContext.allowed) return;
+    if (issuedContext.isIssued && !String(reason || '').trim()) {
+      return res.status(400).json({
+        success: false,
+        code: 'DELETION_REASON_REQUIRED',
+        error: 'A detailed reason is required for emergency deletion of an issued Bill / Invoice.'
+      });
+    }
+
     const deletionInfo = {
       deleted_by: req.user?._id,
-      deleted_by_name: req.user?.name || 'Admin',
+      deleted_by_name: req.user?.name || 'Authorized user',
       deleted_at: new Date(),
-      deletion_reason: reason || 'Admin direct deletion',
+      deletion_reason: String(reason || (issuedContext.isIssued ? '' : 'Authorized direct deletion')).trim(),
       bill_amount: bill.total_amount,
       bill_id: bill._id,
       patient_name: bill.patient_id ? 
@@ -1277,9 +1394,9 @@ exports.adminDeleteBill = async (req, res) => {
       invoice_number: bill.invoice_id?.invoice_number
     };
 
-    if (bill.invoice_id) {
-      await Invoice.findOneAndUpdate({ _id: bill.invoice_id, hospital_id: requestHospitalId(req) }, { $set: { is_deleted: true, is_active: false, deleted_at: deletionInfo.deleted_at, deleted_by: req.user?._id || null, deletion_reason: deletionInfo.deletion_reason } });
-    }
+    const archivedInvoiceCount = issuedContext.isIssued
+      ? await archiveInvoicesLinkedToBill(req, bill, deletionInfo)
+      : 0;
 
     if (bill.prescription_id) {
       const prescription = await Prescription.findById(bill.prescription_id);
@@ -1336,7 +1453,11 @@ exports.adminDeleteBill = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Bill and associated invoice archived successfully',
+      message: issuedContext.isIssued
+        ? 'Issued Bill and linked Invoice(s) emergency-archived successfully'
+        : 'Unissued bill archived successfully',
+      emergencyIssuedDeletion: issuedContext.isIssued,
+      archivedInvoiceCount,
       deletion_info: deletionInfo
     });
   } catch (err) {
@@ -1365,6 +1486,8 @@ exports.requestBillDeletion = async (req, res) => {
       return res.status(400).json({ error: 'Bill is already deleted' });
     }
 
+    const issuedContext = await issuedBillDeletionContext(req, bill);
+
     if (bill.deletion_request && bill.deletion_request.status === 'pending') {
       return res.status(400).json({ 
         error: 'A deletion request is already pending for this bill',
@@ -1381,17 +1504,16 @@ exports.requestBillDeletion = async (req, res) => {
 
     await bill.save();
 
-    if (bill.invoice_id) {
-      const invoice = await Invoice.findById(bill.invoice_id);
-      if (invoice) {
-        invoice.deletion_request_id = bill._id;
-        await invoice.save();
-      }
+    if (issuedContext.isIssued) {
+      await markInvoicesLinkedToBillForDeletionRequest(req, bill, bill._id);
     }
 
     res.json({
       success: true,
-      message: 'Deletion request submitted successfully. Waiting for admin approval.',
+      message: issuedContext.isIssued
+        ? 'Emergency issued-document deletion request submitted. An authorized administrator must approve it.'
+        : 'Deletion request submitted successfully. Waiting for admin approval.',
+      requiresIssuedDeleteAuthority: issuedContext.isIssued,
       bill
     });
   } catch (err) {
@@ -1445,6 +1567,16 @@ exports.reviewDeletionRequest = async (req, res) => {
       return res.status(400).json({ error: 'No pending deletion request found for this bill' });
     }
 
+    const issuedContext = await issuedBillDeletionContext(req, bill);
+    if (action === 'approve' && issuedContext.isIssued && !canEmergencyDeleteIssuedDocument(req)) {
+      return res.status(403).json({
+        success: false,
+        code: 'ISSUED_DOCUMENT_DELETE_PERMISSION_REQUIRED',
+        error: 'Approving deletion of an issued Bill / Invoice requires the "Emergency delete issued Bill / Invoice" permission.',
+        requiredAction: 'billing_delete_issued_document'
+      });
+    }
+
     bill.deletion_request.status = action === 'approve' ? 'approved' : 'rejected';
     bill.deletion_request.reviewed_by = req.user._id;
     bill.deletion_request.reviewed_at = new Date();
@@ -1452,20 +1584,24 @@ exports.reviewDeletionRequest = async (req, res) => {
       bill.deletion_request.review_notes = review_notes;
     }
 
+    if (action === 'reject' && issuedContext.isIssued) {
+      await markInvoicesLinkedToBillForDeletionRequest(req, bill, null);
+    }
+
+    let archivedInvoiceCount = 0;
     if (action === 'approve') {
+      const deletedAt = new Date();
       bill.is_deleted = true;
       bill.is_active = false;
-      bill.deleted_at = new Date();
+      bill.deleted_at = deletedAt;
       bill.deleted_by = req.user._id;
       bill.deletion_reason = bill.deletion_request.reason;
 
-      if (bill.invoice_id) {
-        await Invoice.findByIdAndUpdate(bill.invoice_id, {
-          is_deleted: true,
-          is_active: false,
-          deleted_at: new Date(),
+      if (issuedContext.isIssued) {
+        archivedInvoiceCount = await archiveInvoicesLinkedToBill(req, bill, {
           deleted_by: req.user._id,
-          deletion_reason: `Bill deletion approved: ${bill.deletion_request.reason}`
+          deleted_at: deletedAt,
+          deletion_reason: bill.deletion_request.reason
         });
       }
 
@@ -1520,7 +1656,11 @@ exports.reviewDeletionRequest = async (req, res) => {
 
     res.json({
       success: true,
-      message: `Deletion request ${action === 'approve' ? 'approved' : 'rejected'} successfully`,
+      message: action === 'approve' && issuedContext.isIssued
+        ? 'Emergency issued-document deletion approved; Bill and linked Invoice(s) were archived.'
+        : `Deletion request ${action === 'approve' ? 'approved' : 'rejected'} successfully`,
+      emergencyIssuedDeletion: action === 'approve' && issuedContext.isIssued,
+      archivedInvoiceCount,
       bill
     });
   } catch (err) {
@@ -1576,13 +1716,10 @@ exports.deleteBill = async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body;
 
-    const isAdmin = req.user?.role === 'admin' || req.user?.isAdmin === true;
-    
-    if (isAdmin) {
+    if (canEmergencyDeleteIssuedDocument(req)) {
       return exports.adminDeleteBill(req, res);
-    } else {
-      return exports.requestBillDeletion(req, res);
     }
+    return exports.requestBillDeletion(req, res);
   } catch (err) {
     console.error('Error in deleteBill:', err);
     res.status(500).json({ error: err.message });
