@@ -28,6 +28,36 @@ const { requestHospitalId } = require('../utils/hospitalScope');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 const { appendDomainEvent } = require('../services/auditEvent.service');
 
+const PRESCRIPTION_MEDICINE_TYPES = new Set([
+  'Capsule', 'Tablet', 'Injection', 'Syrup', 'Cream', 'Ointment', 'Drops',
+  'Inhaler', 'Suppository', 'Powder', 'Lotion', 'Suspension', 'Solution',
+  'Gel', 'Spray', 'Patch', 'Implants', 'Inhalation', 'Other'
+]);
+
+function normalizePrescriptionMedicineType(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Tablet';
+  if (/^others?$/i.test(raw)) return 'Other';
+  const exact = [...PRESCRIPTION_MEDICINE_TYPES].find((item) => item.toLowerCase() === raw.toLowerCase());
+  return exact || 'Other';
+}
+
+function normalizePrescriptionRoute(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Oral';
+  const normalized = raw.toUpperCase().replace(/[\s._-]+/g, '');
+  if (normalized.includes('ORAL') || normalized.includes('PO') || normalized.includes('BYMOUTH')) return 'Oral';
+  if (normalized === 'IV' || normalized.includes('INTRAVENOUS')) return 'Intravenous';
+  if (normalized === 'IM' || normalized.includes('INTRAMUSCULAR')) return 'Intramuscular';
+  if (normalized === 'SC' || normalized === 'SQ' || normalized.includes('SUBCUTANEOUS')) return 'Subcutaneous';
+  if (normalized.includes('TOPICAL') || normalized.includes('EXTERNAL') || normalized.includes('LOCAL')) return 'Topical';
+  if (normalized.includes('INHAL')) return 'Inhalation';
+  // IPDMedicationChart intentionally has a smaller route enum than the general
+  // prescription model. Keep unsupported/special routes auditable as Other
+  // rather than failing the complete clinical-order transaction.
+  return 'Other';
+}
+
 async function attachAdmissionDetailsToPrescriptions(prescriptions, hospitalId, { includeWardCode = false } = {}) {
   const rows = prescriptions.map((prescription) =>
     typeof prescription?.toObject === 'function' ? prescription.toObject() : prescription
@@ -365,6 +395,9 @@ exports.createPrescription = async (req, res) => {
       ipd_admission_id,
       source_type,
       round_id,
+      source_document_type,
+      source_document_id,
+      source_document_revision = 0,
       presenting_complaint,
       history_of_presenting_complaint,
       diagnosis,
@@ -465,8 +498,8 @@ exports.createPrescription = async (req, res) => {
           // Optional legacy/pre-mapped inventory reference only. It is never
           // required for OPD/IPD prescribing and is not used to constrain the doctor.
           medicine_id: item.medicine_id || null,
-          medicine_type: item.medicine_type || 'Tablet',
-          route_of_administration: item.route_of_administration || 'Oral',
+          medicine_type: normalizePrescriptionMedicineType(item.medicine_type || item.dosage_form),
+          route_of_administration: normalizePrescriptionRoute(item.route_of_administration),
           dosage: item.dosage || '',
           frequency: item.frequency,
           duration: item.duration,
@@ -548,6 +581,39 @@ exports.createPrescription = async (req, res) => {
       }
     }
 
+    // Clinical documents outside ward rounds also need idempotency. Repeated
+    // sign requests must return the already-created bundle instead of creating
+    // duplicate MAR, laboratory, radiology, procedure, or pharmacy requests.
+    if (source_document_type && source_document_id) {
+      const existingSourcePrescription = await Prescription.findOne({
+        hospitalId: prescriptionHospitalId,
+        source_document_type: String(source_document_type),
+        source_document_id,
+        source_document_revision: Number(source_document_revision) || 0
+      })
+        .populate('patient_id', 'first_name last_name patientId phone')
+        .populate('doctor_id', 'firstName lastName specialization')
+        .populate('lab_test_requests.request_id', 'requestNumber status')
+        .populate('radiology_test_requests.request_id', 'requestNumber status')
+        .populate('procedure_requests.request_id', 'requestNumber status')
+        .session(writeSession || null);
+
+      if (existingSourcePrescription) {
+        return res.status(200).json({
+          success: true,
+          alreadyExists: true,
+          message: 'Clinical-document prescription/orders already saved',
+          prescription: existingSourcePrescription,
+          lab_requests: existingSourcePrescription.lab_test_requests || [],
+          radiology_requests: existingSourcePrescription.radiology_test_requests || [],
+          procedure_requests: existingSourcePrescription.procedure_requests || [],
+          ipd_medications_count: (existingSourcePrescription.ipd_medication_ids || []).length,
+          pharmacy_requests_created: 0,
+          medication_safety_alerts: medicationSafetyAlerts
+        });
+      }
+    }
+
     // Capture immutable clinical context for the generated prescription PDF.
     // Existing callers remain compatible: allergy is taken from the patient
     // master when omitted, and IPD ward-round pain is taken from the linked
@@ -578,6 +644,9 @@ exports.createPrescription = async (req, res) => {
       ipd_admission_id: ipd_admission_id || null,
       source_type: source_type || 'OPD',
       round_id: round_id || null,
+      source_document_type: source_document_type || undefined,
+      source_document_id: source_document_id || undefined,
+      source_document_revision: Number(source_document_revision) || 0,
       presenting_complaint: presenting_complaint || '',
       history_of_presenting_complaint: history_of_presenting_complaint || '',
       diagnosis: diagnosis || '',

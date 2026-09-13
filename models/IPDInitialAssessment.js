@@ -193,6 +193,10 @@ const ipdInitialAssessmentSchema = new mongoose.Schema({
     }
   },
 
+  // Unsigned doctor-order draft. Clinical orders are materialised into
+  // Prescription/LabRequest/IPDMedicationChart only when the assessment is signed.
+  orderDraft: { type: mongoose.Schema.Types.Mixed, default: null },
+
   // ✅ NEW: Prescription references from doctor assessment
   prescriptionIds: [{
     type: mongoose.Schema.Types.ObjectId,

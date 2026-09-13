@@ -1,4 +1,5 @@
 const { operationNow } = require('../utils/operationTimeContext');
+const mongoose = require('mongoose');
 // controllers/ipdClinicalDocuments.controller.js
 const IPDAdmission = require('../models/IPDAdmission');
 const IPDInitialAssessment = require('../models/IPDInitialAssessment');
@@ -7,6 +8,7 @@ const IPDVitals = require('../models/IPDVitals');
 const IPDMedicationChart = require('../models/IPDMedicationChart');
 const IPDRound = require('../models/IPDRound');
 const Prescription = require('../models/Prescription');
+const Doctor = require('../models/Doctor');
 const { clinicalDayBounds, formatClinicalTime, dateKey } = require('../utils/clinicalDate');
 const { DEFAULT_TIMEZONE, EWS_CONFIG } = require('../config/clinicalScoring');
 const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
@@ -105,8 +107,52 @@ function bodyForUpdate(body, ignored = []) {
   return output;
 }
 
+function amendmentRequested(body = {}) {
+  return body.amend === true || body.status === 'Amended' || body.formStatus === 'Amended';
+}
+
 function signedCannotOverwrite(existing, body) {
-  return existing?.formStatus === 'Signed' && body.status !== 'Amended' && body.amend !== true;
+  return existing?.formStatus === 'Signed' && !amendmentRequested(body);
+}
+
+function normalizeClinicalOrders(value = {}) {
+  return {
+    items: Array.isArray(value.items) ? value.items : [],
+    lab_test_requests: Array.isArray(value.lab_test_requests) ? value.lab_test_requests : [],
+    radiology_test_requests: Array.isArray(value.radiology_test_requests) ? value.radiology_test_requests : [],
+    procedure_requests: Array.isArray(value.procedure_requests) ? value.procedure_requests : []
+  };
+}
+
+function hasClinicalOrders(value = {}) {
+  const orders = normalizeClinicalOrders(value);
+  return Boolean(
+    orders.items.length ||
+    orders.lab_test_requests.length ||
+    orders.radiology_test_requests.length ||
+    orders.procedure_requests.length
+  );
+}
+
+function captureControllerResponse() {
+  return {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { this.body = payload; return this; },
+    send(payload) { this.body = payload; return this; },
+    set() { return this; }
+  };
+}
+
+function throwCapturedFailure(capture, fallbackMessage) {
+  if (capture.statusCode < 400) return;
+  const error = new Error(capture.body?.error || capture.body?.message || fallbackMessage);
+  error.status = capture.statusCode;
+  error.statusCode = capture.statusCode;
+  error.code = capture.body?.code;
+  error.details = capture.body;
+  throw error;
 }
 
 function nursingSignedCannotOverwrite(existing, body) {
@@ -606,7 +652,33 @@ exports.getDoctorInitialAssessment = async (req, res) => {
       hospitalId: admission.hospitalId || admission.hospital_id
     });
 
-    res.json({ success: true, assessment });
+    if (!assessment) return res.json({ success: true, assessment: null });
+
+    const payload = assessment.toObject();
+    let prescription = null;
+
+    // Draft/amended documents reload their unsent order draft. A signed document
+    // exposes the most recently materialised order bundle for read-only display.
+    if (assessment.formStatus === 'Signed' && assessment.prescriptionIds?.length) {
+      const prescriptionId = assessment.prescriptionIds[assessment.prescriptionIds.length - 1];
+      // The prescription id is read from this already tenant-scoped assessment.
+      // Use the reference directly so legacy assessment prescriptions created
+      // before hospitalId was written can still be displayed.
+      const saved = await Prescription.findById(prescriptionId).lean();
+      if (saved) {
+        prescription = {
+          items: saved.items || [],
+          lab_test_requests: saved.lab_test_requests || [],
+          radiology_test_requests: saved.radiology_test_requests || [],
+          procedure_requests: saved.procedure_requests || []
+        };
+      }
+    } else if (assessment.orderDraft) {
+      prescription = normalizeClinicalOrders(assessment.orderDraft);
+    }
+
+    payload.prescription = prescription;
+    res.json({ success: true, assessment: payload });
   } catch (error) {
     res.status(error.status || 500).json({ success: false, message: error.message });
   }
@@ -641,7 +713,14 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
       throw statusError(409, 'Signed Doctor Initial Assessment must be amended with a reason');
     }
 
-    const patch = normalizeDoctorPayload(bodyForUpdate(req.body));
+    const requestedOrders = normalizeClinicalOrders(req.body.prescription || {});
+    const hasOrders = hasClinicalOrders(requestedOrders);
+    const isSigning = req.body.sign === true || req.body.formStatus === 'Signed';
+    const isOpeningAmendment = existing?.formStatus === 'Signed' && amendmentRequested(req.body) && !isSigning;
+
+    // Prescription/order data has its own lifecycle and must not be assigned to
+    // the strict assessment schema as an arbitrary field.
+    const patch = normalizeDoctorPayload(bodyForUpdate(req.body, ['prescription', 'amend', 'amendmentReason', 'sign']));
     patch.admissionId = admission._id;
     patch.patientId = id(admission.patientId);
     patch.hospitalId = hospitalId;
@@ -651,7 +730,7 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
       patch.createdBy = req.user._id;
       existing = new IPDInitialAssessment(patch);
     } else {
-      if (existing.formStatus === 'Signed' || req.body.amend === true) {
+      if (isOpeningAmendment || req.body.amend === true) {
         if (!safeText(req.body.amendmentReason)) {
           throw statusError(400, 'Amendment reason is required');
         }
@@ -667,16 +746,75 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
       existing.set(patch);
     }
 
-    const isSigning = req.body.sign === true || req.body.formStatus === 'Signed';
-
     if (isSigning) {
       existing.formStatus = 'Signed';
       existing.signedAt = operationNow();
       existing.signedBy = req.user._id;
       existing.signerName = req.user.name;
+    } else {
+      // Opening an amendment starts with a clean *new-order* draft. Historical
+      // signed orders remain immutable and visible in their own clinical records.
+      existing.orderDraft = isOpeningAmendment ? null : (hasOrders ? requestedOrders : null);
     }
 
-    await existing.save();
+    let prescriptionResult = null;
+
+    if (isSigning && hasOrders) {
+      const doctorAlternatives = [{ user_id: req.user._id }];
+      if (req.user.email) doctorAlternatives.push({ email: String(req.user.email).toLowerCase() });
+      const doctor = await Doctor.findOne({ hospitalId, $or: doctorAlternatives }).select('_id').lean();
+      if (!doctor) throw statusError(404, 'Doctor profile for the signed-in user was not found');
+
+      // Assessment + resulting clinical orders commit together. The central
+      // prescription controller creates LabRequest/RadiologyRequest/
+      // ProcedureRequest/IPDMedicationChart/PharmacyRequest consistently with
+      // ward rounds.
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
+        await existing.save({ session });
+
+        const prescriptionController = require('./prescription.controller');
+        const prescriptionReq = Object.assign(Object.create(req), {
+          body: {
+            ...requestedOrders,
+            patient_id: id(admission.patientId),
+            doctor_id: doctor._id,
+            ipd_admission_id: admission._id,
+            source_type: 'IPD',
+            diagnosis: patch.planAndDisposition?.provisionalDiagnosis || admission.provisionalDiagnosis || 'IPD Initial Assessment',
+            pain_score: patch.painScore?.score,
+            allergy_snapshot: allergySnapshot(patch.allergies, admission.patientId?.allergies),
+            source_document_type: 'DoctorInitialAssessment',
+            source_document_id: existing._id,
+            source_document_revision: existing.amendments?.length || 0
+          },
+          transactionSession: session
+        });
+        const prescriptionRes = captureControllerResponse();
+        await prescriptionController.createPrescription(prescriptionReq, prescriptionRes);
+        throwCapturedFailure(prescriptionRes, 'Unable to save Doctor Initial Assessment clinical orders');
+        prescriptionResult = prescriptionRes.body;
+
+        const prescriptionId = prescriptionResult?.prescription?._id;
+        if (prescriptionId) {
+          const ids = (existing.prescriptionIds || []).map(String);
+          if (!ids.includes(String(prescriptionId))) existing.prescriptionIds.push(prescriptionId);
+        }
+        const medicationNames = requestedOrders.items.map((item) => item.medicine_name).filter(Boolean);
+        existing.medicationSummary = medicationNames.join(', ');
+        existing.orderDraft = null;
+        await existing.save({ session });
+        await session.commitTransaction();
+      } catch (error) {
+        if (session.inTransaction()) await session.abortTransaction();
+        throw error;
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await existing.save();
+    }
 
     // ✅ UPDATE IPD ADMISSION with assessment data when signed
     if (isSigning) {
@@ -684,43 +822,32 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
         const updateData = {};
         let shouldUpdate = false;
 
-        // Update chief complaints
         if (patch.chiefComplaints) {
           updateData.chiefComplaints = patch.chiefComplaints;
           shouldUpdate = true;
         }
-
-        // Update history of presenting illness
         if (patch.historyOfPresentingIllness) {
           updateData.historyOfPresentIllness = patch.historyOfPresentingIllness;
           shouldUpdate = true;
         }
-
-        // Update past medical history
         if (patch.pastHistoryMedical?.other) {
           updateData.pastMedicalHistory = patch.pastHistoryMedical.other;
           shouldUpdate = true;
         }
-
-        // Update provisional diagnosis
         if (patch.planAndDisposition?.provisionalDiagnosis) {
           updateData.provisionalDiagnosis = patch.planAndDisposition.provisionalDiagnosis;
           shouldUpdate = true;
         }
 
-        // Update clinical assessment status
         updateData.clinicalAssessmentCompleted = true;
         updateData.clinicalAssessmentCompletedAt = operationNow();
         updateData.clinicalAssessmentCompletedBy = req.user._id;
         shouldUpdate = true;
 
-        // Update attendant information from assessment
         if (patch.relation) {
           updateData['attendant.relation'] = patch.relation;
           shouldUpdate = true;
         }
-
-        // If admission status is still 'Admitted', update to 'Under Treatment'
         if (admission.status === 'Admitted') {
           updateData.status = 'Under Treatment';
           shouldUpdate = true;
@@ -732,15 +859,14 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
             { $set: updateData },
             { new: true, runValidators: true }
           );
-          console.log('✅ IPD Admission updated with doctor assessment data');
         }
       } catch (admissionUpdateError) {
         console.error('Error updating IPD admission from assessment:', admissionUpdateError);
-        // Don't throw - assessment is already saved, just log the error
       }
     }
 
-    // Create Vitals record from assessment data
+    // Create Vitals record from assessment data. This remains independent from
+    // the signed clinical-order transaction because vitals have their own chart.
     try {
       const vitalsData = patch.generalExamination?.vitals || {};
       const height = patch.generalExamination?.height?.value || patch.generalExamination?.height;
@@ -750,7 +876,7 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
       const vitalsPayload = {
         admissionId: admission._id,
         patientId: id(admission.patientId),
-        hospitalId: hospitalId,
+        hospitalId,
         recordedBy: req.user._id,
         recordedByName: req.user.name,
         recordedByInitials: initials(req.user.name),
@@ -767,77 +893,35 @@ exports.saveDoctorInitialAssessment = async (req, res) => {
         weight: weight ? parseFloat(weight) : undefined,
         height: height ? parseFloat(height) : undefined,
         painScore: painScore ? parseInt(painScore) : undefined,
-        status: req.body.formStatus === 'Signed' ? 'Signed' : 'Draft',
+        status: isSigning ? 'Signed' : 'Draft',
         remarks: 'Auto-created from Doctor Initial Assessment'
       };
 
       const newVitals = new IPDVitals(vitalsPayload);
       await newVitals.save();
-
     } catch (vitalsError) {
       console.error('Error saving vitals from assessment:', vitalsError);
     }
 
-    // Save prescription if medications were prescribed
-    if (req.body.prescription) {
-      try {
-        const { items, lab_test_requests, radiology_test_requests, procedure_requests } = req.body.prescription;
+    const responseAssessment = existing.toObject();
+    responseAssessment.prescription = isSigning
+      ? (prescriptionResult?.prescription ? {
+          items: prescriptionResult.prescription.items || [],
+          lab_test_requests: prescriptionResult.prescription.lab_test_requests || [],
+          radiology_test_requests: prescriptionResult.prescription.radiology_test_requests || [],
+          procedure_requests: prescriptionResult.prescription.procedure_requests || []
+        } : null)
+      : (existing.orderDraft || null);
 
-        if (items && items.length > 0) {
-          const prescription = new Prescription({
-            patient_id: admission.patientId,
-            doctor_id: req.user._id,
-            ipd_admission_id: admission._id,
-            source_type: 'IPD',
-            diagnosis: patch.planAndDisposition?.provisionalDiagnosis || '',
-            pain_score: patch.painScore?.score,
-            allergy_snapshot: allergySnapshot(
-              patch.allergies,
-              admission.patientId?.allergies
-            ),
-            items: items.map(item => ({
-              medicine_name: item.medicine_name,
-              generic_name: item.generic_name || item.medicine_name,
-              nlem_code: item.nlem_code || '',
-              dosage_form: item.dosage_form || '',
-              medicine_type: item.medicine_type || 'Tablet',
-              route_of_administration: item.route_of_administration || 'Oral',
-              dosage: item.dosage || '',
-              frequency: item.frequency || '',
-              duration: item.duration || '',
-              quantity: item.quantity || 1,
-              dose_qty_base_units: item.dose_quantity || 1,
-              requires_pharmacy_dispense: item.requires_pharmacy_dispense !== false,
-              instructions: item.instructions || '',
-              timing: item.timing || 'Anytime'
-            })),
-            lab_test_requests: lab_test_requests || [],
-            radiology_test_requests: radiology_test_requests || [],
-            procedure_requests: procedure_requests || [],
-            created_by: req.user._id
-          });
-
-          await prescription.save();
-
-          if (!existing.prescriptionIds) existing.prescriptionIds = [];
-          existing.prescriptionIds.push(prescription._id);
-
-          const medicationNames = items.map(item => item.medicine_name).filter(Boolean);
-          if (medicationNames.length > 0) {
-            existing.medicationSummary = medicationNames.join(', ');
-          }
-
-          await existing.save();
-        }
-      } catch (prescriptionError) {
-        console.error('Error saving prescription from assessment:', prescriptionError);
-      }
-    }
-
-    res.json({ success: true, assessment: existing });
+    res.json({
+      success: true,
+      assessment: responseAssessment,
+      prescription: prescriptionResult,
+      ipd_medications_count: prescriptionResult?.ipd_medications_count || 0
+    });
   } catch (error) {
     console.log('Error in saveDoctorInitialAssessment:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message });
+    res.status(error.status || error.statusCode || 500).json({ success: false, message: error.message, code: error.code });
   }
 };
 

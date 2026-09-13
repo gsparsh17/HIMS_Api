@@ -128,6 +128,12 @@ const prescriptionSchema = new mongoose.Schema({
   source_type: { type: String, enum: ['OPD', 'IPD', 'Emergency'], default: 'OPD' },
   round_id: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDRound' },
 
+  // Optional originating clinical document. This gives non-round clinical order
+  // bundles (for example Doctor Initial Assessment) an idempotency key too.
+  source_document_type: { type: String, trim: true, index: true },
+  source_document_id: { type: mongoose.Schema.Types.ObjectId, index: true },
+  source_document_revision: { type: Number, default: 0 },
+
   // Clinical Information
   presenting_complaint: { type: String, trim: true },
   history_of_presenting_complaint: { type: String, trim: true },
@@ -209,6 +215,16 @@ prescriptionSchema.index({ prescription_number: 1 });
 prescriptionSchema.index({ status: 1 });
 prescriptionSchema.index({ diagnosis_icd11_code: 1 });
 prescriptionSchema.index({ ipd_admission_id: 1, source_type: 1 });
+prescriptionSchema.index(
+  { hospitalId: 1, source_document_type: 1, source_document_id: 1, source_document_revision: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      source_document_type: { $type: 'string' },
+      source_document_id: { $type: 'objectId' }
+    }
+  }
+);
 // One order bundle per IPD ward round. Partial filter keeps OPD/non-round
 // prescriptions unaffected while closing the concurrent-retry duplication race.
 prescriptionSchema.index(

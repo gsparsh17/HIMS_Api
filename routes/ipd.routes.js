@@ -21,6 +21,7 @@ const billing = require('../controllers/ipdBilling.controller');
 const discharge = require('../controllers/ipdDischarge.controller');
 const clinical = require('../controllers/ipdClinicalDocuments.controller');
 const clinicalTemplates = require('../controllers/clinicalTemplate.controller');
+const clinicalCatalog = require('../controllers/ipdClinicalCatalog.controller');
 
 const clinicalRoles = ['admin', 'doctor', 'nurse', 'staff', 'registrar', 'pharmacy', 'accountant'];
 const read = [protect, authorize(...clinicalRoles)];
@@ -36,6 +37,14 @@ router.use((req, res, next) => {
   if (req.method === 'POST' && /^\/discharge\/[^/]+\/complete\/?$/.test(req.path)) return next();
   return requireModuleAccess('ipd', 'manage')(req, res, next);
 });
+
+// ============== DOCTOR CLINICAL ORDER CATALOGUES ==============
+// These read-only catalogues live under IPD so doctors can order medicines,
+// pathology/lab tests and procedures without needing pharmacy/laboratory master
+// maintenance permissions. The router-level IPD view permission still applies.
+router.get('/clinical-catalog/medicines', clinicalCatalog.searchMedicines);
+router.get('/clinical-catalog/lab-tests', clinicalCatalog.searchLabTests);
+router.get('/clinical-catalog/procedures', clinicalCatalog.searchProcedures);
 
 // ============== CLINICAL DOCUMENTS ==============
 router.get(
