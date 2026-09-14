@@ -8,6 +8,7 @@ const Invoice = require('../models/Invoice');
 const Patient = require('../models/Patient');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
+const { debitIpdSharedAdvance } = require('./ipdAdvanceWallet.service');
 const PharmacyLedgerSettlement = require('../models/PharmacyLedgerSettlement');
 const PatientSettlementCredit = require('../models/PatientSettlementCredit');
 const Pharmacy = require('../models/Pharmacy');
@@ -102,7 +103,7 @@ function getSafeBalance(value) {
 // ========== ADVANCE BALANCE FUNCTIONS ==========
 
 async function getAdvanceBalance({ patientId, admissionId, walletType, session }) {
-  const query = { walletType };
+  const query = { walletType, status: 'POSTED' };
   if (admissionId) {
     query.admissionId = admissionId;
   } else if (patientId) {
@@ -359,6 +360,30 @@ async function debitAdvanceIfUsed({ payment, sale, settlement, session, createdB
 
   const balanceAfter = money(available - payment.amount);
 
+  if (walletType === 'IPD_SHARED') {
+    // The IPD shared wallet belongs to the encounter, even when Pharmacy is
+    // the consumer. Debit the authoritative wallet service so the ledger and
+    // IPDAdmission.advanceAmount projection are updated in the same transaction.
+    await debitIpdSharedAdvance({
+      hospitalId: settlement.hospital_id,
+      patientId: sale.patient_id,
+      admissionId: sale.admission_id,
+      amount: payment.amount,
+      transactionType: 'OUTSTANDING_SETTLEMENT_DEBIT',
+      paymentMethod: payment.method,
+      referenceNumber: settlement.settlement_number,
+      documentType: 'Adjustment',
+      documentId: settlement._id,
+      sourceModule: 'Pharmacy',
+      sourceId: sale._id,
+      notes: `Pharmacy ledger settlement ${settlement.settlement_number}`,
+      createdBy,
+      fallbackBalance: available,
+      session
+    });
+    return;
+  }
+
   await PatientAdvanceLedger.create([{
     hospitalId: settlement.hospital_id,
     patientId: sale.patient_id,
@@ -367,6 +392,7 @@ async function debitAdvanceIfUsed({ payment, sale, settlement, session, createdB
     transactionType: 'OUTSTANDING_SETTLEMENT_DEBIT',
     direction: 'DEBIT',
     amount: payment.amount,
+    openingBalance: available,
     paymentMethod: payment.method,
     referenceNumber: settlement.settlement_number,
     documentType: 'Adjustment',

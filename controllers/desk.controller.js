@@ -4,6 +4,17 @@ const { userHospitalId } = require('../utils/hospitalScope');
 const { searchServiceCatalog } = require('../services/serviceCatalog.service');
 const desk = require('../services/deskOrchestration.service');
 
+const ACTIVE_IPD_STATUSES = Object.freeze([
+  'Admitted',
+  'Under Treatment',
+  'Discharge Initiated',
+  'Discharge Summary Pending',
+  'Billing Pending',
+  'Payment Pending',
+  'Ready for Discharge'
+]);
+
+
 function sendError(res, error) {
   return res.status(error.statusCode || 500).json({
     success: false,
@@ -49,7 +60,7 @@ exports.searchPatients = async (req, res) => {
       .find({
         hospitalId,
         patientId: { $in: ids },
-        status: { $nin: ['Discharged', 'Cancelled'] }
+        status: { $in: ACTIVE_IPD_STATUSES }
       })
       .select('patientId admissionNumber status')
       .lean();
@@ -76,7 +87,7 @@ exports.getPatientAdmissions = async (req, res) => {
       .find({
         hospitalId,
         patientId: req.params.patientId,
-        status: { $nin: ['Discharged', 'Cancelled'] }
+        status: { $in: ACTIVE_IPD_STATUSES }
       })
       .select('admissionNumber ipdNumber status wardId bedId admissionDate consultantId')
       .populate('wardId', 'name')
@@ -104,7 +115,11 @@ exports.searchServices = async (req, res) => {
       user: req.user,
       query: req.query.q,
       encounterType: req.query.encounterType,
-      limit: req.query.limit
+      limit: req.query.limit,
+      // The public Clinical Services picker is intentionally limited to true
+      // clinical-order masters (lab, imaging and procedure). Encounter fees
+      // remain in the internal catalogue for appointment/admission quoting.
+      includeEncounterCharges: false
     });
 
     return res.json({ success: true, data });

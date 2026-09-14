@@ -1356,7 +1356,6 @@ async function commitDeskCheckout(payload, user) {
         admissionType: admDraft.admissionType || (admDraft.emergency?.enabled ? 'Emergency' : 'Planned'),
         provisionalDiagnosis: admDraft.provisionalDiagnosis,
         chiefComplaints: admDraft.chiefComplaints,
-        paymentType: admDraft.paymentType || 'Cash',
         sponsorType: admDraft.sponsorType || payload.coverage?.payerCategory || 'self',
         coverage: admDraft.coverage || payload.coverage,
         attendant: admDraft.attendant,

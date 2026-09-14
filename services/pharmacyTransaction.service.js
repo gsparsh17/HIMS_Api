@@ -130,7 +130,7 @@ function calculateRequiredBaseUnits(item = {}) {
 }
 
 async function getAdvanceBalance({ admissionId, patientId, walletType = 'PHARMACY_IPD', session } = {}) {
-  const query = { walletType };
+  const query = { walletType, status: 'POSTED' };
   if (admissionId) query.admissionId = admissionId;
   else if (patientId) query.patientId = patientId;
   let lookup = PatientAdvanceLedger.findOne(query).sort({ postedAt: -1, createdAt: -1 });
@@ -290,8 +290,8 @@ async function resolvePatientContext({ hospitalId, patientId, admissionId, presc
     uhid: explicit.uhid || patient?.uhid || patient?.patientId,
     registrationNumber: explicit.registration_number || explicit.registrationNumber || admission?.admissionNumber || patient?.patientId,
     shipNo: explicit.ship_no || explicit.shipNo || admission?.shipNo || admission?.admissionNumber,
-    sponsorType: explicit.sponsor_type || explicit.sponsorType || admission?.paymentType || patient?.sponsorType || 'Self',
-    sponsorName: explicit.sponsor_name || explicit.sponsorName || admission?.insuranceDetails?.provider || admission?.paymentType || 'Self',
+    sponsorType: explicit.sponsor_type || explicit.sponsorType || admission?.sponsorType || patient?.sponsorType || admission?.paymentType || 'Self',
+    sponsorName: explicit.sponsor_name || explicit.sponsorName || admission?.sponsorName || admission?.insuranceDetails?.provider || 'Self',
     wardName: explicit.ward_name || explicit.wardName,
     bedName: explicit.bed_name || explicit.bedName
   };
@@ -2064,7 +2064,7 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
       .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
       .populate({
         path: 'admission_id',
-        select: 'admissionNumber status paymentType advanceAmount bedId wardId pharmacyBillingPolicySnapshot',
+        select: 'admissionNumber status paymentType sponsorType sponsorName advanceAmount bedId wardId pharmacyBillingPolicySnapshot',
         populate: [
           { path: 'bedId', model: 'Bed', select: 'bedNumber bed_number bedName' },
           { path: 'wardId', model: 'Ward', select: 'name wardName' }
@@ -2382,7 +2382,7 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
     .populate('patient_id', 'first_name middle_name last_name patientId uhid phone gender dob')
     .populate({
       path: 'admission_id',
-      select: 'admissionNumber status paymentType advanceAmount bedId wardId',
+      select: 'admissionNumber status paymentType sponsorType sponsorName advanceAmount bedId wardId',
       populate: [
         { path: 'bedId', model: 'Bed', select: 'bedNumber bed_number bedName' },
         { path: 'wardId', model: 'Ward', select: 'name wardName' }

@@ -24,6 +24,15 @@ function legacyEncounterSponsorType(payerType) {
   return 'other';
 }
 
+function legacyAdmissionPaymentType(payerType) {
+  const raw = String(payerType || 'self').trim().toLowerCase();
+  if (['self', 'cash'].includes(raw)) return 'Cash';
+  if (['private_insurer', 'tpa', 'tpa_managed', 'insurance'].includes(raw)) return 'Insurance';
+  if (['corporate', 'company_panel'].includes(raw)) return 'Corporate';
+  if (['pmjay', 'ayushman_bharat', 'cghs', 'state_scheme', 'echs', 'esic', 'government_other', 'government_scheme'].includes(raw)) return 'Government Scheme';
+  return 'Other';
+}
+
 function sessionQuery(query, session) {
   return session ? query.session(session) : query;
 }
@@ -179,6 +188,10 @@ async function createEncounterCoverage({ req, hospitalId, encounterType, encount
     if (normalizedType === 'IPD') {
       encounter.patientReceivable = Number(encounter.patientReceivable || 0);
       encounter.sponsorReceivable = Number(encounter.sponsorReceivable || 0);
+      // `paymentType` is a legacy financial-class projection, not a tender.
+      // Keep it derived from the active payer so the UI cannot create
+      // contradictions such as "Insurance payer + Cash paymentType".
+      encounter.paymentType = legacyAdmissionPaymentType(payer.type);
     }
     await encounter.save({ session });
   }
@@ -354,6 +367,9 @@ async function activatePreparedCoverage({ req, hospitalId, coverageId, session }
   // coverage can be activated during repricing without failing model validation.
   encounter.sponsorType = legacyEncounterSponsorType(payer?.type || coverage.payerCategory);
   encounter.sponsorName = payer?.name;
+  if (coverage.encounterType === 'IPD') {
+    encounter.paymentType = legacyAdmissionPaymentType(payer?.type || coverage.payerCategory);
+  }
   await encounter.save({ session });
   await rememberCoveragePreference({ hospitalId, coverage, userId: req.user?._id, session });
   await appendDomainEvent({
@@ -384,5 +400,6 @@ module.exports = {
   tenantAdmission,
   tenantAppointment,
   encounterFilter,
+  legacyAdmissionPaymentType,
   httpError
 };

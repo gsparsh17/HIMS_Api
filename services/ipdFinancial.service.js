@@ -29,6 +29,7 @@ const { loadIPDWorkflowPolicy, stageBefore } = require('./ipdWorkflowPolicy.serv
 const { _hasActionPermission } = require('../middlewares/auth');
 const { assertAdmissionOpenForMutation } = require('./ipdLifecycleGuard.service');
 const { policyFromAdmission, ipdOwnsPharmacyBilling } = require('./ipdPharmacyBillingPolicy.service');
+const { getIpdSharedAdvanceBalance, debitIpdSharedAdvance } = require('./ipdAdvanceWallet.service');
 
 const ACTIVE_CHARGE_FILTER = {
   $or: [
@@ -569,10 +570,16 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
     if (row.direction === 'DEBIT' && ['REFUND_PAID', 'ADVANCE_REFUND', 'PHARMACY_ADVANCE_REFUND'].includes(type)) totals.refunded += amount;
     return totals;
   }, { received: 0, utilized: 0, refunded: 0 });
-  const advanceAvailable = money(patientAdvanceLedger.length ? patientAdvanceLedger[patientAdvanceLedger.length - 1].balanceAfter : 0);
-  const advanceReceived = money(advanceStats.received);
-  const advanceUtilized = money(advanceStats.utilized);
-  const advanceRefunded = money(advanceStats.refunded);
+  const hasAuthoritativeAdvanceLedger = patientAdvanceLedger.length > 0;
+  // Preserve legacy installations that had only the admission projection until
+  // the first append-only IPD_SHARED ledger transaction is posted. Once a
+  // ledger row exists, the ledger is always authoritative.
+  const advanceAvailable = money(hasAuthoritativeAdvanceLedger
+    ? patientAdvanceLedger[patientAdvanceLedger.length - 1].balanceAfter
+    : admission.advanceAmount);
+  const advanceReceived = money(hasAuthoritativeAdvanceLedger ? advanceStats.received : (admission.advanceReceivedAmount || advanceAvailable));
+  const advanceUtilized = money(hasAuthoritativeAdvanceLedger ? advanceStats.utilized : admission.advanceUtilizedAmount);
+  const advanceRefunded = money(hasAuthoritativeAdvanceLedger ? advanceStats.refunded : admission.advanceRefundedAmount);
 
   const totalChargeAmount = sumCharges(charges);
   const totalStandardAmount = money(
@@ -2636,35 +2643,28 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
     const advanceApplied = money(breakdown.filter((row) => row.method === 'IPDAdvance').reduce((sum, row) => sum + row.amount, 0));
     let updatedAdvance = null;
     if (advanceApplied > 0) {
-      updatedAdvance = await IPDAdmission.findOneAndUpdate(
-        { _id: admission._id, hospitalId: admission.hospitalId, advanceAmount: { $gte: advanceApplied } },
-        { $inc: { advanceAmount: -advanceApplied, advanceUtilizedAmount: advanceApplied } },
-        { new: true, ...sessionOptions(session) }
-      );
-      if (!updatedAdvance) {
-        const error = new Error('Insufficient available IPD advance');
-        error.statusCode = 409;
-        throw error;
-      }
-      await PatientAdvanceLedger.create([{
+      // PatientAdvanceLedger is authoritative. Do not authorise a wallet debit
+      // from the cached admission.advanceAmount projection because Pharmacy or
+      // another settlement workflow may have consumed the shared wallet first.
+      const debit = await debitIpdSharedAdvance({
         hospitalId,
         patientId: admission.patientId,
         admissionId: admission._id,
-        walletType: 'IPD_SHARED',
-        transactionType: 'IPD_INVOICE_DEBIT',
-        direction: 'DEBIT',
         amount: advanceApplied,
-        openingBalance: money(updatedAdvance.advanceAmount + advanceApplied),
+        transactionType: 'IPD_INVOICE_DEBIT',
         paymentMethod: 'IPDAdvance',
         referenceNumber: receiptNumber,
         documentType: 'Invoice',
         sourceModule: 'IPD',
         sourceId: admission._id,
-        balanceAfter: money(updatedAdvance.advanceAmount),
         notes: payload.notes || 'IPD advance utilised against invoice(s)',
         createdBy: user?._id,
-        idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:advance` : undefined
-      }], sessionOptions(session));
+        idempotencyKey: payload.idempotencyKey ? `${payload.idempotencyKey}:advance` : undefined,
+        utilizedDelta: advanceApplied,
+        fallbackBalance: admission.advanceAmount,
+        session
+      });
+      updatedAdvance = debit.admission;
     }
 
     const receiptType = payload.receiptType === 'Final Settlement' ? 'Final Settlement' : 'Payment';
@@ -2912,20 +2912,11 @@ async function applyAvailableIPDAdvance(admissionId, options = {}, user) {
 }
 
 async function getAuthoritativeIpdAdvanceBalance({ hospitalId, admissionId, session, fallbackBalance = 0 }) {
-  const latest = await PatientAdvanceLedger.findOne(
-    { hospitalId, admissionId, walletType: 'IPD_SHARED', status: 'POSTED' },
-    null,
-    sessionOptions(session)
-  )
-    .sort({ postedAt: -1, createdAt: -1, _id: -1 })
-    .select('balanceAfter')
-    .lean();
-
   // Existing installations can contain legacy admissions whose projection was
   // populated before the append-only IPD_SHARED ledger existed. Preserve that
   // value only when no authoritative ledger row exists; the first new deposit
   // or refund then bootstraps the ledger from the legacy opening balance.
-  return latest ? money(latest.balanceAfter) : money(fallbackBalance);
+  return getIpdSharedAdvanceBalance({ hospitalId, admissionId, session, fallbackBalance });
 }
 
 
@@ -4367,7 +4358,10 @@ async function getFinancialClearance(admissionId, user, options = {}) {
   const disposition = admission.advanceClearanceDisposition || 'pending';
   const advanceReconciled = !workflowPolicy.requireAdvanceReconciliation || advanceAvailable === 0 ||
     workflowPolicy.unusedIpdAdvanceDisposition === 'ALLOW_RETAIN' ||
-    (workflowPolicy.unusedIpdAdvanceDisposition === 'REQUIRE_DECISION' && ['retain', 'carry_forward', 'refunded', 'none'].includes(disposition));
+    (workflowPolicy.unusedIpdAdvanceDisposition === 'REQUIRE_DECISION' && (
+      ['retain', 'carry_forward'].includes(disposition) ||
+      (['refunded', 'none'].includes(disposition) && advanceAvailable === 0)
+    ));
 
   const pharmacyMustPrecedeFinance = workflowPolicy.requirePharmacyClearance && stageBefore(workflowPolicy, 'PHARMACY_CLEARANCE', 'IPD_FINANCIAL_CLEARANCE');
   const checks = {
@@ -4570,11 +4564,21 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
   // retain/carry_forward only records the operator's clearance decision.
   admissionForPolicy = await findAdmission(admissionId, null, user);
   const advanceDisposition = String(payload.unusedAdvanceDisposition || '').toLowerCase();
-  const currentAdvance = money(admissionForPolicy.advanceAmount || 0);
+  const currentAdvance = await getIpdSharedAdvanceBalance({
+    hospitalId: admissionForPolicy.hospitalId,
+    admissionId: admissionForPolicy._id,
+    fallbackBalance: admissionForPolicy.advanceAmount
+  });
 
   if (advanceDisposition === 'refund' && currentAdvance > 0) {
     const requestedRefund = optionalMoney(payload.advanceRefundAmount);
-    const refundAmount = requestedRefund > 0 ? Math.min(requestedRefund, currentAdvance) : currentAdvance;
+    if (requestedRefund > 0 && Math.abs(requestedRefund - currentAdvance) > 0.01) {
+      const error = new Error(`Final clearance refund must reconcile the full unused IPD advance of ₹${currentAdvance.toFixed(2)}`);
+      error.statusCode = 409;
+      error.code = 'FULL_ADVANCE_RECONCILIATION_REQUIRED';
+      throw error;
+    }
+    const refundAmount = currentAdvance;
     advanceRefund = await refundAdvance(admissionId, {
       amount: refundAmount,
       paymentMethod: payload.advanceRefundMethod || payload.refundPaymentMethod || 'Cash',
@@ -4594,7 +4598,7 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
     admissionForPolicy.advanceClearanceDispositionBy = user?._id;
     admissionForPolicy.advanceClearanceDispositionNote = String(payload.advanceDispositionNote || payload.notes || '').trim();
     await admissionForPolicy.save();
-  } else if (money(admissionForPolicy.advanceAmount || 0) === 0 && admissionForPolicy.advanceClearanceDisposition === 'pending') {
+  } else if (currentAdvance === 0 && admissionForPolicy.advanceClearanceDisposition === 'pending') {
     admissionForPolicy.advanceClearanceDisposition = 'none';
     admissionForPolicy.advanceClearanceDispositionAt = operationNow();
     admissionForPolicy.advanceClearanceDispositionBy = user?._id;

@@ -34,7 +34,8 @@ const IPDBedTransfer2026 = require('../models/IPDBedTransfer');
 const IPDAccommodationSegment2026 = require('../models/IPDAccommodationSegment');
 const {
   createCoverage: createAdmissionCoverage2026,
-  activeCoverage: activeAdmissionCoverage2026
+  activeCoverage: activeAdmissionCoverage2026,
+  legacyAdmissionPaymentType
 } = require('../services/coverage.service');
 const { quotePricing: quoteAdmissionPricing2026 } = require('../services/pricingEngine.service');
 const { buildPatientFileDto: buildPatientFileDto2026 } = require('../services/ipdPatientFileDto.service');
@@ -412,7 +413,9 @@ exports.createAdmission = async (req, res) => {
         historyOfPresentIllness: payload.historyOfPresentIllness,
         pastMedicalHistory: payload.pastMedicalHistory,
         attendant: payload.attendant,
-        paymentType: payload.paymentType,
+        // Legacy projection only: payer/coverage is authoritative. Tender method
+        // is captured separately by Finance when money is actually collected.
+        paymentType: legacyAdmissionPaymentType(payload.coverage?.payerCategory || payload.sponsorType || 'self'),
         insuranceDetails: payload.insuranceDetails,
         sponsorType: normalizeAdmissionSponsorType(payload.coverage?.payerCategory || payload.sponsorType || 'self'),
         sponsorName: payload.sponsorName || undefined,

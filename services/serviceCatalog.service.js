@@ -25,7 +25,7 @@ function dto({ serviceType, row, name, code, rate, category, source }) {
   };
 }
 
-async function searchServiceCatalog({ user, query, encounterType = 'OPD', limit = 30 }) {
+async function searchServiceCatalog({ user, query, encounterType = 'OPD', limit = 30, includeEncounterCharges = true }) {
   const hospitalId = userHospitalId(user);
   if (!hospitalId) throw Object.assign(new Error('Hospital context is required'), { statusCode: 400 });
   const q = clean(query);
@@ -36,7 +36,9 @@ async function searchServiceCatalog({ user, query, encounterType = 'OPD', limit 
     LabTest.find({ hospitalId, is_active: { $ne: false }, is_billable: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
     ImagingTest.find({ hospitalId, is_active: { $ne: false }, is_billable: { $ne: false }, template_only: { $ne: true }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
     Procedure.find({ hospitalId, is_active: { $ne: false }, is_billable: { $ne: false }, $or: [{ name: match }, { code: match }, { category: match }] }).limit(capped).lean(),
-    HospitalCharges.findOne({ hospital: hospitalId }).sort({ effectiveFrom: -1 }).lean()
+    includeEncounterCharges
+      ? HospitalCharges.findOne({ hospital: hospitalId }).sort({ effectiveFrom: -1 }).lean()
+      : Promise.resolve(null)
   ]);
 
   const rows = [
@@ -44,19 +46,21 @@ async function searchServiceCatalog({ user, query, encounterType = 'OPD', limit 
     ...imaging.map(row => dto({ serviceType: 'RADIOLOGY', row, name: row.name, code: row.code, rate: row.base_price, category: row.category, source: 'ImagingTest' })),
     ...procedures.map(row => dto({ serviceType: 'PROCEDURE', row, name: row.name, code: row.code, rate: row.base_price, category: row.category, source: 'Procedure' }))
   ];
-  const configRows = encounterType === 'IPD' ? [
-    ['REGISTRATION', 'IPD-REG', 'IPD Registration Fee', charges?.ipdCharges?.registrationFee],
-    ['ADMISSION', 'IPD-ADM', 'Admission Fee', charges?.ipdCharges?.admissionFee],
-    ['CONSULTATION', 'IPD-CONS', 'IPD Consultation Fee', charges?.ipdCharges?.consultationFee],
-    ['NURSING', 'IPD-NURS', 'Nursing Charges', charges?.ipdCharges?.nursingCharges],
-    ['OT', 'IPD-OT', 'Operation Theatre Charges', charges?.ipdCharges?.otCharges]
-  ] : [
-    ['REGISTRATION', 'OPD-REG', 'OPD Registration Fee', charges?.opdCharges?.registrationFee],
-    ['CONSULTATION', 'OPD-CONS', 'OPD Consultation Fee', charges?.opdCharges?.consultationFee]
-  ];
-  configRows.forEach(([serviceType, code, name, rate]) => {
-    if ((!q || match.test(name) || match.test(code)) && Number(rate || 0) >= 0) rows.push(dto({ serviceType, name, code, rate, source: 'HospitalCharges' }));
-  });
+  if (includeEncounterCharges) {
+    const configRows = encounterType === 'IPD' ? [
+      ['REGISTRATION', 'IPD-REG', 'IPD Registration Fee', charges?.ipdCharges?.registrationFee],
+      ['ADMISSION', 'IPD-ADM', 'Admission Fee', charges?.ipdCharges?.admissionFee],
+      ['CONSULTATION', 'IPD-CONS', 'IPD Consultation Fee', charges?.ipdCharges?.consultationFee],
+      ['NURSING', 'IPD-NURS', 'Nursing Charges', charges?.ipdCharges?.nursingCharges],
+      ['OT', 'IPD-OT', 'Operation Theatre Charges', charges?.ipdCharges?.otCharges]
+    ] : [
+      ['REGISTRATION', 'OPD-REG', 'OPD Registration Fee', charges?.opdCharges?.registrationFee],
+      ['CONSULTATION', 'OPD-CONS', 'OPD Consultation Fee', charges?.opdCharges?.consultationFee]
+    ];
+    configRows.forEach(([serviceType, code, name, rate]) => {
+      if ((!q || match.test(name) || match.test(code)) && Number(rate || 0) >= 0) rows.push(dto({ serviceType, name, code, rate, source: 'HospitalCharges' }));
+    });
+  }
 
   return rows
     .sort((a, b) => {

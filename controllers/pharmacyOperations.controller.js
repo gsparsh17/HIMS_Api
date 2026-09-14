@@ -191,7 +191,7 @@ exports.searchPharmacyPatients = asyncHandler(async (req, res) => {
       uhid: patient.uhid || patient.patientId,
       registrationNumber: admission.admissionNumber,
       shipNo: admission.shipNo || admission.admissionNumber,
-      sponsorType: admission.paymentType || 'Self',
+      sponsorType: admission.sponsorType || admission.paymentType || 'Self',
       doctor: admission.primaryDoctorId,
       balances,
       key
