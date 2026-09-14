@@ -12,6 +12,7 @@ const { resolveFinancialPolicy } = require('./financialPolicy.service');
 const { DAILY_TARIFF_CODES, wardEntitlementFrom } = require('./hospitalTariff.service');
 const { userHospitalId, normalizeObjectId } = require('../utils/hospitalScope');
 const { loadIPDWorkflowPolicy } = require('./ipdWorkflowPolicy.service');
+const { recurringFallbackRates } = require('../utils/effectiveHospitalCharges');
 
 // ============================================
 // Constants
@@ -95,13 +96,19 @@ function segmentForDate(segments, key, timeZone = DEFAULT_TIME_ZONE) {
 // Daily Fallbacks
 // ============================================
 
-async function dailyFallbacks(hospitalId) {
-  const row = await HospitalCharges.findOne({ hospital: hospitalId }).lean();
-
-  return {
-    nursing: Number(row?.ipdCharges?.nursingCharges || 0),
-    rmo: Number(row?.ipdCharges?.rmoDutyDoctorCharges || 0)
-  };
+async function dailyFallbackRows(hospitalId, throughDate = new Date()) {
+  const through = new Date(throughDate);
+  return HospitalCharges.find({
+    hospital: hospitalId,
+    is_active: { $ne: false },
+    $or: [
+      { effectiveFrom: { $lte: through } },
+      { effectiveFrom: { $exists: false } },
+      { effectiveFrom: null }
+    ]
+  })
+    .sort({ effectiveFrom: -1, createdAt: -1 })
+    .lean();
 }
 
 // ============================================
@@ -409,8 +416,8 @@ async function ensureAdmissionDailyCharges(
     .sort({ startedAt: 1 })
     .lean();
 
-  const [fallback, workflowPolicy] = await Promise.all([
-    dailyFallbacks(hospitalId),
+  const [fallbackRows, workflowPolicy] = await Promise.all([
+    dailyFallbackRows(hospitalId, effectiveThrough),
     loadIPDWorkflowPolicy(hospitalId)
   ]);
 
@@ -424,6 +431,8 @@ async function ensureAdmissionDailyCharges(
   };
 
   for (const key of keys) {
+    const chargeDate = keyToChargeDate(key);
+    const fallback = recurringFallbackRates(fallbackRows, chargeDate);
     const segment = segmentForDate(segments, key);
     let bed = null;
 

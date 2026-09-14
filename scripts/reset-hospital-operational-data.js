@@ -51,13 +51,14 @@ const PRESERVE_MODEL_FILES = [
 
   // Users / people / staff masters.
   'Admin', 'User', 'Patient', 'Customer', 'Doctor', 'Nurse', 'Staff', 'HRStaffProfile',
-  'LabStaff', 'OTStaff', 'PathologyStaff', 'RadiologyStaff',
+  'LabStaff', 'OTStaff', 'PathologyStaff', 'RadiologyStaff', 'StaffSchedule',
 
   // Hospital / configuration / access / setup.
   'Hospital', 'HospitalGroup', 'License', 'LicenseSnapshot', 'Department', 'Shift',
   'Ward', 'Room', 'Bed', 'HospitalCharges', 'HospitalPharmacySetting',
   'AdmissionWorkflowPolicy', 'FinanceFeatureFlag', 'HRWorkflowRule', 'SafetyPolicy',
   'NabhSetting', 'SetupAssistantState', 'BiometricDevice', 'BiometricEmployeeMap',
+  'LocalPlatformConfig',
 
   // Clinical/service masters and templates.
   'BillingServiceMaster', 'ClinicalAssessmentDefinition', 'ClinicalOrderSet',
@@ -89,7 +90,7 @@ const PRESERVE_MODEL_FILES = [
 
 const PURGE_MODEL_FILES = [
   // OPD / encounter / appointment lifecycle.
-  'Appointment', 'AppointmentSequence', 'Calendar', 'DeskCheckout', 'Episode',
+  'Appointment', 'AppointmentSequence', 'Calendar', 'CalendarEvent', 'DeskCheckout', 'Episode',
   'EmergencyEncounter', 'EmergencyMedicationChecklist', 'Referral', 'Vital',
   'Immunization', 'OfflineSyncLog',
 
@@ -207,6 +208,7 @@ const RAW_PRESERVE_COLLECTIONS = [
   'consultantcontracts',
   'counters',
   'empigoldenrecords',
+  'electronenrollments',
   'engagementcampaigns',
   'engagementsurveys',
   'marketplaceapps',
