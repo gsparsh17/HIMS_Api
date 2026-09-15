@@ -88,6 +88,9 @@ const labRequestSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Prescription'
   },
+  // Optional OT surgical-specimen linkage. One pathology order per specimen.
+  otCaseId: { type: mongoose.Schema.Types.ObjectId, ref: 'OTRequest', index: true },
+  otSpecimenId: { type: mongoose.Schema.Types.ObjectId, ref: 'OTSpecimen', index: true },
   
   // Patient and doctor info
   patientId: {
@@ -410,6 +413,7 @@ labRequestSchema.methods.checkAbnormal = function(value) {
 
 // Indexes
 labRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
+labRequestSchema.index({ hospitalId: 1, otSpecimenId: 1 }, { unique: true, partialFilterExpression: { otSpecimenId: { $type: 'objectId' } } });
 // Operational worklist/dashboard indexes (Phase 2 performance).
 labRequestSchema.index({ hospitalId: 1, status: 1, scheduledDate: 1, priority: -1, requestedDate: 1 });
 labRequestSchema.index({ hospitalId: 1, status: 1, requestedDate: 1 });

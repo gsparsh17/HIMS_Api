@@ -237,7 +237,7 @@ exports.listAdmissionConsents = async (req, res, next) => {
       data: templates.map((template) => ({
         template,
         consents: records.filter((record) => record.templateId === template.id),
-        consent: records.find((record) => record.templateId === template.id && record.scopeKey === 'admission') || null
+        consent: records.find((record) => record.templateId === template.id && record.scopeKey === scopeKey({}, req.query)) || null
       }))
     });
   } catch (error) { next(error); }

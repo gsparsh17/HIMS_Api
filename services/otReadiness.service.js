@@ -2,6 +2,7 @@ const { operationNow } = require('../utils/operationTimeContext');
 const OTReadinessChecklist = require('../models/OTReadinessChecklist');
 const OTClinicalForm = require('../models/OTClinicalForm');
 const OTPreAnaesthesiaAssessment = require('../models/OTPreAnaesthesiaAssessment');
+const IPDConsent = require('../models/IPDConsent');
 const { financialCanProceed, canonicalStatus } = require('./otWorkflow.service');
 
 const DEFAULT_READINESS_ITEMS = Object.freeze([
@@ -32,6 +33,14 @@ const CONSENT_TEMPLATE_BY_KEY = Object.freeze({
   general_consent: 'general_consent',
   procedure_consent: 'surgery_procedure_consent',
   anaesthesia_consent: 'anesthesia_consent'
+});
+
+// The same consents can also be captured from the canonical IPD Patient File > Consents tab.
+// OT-specific surgery/anaesthesia consents should use the OT case scope when available.
+const IPD_CONSENT_TEMPLATE_BY_KEY = Object.freeze({
+  general_consent: 'general-consent',
+  procedure_consent: 'surgery-consent',
+  anaesthesia_consent: 'anaesthesia-consent'
 });
 
 function cloneDefaults() {
@@ -119,10 +128,22 @@ async function loadDerivedEvidence(otCase, session) {
   }).select('templateId status updatedAt completedAt signedAt');
   const pacQuery = OTPreAnaesthesiaAssessment.findOne({ hospitalId: otCase.hospitalId, caseId: otCase._id })
     .select('status fitnessStatus assessedAt signedAt updatedAt');
-  if (session) { formQuery.session(session); pacQuery.session(session); }
-  const [forms, pac] = await Promise.all([formQuery.lean(), pacQuery.lean()]);
+  const ipdConsentQuery = IPDConsent.find({
+    hospitalId: otCase.hospitalId,
+    admissionId: otCase.admissionId,
+    templateId: { $in: Object.values(IPD_CONSENT_TEMPLATE_BY_KEY) },
+    status: { $in: ['Completed', 'Signed', 'Amended'] },
+    $or: [
+      { relatedOTCaseId: otCase._id },
+      { scopeKey: `ot:${otCase._id}` },
+      { templateId: 'general-consent', scopeKey: 'admission' }
+    ]
+  }).select('templateId status relatedOTCaseId scopeKey completedAt finalizedAt updatedAt');
+  if (session) { formQuery.session(session); pacQuery.session(session); ipdConsentQuery.session(session); }
+  const [forms, pac, ipdConsents] = await Promise.all([formQuery.lean(), pacQuery.lean(), ipdConsentQuery.lean()]);
   return {
     forms: new Map(forms.map((row) => [row.templateId, row])),
+    ipdConsents: new Map(ipdConsents.map((row) => [row.templateId, row])),
     pac
   };
 }
@@ -134,11 +155,16 @@ async function reconcileOtReadiness({ otCase, userId, session, autoApprove = tru
   for (const [key, templateId] of Object.entries(CONSENT_TEMPLATE_BY_KEY)) {
     const item = ensureItem(checklist, key, DEFAULT_READINESS_ITEMS.find((row) => row.key === key)?.label || key, 'Consent');
     const form = evidence.forms.get(templateId);
-    const complete = Boolean(form && ['Completed', 'Signed'].includes(form.status));
+    const ipdTemplateId = IPD_CONSENT_TEMPLATE_BY_KEY[key];
+    const ipdConsent = ipdTemplateId ? evidence.ipdConsents.get(ipdTemplateId) : null;
+    const complete = Boolean((form && ['Completed', 'Signed', 'Amended'].includes(form.status)) || ipdConsent);
+    const source = form ? { type: 'OTClinicalForm', id: form._id, status: form.status, templateId }
+      : ipdConsent ? { type: 'IPDConsent', id: ipdConsent._id, status: ipdConsent.status, templateId: ipdTemplateId, scopeKey: ipdConsent.scopeKey }
+        : null;
     applyDerivedState(item, complete, {
       userId,
-      notes: complete ? `Automatically derived from ${templateId} (${form.status})` : `Awaiting ${templateId}`,
-      value: { derived: true, source: 'OTClinicalForm', templateId, sourceStatus: form?.status || null, sourceId: form?._id || null }
+      notes: complete ? `Automatically derived from ${source.type} ${source.templateId} (${source.status})` : `Awaiting ${templateId} / ${ipdTemplateId}`,
+      value: { derived: true, source: source?.type || null, templateId: source?.templateId || templateId, sourceStatus: source?.status || null, sourceId: source?.id || null, scopeKey: source?.scopeKey }
     });
   }
 
@@ -180,6 +206,7 @@ module.exports = {
   DEFAULT_READINESS_ITEMS,
   DERIVED_READINESS_KEYS,
   CONSENT_TEMPLATE_BY_KEY,
+  IPD_CONSENT_TEMPLATE_BY_KEY,
   evaluateReadiness,
   getOrCreateReadiness,
   syncFinancialItem,

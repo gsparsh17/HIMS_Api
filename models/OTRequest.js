@@ -12,6 +12,8 @@ const otRequestSchema = new mongoose.Schema({
   clinicalClosureStatus: { type: String, enum: ['Open', 'Pending Documents', 'Closed'], default: 'Open' },
   inventoryClosureStatus: { type: String, enum: ['Not Required', 'Pending', 'Reconciled'], default: 'Not Required' },
   billingClosureStatus: { type: String, enum: ['Pending', 'Cleared', 'Exception Approved'], default: 'Pending' },
+  financialReconciliationStatus: { type: String, enum: ['Not Evaluated', 'Pending Review', 'Reconciled'], default: 'Not Evaluated', index: true },
+  financialReconciliationSummary: { type: mongoose.Schema.Types.Mixed, default: {} },
   emergencyOverride: {
     enabled: { type: Boolean, default: false },
     reason: String,
@@ -214,7 +216,12 @@ const otRequestSchema = new mongoose.Schema({
   post_op_bedId: { type: mongoose.Schema.Types.ObjectId, ref: 'Bed' },
   transferred_to_ward: { type: Boolean, default: false },
   transferred_at: Date,
+  transferId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDTransfer' },
   
+  // Inventory linkage
+  inventoryReservationId: { type: mongoose.Schema.Types.ObjectId, ref: 'StockReservation' },
+  inventoryStatus: { type: String, trim: true },
+
   // Consumables & Implants
   consumables: [{
     item_name: String,

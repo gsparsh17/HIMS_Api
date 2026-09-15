@@ -11,6 +11,8 @@ const schema = new mongoose.Schema({
   container: String,
   preservative: String,
   pathologyOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'LabRequest' },
+  pathologyLabTestId: { type: mongoose.Schema.Types.ObjectId, ref: 'LabTest' },
+  pathologyChargeStatus: { type: String, enum: ['Not Requested', 'Pending', 'Posted', 'Failed'], default: 'Not Requested' },
   collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   collectedAt: Date,
   handedOverBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

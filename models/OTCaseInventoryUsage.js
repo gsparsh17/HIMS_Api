@@ -12,6 +12,11 @@ const usageLineSchema = new mongoose.Schema({
   unitCost: { type: Number, default: 0 },
   patientCharge: { type: Number, default: 0 },
   reconciliationStatus: { type: String, enum: ['Pending', 'Reconciled', 'Variance'], default: 'Pending' },
+  releasedReservationQuantity: { type: Number, default: 0 },
+  inventoryTransactionIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'StoreInventoryTransaction' }],
+  billingChargeId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDCharge' },
+  billingStatus: { type: String, enum: ['Not Required', 'Pending', 'Posted', 'Package Covered', 'Failed'], default: 'Pending' },
+  itemSnapshot: { type: mongoose.Schema.Types.Mixed },
   notes: String
 }, { _id: true });
 
@@ -25,6 +30,8 @@ const schema = new mongoose.Schema({
   status: { type: String, enum: ['Planned', 'Reserved', 'Issued', 'In Use', 'Reconciled'], default: 'Planned', index: true },
   totalCost: { type: Number, default: 0 },
   totalPatientCharge: { type: Number, default: 0 },
+  notes: String,
+  reconciliationSummary: { type: mongoose.Schema.Types.Mixed, default: {} },
   reconciledAt: Date,
   reconciledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   version: { type: Number, default: 1 }

@@ -11,6 +11,10 @@ const OTOperativeNote = require('../models/OTOperativeNote');
 const OTRecoveryRecord = require('../models/OTRecoveryRecord');
 const OTCaseInventoryUsage = require('../models/OTCaseInventoryUsage');
 const OTSpecimen = require('../models/OTSpecimen');
+const OTAdditionalProcedure = require('../models/OTAdditionalProcedure');
+const StoreLocation = require('../models/StoreLocation');
+const StoreItem = require('../models/StoreItem');
+const InventoryLot = require('../models/InventoryLot');
 const IPDAdmission = require('../models/IPDAdmission');
 const Procedure = require('../models/Procedure');
 const { reverseSourceFinancials } = require('../services/chargePosting.service');
@@ -27,6 +31,10 @@ const { getOrCreateReadiness, evaluateReadiness, reconcileOtReadiness, DERIVED_R
 const { ensureOTFinancialObligation, refreshOTFinancialState } = require('../services/otFinancialClearance.service');
 const { findSchedulingConflicts, teamAssignments, validateDuration, clampMinutes } = require('../services/otScheduling.service');
 const { _hasActionPermission } = require('../middlewares/auth');
+const { saveInventoryUsage } = require('../services/otInventoryIntegration.service');
+const { ensurePathologyOrder } = require('../services/otPathology.service');
+const { addAdditionalProcedure } = require('../services/otAdditionalProcedure.service');
+const { clinicalClosureCheck, financialReconciliation, validateClinicalPayload } = require('../services/otClinicalCompletion.service');
 
 
 const DEFAULT_SAFETY = {
@@ -277,20 +285,26 @@ exports.getWorkspace = async (req, res, next) => {
     const otCase = await findCase(req, req.params.id);
     const financial = await refreshOTFinancialState({ otCase, user: req.user, syncReadiness: true });
     const filter = { hospitalId: otCase.hospitalId, caseId: otCase._id };
-    const [safety, pac, anesthesia, operative, recovery, inventory, specimens, schedule] = await Promise.all([
+    const [safety, pac, anesthesia, operative, recovery, inventory, specimens, schedule, additionalProcedures, reconciliation] = await Promise.all([
       getOrCreateSafety(otCase),
       OTPreAnaesthesiaAssessment.findOne(filter), OTAnesthesiaRecord.findOne(filter), OTOperativeNote.findOne(filter),
-      OTRecoveryRecord.findOne(filter), OTCaseInventoryUsage.findOne(filter).populate('lines.itemId lines.lotId'),
-      OTSpecimen.find(filter).sort({ createdAt: 1 }), OTSchedule.findOne({ hospitalId: otCase.hospitalId, requestId: otCase._id })
+      OTRecoveryRecord.findOne(filter), OTCaseInventoryUsage.findOne(filter).populate('sourceLocationId', 'code name type').populate('lines.itemId lines.lotId lines.billingChargeId'),
+      OTSpecimen.find(filter).populate('pathologyOrderId', 'requestNumber status testName').populate('pathologyLabTestId', 'code name category').sort({ createdAt: 1 }),
+      OTSchedule.findOne({ hospitalId: otCase.hospitalId, requestId: otCase._id }),
+      OTAdditionalProcedure.find(filter).populate('procedureId', 'code name category base_price').populate('billingChargeId', 'description netAmount patientLiability sponsorLiability').sort({ createdAt: 1 }),
+      financialReconciliation(otCase)
     ]);
+    otCase.financialReconciliationStatus = reconciliation.status;
+    otCase.financialReconciliationSummary = reconciliation;
+    await otCase.save();
     const populated = await casePopulate(OTRequest.findById(otCase._id));
     res.json({
       success: true,
       data: {
         case: decorateCase(populated, { safety }),
-        financial: financial.summary,
+        financial: { ...financial.summary, reconciliation },
         readiness: financial.readiness,
-        safety, pac, anesthesia, operative, recovery, inventory, specimens, schedule
+        safety, pac, anesthesia, operative, recovery, inventory, specimens, schedule, additionalProcedures
       }
     });
   } catch (error) { next(error); }
@@ -616,17 +630,25 @@ const transitions = buildTransitionDefinitions({
     }
     return true;
   },
+  transferGuard: async (doc) => {
+    const recovery = await OTRecoveryRecord.findOne({ hospitalId: doc.hospitalId, caseId: doc._id });
+    if (!recovery) return 'Recovery record is required before transfer';
+    const threshold = Math.max(0, Number(process.env.OT_RECOVERY_MIN_ALDRETE || 9));
+    if (!doc.emergencyOverride?.enabled) {
+      if (!recovery.dischargeCriteriaMet) return 'Recovery discharge criteria are not met';
+      if (Number(recovery.finalAldreteScore || 0) < threshold) return `Final Aldrete score must be at least ${threshold} before transfer`;
+    }
+    if (!recovery.disposition) return 'Recovery destination/disposition is required before transfer';
+    return true;
+  },
   closeGuard: async (doc) => {
-    const [operative, anesthesia, recovery, inventory] = await Promise.all([
-      OTOperativeNote.findOne({ hospitalId: doc.hospitalId, caseId: doc._id }),
-      OTAnesthesiaRecord.findOne({ hospitalId: doc.hospitalId, caseId: doc._id }),
-      OTRecoveryRecord.findOne({ hospitalId: doc.hospitalId, caseId: doc._id }),
-      OTCaseInventoryUsage.findOne({ hospitalId: doc.hospitalId, caseId: doc._id })
-    ]);
-    if (!operative || !['Completed', 'Signed'].includes(operative.status)) return 'Operative note is incomplete';
-    if (!anesthesia || !['Completed', 'Signed'].includes(anesthesia.status)) return 'Anaesthesia record is incomplete';
-    if (!recovery || !['Transferred', 'Signed'].includes(recovery.status)) return 'Recovery/transfer record is incomplete';
-    if (inventory && inventory.status !== 'Reconciled') return 'OT inventory usage is not reconciled';
+    const clinical = await clinicalClosureCheck(doc);
+    if (!clinical.ok) return clinical.errors.join('; ');
+    const reconciliation = await financialReconciliation(doc);
+    if (reconciliation.status !== 'Reconciled') return `OT financial reconciliation is incomplete: ${reconciliation.billingFailures.join(', ') || 'review required'}`;
+    doc.financialReconciliationStatus = reconciliation.status;
+    doc.financialReconciliationSummary = reconciliation;
+    doc.billingClosureStatus = 'Cleared';
     return true;
   }
 });
@@ -641,7 +663,55 @@ exports.transitionCase = async (req, res, next) => {
       await refreshOTFinancialState({ otCase, user: req.user, syncReadiness: false });
       await reconcileOtReadiness({ otCase, userId: req.user._id, autoApprove: action !== 'approve' });
     }
+    let sharedTransfer = null;
+    if (action === 'transfer') {
+      const recovery = await OTRecoveryRecord.findOne({ hospitalId: otCase.hospitalId, caseId: otCase._id });
+      const toBedId = req.body.toBedId || req.body.post_op_bedId;
+      if (toBedId) {
+        const transferService = require('../services/ipdTransfer.service');
+        sharedTransfer = await transferService.transaction(async (session) => {
+          let row = await transferService.createTransfer({ req, hospitalId: otCase.hospitalId, admissionId: otCase.admissionId, payload: {
+            toBedId, source: 'ot', reason: req.body.reason || `Post-operative transfer after ${otCase.procedureName || 'surgery'}`,
+            priority: req.body.priority || 'urgent', patientCondition: req.body.patientCondition, oxygenRequired: req.body.oxygenRequired,
+            isolationRequired: req.body.isolationRequired, equipmentNeeds: req.body.equipmentNeeds || [], handover: req.body.handover || {},
+            idempotencyKey: req.body.idempotencyKey || `ot:${otCase._id}:transfer`
+          }, session });
+          row = await transferService.reserveTransfer({ req, hospitalId: otCase.hospitalId, transferId: row._id, expiresInMinutes: req.body.expiresInMinutes || 60, session });
+          row = await transferService.approveTransfer({ req, hospitalId: otCase.hospitalId, transferId: row._id, note: req.body.approvalNote || 'Approved from canonical OT recovery workflow', session });
+          row = await transferService.startTransfer({ req, hospitalId: otCase.hospitalId, transferId: row._id, handover: req.body.handover || { note: 'Post-operative handover' }, session });
+          return transferService.completeTransfer({ req, hospitalId: otCase.hospitalId, transferId: row._id, payload: { conditionOnArrival: req.body.conditionOnArrival, note: req.body.note, actualEffectiveAt: req.body.actualEffectiveAt }, session });
+        });
+        req.body.disposition = req.body.disposition || recovery?.disposition || 'Ward';
+      }
+    }
     const updated = await transitionDocument({ document: otCase, action, definitions: transitions, req, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, reasonCode: req.body.reasonCode, comments: req.body.comments || req.body.reason, extraUpdate: action === 'cancel' ? { cancellationReason: req.body.reason } : action === 'postpone' ? { postponementReason: req.body.reason } : {} });
+    if (action === 'recover') {
+      await OTRecoveryRecord.findOneAndUpdate(
+        { hospitalId: otCase.hospitalId, caseId: otCase._id },
+        { $setOnInsert: { admissionId: otCase.admissionId, patientId: otCase.patientId }, $set: { receivedAt: operationNow(), receivedFrom: 'Operating Theatre', status: 'Monitoring' }, $inc: { version: 1 } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    }
+    if (action === 'transfer') {
+      const transferAt = sharedTransfer?.actualEffectiveAt || operationNow();
+      await OTRecoveryRecord.findOneAndUpdate(
+        { hospitalId: otCase.hospitalId, caseId: otCase._id },
+        { $set: { transferAt, status: 'Transferred', disposition: req.body.disposition || undefined, handoverTo: req.body.handoverTo || undefined, postOpInstructions: req.body.postOpInstructions || undefined }, $inc: { version: 1 } }
+      );
+      if (sharedTransfer) {
+        updated.transferId = sharedTransfer._id;
+        updated.post_op_wardId = sharedTransfer.to?.wardId; updated.post_op_roomId = sharedTransfer.to?.roomId; updated.post_op_bedId = sharedTransfer.to?.bedId;
+        updated.transferred_at = transferAt; updated.transferred_to_ward = true;
+        await updated.save();
+      }
+    }
+    if (action === 'close') {
+      const reconciliation = await financialReconciliation(updated);
+      updated.financialReconciliationStatus = reconciliation.status;
+      updated.financialReconciliationSummary = reconciliation;
+      updated.billingClosureStatus = reconciliation.status === 'Reconciled' ? 'Cleared' : 'Pending';
+      await updated.save();
+    }
     if (['cancel', 'postpone'].includes(action)) {
       const schedule = await OTSchedule.findOne({ hospitalId: otCase.hospitalId, requestId: otCase._id });
       if (schedule) {
@@ -670,7 +740,7 @@ exports.transitionCase = async (req, res, next) => {
       }
     }
     const safety = await getOrCreateSafety(updated);
-    res.json({ success: true, message: `OT case ${action} completed`, data: decorateCase(updated, { safety }), financialReversal });
+    res.json({ success: true, message: `OT case ${action} completed`, data: decorateCase(updated, { safety }), financialReversal, transfer: sharedTransfer });
   } catch (error) { next(error); }
 };
 
@@ -728,20 +798,101 @@ async function saveForm(req, res, next, Model, eventType, afterSave) {
 exports.getPac = (req, res, next) => getForm(req, res, next, OTPreAnaesthesiaAssessment);
 exports.savePac = (req, res, next) => saveForm(req, res, next, OTPreAnaesthesiaAssessment, 'ot.pac.updated', async ({ otCase }) => ({ readiness: await reconcileOtReadiness({ otCase, userId: req.user._id, autoApprove: true }) }));
 exports.getAnesthesia = (req, res, next) => getForm(req, res, next, OTAnesthesiaRecord);
-exports.saveAnesthesia = (req, res, next) => saveForm(req, res, next, OTAnesthesiaRecord, 'ot.anesthesia.updated');
+exports.saveAnesthesia = (req, res, next) => { try { validateClinicalPayload('anesthesia', req.body); } catch (error) { return next(error); } return saveForm(req, res, next, OTAnesthesiaRecord, 'ot.anesthesia.updated'); };
 exports.getOperative = (req, res, next) => getForm(req, res, next, OTOperativeNote);
-exports.saveOperative = (req, res, next) => saveForm(req, res, next, OTOperativeNote, 'ot.operative_note.updated');
+exports.saveOperative = (req, res, next) => { try { validateClinicalPayload('operative', req.body); } catch (error) { return next(error); } return saveForm(req, res, next, OTOperativeNote, 'ot.operative_note.updated'); };
 exports.getRecovery = (req, res, next) => getForm(req, res, next, OTRecoveryRecord);
-exports.saveRecovery = (req, res, next) => saveForm(req, res, next, OTRecoveryRecord, 'ot.recovery.updated');
+exports.saveRecovery = (req, res, next) => { try { validateClinicalPayload('recovery', req.body); } catch (error) { return next(error); } return saveForm(req, res, next, OTRecoveryRecord, 'ot.recovery.updated'); };
 exports.getInventory = (req, res, next) => getForm(req, res, next, OTCaseInventoryUsage);
-exports.saveInventory = (req, res, next) => saveForm(req, res, next, OTCaseInventoryUsage, 'ot.inventory.updated');
+exports.saveInventory = async (req, res, next) => {
+  try {
+    const otCase = await findCase(req, req.params.id);
+    const record = await saveInventoryUsage({ otCase, payload: req.body, user: req.user });
+    otCase.inventoryClosureStatus = record.status === 'Reconciled' ? 'Reconciled' : 'Pending';
+    otCase.inventoryStatus = record.status;
+    await otCase.save();
+    await appendDomainEvent({ req, eventType: 'ot.inventory.updated', entityType: 'OTCaseInventoryUsage', entityId: record._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, revision: record.version, afterSummary: { status: record.status, totalCost: record.totalCost, totalPatientCharge: record.totalPatientCharge } });
+    res.json({ success: true, message: record.status === 'Reconciled' ? 'OT inventory reconciled and billable usage posted' : 'OT inventory usage saved', data: record });
+  } catch (error) { next(error); }
+};
+
+exports.getInventoryOptions = async (req, res, next) => {
+  try {
+    const otCase = await findCase(req, req.params.id);
+    const q = String(req.query.q || '').trim();
+    const itemId = req.query.itemId;
+    const locationId = req.query.locationId;
+    const itemFilter = { hospital_id: otCase.hospitalId, is_active: { $ne: false }, deleted_at: { $exists: false } };
+    if (q) itemFilter.$or = [
+      { name: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+      { item_code: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+      { brand: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }
+    ];
+    const [locations, items, lots] = await Promise.all([
+      StoreLocation.find({ hospitalId: otCase.hospitalId, isActive: { $ne: false }, allowIssue: { $ne: false } }).select('code name type').sort({ type: 1, code: 1 }).lean(),
+      StoreItem.find(itemFilter).select('item_code name item_type unit serial_tracking batch_tracking average_cost').sort({ name: 1 }).limit(50).lean(),
+      itemId ? InventoryLot.find({
+        hospitalId: otCase.hospitalId,
+        itemId,
+        qualityStatus: 'Accepted',
+        ...(locationId ? { locationBalances: { $elemMatch: { locationId, onHand: { $gt: 0 } } } } : {})
+      }).select('lotNumber serialNumber expiryDate unitCost totalOnHand totalReserved totalAvailable locationBalances').sort({ expiryDate: 1, createdAt: 1 }).limit(50).lean() : []
+    ]);
+    const shapedLots = lots.map((lot) => {
+      const balance = locationId ? (lot.locationBalances || []).find((row) => String(row.locationId) === String(locationId)) : null;
+      return {
+        _id: lot._id, lotNumber: lot.lotNumber, serialNumber: lot.serialNumber, expiryDate: lot.expiryDate,
+        unitCost: lot.unitCost, onHand: balance?.onHand ?? lot.totalOnHand, reserved: balance?.reserved ?? lot.totalReserved,
+        available: balance?.available ?? lot.totalAvailable
+      };
+    });
+    res.json({ success: true, data: { locations, items, lots: shapedLots } });
+  } catch (error) { next(error); }
+};
 
 exports.createSpecimen = async (req, res, next) => {
   try {
     const otCase = await findCase(req, req.params.id);
     const count = await OTSpecimen.countDocuments({ hospitalId: otCase.hospitalId, caseId: otCase._id });
     const specimen = await OTSpecimen.create({ ...req.body, hospitalId: otCase.hospitalId, caseId: otCase._id, admissionId: otCase.admissionId, patientId: otCase.patientId, specimenNumber: req.body.specimenNumber || `${otCase.requestNumber}/SP-${String(count + 1).padStart(2, '0')}`, collectedBy: req.user._id, collectedAt: req.body.collectedAt || operationNow() });
-    res.status(201).json({ success: true, data: specimen });
+    const pathology = await ensurePathologyOrder({ otCase, specimen, labTestId: req.body.labTestId || req.body.pathologyLabTestId, user: req.user });
+    await appendDomainEvent({ req, eventType: 'ot.specimen.created', entityType: 'OTSpecimen', entityId: specimen._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, afterSummary: { specimenNumber: specimen.specimenNumber, pathologyOrderId: pathology.labRequest?._id } });
+    res.status(201).json({ success: true, data: pathology.specimen, pathologyOrder: pathology.labRequest, financialWarning: pathology.financialWarning });
+  } catch (error) { next(error); }
+};
+
+exports.updateSpecimen = async (req, res, next) => {
+  try {
+    const otCase = await findCase(req, req.params.id);
+    const specimen = await OTSpecimen.findOne({ _id: req.params.specimenId, hospitalId: otCase.hospitalId, caseId: otCase._id });
+    if (!specimen) return res.status(404).json({ error: 'OT specimen not found' });
+    const action = String(req.body.action || '').toLowerCase();
+    if (action === 'handover') { specimen.status = 'Handed Over'; specimen.handedOverBy = req.user._id; specimen.handedOverAt = req.body.handedOverAt || operationNow(); }
+    else if (action === 'receive') { specimen.status = 'Received'; specimen.receivedBy = req.user._id; specimen.receivedAt = req.body.receivedAt || operationNow(); }
+    else if (action === 'reject') { specimen.status = 'Rejected'; specimen.rejectionReason = String(req.body.rejectionReason || '').trim(); if (!specimen.rejectionReason) return res.status(400).json({ error: 'Rejection reason is required' }); }
+    else return res.status(400).json({ error: 'Supported specimen actions are handover, receive and reject' });
+    await specimen.save();
+    await appendDomainEvent({ req, eventType: `ot.specimen.${action}`, entityType: 'OTSpecimen', entityId: specimen._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, afterSummary: { status: specimen.status, pathologyOrderId: specimen.pathologyOrderId } });
+    res.json({ success: true, data: specimen });
+  } catch (error) { next(error); }
+};
+
+exports.addAdditionalProcedure = async (req, res, next) => {
+  try {
+    const otCase = await findCase(req, req.params.id);
+    if (!['In Progress', 'Recovery'].includes(canonicalStatus(otCase.status, otCase))) return res.status(409).json({ error: 'Additional OT procedures can only be recorded during or immediately after surgery' });
+    const record = await addAdditionalProcedure({ otCase, payload: req.body, user: req.user });
+    await appendDomainEvent({ req, eventType: 'ot.additional_procedure.added', entityType: 'OTAdditionalProcedure', entityId: record._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, afterSummary: { procedureCode: record.procedureCode, billingStatus: record.billingStatus } });
+    res.status(201).json({ success: true, data: record });
+  } catch (error) { next(error); }
+};
+
+exports.getFinancialReconciliation = async (req, res, next) => {
+  try {
+    const otCase = await findCase(req, req.params.id);
+    const data = await financialReconciliation(otCase);
+    otCase.financialReconciliationStatus = data.status; otCase.financialReconciliationSummary = data; await otCase.save();
+    res.json({ success: true, data });
   } catch (error) { next(error); }
 };
 

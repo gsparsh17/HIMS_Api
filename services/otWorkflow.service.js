@@ -155,7 +155,7 @@ function legacyActionForStatus(status) {
   return Object.prototype.hasOwnProperty.call(mapping, status) ? mapping[status] : undefined;
 }
 
-function buildTransitionDefinitions({ closeGuard, receiptGuard, safetyGuard }) {
+function buildTransitionDefinitions({ closeGuard, receiptGuard, safetyGuard, transferGuard }) {
   return {
     approve: {
       from: ['Requested', 'Readiness Pending', 'Payment Pending', 'Payment Received'],
@@ -206,7 +206,12 @@ function buildTransitionDefinitions({ closeGuard, receiptGuard, safetyGuard }) {
       from: ['Recovery'],
       to: 'Transferred',
       eventType: 'ot.case.transferred',
-      update: () => ({ transferredAt: operationNow(), transferred_to_ward: true, workflowPolicyVersion: OT_WORKFLOW_POLICY_VERSION })
+      guard: (doc, req) => transferGuard ? transferGuard(doc, req) : true,
+      update: (_doc, req) => ({
+        transferredAt: operationNow(),
+        transferred_to_ward: Boolean(req.body.toBedId || req.body.post_op_bedId || req.body.disposition === 'Ward'),
+        workflowPolicyVersion: OT_WORKFLOW_POLICY_VERSION
+      })
     },
     close: {
       from: ['Transferred'],
