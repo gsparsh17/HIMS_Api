@@ -7,7 +7,7 @@ const otRequestSchema = new mongoose.Schema({
   encounterType: { type: String, enum: ['IPD', 'OPD', 'Emergency'], default: 'IPD' },
   encounterId: { type: mongoose.Schema.Types.ObjectId, index: true },
   version: { type: Number, default: 1, min: 1 },
-  workflowPolicyVersion: { type: String, default: 'ot-v1' },
+  workflowPolicyVersion: { type: String, default: 'ot-v2' },
   readinessStatus: { type: String, enum: ['Not Evaluated', 'Pending', 'Ready', 'Ready With Bypass'], default: 'Not Evaluated', index: true },
   clinicalClosureStatus: { type: String, enum: ['Open', 'Pending Documents', 'Closed'], default: 'Open' },
   inventoryClosureStatus: { type: String, enum: ['Not Required', 'Pending', 'Reconciled'], default: 'Not Required' },
@@ -138,7 +138,7 @@ const otRequestSchema = new mongoose.Schema({
       'Cancelled',
       'Postponed'
     ],
-    default: 'Requested'
+    default: 'Readiness Pending'
   },
   
   // Payment Tracking - NEW FIELDS
@@ -288,7 +288,11 @@ otRequestSchema.virtual('isPaymentComplete').get(function() {
 });
 
 otRequestSchema.virtual('canSchedule').get(function() {
-  return this.status === 'Payment Received' || (this.status === 'Approved' && this.isPaymentComplete);
+  const { financialCanProceed, canonicalStatus } = require('../services/otWorkflow.service');
+  const status = canonicalStatus(this.status, this);
+  return ['Approved', 'Postponed', 'Scheduled'].includes(status)
+    && ['Ready', 'Ready With Bypass'].includes(this.readinessStatus)
+    && financialCanProceed(this.financialClearanceState, this);
 });
 
 // Indexes
@@ -296,6 +300,7 @@ otRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });
 otRequestSchema.index({ hospitalId: 1, admissionId: 1, status: 1 });
 otRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
 otRequestSchema.index({ hospitalId: 1, doctorId: 1, status: 1 });
+otRequestSchema.index({ hospitalId: 1, status: 1, financialClearanceState: 1, requestedDate: -1 });
 otRequestSchema.index({ requestedDate: -1 });
 otRequestSchema.index({ hospitalId: 1, scheduledStart: 1, scheduledEnd: 1 });
 otRequestSchema.index({ hospitalId: 1, otRoomId: 1, scheduledStart: 1, scheduledEnd: 1 });

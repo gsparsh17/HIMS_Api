@@ -10,10 +10,13 @@ const Doctor = require('../models/Doctor');
 const Procedure = require('../models/Procedure');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { postSourceCharge, getSourceFinancialStatus } = require('../services/chargePosting.service');
+const { refreshOTFinancialState } = require('../services/otFinancialClearance.service');
+const { decorateCase, canonicalStatus } = require('../services/otWorkflow.service');
 const ipdFinancial = require('../services/ipdFinancial.service');
 const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
 
@@ -119,10 +122,10 @@ exports.processOTPayment = async (req, res) => {
     const { payment_method, amount, reference, notes } = req.body;
     const request = await OTRequest.findOne({ _id: id, hospitalId });
     if (!request) return res.status(404).json({ error: 'OT request not found' });
-    if (['Completed', 'Cancelled'].includes(request.status)) return res.status(409).json({ error: `Cannot settle an OT request in ${request.status} status` });
+    if (['Closed', 'Cancelled'].includes(canonicalStatus(request.status, request))) {
+      return res.status(409).json({ error: `Cannot settle an OT request in ${canonicalStatus(request.status, request)} status` });
+    }
 
-    // Ensure the canonical source obligation/invoice exists. Browser amount is
-    // settlement only; it never becomes the OT tariff.
     await postSourceCharge({
       sourceModule: 'OTRequest', sourceId: request._id,
       selectedMode: req.body.selectedMode, requestedDeposit: req.body.requestedDeposit,
@@ -133,41 +136,36 @@ exports.processOTPayment = async (req, res) => {
       },
       overrideReason: req.body.overrideReason, idempotencyKey: `OTRequest:${request._id}:charge`, user: req.user
     });
+
     let status = await getSourceFinancialStatus({ sourceModule: 'OTRequest', sourceId: request._id, user: req.user });
     const requestedPayment = Number(amount || 0);
     if (requestedPayment > 0) {
       const invoice = status.invoices.find((row) => Number(row.balance_due || 0) > 0);
       if (!invoice) return res.status(409).json({ error: 'No payable OT invoice exists for this request', clearanceState: status.clearanceState });
+      const explicitPaymentKey = req.body.idempotencyKey || req.get('Idempotency-Key');
+      const paymentIdempotencyKey = explicitPaymentKey
+        || (reference ? `OTRequest:${request._id}:payment:reference:${String(reference).trim()}` : `OTRequest:${request._id}:payment:${crypto.randomUUID()}`);
       await ipdFinancial.recordIPDPayment(request.admissionId, {
-        invoiceId: invoice._id, amount: requestedPayment, paymentMethod: payment_method || 'Cash',
-        reference, notes, sourceModule: 'OTRequest',
-        idempotencyKey: req.body.idempotencyKey || req.get('Idempotency-Key') || `OTRequest:${request._id}:payment:${invoice._id}`
+        invoiceId: invoice._id,
+        amount: requestedPayment,
+        paymentMethod: payment_method || 'Cash',
+        reference,
+        notes,
+        sourceModule: 'OTRequest',
+        idempotencyKey: paymentIdempotencyKey
       }, req.user);
-      status = await getSourceFinancialStatus({ sourceModule: 'OTRequest', sourceId: request._id, user: req.user });
+      request.paymentReceivedAt = operationNow();
+      request.paymentReceivedBy = req.user?._id;
+      await request.save();
     }
 
-    request.is_billed = Boolean(status.charge || status.bill || status.invoices.length);
-    request.billId = status.bill?._id || request.billId;
-    request.invoiceId = status.invoices[0]?._id || request.invoiceId;
-    request.total_cost = Number((Number(status.charge?.patientLiability || 0) + Number(status.charge?.sponsorLiability || 0)).toFixed(2));
-    request.paidAmount = Number(status.paidNow || 0);
-    request.dueAmount = Number(Math.max(0, request.total_cost - request.paidAmount).toFixed(2));
-    request.selectedBillingMode = status.selectedMode;
-    request.requiredNowAmount = status.requiredNow;
-    request.financialClearanceState = status.clearanceState;
-    request.billingClosureStatus = ['CLEARED', 'POSTPAID_ALLOWED'].includes(status.clearanceState) ? 'Cleared'
-      : (status.clearanceState === 'EXCEPTION_APPROVED' ? 'Exception Approved' : 'Pending');
-    if (['CLEARED', 'POSTPAID_ALLOWED', 'EXCEPTION_APPROVED'].includes(status.clearanceState) && ['Requested', 'Payment Pending', 'Readiness Pending'].includes(request.status)) {
-      request.status = 'Approved';
-    } else if (status.clearanceState === 'PAYMENT_REQUIRED') {
-      request.status = 'Payment Pending';
-    }
-    if (requestedPayment > 0) { request.paymentReceivedAt = operationNow(); request.paymentReceivedBy = req.user?._id; }
-    await request.save();
-
+    const refreshed = await refreshOTFinancialState({ otCase: request, user: req.user, syncReadiness: true });
     return res.json({
-      success: true, message: requestedPayment > 0 ? 'OT settlement recorded against the canonical invoice' : 'OT financial clearance refreshed',
-      request, financial: status
+      success: true,
+      message: requestedPayment > 0 ? 'OT settlement recorded against the canonical IPD invoice' : 'OT financial clearance refreshed',
+      request: decorateCase(refreshed.otCase),
+      financial: refreshed.summary,
+      readiness: refreshed.readiness
     });
   } catch (error) {
     console.error('Error processing OT financial clearance:', error);
