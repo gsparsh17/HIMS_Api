@@ -22,6 +22,7 @@ const IPDCharge = require('../models/IPDCharge');
 const { userHospitalId } = require('../utils/hospitalScope');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 const Doctor = require('../models/Doctor');
+const Supplier = require('../models/Supplier');
 const {
   objectIdOrUndefined,
   getHospitalId,
@@ -43,6 +44,9 @@ const { findActivePharmacyIdForHospital } = require('../services/pharmacyResolve
 function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
+
+const PHARMACY_DASHBOARD_CACHE_TTL_MS = 15 * 1000;
+const pharmacyDashboardCache = new Map();
 
 function canViewPharmacyCost(req) {
   const role = String(req.user?.role || req.user?.userType || '').toLowerCase();
@@ -2275,29 +2279,60 @@ exports.refundPharmacyAdvance = asyncHandler(async (req, res) => {
 });
 
 exports.getDashboard = asyncHandler(async (req, res) => {
-  const { start, end } = hospitalDayBounds(operationDateKey());
+  const hospitalId = getHospitalId(req);
+  const cacheKey = String(hospitalId || 'global');
+  const cached = pharmacyDashboardCache.get(cacheKey);
+  if (cached && (Date.now() - cached.at) < PHARMACY_DASHBOARD_CACHE_TTL_MS) {
+    return res.json({ ...cached.payload, cache: { hit: true, ttlMs: PHARMACY_DASHBOARD_CACHE_TTL_MS } });
+  }
 
-  const [salesAgg, ledgerAgg, pendingIpd, lowStockCount, nearExpiryCount, pendingPO, recentSales, recentReturns, recentBills, invoiceStats, deferredCount] = await Promise.all([
+  const { start, end } = hospitalDayBounds(operationDateKey());
+  const hospitalObjectId = objectIdOrUndefined(hospitalId);
+  const hospitalMatch = hospitalObjectId ? { hospitalId: hospitalObjectId } : {};
+  const invoiceHospitalMatch = hospitalObjectId ? { hospital_id: hospitalObjectId } : {};
+
+  const [
+    salesAgg,
+    ledgerAgg,
+    pendingIpd,
+    lowStockCount,
+    nearExpiryCount,
+    pendingPO,
+    recentSales,
+    recentReturns,
+    recentBills,
+    invoiceStats,
+    deferredCount,
+    totalSuppliers,
+    recentPrescriptions
+  ] = await Promise.all([
     Sale.aggregate([
-      { $match: { sale_date: { $gte: start, $lt: end } } },
+      { $match: { ...hospitalMatch, sale_date: { $gte: start, $lt: end } } },
       { $group: { _id: '$customer_type', count: { $sum: 1 }, total: { $sum: '$total_amount' }, discount: { $sum: '$discount_amount' } } }
     ]),
     PharmacyLedgerEntry.aggregate([
-      { $match: { entryDate: { $gte: start, $lt: end } } },
+      { $match: { ...hospitalMatch, entryDate: { $gte: start, $lt: end } } },
       { $group: { _id: { method: '$paymentMethod', direction: '$direction', type: '$entryType' }, amount: { $sum: '$amount' }, count: { $sum: 1 } } }
     ]),
-    IPDMedicationChart.countDocuments({ requiresPharmacyDispense: true, 'pharmacyRequest.requestedToPharmacy': true, 'pharmacyRequest.pharmacyStatus': 'Pending' }),
+    IPDMedicationChart.countDocuments({ ...hospitalMatch, requiresPharmacyDispense: true, 'pharmacyRequest.requestedToPharmacy': true, 'pharmacyRequest.pharmacyStatus': 'Pending' }),
     MedicineBatch.countDocuments({ $expr: { $lte: ['$quantity_base_units', 10] }, is_active: true }),
     MedicineBatch.countDocuments({ expiry_date: { $gte: new Date(), $lte: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) }, is_active: true }),
-    PurchaseOrder.countDocuments({ status: { $in: ['Draft', 'Ordered', 'Partially Received'] } }),
-    Sale.find({}).sort({ sale_date: -1 }).limit(10).populate('patient_id', 'first_name last_name patientId').lean(),
-    PharmacyReturn.find({}).sort({ returnedAt: -1, createdAt: -1 }).limit(10).lean(),
-    Bill.find({ is_pharmacy_bill: true }).sort({ generated_at: -1 }).limit(10).populate('patient_id', 'first_name last_name patientId').lean(),
+    PurchaseOrder.countDocuments({ ...hospitalMatch, status: { $in: ['Draft', 'Ordered', 'Partially Received'] } }),
+    Sale.find({ ...hospitalMatch }).sort({ sale_date: -1 }).limit(10).populate('patient_id', 'first_name last_name patientId').lean(),
+    PharmacyReturn.find({ ...hospitalMatch }).sort({ returnedAt: -1, createdAt: -1 }).limit(10).lean(),
+    Bill.find({ ...invoiceHospitalMatch, is_pharmacy_bill: true }).sort({ generated_at: -1 }).limit(10).populate('patient_id', 'first_name last_name patientId').lean(),
     Invoice.aggregate([
-      { $match: { is_pharmacy_sale: true, issue_date: { $gte: start, $lt: end } } },
+      { $match: { ...invoiceHospitalMatch, is_pharmacy_sale: true, issue_date: { $gte: start, $lt: end } } },
       { $group: { _id: '$status', count: { $sum: 1 }, total: { $sum: '$total' } } }
     ]),
-    Sale.countDocuments({ payment_deferred: true, status: 'Pending' })
+    Sale.countDocuments({ ...hospitalMatch, payment_deferred: true, status: 'Pending' }),
+    Supplier.countDocuments({ isActive: { $ne: false }, is_deleted: { $ne: true } }),
+    Prescription.find({ ...hospitalMatch, status: { $ne: 'Cancelled' }, is_active: { $ne: false } })
+      .sort({ issue_date: -1, created_at: -1 })
+      .limit(5)
+      .populate('patient_id', 'first_name last_name patientId')
+      .populate('doctor_id', 'firstName lastName')
+      .lean()
   ]);
 
   const salesTotals = salesAgg.reduce((acc, row) => {
@@ -2317,7 +2352,7 @@ exports.getDashboard = asyncHandler(async (req, res) => {
     return acc;
   }, {});
 
-  res.json({
+  const payload = {
     success: true,
     today: {
       ...salesTotals,
@@ -2328,11 +2363,16 @@ exports.getDashboard = asyncHandler(async (req, res) => {
       pendingPurchaseOrders: pendingPO,
       deferredPaymentsCount: deferredCount
     },
+    totalSuppliers,
+    recentPrescriptions,
     recentSales,
     recentReturns,
     recentBills,
     invoiceStats
-  });
+  };
+
+  pharmacyDashboardCache.set(cacheKey, { at: Date.now(), payload });
+  return res.json({ ...payload, cache: { hit: false, ttlMs: PHARMACY_DASHBOARD_CACHE_TTL_MS } });
 });
 
 exports.getInventoryAnalytics = asyncHandler(async (req, res) => {

@@ -1376,7 +1376,7 @@ exports.getPrescriptionsByPatientId = async (req, res) => {
     if (appointment_id) filter.appointment_id = appointment_id;
 
     const prescriptions = await Prescription.find(filter)
-      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('doctor_id', 'firstName lastName specialization department')
       .populate('items.medicine_id', 'name strength dosage_form generic_name composition')
       .populate('lab_test_requests.request_id', 'requestNumber status')
       .populate('radiology_test_requests.request_id', 'requestNumber status')

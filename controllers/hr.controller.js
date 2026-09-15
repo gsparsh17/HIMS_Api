@@ -2282,6 +2282,7 @@ exports.getPendingSalaries = async (req, res) => {
 
     // Get existing payrolls for the period (all statuses except cancelled/rejected)
     const existingPayrolls = await EmployeePayroll.find({
+      ...(hospitalId ? { hospital_id: hospitalId } : {}),
       year: targetYear,
       month: targetMonth,
       period_type: 'monthly',
@@ -2338,107 +2339,154 @@ exports.getPendingCommissions = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
     const { startDate, endDate } = req.query;
-    
-    const start = startDate ? new Date(startDate) : new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
-    const end = endDate ? new Date(endDate) : new Date();
 
-    // Get all part-time doctors with commission-based payment
-    const doctors = await Doctor.find({
+    const start = startDate
+      ? startOfDay(new Date(startDate))
+      : startOfDay(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1));
+    const end = endDate ? new Date(endDate) : new Date();
+    end.setHours(23, 59, 59, 999);
+
+    const doctorFilter = {
+      ...(hospitalId ? { hospitalId } : {}),
       isFullTime: false,
       paymentType: { $in: ['Fee per Visit', 'Per Hour', 'Commission'] }
-    });
+    };
+    const doctors = await Doctor.find(doctorFilter)
+      .select('firstName lastName isFullTime paymentType amount revenuePercentage hospitalId')
+      .lean();
 
-    // Get completed appointments in the period
+    const doctorIds = doctors.map((doctor) => doctor._id);
+    if (!doctorIds.length) {
+      return res.json({ pending: [], total: 0, period: { start, end } });
+    }
+
+    // Phase-1 latency fix: batch all dependent rows instead of doing two
+    // database queries per appointment (Invoice.findOne + HRStaffProfile.findOne).
     const appointments = await Appointment.find({
-      doctor_id: { $in: doctors.map(d => d._id) },
+      ...(hospitalId ? { hospital_id: hospitalId } : {}),
+      doctor_id: { $in: doctorIds },
       status: 'Completed',
-      actual_end_time: { $gte: start, $lte: end }
-    }).populate('doctor_id');
+      actual_end_time: { $gte: start, $lte: end },
+      is_active: { $ne: false }
+    })
+      .select('_id doctor_id patient_id patient_name appointment_date actual_end_time')
+      .populate('patient_id', 'first_name last_name')
+      .lean();
 
-    // ✅ FIX: Get all commission payrolls (not just paid) to avoid duplicates
-    const existingCommissions = await EmployeePayroll.find({
-      earning_type: 'commission',
-      status: { $nin: ['cancelled', 'rejected'] }
-    });
+    if (!appointments.length) {
+      return res.json({ pending: [], total: 0, period: { start, end } });
+    }
 
-    const paidAppointmentIds = new Set();
-    existingCommissions.forEach(p => {
-      if (p.appointments) {
-        p.appointments.forEach(apptId => paidAppointmentIds.add(apptId.toString()));
-      }
-    });
+    const appointmentIds = appointments.map((appointment) => appointment._id);
+    const [invoices, existingCommissions, employeeProfiles] = await Promise.all([
+      Invoice.find({
+        ...(hospitalId ? { hospital_id: hospitalId } : {}),
+        appointment_id: { $in: appointmentIds },
+        invoice_type: 'Appointment',
+        document_stage: { $ne: 'VOID' }
+      })
+        .select('_id invoice_number appointment_id total service_items issue_date status')
+        .sort({ issue_date: -1 })
+        .lean(),
+      EmployeePayroll.find({
+        ...(hospitalId ? { hospital_id: hospitalId } : {}),
+        earning_type: 'commission',
+        status: { $nin: ['cancelled', 'rejected'] },
+        appointments: { $in: appointmentIds }
+      }).select('appointments').lean(),
+      HRStaffProfile.find({
+        ...(hospitalId ? { hospital_id: hospitalId } : {}),
+        $or: [
+          { doctor_id: { $in: doctorIds } },
+          { source_model: 'Doctor', source_id: { $in: doctorIds } }
+        ]
+      })
+        .select('_id doctor_id source_id full_name employee_code staff_type')
+        .lean()
+    ]);
 
-    const pending = [];
-    for (const appointment of appointments) {
-      if (paidAppointmentIds.has(appointment._id.toString())) continue;
+    const doctorMap = new Map(doctors.map((doctor) => [String(doctor._id), doctor]));
+    const invoiceByAppointment = new Map();
+    for (const invoice of invoices) {
+      const key = String(invoice.appointment_id);
+      if (!invoiceByAppointment.has(key)) invoiceByAppointment.set(key, invoice);
+    }
 
-      const doctor = appointment.doctor_id;
-      if (!doctor) continue;
-
-      // Find associated invoices
-      const invoice = await Invoice.findOne({
-        appointment_id: appointment._id,
-        invoice_type: 'Appointment'
-      });
-
-      if (!invoice) continue;
-
-      let consultationFee = 0;
-      (invoice.service_items || []).forEach(item => {
-        const desc = (item.description || '').toLowerCase();
-        if (desc.includes('consultation') || desc.includes('doctor consultation')) {
-          consultationFee += item.total_price || 0;
-        }
-      });
-
-      if (consultationFee === 0) consultationFee = invoice.total || 0;
-
-      const commissionAmount = (consultationFee * (doctor.revenuePercentage || 0)) / 100;
-
-      if (commissionAmount > 0) {
-        // Find employee profile
-        const employee = await HRStaffProfile.findOne({
-          $or: [
-            { doctor_id: doctor._id },
-            { source_model: 'Doctor', source_id: doctor._id }
-          ]
-        });
-
-        pending.push({
-          _id: `pending-commission-${appointment._id}`,
-          invoice_id: invoice._id,
-          invoice_number: invoice.invoice_number,
-          doctor_id: doctor,
-          employee_id: employee,
-          appointment_id: appointment._id,
-          appointment_date: appointment.appointment_date,
-          patient_name: appointment.patient_id?.full_name || appointment.patient_name || 'Unknown',
-          consultation_fee: consultationFee,
-          registration_fee: invoice.total - consultationFee,
-          total_amount: invoice.total || 0,
-          amount: commissionAmount,
-          net_amount: commissionAmount,
-          status: 'pending',
-          is_pending: true,
-          period_type: 'daily',
-          period_start: new Date(appointment.appointment_date),
-          period_end: new Date(appointment.appointment_date),
-          payroll_category: 'doctor_commission',
-          earning_type: 'commission'
-        });
+    const processedAppointmentIds = new Set();
+    for (const payroll of existingCommissions) {
+      for (const appointmentId of (payroll.appointments || [])) {
+        processedAppointmentIds.add(String(appointmentId));
       }
     }
 
-    res.json({
+    const employeeByDoctor = new Map();
+    for (const employee of employeeProfiles) {
+      const doctorId = employee.doctor_id || (employee.source_model === 'Doctor' ? employee.source_id : null);
+      if (doctorId && !employeeByDoctor.has(String(doctorId))) {
+        employeeByDoctor.set(String(doctorId), employee);
+      }
+    }
+
+    const pending = [];
+    for (const appointment of appointments) {
+      const appointmentId = String(appointment._id);
+      if (processedAppointmentIds.has(appointmentId)) continue;
+
+      const doctor = doctorMap.get(String(appointment.doctor_id));
+      const invoice = invoiceByAppointment.get(appointmentId);
+      if (!doctor || !invoice) continue;
+
+      let consultationFee = 0;
+      for (const item of (invoice.service_items || [])) {
+        const description = String(item.description || '').toLowerCase();
+        if (description.includes('consultation') || description.includes('doctor consultation')) {
+          consultationFee += Number(item.total_price || item.net_amount || 0);
+        }
+      }
+      if (consultationFee === 0) consultationFee = Number(invoice.total || 0);
+
+      const commissionAmount = (consultationFee * Number(doctor.revenuePercentage || 0)) / 100;
+      if (commissionAmount <= 0) continue;
+
+      const patientName = appointment.patient_id
+        ? `${appointment.patient_id.first_name || ''} ${appointment.patient_id.last_name || ''}`.trim()
+        : (appointment.patient_name || 'Unknown');
+
+      pending.push({
+        _id: `pending-commission-${appointment._id}`,
+        invoice_id: invoice._id,
+        invoice_number: invoice.invoice_number,
+        doctor_id: doctor,
+        employee_id: employeeByDoctor.get(String(doctor._id)) || null,
+        appointment_id: appointment._id,
+        appointment_date: appointment.appointment_date,
+        patient_name: patientName || 'Unknown',
+        consultation_fee: consultationFee,
+        registration_fee: Math.max(0, Number(invoice.total || 0) - consultationFee),
+        total_amount: Number(invoice.total || 0),
+        amount: commissionAmount,
+        net_amount: commissionAmount,
+        status: 'pending',
+        is_pending: true,
+        period_type: 'daily',
+        period_start: new Date(appointment.appointment_date),
+        period_end: new Date(appointment.appointment_date),
+        payroll_category: 'doctor_commission',
+        earning_type: 'commission'
+      });
+    }
+
+    return res.json({
       pending,
       total: pending.length,
       period: { start, end }
     });
   } catch (error) {
     console.error('Get pending commissions error:', error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 };
+
 // ================= SECURE EMPLOYEE SELF-SERVICE =================
 async function resolveSelfEmployee(req) {
   const hospitalId = await resolveHospitalId(req);

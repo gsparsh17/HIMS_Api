@@ -41,7 +41,10 @@
     "storage:b2:migrate": "node scripts/migrate-local-files-to-b2.js",
     "storage:b2:cleanup-local": "node scripts/cleanup-migrated-local-files.js",
     "backup:incremental": "node scripts/backup.js --type=incremental",
-    "backup:full": "node scripts/backup.js --type=full"
+    "backup:full": "node scripts/backup.js --type=full",
+    "db:prepare-indexes": "node scripts/prepare-new-hospital-db.js",
+    "db:prepare-new-hospital": "node scripts/prepare-new-hospital-db.js",
+    "db:verify-indexes": "node scripts/prepare-new-hospital-db.js --verify-only"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",
@@ -78,7 +81,7 @@
     "nodemon": "^2.0.22"
   },
   "description": "Hospital/HIMS backend with ABDM M1, M2 HIP and M3 HIU integration through MediQliq Master.",
-"engines": {
-  "node": "22.x"
-}
+  "engines": {
+    "node": "22.x"
+  }
 }

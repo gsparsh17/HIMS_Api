@@ -50,6 +50,10 @@ const ipdFinancial2026 = require('../services/ipdFinancial.service');
 const { reverseCoverageUtilization } = require('../services/coverageUtilization.service');
 const { reversePackageUtilization } = require('../services/packageAdjudication.service');
 
+// Short tenant-scoped cache for the read-heavy IPD dashboard.
+const IPD_DASHBOARD_CACHE_TTL_MS = 10 * 1000;
+const ipdDashboardCache = new Map();
+
 function activeAdmissionFilter2026() {
   return {
     $in: [
@@ -873,6 +877,40 @@ exports.getAdmissionById = async (req, res) => {
     }
 
     const canViewFinancial = checkModuleAccess(req.user, 'billing_finance', 'view');
+
+    // Compact patient-file bootstrap used by the interactive IPD screen. The
+    // legacy/full DTO remains the default for callers that need coverage, bed
+    // transfer history, accommodation segments and invoice/bill collections.
+    if (String(req.query.view || '').toLowerCase() === 'bootstrap') {
+      const [nursingNotes, vitals, charges, dischargeSummary] = await Promise.all([
+        NursingNote.find({ admissionId: admission._id, is_active: { $ne: false }, $or: [{ hospitalId }, { hospitalId: { $exists: false } }] })
+          .populate('nurseId', 'first_name last_name')
+          .sort({ noteDateTime: -1 })
+          .limit(20)
+          .lean(),
+        IPDVitals.find({ hospitalId, admissionId: admission._id })
+          .populate('recordedBy', 'first_name last_name')
+          .sort({ recordedAt: -1 })
+          .limit(50)
+          .lean(),
+        canViewFinancial
+          ? IPDCharge.find({ hospitalId, admissionId: admission._id, is_active: { $ne: false }, status: { $nin: ['VOIDED', 'CANCELLED'] } })
+            .sort({ chargeDate: -1 })
+            .lean()
+          : Promise.resolve([]),
+        DischargeSummary.findOne({ admissionId: admission._id, hospitalId }).lean()
+      ]);
+
+      return res.json({
+        success: true,
+        admission,
+        nursingNotes,
+        vitals,
+        charges,
+        dischargeSummary,
+        rounds: []
+      });
+    }
     const [coverage, transfers, accommodationSegments, rounds, nursingNotes, vitals, charges, dischargeSummary, invoices, bills] = await Promise.all([
       activeAdmissionCoverage2026(hospitalId, admission._id),
       IPDBedTransfer2026.find({ hospitalId, admissionId: admission._id })
@@ -1733,6 +1771,11 @@ exports.deleteAdmission = async (req, res) => {
 exports.getDashboardStats = async (req, res) => {
   try {
     const hospitalId = requireAdmissionHospitalId(req);
+    const cacheKey = String(hospitalId);
+    const cached = ipdDashboardCache.get(cacheKey);
+    if (cached && (Date.now() - cached.at) < IPD_DASHBOARD_CACHE_TTL_MS) {
+      return res.json({ ...cached.payload, cache: { hit: true, ttlMs: IPD_DASHBOARD_CACHE_TTL_MS } });
+    }
     const { start: today, end: tomorrow } = hospitalDayBounds(operationDateKey());
 
     const [
@@ -1743,7 +1786,13 @@ exports.getDashboardStats = async (req, res) => {
       occupiedBeds,
       availableBeds,
       reservedBeds,
-      cleaningBeds
+      cleaningBeds,
+      totalBeds,
+      totalRooms,
+      totalWards,
+      recentAdmissions,
+      wards,
+      wardBedCounts
     ] = await Promise.all([
       IPDAdmission.countDocuments({
         hospitalId,
@@ -1771,13 +1820,43 @@ exports.getDashboardStats = async (req, res) => {
         status: 'Discharged',
         dischargeDate: { $gte: today, $lt: tomorrow }
       }),
-      Bed.countDocuments({ hospitalId, status: 'Occupied' }),
-      Bed.countDocuments({ hospitalId, status: 'Available' }),
-      Bed.countDocuments({ hospitalId, status: 'Reserved' }),
-      Bed.countDocuments({ hospitalId, status: 'Cleaning' })
+      Bed.countDocuments({ hospitalId, status: 'Occupied', isActive: { $ne: false } }),
+      Bed.countDocuments({ hospitalId, status: 'Available', isActive: { $ne: false } }),
+      Bed.countDocuments({ hospitalId, status: 'Reserved', isActive: { $ne: false } }),
+      Bed.countDocuments({ hospitalId, status: 'Cleaning', isActive: { $ne: false } }),
+      Bed.countDocuments({ hospitalId, isActive: { $ne: false } }),
+      Room.countDocuments({ hospitalId, isActive: { $ne: false } }),
+      Ward.countDocuments({ hospitalId, isActive: { $ne: false } }),
+      IPDAdmission.find({ hospitalId })
+        .select('admissionNumber patientId primaryDoctorId bedId admissionDate status dueAmount')
+        .populate('patientId', 'first_name last_name patientId uhid')
+        .populate('primaryDoctorId', 'firstName lastName')
+        .populate('bedId', 'bedNumber bedType')
+        .sort({ admissionDate: -1, createdAt: -1 })
+        .limit(10)
+        .lean(),
+      Ward.find({ hospitalId, isActive: { $ne: false } })
+        .select('name code')
+        .sort({ name: 1 })
+        .lean(),
+      Bed.aggregate([
+        { $match: { hospitalId: new mongoose.Types.ObjectId(String(hospitalId)), isActive: { $ne: false }, wardId: { $ne: null } } },
+        { $group: { _id: '$wardId', bedCount: { $sum: 1 }, occupiedBeds: { $sum: { $cond: [{ $eq: ['$status', 'Occupied'] }, 1, 0] } }, availableBeds: { $sum: { $cond: [{ $eq: ['$status', 'Available'] }, 1, 0] } } } }
+      ])
     ]);
 
-    return res.json({
+    const wardCountMap = new Map(wardBedCounts.map((row) => [String(row._id), row]));
+    const wardSummary = wards.map((ward) => {
+      const counts = wardCountMap.get(String(ward._id)) || {};
+      return {
+        ...ward,
+        bedCount: Number(counts.bedCount || 0),
+        occupiedBeds: Number(counts.occupiedBeds || 0),
+        availableBeds: Number(counts.availableBeds || 0)
+      };
+    });
+
+    const payload = {
       success: true,
       stats: {
         totalAdmitted,
@@ -1787,9 +1866,16 @@ exports.getDashboardStats = async (req, res) => {
         occupiedBeds,
         availableBeds,
         reservedBeds,
-        cleaningBeds
-      }
-    });
+        cleaningBeds,
+        totalBeds,
+        totalRooms,
+        totalWards
+      },
+      recentAdmissions,
+      wards: wardSummary
+    };
+    ipdDashboardCache.set(cacheKey, { at: Date.now(), payload });
+    return res.json({ ...payload, cache: { hit: false, ttlMs: IPD_DASHBOARD_CACHE_TTL_MS } });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
