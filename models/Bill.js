@@ -528,6 +528,8 @@ billSchema.index({ 'deletion_request.status': 1 });
 billSchema.index({ bill_number: 1 }, { unique: true, sparse: true });
 billSchema.index({ idempotency_key: 1 }, { unique: true, sparse: true });
 billSchema.index({ hospital_id: 1, document_stage: 1, generated_at: -1 });
+// Billing worklist/dashboard filter path.
+billSchema.index({ hospital_id: 1, is_deleted: 1, status: 1, generated_at: -1 });
 
 addSoftDeleteFields(billSchema);
 

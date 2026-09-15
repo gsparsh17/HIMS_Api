@@ -410,6 +410,10 @@ labRequestSchema.methods.checkAbnormal = function(value) {
 
 // Indexes
 labRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
+// Operational worklist/dashboard indexes (Phase 2 performance).
+labRequestSchema.index({ hospitalId: 1, status: 1, scheduledDate: 1, priority: -1, requestedDate: 1 });
+labRequestSchema.index({ hospitalId: 1, status: 1, requestedDate: 1 });
+labRequestSchema.index({ hospitalId: 1, 'critical.isCritical': 1, requestedDate: -1 });
 labRequestSchema.index({ hospitalId: 1, orderNumber: 1, patientId: 1 });
 labRequestSchema.index({ hospitalId: 1, requestGroupKey: 1, patientId: 1 });
 labRequestSchema.index(

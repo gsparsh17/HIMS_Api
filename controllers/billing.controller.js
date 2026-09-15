@@ -1940,7 +1940,8 @@ exports.getBillingTransactionWorklist = async (req, res, next) => {
       endDate: req.query.endDate || '',
       scope: req.query.scope || 'all',
       limit: req.query.limit || 50,
-      page: req.query.page || 1
+      page: req.query.page || 1,
+      includeMeta: req.query.includeMeta !== 'false'
     });
     res.json({ success: true, data });
   } catch (error) {
@@ -1961,7 +1962,8 @@ exports.getPatientBillingSummaries = async (req, res, next) => {
       startDate: req.query.startDate || '',
       endDate: req.query.endDate || '',
       limit: req.query.limit || 250,
-      page: req.query.page || 1
+      page: req.query.page || 1,
+      includeMeta: req.query.includeMeta !== 'false'
     });
     res.json({ success: true, ...data });
   } catch (error) {

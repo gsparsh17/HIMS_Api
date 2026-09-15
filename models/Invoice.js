@@ -1223,6 +1223,8 @@ invoiceSchema.index({ invoice_type: 1, status: 1, created_at: -1 });
 invoiceSchema.index({ patient_id: 1, status: 1, created_at: -1 });
 invoiceSchema.index({ is_deleted: 1 });
 invoiceSchema.index({ hospital_id: 1, document_stage: 1, issue_date: -1 });
+// Billing worklist/dashboard filter path.
+invoiceSchema.index({ hospital_id: 1, is_deleted: 1, status: 1, issue_date: -1 });
 invoiceSchema.index({ admission_id: 1, document_stage: 1, issue_date: -1 });
 invoiceSchema.index({ idempotency_key: 1 }, { unique: true, sparse: true });
 

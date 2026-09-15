@@ -384,6 +384,9 @@ radiologyRequestSchema.virtual('sourceDisplay').get(function() {
 
 // Indexes
 radiologyRequestSchema.index({ hospitalId: 1, patientId: 1, requestedDate: -1 });
+// Operational worklist/dashboard indexes (Phase 2 performance).
+radiologyRequestSchema.index({ hospitalId: 1, status: 1, scheduledStart: 1, priority: -1, requestedDate: 1 });
+radiologyRequestSchema.index({ hospitalId: 1, modality: 1, status: 1 });
 radiologyRequestSchema.index({ doctorId: 1, status: 1 });
 radiologyRequestSchema.index({ status: 1, scheduledDate: 1 });
 radiologyRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });

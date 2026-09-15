@@ -267,6 +267,27 @@ exports.getLabTests = async (req, res) => {
   }
 };
 
+
+// Compact metadata endpoint used by operational worklists. Avoid downloading the
+// entire lab-test master merely to build a category dropdown.
+exports.getLabTestCategories = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const categories = await LabTest.distinct('category', {
+      hospitalId,
+      is_active: { $ne: false },
+      category: { $nin: [null, ''] }
+    });
+    return res.json({
+      success: true,
+      data: categories.map((value) => String(value).trim()).filter(Boolean).sort((a, b) => a.localeCompare(b))
+    });
+  } catch (error) {
+    console.error('Error fetching lab test categories:', error);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 // Get lab test by ID
 exports.getLabTestById = async (req, res) => {
   try {

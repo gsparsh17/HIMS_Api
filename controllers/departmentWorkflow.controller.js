@@ -23,6 +23,31 @@ const {
   notifyDiagnosticRelease
 } = require('../services/diagnosticReport.service');
 
+
+// Diagnostic dashboards are read-heavy and are opened by multiple operational
+// users at the same time. Cache only aggregate counters briefly; worklists remain
+// live and uncached.
+const DIAGNOSTIC_STATS_CACHE_TTL_MS = Math.max(0, Number(process.env.DIAGNOSTIC_STATS_CACHE_TTL_MS || 15000));
+const diagnosticStatsCache = new Map();
+
+function diagnosticStatsCacheKey(kind, hospitalId) {
+  return `${kind}:${String(hospitalId)}`;
+}
+
+function getDiagnosticStatsCache(kind, hospitalId) {
+  const row = diagnosticStatsCache.get(diagnosticStatsCacheKey(kind, hospitalId));
+  if (!row || row.expiresAt <= Date.now()) return null;
+  return row.payload;
+}
+
+function setDiagnosticStatsCache(kind, hospitalId, payload) {
+  if (DIAGNOSTIC_STATS_CACHE_TTL_MS <= 0) return;
+  diagnosticStatsCache.set(diagnosticStatsCacheKey(kind, hospitalId), {
+    payload,
+    expiresAt: Date.now() + DIAGNOSTIC_STATS_CACHE_TTL_MS
+  });
+}
+
 function sendError(res, error) {
   return res.status(error.statusCode || 400).json({
     success: false,
@@ -134,6 +159,14 @@ function requestFilter(req, hospitalId) {
         }
       ]
     }];
+  }
+
+
+  if (req.query.critical === 'true' || req.query.critical === 'open') {
+    filter['critical.isCritical'] = true;
+    if (req.query.critical === 'open') {
+      filter['critical.acknowledgements.0'] = { $exists: false };
+    }
   }
 
   if (req.query.q) {
@@ -724,6 +757,10 @@ exports.releaseLab = async (req, res) => {
 exports.labStats = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    const cached = getDiagnosticStatsCache('lab', hospitalId);
+    if (cached) {
+      return res.json({ ...cached, cache: { hit: true, ttlMs: DIAGNOSTIC_STATS_CACHE_TTL_MS } });
+    }
     const now = operationNow();
     const hospital = await Hospital.findById(hospitalId).select('timezone').lean();
     const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
@@ -864,12 +901,14 @@ exports.labStats = async (req, res) => {
     delete summary._id;
     summary.readyForCollection = summary.totalPending;
 
-    res.json({
+    const payload = {
       success: true,
       byStatus: rows,
       summary,
       generatedAt: now
-    });
+    };
+    setDiagnosticStatsCache('lab', hospitalId, payload);
+    res.json({ ...payload, cache: { hit: false, ttlMs: DIAGNOSTIC_STATS_CACHE_TTL_MS } });
   } catch (e) {
     sendError(res, e);
   }
@@ -1169,6 +1208,10 @@ exports.releaseRadiology = async (req, res) => {
 exports.radiologyStats = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
+    const cached = getDiagnosticStatsCache('radiology', hospitalId);
+    if (cached) {
+      return res.json({ ...cached, cache: { hit: true, ttlMs: DIAGNOSTIC_STATS_CACHE_TTL_MS } });
+    }
     const now = operationNow();
 
     const [byStatus, byModality, summaryRows] = await Promise.all([
@@ -1260,13 +1303,15 @@ exports.radiologyStats = async (req, res) => {
     const summary = summaryRows[0] || { total: 0, pending: 0, scheduled: 0, inProgress: 0, completed: 0, reported: 0, pendingBilling: 0, revenue: 0 };
     delete summary._id;
 
-    res.json({
+    const payload = {
       success: true,
       byStatus,
       byModality,
       summary,
       generatedAt: now
-    });
+    };
+    setDiagnosticStatsCache('radiology', hospitalId, payload);
+    res.json({ ...payload, cache: { hit: false, ttlMs: DIAGNOSTIC_STATS_CACHE_TTL_MS } });
   } catch (e) {
     sendError(res, e);
   }

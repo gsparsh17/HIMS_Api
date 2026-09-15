@@ -13,6 +13,31 @@ const { normalizeFinancialLine } = require('../utils/financialLine');
 const { buildDailyAccommodationSummary } = require('./ipdFinancial.service');
 const { ipdOwnsPharmacyBilling } = require('./ipdPharmacyBillingPolicy.service');
 
+// Short-lived tenant-scoped cache for dashboard metadata. Search/pagination requests
+// should not recompute hospital-wide financial aggregates on every keystroke/page.
+const BILLING_META_CACHE_TTL_MS = Math.max(0, Number(process.env.BILLING_META_CACHE_TTL_MS || 15000));
+const billingMetaCache = new Map();
+
+function billingMetaCacheKey({ hospitalObjectId, search = '', status = 'All', startDate = '', endDate = '', scope = 'all' }) {
+  return [hospitalObjectId, String(search || '').trim().toLowerCase(), status, startDate, endDate, scope].join('|');
+}
+
+async function getCachedBillingMeta(input) {
+  const key = billingMetaCacheKey(input);
+  const cached = billingMetaCache.get(key);
+  if (BILLING_META_CACHE_TTL_MS > 0 && cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const { hospitalObjectId, search = '', status = 'All', startDate = '', endDate = '', scope = 'all' } = input;
+  const [stats, openIpdCount, patientCounts] = await Promise.all([
+    getBillingDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope }),
+    IPDAdmission.countDocuments({ hospitalId: hospitalObjectId, status: { $ne: 'Cancelled' }, financialClearanceStatus: { $ne: 'cleared' } }),
+    getGlobalBillingCounts(hospitalObjectId)
+  ]);
+  const value = { stats, openIpdCount, patientCounts };
+  if (BILLING_META_CACHE_TTL_MS > 0) billingMetaCache.set(key, { value, expiresAt: Date.now() + BILLING_META_CACHE_TTL_MS });
+  return value;
+}
+
 const asNumber = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -894,7 +919,7 @@ async function getBillingDashboardStats({ hospitalObjectId, search = '', status 
   };
 }
 
-async function listBillingTransactions({ hospitalId, search = '', status = 'All', startDate = '', endDate = '', scope = 'all', limit = 50, page = 1 }) {
+async function listBillingTransactions({ hospitalId, search = '', status = 'All', startDate = '', endDate = '', scope = 'all', limit = 50, page = 1, includeMeta = true }) {
   const hospitalObjectId = new mongoose.Types.ObjectId(String(hospitalId));
   const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
   const safePage = Math.max(1, Number(page) || 1);
@@ -902,12 +927,13 @@ async function listBillingTransactions({ hospitalId, search = '', status = 'All'
   const candidateLimit = safePage * safeLimit;
   const normalizedScope = ['opd', 'ipd'].includes(scope) ? scope : 'all';
 
-  const [bills, invoices, stats, openIpdCount, patientCounts] = await Promise.all([
+  const metaPromise = includeMeta
+    ? getCachedBillingMeta({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope })
+    : Promise.resolve(null);
+  const [bills, invoices, meta] = await Promise.all([
     aggregateBillTransactions({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope, rowLimit: candidateLimit }),
     aggregateInvoiceTransactions({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope, rowLimit: candidateLimit }),
-    getBillingDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope }),
-    IPDAdmission.countDocuments({ hospitalId: hospitalObjectId, status: { $ne: 'Cancelled' }, financialClearanceStatus: { $ne: 'cleared' } }),
-    getGlobalBillingCounts(hospitalObjectId)
+    metaPromise
   ]);
 
   const rows = [...bills.rows, ...invoices.rows]
@@ -920,47 +946,43 @@ async function listBillingTransactions({ hospitalId, search = '', status = 'All'
   const total = bills.count + invoices.count;
   return {
     rows,
-    stats,
-    openIpdCount,
-    patientCounts,
+    ...(meta || {}),
+    metaIncluded: Boolean(meta),
     pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.max(1, Math.ceil(total / safeLimit)) }
   };
 }
 
-async function listPatientBillingSummaries({ hospitalId, type = 'all', search = '', status = 'All', startDate = '', endDate = '', limit = 250, page = 1 }) {
+async function listPatientBillingSummaries({ hospitalId, type = 'all', search = '', status = 'All', startDate = '', endDate = '', limit = 250, page = 1, includeMeta = true }) {
   const hospitalObjectId = new mongoose.Types.ObjectId(String(hospitalId));
   // Preserve the legacy endpoint's accepted response size for callers that have
   // not yet migrated, while new high-traffic screens use much smaller pages.
   const safeLimit = Math.min(1000, Math.max(1, Number(limit) || 250));
   const safePage = Math.max(1, Number(page) || 1);
   const skip = (safePage - 1) * safeLimit;
-  const countsPromise = getGlobalBillingCounts(hospitalObjectId);
   const normalizedScope = ['ipd', 'opd'].includes(type) ? type : 'all';
-  const statsPromise = getBillingDashboardStats({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope });
+  const metaPromise = includeMeta
+    ? getCachedBillingMeta({ hospitalObjectId, search, status, startDate, endDate, scope: normalizedScope })
+    : Promise.resolve(null);
 
   if (type === 'ipd') {
-    const [result, counts, stats] = await Promise.all([
+    const [result, meta] = await Promise.all([
       aggregateIpdBillingRows({ hospitalObjectId, search, status, startDate, endDate, rowLimit: safeLimit, skip }),
-      countsPromise,
-      statsPromise
+      metaPromise
     ]);
     return {
       rows: result.rows,
-      counts,
-      stats,
+      ...(meta ? { counts: meta.patientCounts, stats: meta.stats, metaIncluded: true } : { metaIncluded: false }),
       pagination: { page: safePage, limit: safeLimit, total: result.count, totalPages: Math.max(1, Math.ceil(result.count / safeLimit)) }
     };
   }
   if (type === 'opd') {
-    const [result, counts, stats] = await Promise.all([
+    const [result, meta] = await Promise.all([
       aggregateOpdBillingRows({ hospitalObjectId, search, status, startDate, endDate, rowLimit: safeLimit, skip }),
-      countsPromise,
-      statsPromise
+      metaPromise
     ]);
     return {
       rows: result.rows,
-      counts,
-      stats,
+      ...(meta ? { counts: meta.patientCounts, stats: meta.stats, metaIncluded: true } : { metaIncluded: false }),
       pagination: { page: safePage, limit: safeLimit, total: result.count, totalPages: Math.max(1, Math.ceil(result.count / safeLimit)) }
     };
   }
@@ -969,19 +991,17 @@ async function listPatientBillingSummaries({ hospitalId, type = 'all', search = 
   // the requested combined page. This keeps Node memory bounded while preserving
   // the exact cross-type lastUpdated ordering used by the previous implementation.
   const candidateLimit = safePage * safeLimit;
-  const [ipd, opd, counts, stats] = await Promise.all([
+  const [ipd, opd, meta] = await Promise.all([
     aggregateIpdBillingRows({ hospitalObjectId, search, status, startDate, endDate, rowLimit: candidateLimit, skip: 0 }),
     aggregateOpdBillingRows({ hospitalObjectId, search, status, startDate, endDate, rowLimit: candidateLimit, skip: 0 }),
-    countsPromise,
-    statsPromise
+    metaPromise
   ]);
   const combined = [...ipd.rows, ...opd.rows]
     .sort((left, right) => new Date(right.lastUpdated || 0) - new Date(left.lastUpdated || 0));
   const filteredTotal = ipd.count + opd.count;
   return {
     rows: combined.slice(skip, skip + safeLimit),
-    counts,
-    stats,
+    ...(meta ? { counts: meta.patientCounts, stats: meta.stats, metaIncluded: true } : { metaIncluded: false }),
     pagination: { page: safePage, limit: safeLimit, total: filteredTotal, totalPages: Math.max(1, Math.ceil(filteredTotal / safeLimit)) }
   };
 }

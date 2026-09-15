@@ -44,6 +44,7 @@ const collect = [
 // Masters
 router.post('/tests', ...manage, controller.createLabTest);
 router.get('/tests', ...view, controller.getLabTests);
+router.get('/tests/categories', ...view, controller.getLabTestCategories);
 router.get('/tests/:id', ...view, controller.getLabTestById);
 router.put('/tests/:id', ...manage, controller.updateLabTest);
 router.delete('/tests/:id', ...manage, controller.deleteLabTest);

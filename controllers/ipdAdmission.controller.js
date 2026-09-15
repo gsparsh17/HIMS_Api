@@ -53,6 +53,8 @@ const { reversePackageUtilization } = require('../services/packageAdjudication.s
 // Short tenant-scoped cache for the read-heavy IPD dashboard.
 const IPD_DASHBOARD_CACHE_TTL_MS = 10 * 1000;
 const ipdDashboardCache = new Map();
+const IPD_ADMISSION_MASTERS_CACHE_TTL_MS = Math.max(0, Number(process.env.IPD_ADMISSION_MASTERS_CACHE_TTL_MS || 60000));
+const ipdAdmissionMastersCache = new Map();
 
 function activeAdmissionFilter2026() {
   return {
@@ -1764,6 +1766,58 @@ exports.deleteAdmission = async (req, res) => {
     });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message, code: error.code });
+  }
+};
+
+// Compact, cacheable bootstrap for the IPD admission form. This replaces five
+// independent browser requests for doctors, departments, wards, hospital charges
+// and hospital identity with one tenant-scoped read model.
+exports.getAdmissionMasters = async (req, res) => {
+  try {
+    const hospitalId = requireAdmissionHospitalId(req);
+    const cacheKey = String(hospitalId);
+    const cached = ipdAdmissionMastersCache.get(cacheKey);
+    const forceRefresh = req.query.refresh === 'true';
+    if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+      return res.json({ success: true, data: cached.data, cache: { hit: true, ttlMs: IPD_ADMISSION_MASTERS_CACHE_TTL_MS } });
+    }
+
+    const [doctors, departments, wards, charges, hospital] = await Promise.all([
+      Doctor.find({ hospitalId, is_active: { $ne: false } })
+        .select('_id doctorId firstName lastName specialization department isFullTime')
+        .populate('department', '_id name')
+        .sort({ firstName: 1, lastName: 1 })
+        .lean(),
+      Department.find({ hospitalId, active: { $ne: false }, is_active: { $ne: false } })
+        .select('_id name code active is_active')
+        .sort({ name: 1 })
+        .lean(),
+      Ward.find({ hospitalId, isActive: true })
+        .select('_id name code type departmentId')
+        .populate('departmentId', '_id name')
+        .sort({ name: 1 })
+        .lean(),
+      HospitalCharges2026.findOne({ hospital: hospitalId, is_active: { $ne: false } })
+        .select('ipdCharges effectiveFrom')
+        .lean(),
+      Hospital.findById(hospitalId)
+        .select('_id name hospitalName address city state pinCode pincode contact phone email logo timezone')
+        .lean()
+    ]);
+
+    const data = {
+      doctors,
+      departments,
+      wards,
+      charges: charges || null,
+      hospital: hospital || null
+    };
+    if (IPD_ADMISSION_MASTERS_CACHE_TTL_MS > 0) {
+      ipdAdmissionMastersCache.set(cacheKey, { data, expiresAt: Date.now() + IPD_ADMISSION_MASTERS_CACHE_TTL_MS });
+    }
+    return res.json({ success: true, data, cache: { hit: false, ttlMs: IPD_ADMISSION_MASTERS_CACHE_TTL_MS } });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
   }
 };
 

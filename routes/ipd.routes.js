@@ -191,6 +191,11 @@ router.get(
   admissions.getDashboardStats
 );
 
+router.get(
+  '/admissions/masters',
+  admissions.getAdmissionMasters
+);
+
 // Keep concrete analytics routes above /admissions/:id so they can never be
 // interpreted as an admission identifier and so the dashboard has stable APIs.
 router.get('/admissions/stats/by-doctor', admissions.getAdmissionStatsByDoctor);
