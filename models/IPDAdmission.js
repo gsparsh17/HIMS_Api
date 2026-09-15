@@ -540,6 +540,9 @@ ipdAdmissionSchema.index({ 'abdmRecordLink.abhaNumber': 1 });
 ipdAdmissionSchema.index({ 'abdmRecordLink.abhaAddress': 1 });
 
 ipdAdmissionSchema.index({ hospitalId: 1, status: 1, wardId: 1 });
+// Front-desk patient worklist indexes.
+ipdAdmissionSchema.index({ hospitalId: 1, patientId: 1, admissionDate: -1, createdAt: -1 });
+ipdAdmissionSchema.index({ hospitalId: 1, patientId: 1, status: 1, admissionDate: -1 });
 addSoftDeleteFields(ipdAdmissionSchema);
 
 module.exports = mongoose.model('IPDAdmission', ipdAdmissionSchema);

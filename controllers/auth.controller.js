@@ -429,13 +429,17 @@ async function completeSuccessfulLogin(user, hospital, req, res, securityOverrid
     ? { mfaSetupRequired: true }
     : {};
   const response = await enrichLoginResponse(user, hospital, tokenClaims);
-  const licenseSnapshot = user.hospital_id ? await activeSnapshot(user.hospital_id, { refreshIfDue: true }) : null;
+  const [licenseSnapshot, setting] = user.hospital_id
+    ? await Promise.all([
+        activeSnapshot(user.hospital_id, { refreshIfDue: true }),
+        getOrCreateNabhSetting(user.hospital_id, user._id)
+      ])
+    : [null, null];
   if (licenseSnapshot) {
     response.license = publicLicense(licenseSnapshot);
     response.entitlements = response.license?.entitlements || {};
     response.user = { ...(response.user || {}), license: response.license, entitlements: response.entitlements };
   }
-  const setting = user.hospital_id ? await getOrCreateNabhSetting(user.hospital_id, user._id) : null;
   response.security = {
     mfaEnabled: Boolean(user.mfa?.enabled),
     idleLockMinutes: Number(setting?.security?.idleLockMinutes || 15),
@@ -448,12 +452,14 @@ async function completeSuccessfulLogin(user, hospital, req, res, securityOverrid
 }
 
 exports.getCurrentUser = async (req, res) => {
-  const setting = req.user.hospital_id
-    ? await getOrCreateNabhSetting(req.user.hospital_id, req.user._id)
-    : null;
-  const licenseSnapshot = req.user.hospital_id
-    ? await activeSnapshot(req.user.hospital_id, { refreshIfDue: true })
-    : null;
+  // The security settings and license snapshot are independent reads. Running
+  // them in parallel removes an avoidable round-trip from the /auth/me hot path.
+  const [setting, licenseSnapshot] = req.user.hospital_id
+    ? await Promise.all([
+        getOrCreateNabhSetting(req.user.hospital_id, req.user._id),
+        activeSnapshot(req.user.hospital_id, { refreshIfDue: true })
+      ])
+    : [null, null];
   const license = licenseSnapshot ? publicLicense(licenseSnapshot) : null;
   return res.json({
     license,

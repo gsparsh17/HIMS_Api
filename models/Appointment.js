@@ -221,6 +221,12 @@ appointmentSchema.index(
 );
 appointmentSchema.index({ hospital_id: 1, appointment_date: 1, department_id: 1, status: 1 });
 appointmentSchema.index({ hospital_id: 1, appointment_date_key: 1, department_id: 1, status: 1 });
+// Front-desk patient worklist: latest/active appointment lookups are scoped by
+// hospital + patient and then sorted by the scheduled date/time.
+appointmentSchema.index({ hospital_id: 1, patient_id: 1, appointment_date: -1, start_time: -1, created_at: -1 });
+appointmentSchema.index({ hospital_id: 1, patient_id: 1, status: 1, appointment_date: -1, start_time: -1 });
+// Worklist metadata groups appointment-bearing patients inside one hospital.
+appointmentSchema.index({ hospital_id: 1, patient_id: 1, status: 1 });
 
 appointmentSchema.pre('validate', function normalizeAppointmentDate(next) {
   try {

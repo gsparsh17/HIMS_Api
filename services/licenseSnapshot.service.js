@@ -5,6 +5,69 @@ const { mergeEntitlements, normalizeEntitlements, isEntitled } = require('../uti
 const { platformRequest } = require('./platformClient.service');
 const { parseOptionalDate, parseDateOrNow } = require('../utils/platformDates');
 
+// License state is read on virtually every authenticated API request. The
+// snapshot already has its own nextCheckAt/offline-grace semantics, so hitting
+// MongoDB several times per page request adds latency without making licensing
+// safer. Keep a very short process-local cache and coalesce concurrent reads.
+// Set LICENSE_REQUEST_CACHE_MS=0 to disable it.
+const SNAPSHOT_CACHE_MS = Math.max(0, Number(process.env.LICENSE_REQUEST_CACHE_MS || 30000));
+const snapshotCache = new Map();
+const snapshotInflight = new Map();
+
+function cacheKey(hospitalId) {
+  return hospitalId ? String(hospitalId) : '';
+}
+
+function cachedSnapshot(hospitalId) {
+  if (!SNAPSHOT_CACHE_MS) return null;
+  const key = cacheKey(hospitalId);
+  if (!key) return null;
+  const entry = snapshotCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    snapshotCache.delete(key);
+    return null;
+  }
+  return entry.snapshot;
+}
+
+function rememberSnapshot(snapshot) {
+  if (!snapshot || !SNAPSHOT_CACHE_MS) return snapshot;
+  const key = cacheKey(snapshot.hospitalId);
+  if (key) snapshotCache.set(key, { snapshot, expiresAt: Date.now() + SNAPSHOT_CACHE_MS });
+  return snapshot;
+}
+
+function invalidateSnapshot(hospitalId) {
+  const key = cacheKey(hospitalId);
+  if (key) {
+    snapshotCache.delete(key);
+    snapshotInflight.delete(key);
+  }
+}
+
+async function findSnapshotForHospital(hospitalId, { useCache = true } = {}) {
+  const key = cacheKey(hospitalId);
+  if (!key) return null;
+
+  if (useCache) {
+    const cached = cachedSnapshot(key);
+    if (cached) return cached;
+    const pending = snapshotInflight.get(key);
+    if (pending) return pending;
+  }
+
+  const request = LicenseSnapshot.findOne({ hospitalId }).then(rememberSnapshot);
+  if (!useCache || !SNAPSHOT_CACHE_MS) return request;
+
+  snapshotInflight.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (snapshotInflight.get(key) === request) snapshotInflight.delete(key);
+  }
+}
+
 function daysRemaining(expiresAt) {
   if (!expiresAt) return null;
   return Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400000);
@@ -52,10 +115,22 @@ async function hospitalForContext(hospitalId) {
   return Hospital.findOne({ is_active: { $ne: false } });
 }
 
-async function getSnapshot(hospitalId) {
-  const hospital = await hospitalForContext(hospitalId);
+async function getSnapshot(hospitalId, { includeHospital = false, useCache = true } = {}) {
+  // Authenticated requests already carry a concrete hospital id. In the hot
+  // path, query LicenseSnapshot directly instead of first loading Hospital just
+  // to obtain the same _id again.
+  if (hospitalId) {
+    const snapshot = await findSnapshotForHospital(hospitalId, { useCache });
+    if (!includeHospital) return { hospital: null, snapshot };
+    const hospital = await hospitalForContext(hospitalId);
+    return { hospital, snapshot };
+  }
+
+  // Provisioning/control-plane paths may not have a user hospital id yet.
+  const hospital = await hospitalForContext();
   if (!hospital) return { hospital: null, snapshot: null };
-  return { hospital, snapshot: await LicenseSnapshot.findOne({ hospitalId: hospital._id }) };
+  const snapshot = await findSnapshotForHospital(hospital._id, { useCache });
+  return { hospital, snapshot };
 }
 
 function applyRemotePayload(snapshot, hospital, payload, source) {
@@ -81,29 +156,36 @@ function applyRemotePayload(snapshot, hospital, payload, source) {
   return target;
 }
 
-async function upsertFromRemotePayload(payload, source = 'PUSHED') {
-  const hospital = await hospitalForContext();
+async function upsertFromRemotePayload(payload, source = 'PUSHED', options = {}) {
+  const hospital = options.hospital || await hospitalForContext(options.hospitalId);
   if (!hospital) throw new Error('Hospital is not provisioned');
   const existing = await LicenseSnapshot.findOne({ hospitalId: hospital._id });
   const target = applyRemotePayload(existing, hospital, payload, source);
   await target.save();
+  invalidateSnapshot(hospital._id);
+  rememberSnapshot(target);
   return target;
 }
 
 async function refreshLicense(options = {}) {
-  const { hospital, snapshot } = await getSnapshot(options.hospitalId);
+  const { hospital, snapshot } = await getSnapshot(options.hospitalId, {
+    includeHospital: true,
+    useCache: false
+  });
   if (!hospital) throw new Error('Hospital is not provisioned');
   try {
     const response = await platformRequest('/internal/platform/license/validate', {
       tenantCode: hospital.tenantCode,
       knownVersion: snapshot?.licenseVersion || 0
     });
-    return upsertFromRemotePayload(response.license, 'PULLED');
+    return upsertFromRemotePayload(response.license, 'PULLED', { hospital });
   } catch (error) {
     if (snapshot) {
       snapshot.lastSyncStatus = 'FAILED';
       snapshot.lastSyncError = String(error.message || error).slice(0, 1000);
       await snapshot.save().catch(() => {});
+      invalidateSnapshot(hospital._id);
+      rememberSnapshot(snapshot);
     }
     throw error;
   }
@@ -124,6 +206,7 @@ async function activeSnapshot(hospitalId, options = {}) {
   if (snapshot.expiresAt && new Date(snapshot.expiresAt).getTime() <= Date.now() && snapshot.status === 'active') {
     snapshot.status = 'expired';
     await snapshot.save().catch(() => {});
+    rememberSnapshot(snapshot);
   }
 
   if (snapshot.status !== 'active') {
@@ -164,4 +247,12 @@ async function assertEntitlement(hospitalId, key) {
   return snapshot;
 }
 
-module.exports = { publicLicense, getSnapshot, activeSnapshot, assertEntitlement, upsertFromRemotePayload, refreshLicense };
+module.exports = {
+  publicLicense,
+  getSnapshot,
+  activeSnapshot,
+  assertEntitlement,
+  upsertFromRemotePayload,
+  refreshLicense,
+  invalidateSnapshot
+};

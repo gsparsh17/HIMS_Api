@@ -115,6 +115,12 @@ function attachEffectivePermissions(req, user) {
 
 exports.verifyToken = async (req, res, next) => {
   try {
+    // Most hospital routers are mounted behind the global /api authentication
+    // boundary and also call protect() locally. Re-authenticating here used to
+    // execute User.findById() twice for the same HTTP request. Preserve the
+    // local route guards for defence in depth, but make them idempotent.
+    if (req.user) return next();
+
     const user = await authenticateRequest(req);
     attachEffectivePermissions(req, user);
     return next();
@@ -131,6 +137,7 @@ exports.verifyToken = async (req, res, next) => {
 
 exports.optionalAuth = async (req, res, next) => {
   try {
+    if (req.user) return next();
     const user = await authenticateRequest(req, { optional: true });
     if (user) attachEffectivePermissions(req, user);
     return next();

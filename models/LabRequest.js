@@ -422,7 +422,10 @@ labRequestSchema.index(
 labRequestSchema.index({ doctorId: 1, status: 1 });
 labRequestSchema.index({ status: 1, scheduledDate: 1 });
 labRequestSchema.index({ hospitalId: 1, requestNumber: 1 }, { unique: true });
-labRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, { unique: true, sparse: true });
+labRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, {
+  unique: true,
+  partialFilterExpression: { deskCheckoutKey: { $type: 'string' } }
+});
 labRequestSchema.index({ admissionId: 1, sourceType: 1 });
 labRequestSchema.index({ appointmentId: 1, sourceType: 1 });
 labRequestSchema.index({ hospitalId: 1, 'reportFinalisation.isFinal': 1, releasedAt: -1 });

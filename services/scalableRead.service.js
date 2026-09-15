@@ -81,11 +81,21 @@ function patientCareLookupStages(hospitalObjectId) {
               }
             }
           },
-          { $sort: { appointment_date: -1, start_time: -1, created_at: -1, createdAt: -1 } },
+          // Keep the count branch unsorted. The previous pipeline sorted every
+          // appointment before $facet, so even a simple count paid the sort cost.
           {
             $facet: {
-              latest: [{ $limit: 1 }, { $project: { _id: 1, status: 1, appointment_date: 1, start_time: 1, created_at: 1, createdAt: 1, doctor_id: 1, department_id: 1 } }],
-              active: [{ $match: { status: { $in: ACTIVE_APPOINTMENT_STATUSES } } }, { $limit: 1 }, { $project: { _id: 1 } }],
+              latest: [
+                { $sort: { appointment_date: -1, start_time: -1, created_at: -1, createdAt: -1 } },
+                { $limit: 1 },
+                { $project: { _id: 1, status: 1, appointment_date: 1, start_time: 1, created_at: 1, createdAt: 1, doctor_id: 1, department_id: 1 } }
+              ],
+              active: [
+                { $match: { status: { $in: ACTIVE_APPOINTMENT_STATUSES } } },
+                { $sort: { appointment_date: -1, start_time: -1, created_at: -1, createdAt: -1 } },
+                { $limit: 1 },
+                { $project: { _id: 1 } }
+              ],
               count: [{ $count: 'value' }]
             }
           }
@@ -109,11 +119,19 @@ function patientCareLookupStages(hospitalObjectId) {
               }
             }
           },
-          { $sort: { admissionDate: -1, createdAt: -1, updatedAt: -1 } },
           {
             $facet: {
-              latest: [{ $limit: 1 }, { $project: { _id: 1, status: 1, admissionDate: 1, createdAt: 1, updatedAt: 1, primaryDoctorId: 1, departmentId: 1 } }],
-              active: [{ $match: { status: { $in: ACTIVE_ADMISSION_STATUSES } } }, { $limit: 1 }, { $project: { _id: 1, status: 1, admissionDate: 1, createdAt: 1, updatedAt: 1, primaryDoctorId: 1, departmentId: 1 } }],
+              latest: [
+                { $sort: { admissionDate: -1, createdAt: -1, updatedAt: -1 } },
+                { $limit: 1 },
+                { $project: { _id: 1, status: 1, admissionDate: 1, createdAt: 1, updatedAt: 1, primaryDoctorId: 1, departmentId: 1 } }
+              ],
+              active: [
+                { $match: { status: { $in: ACTIVE_ADMISSION_STATUSES } } },
+                { $sort: { admissionDate: -1, createdAt: -1, updatedAt: -1 } },
+                { $limit: 1 },
+                { $project: { _id: 1, status: 1, admissionDate: 1, createdAt: 1, updatedAt: 1, primaryDoctorId: 1, departmentId: 1 } }
+              ],
               count: [{ $count: 'value' }]
             }
           }
@@ -225,9 +243,17 @@ function patientRowEnrichmentStages() {
 const PATIENT_WORKLIST_PROJECTION = {
   _id: 1, patientId: 1, uhid: 1, salutation: 1, first_name: 1, last_name: 1,
   email: 1, phone: 1, gender: 1, dob: 1, blood_group: 1, patient_image: 1,
-  aadhaar_number: 1, address: 1, registered_at: 1, sponsor_type: 1, sponsor_name: 1,
+  address: 1, registered_at: 1, sponsor_type: 1, sponsor_name: 1,
   pharmacy_outstanding_balance: 1, pharmacy_advance_balance: 1, is_walkin: 1,
-  abha: 1, lastVisitedDepartment: 1, lastVisitedDoctor: 1, totalCollection: 1,
+  // The worklist only renders ABHA linkage/status. Returning the entire ABHA
+  // document exposed transaction/reconciliation metadata and inflated every row.
+  abha: {
+    status: '$abha.status',
+    number: '$abha.number',
+    address: '$abha.address',
+    kycVerified: '$abha.kycVerified'
+  },
+  lastVisitedDepartment: 1, lastVisitedDoctor: 1, totalCollection: 1,
   hasOpd: 1, hasIpd: 1, hasActiveAppointment: 1, hasActiveAdmission: 1,
   careType: 1, latestCareDate: 1, totalAppointments: 1,
   latestAppointment: {
@@ -282,7 +308,14 @@ async function buildPatientWorklistFilteredPipeline({ hospitalId, query = {} }) 
   return { pipeline, page, limit };
 }
 
-async function patientWorklistMeta({ hospitalId }) {
+const PATIENT_WORKLIST_META_CACHE_MS = Math.max(
+  0,
+  Number(process.env.PATIENT_WORKLIST_META_CACHE_MS || 15000)
+);
+const patientWorklistMetaCache = new Map();
+const patientWorklistMetaInflight = new Map();
+
+async function computePatientWorklistMeta({ hospitalId }) {
   const hospitalObjectId = asObjectId(hospitalId);
   const patientMatch = { hospitalId: hospitalObjectId, is_active: { $ne: false } };
   const [all, balancesRows, opdRows, ipdRows] = await Promise.all([
@@ -310,6 +343,30 @@ async function patientWorklistMeta({ hospitalId }) {
     careCounts: { all, opd: opdRows?.[0]?.value || 0, ipd: ipdRows?.[0]?.value || 0 },
     balances: balancesRows?.[0] || { outstanding: 0, advance: 0 }
   };
+}
+
+async function patientWorklistMeta({ hospitalId }) {
+  const key = String(hospitalId || '');
+  const cached = patientWorklistMetaCache.get(key);
+  if (PATIENT_WORKLIST_META_CACHE_MS && cached?.expiresAt > Date.now()) return cached.value;
+
+  const pending = patientWorklistMetaInflight.get(key);
+  if (pending) return pending;
+
+  const request = computePatientWorklistMeta({ hospitalId });
+  patientWorklistMetaInflight.set(key, request);
+  try {
+    const value = await request;
+    if (PATIENT_WORKLIST_META_CACHE_MS) {
+      patientWorklistMetaCache.set(key, {
+        value,
+        expiresAt: Date.now() + PATIENT_WORKLIST_META_CACHE_MS
+      });
+    }
+    return value;
+  } finally {
+    if (patientWorklistMetaInflight.get(key) === request) patientWorklistMetaInflight.delete(key);
+  }
 }
 
 async function listPatientWorklist({ hospitalId, query = {} }) {

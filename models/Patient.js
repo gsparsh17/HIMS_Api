@@ -429,6 +429,8 @@ patientSchema.index({
 patientSchema.index({ hospitalId: 1, phone: 1 });
 patientSchema.index({ hospitalId: 1, uhid: 1 }, { unique: true, sparse: true });
 patientSchema.index({ hospitalId: 1, patientId: 1 }, { unique: true, sparse: true });
+// Fast hospital-scoped worklist base scan / registration fallback ordering.
+patientSchema.index({ hospitalId: 1, registered_at: -1, _id: -1 });
 patientSchema.index(
   { hospitalId: 1, 'abha.number': 1 },
   {

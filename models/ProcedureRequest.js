@@ -276,7 +276,10 @@ procedureRequestSchema.index({ patientId: 1, requestedDate: -1 });
 procedureRequestSchema.index({ doctorId: 1, status: 1 });
 procedureRequestSchema.index({ status: 1, scheduledDate: 1 });
 procedureRequestSchema.index({ requestNumber: 1 });
-procedureRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, { unique: true, sparse: true });
+procedureRequestSchema.index({ hospitalId: 1, deskCheckoutKey: 1 }, {
+  unique: true,
+  partialFilterExpression: { deskCheckoutKey: { $type: 'string' } }
+});
 procedureRequestSchema.index({ admissionId: 1, sourceType: 1 });
 procedureRequestSchema.index({ appointmentId: 1, sourceType: 1 });
 procedureRequestSchema.index({ procedureCode: 1 });
