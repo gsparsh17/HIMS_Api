@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const invoiceController = require('../controllers/invoice.controller');
-const { protect, requireModuleAccess, requireActionPermission, requireAnyActionPermission } = require('../middlewares/auth');
+const { protect, requireModuleAccess, requireAnyActionPermission, requirePharmacyFinancialAccess } = require('../middlewares/auth');
 
 const viewBilling = requireModuleAccess('billing_finance', 'view');
 const manageBilling = requireModuleAccess('billing_finance', 'manage');
@@ -41,6 +41,9 @@ router.get('/type/:type', viewBilling, invoiceController.getInvoicesByType);
 router.get('/:id/download', viewBilling, invoiceController.downloadInvoicePDF);
 router.get('/:id/print-data', viewBilling, invoiceController.getInvoicePrintData);
 router.get('/:id', viewBilling, invoiceController.getInvoiceById);
-router.put('/:id/payment', manageBilling, requireAnyActionPermission(['billing_edit', 'settlement']), invoiceController.updateInvoicePayment);
+// Compatibility payment endpoint is Pharmacy-only in the controller. Use the
+// Pharmacy financial guard so Pharmacy users do not need Billing & Finance
+// manage permission merely to settle a Pharmacy invoice.
+router.put('/:id/payment', requirePharmacyFinancialAccess('manage'), invoiceController.updateInvoicePayment);
 
 module.exports = router;

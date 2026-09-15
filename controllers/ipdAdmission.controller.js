@@ -860,7 +860,7 @@ exports.getAdmissionById = async (req, res) => {
 
     const admission = await IPDAdmission
       .findOne({ _id: id, hospitalId })
-      .populate('patientId', 'first_name last_name patientId uhid phone dob gender blood_group sponsor_type sponsor_name')
+      .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone dob dobPrecision ageEntrySource enteredAgeYears enteredAgeMonths enteredAgeDays ageAsOf age gender blood_group address city state zipCode village district tehsil emergency_contact emergency_phone emergency_relationship sponsor_type sponsor_name')
       .populate('primaryDoctorId', 'firstName lastName specialization')
       .populate('secondaryDoctorIds', 'firstName lastName specialization')
       .populate('departmentId', 'name')
@@ -882,23 +882,23 @@ exports.getAdmissionById = async (req, res) => {
       IPDAccommodationSegment2026.find({ hospitalId, admissionId: admission._id })
         .populate('wardId roomId bedId')
         .sort({ startedAt: 1 }),
-      IPDRound.find({ admissionId: admission._id })
+      IPDRound.find({ hospitalId, admissionId: admission._id, is_active: { $ne: false } })
         .populate('doctorId', 'firstName lastName')
         .populate('prescriptionId')
         .sort({ roundDateTime: -1 })
         .limit(10),
-      NursingNote.find({ admissionId: admission._id })
+      NursingNote.find({ admissionId: admission._id, is_active: { $ne: false }, $or: [{ hospitalId }, { hospitalId: { $exists: false } }] })
         .populate('nurseId', 'first_name last_name')
         .sort({ noteDateTime: -1 })
         .limit(20),
-      IPDVitals.find({ admissionId: admission._id })
+      IPDVitals.find({ hospitalId, admissionId: admission._id })
         .populate('recordedBy', 'first_name last_name')
         .sort({ recordedAt: -1 })
         .limit(50),
-      canViewFinancial ? IPDCharge.find({ hospitalId, admissionId: admission._id }).sort({ chargeDate: -1 }) : Promise.resolve([]),
-      DischargeSummary.findOne({ admissionId: admission._id }),
-      canViewFinancial ? Invoice.find({ hospital_id: hospitalId, admission_id: admission._id }).sort({ issue_date: -1 }) : Promise.resolve([]),
-      canViewFinancial ? Bill.find({ hospital_id: hospitalId, admission_id: admission._id }).sort({ generated_at: -1 }) : Promise.resolve([])
+      canViewFinancial ? IPDCharge.find({ hospitalId, admissionId: admission._id, is_active: { $ne: false }, status: { $nin: ['VOIDED', 'CANCELLED'] } }).sort({ chargeDate: -1 }) : Promise.resolve([]),
+      DischargeSummary.findOne({ admissionId: admission._id, hospitalId }),
+      canViewFinancial ? Invoice.find({ hospital_id: hospitalId, admission_id: admission._id, is_deleted: { $ne: true }, document_stage: { $ne: 'VOID' } }).sort({ issue_date: -1 }) : Promise.resolve([]),
+      canViewFinancial ? Bill.find({ hospital_id: hospitalId, admission_id: admission._id, is_deleted: { $ne: true }, document_stage: { $ne: 'VOID' } }).sort({ generated_at: -1 }) : Promise.resolve([])
     ]);
 
     return res.json(buildPatientFileDto2026({

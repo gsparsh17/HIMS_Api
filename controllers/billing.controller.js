@@ -1411,7 +1411,7 @@ exports.getBillLedger = async (req, res) => {
           { path: 'primaryDoctorId', select: 'firstName lastName name' },
           { path: 'departmentId', select: 'name' },
           { path: 'wardId', select: 'name wardName' },
-          { path: 'roomId', select: 'roomNumber name' },
+          { path: 'roomId', select: 'room_number roomNumber name type' },
           { path: 'bedId', select: 'bedNumber bed_number' }
         ]
       })
@@ -1468,7 +1468,7 @@ exports.getBillById = async (req, res) => {
           { path: 'primaryDoctorId', select: 'firstName lastName name' },
           { path: 'departmentId', select: 'name' },
           { path: 'wardId', select: 'name wardName' },
-          { path: 'roomId', select: 'roomNumber name' },
+          { path: 'roomId', select: 'room_number roomNumber name type' },
           { path: 'bedId', select: 'bedNumber bed_number' }
         ]
       })

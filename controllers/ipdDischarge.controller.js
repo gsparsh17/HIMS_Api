@@ -444,13 +444,13 @@ exports.getDischargeRecords = async (req, res) => {
       otRequests,
       prescriptions
     ] = await Promise.all([
-      IPDRound.find({ admissionId, hospitalId })
+      IPDRound.find({ admissionId, hospitalId, is_active: { $ne: false } })
         .populate('doctorId', 'firstName lastName specialization')
         .populate({ path: 'prescriptionId', populate: [{ path: 'items.medicine_id', select: 'name' }] })
         .sort({ roundDateTime: 1 }),
       IPDVitals.find({ admissionId, hospitalId }).populate('recordedBy', 'first_name last_name').sort({ recordedAt: 1 }),
       // NursingNote is encounter-scoped through the already tenant-validated admissionId.
-      NursingNote.find({ admissionId, $or: [{ hospitalId }, { hospitalId: { $exists: false } }] }).populate('nurseId', 'first_name last_name').sort({ noteDateTime: 1 }),
+      NursingNote.find({ admissionId, is_active: { $ne: false }, $or: [{ hospitalId }, { hospitalId: { $exists: false } }] }).populate('nurseId', 'first_name last_name').sort({ noteDateTime: 1 }),
       IPDMedicationChart.find({ admissionId, hospitalId }).populate('medicineId', 'name strength dosage_form base_unit compositions').sort({ createdAt: 1 }),
       LabRequest.find({ admissionId, hospitalId }).populate('doctorId', 'firstName lastName').populate('labTestId', 'name testName code').sort({ requestedDate: 1 }),
       RadiologyRequest.find({ admissionId, hospitalId }).populate('doctorId', 'firstName lastName').populate('imagingTestId', 'name testName code').sort({ requestedDate: 1 }),
@@ -555,7 +555,9 @@ exports.getDischargeRecords = async (req, res) => {
     autoFill.dischargeMedications = [];
     autoFill.dischargeMedicationCandidates = dischargeMedicationCandidates;
     autoFill.requiresMedicationReconciliation = true;
-    autoFill.emergencyInstructions = 'BLOOD IN URINE/STOOL/SPUTUM, SWELLING AT SURGICAL SITE, BLEEDING FROM SURGICAL SITE, PUS DISCHARGE FROM SURGICAL SITE';
+    autoFill.emergencyInstructions = surgeryLines.length > 0
+      ? 'Seek urgent medical attention for bleeding, wound swelling, pus discharge, severe pain, fever or any sudden deterioration.'
+      : 'Seek urgent medical attention for worsening symptoms, breathing difficulty, persistent vomiting, altered consciousness, high fever or any new concerning symptom.';
     autoFill.emergencyContactNumber = hospital?.contact || hospital?.phone || '';
 
     res.json({ success: true, admission, autoFill, records: { rounds, vitals, nursingNotes, medications, labRequests, radiologyRequests, procedureRequests, otRequests, prescriptions }, investigationFinality: { completed: completedInvestigations, pending: pendingInvestigations, cancelled: cancelledInvestigations, referredOut: referredOutInvestigations } });
@@ -578,7 +580,7 @@ exports.finalizeDischargeSummary = async (req, res) => {
       IPDAdmission.findOne({ _id: admissionId, hospitalId })
         .populate('primaryDoctorId', 'firstName lastName')
         .populate('wardId', 'name wardName')
-        .populate('roomId', 'roomNumber roomName name')
+        .populate('roomId', 'room_number roomNumber roomName name type')
         .populate('bedId', 'bedNumber bedName name')
         .populate('departmentId', 'name departmentName')
         .lean()
@@ -663,7 +665,7 @@ exports.finalizeDischargeSummary = async (req, res) => {
         ? `Dr. ${[primaryDoctor.firstName, primaryDoctor.lastName].filter(Boolean).join(' ')}`.trim()
         : '',
       ward: displayName(admission.wardId, ['wardName', 'name']),
-      room: displayName(admission.roomId, ['roomNumber', 'roomName', 'name']),
+      room: displayName(admission.roomId, ['room_number', 'roomNumber', 'roomName', 'name']),
       bed: displayName(admission.bedId, ['bedNumber', 'bedName', 'name']),
       department: displayName(admission.departmentId, ['departmentName', 'name'])
     };

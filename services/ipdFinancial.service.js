@@ -852,7 +852,7 @@ async function listBillingAdmissions(user, query = {}) {
     .populate('primaryDoctorId', 'firstName lastName specialization')
     .populate('departmentId', 'name')
     .populate('wardId', 'name wardName')
-    .populate('roomId', 'roomNumber name')
+    .populate('roomId', 'room_number roomNumber name type')
     .populate('bedId', 'bedNumber bed_number')
     .lean();
   const byId = new Map(admissions.map((row) => [String(row._id), row]));
@@ -879,7 +879,7 @@ async function getRunningBill(admissionId, user, options = {}) {
     .populate('primaryDoctorId', 'firstName lastName specialization')
     .populate('departmentId', 'name')
     .populate('wardId', 'name wardName')
-    .populate('roomId', 'roomNumber name')
+    .populate('roomId', 'room_number roomNumber name type')
     .populate('bedId', 'bedNumber bed_number');
 
   const receipts = options.transactions
