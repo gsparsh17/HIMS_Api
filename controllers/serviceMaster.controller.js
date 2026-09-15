@@ -168,6 +168,7 @@ exports.list = async (req, res) => {
       if (entry.modelName === 'ImagingTest') filter.template_only = { $ne: true };
     }
     if (req.query.status === 'inactive') filter[entry.activeField] = false;
+    if (req.query.status === 'active') filter[entry.activeField] = true;
     if (req.query.category) filter.category = req.query.category;
     if (req.query.specialty && entry.modelName === 'Procedure') filter.specialty = req.query.specialty;
     if (req.query.billable !== undefined) filter[entry.billableField] = req.query.billable === 'true';
@@ -196,6 +197,69 @@ exports.list = async (req, res) => {
       data,
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
     });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
+exports.summary = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const entry = config(req.params.entity);
+    const activeField = entry.activeField;
+    const baseMatch = { hospitalId };
+
+    const [overallRows, categoryRows] = await Promise.all([
+      entry.model.aggregate([
+        { $match: baseMatch },
+        { $group: {
+          _id: null,
+          total: { $sum: 1 },
+          active: { $sum: { $cond: [{ $ne: [`$${activeField}`, false] }, 1, 0] } },
+          estimatedUtilizationValue: {
+            $sum: { $multiply: [{ $ifNull: ['$base_price', 0] }, { $ifNull: ['$usage_count', 0] }] }
+          }
+        } }
+      ]),
+      entry.model.aggregate([
+        { $match: baseMatch },
+        { $group: {
+          _id: { $ifNull: ['$category', 'Other'] },
+          count: { $sum: 1 },
+          activeCount: { $sum: { $cond: [{ $ne: [`$${activeField}`, false] }, 1, 0] } },
+          estimatedUtilizationValue: {
+            $sum: { $multiply: [{ $ifNull: ['$base_price', 0] }, { $ifNull: ['$usage_count', 0] }] }
+          },
+          usageCount: { $sum: { $ifNull: ['$usage_count', 0] } },
+          priceTotal: { $sum: { $ifNull: ['$base_price', 0] } }
+        } },
+        { $project: {
+          _id: 0,
+          name: '$_id',
+          count: 1,
+          activeCount: 1,
+          estimatedUtilizationValue: 1,
+          usageCount: 1,
+          avgPrice: { $cond: [{ $gt: ['$count', 0] }, { $divide: ['$priceTotal', '$count'] }, 0] }
+        } },
+        { $sort: { count: -1, name: 1 } }
+      ])
+    ]);
+
+    const overall = overallRows[0] || { total: 0, active: 0, estimatedUtilizationValue: 0 };
+    const categoryStats = categoryRows.map((row) => ({
+      ...row,
+      name: String(row.name || 'Other').trim() || 'Other'
+    }));
+    const categories = Object.fromEntries(categoryStats.map((row) => [row.name, row.count]));
+
+    return res.json({ success: true, data: {
+      total: overall.total || 0,
+      active: overall.active || 0,
+      categories,
+      categoryStats,
+      estimatedUtilizationValue: overall.estimatedUtilizationValue || 0
+    } });
   } catch (error) {
     return fail(res, error);
   }

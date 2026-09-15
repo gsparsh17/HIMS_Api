@@ -112,6 +112,8 @@ exports.getImagingTests = async (req, res) => {
     const filter = { hospitalId: requireHospitalId(req) };
     
     if (active_only === 'true') filter.is_active = true;
+    if (req.query.status === 'active') filter.is_active = true;
+    if (req.query.status === 'inactive') filter.is_active = false;
     if (req.query.include_template_only !== 'true') filter.template_only = false;
     if (req.query.include_non_billable !== 'true') filter.is_billable = true;
     if (category) filter.category = category;
@@ -122,11 +124,84 @@ exports.getImagingTests = async (req, res) => {
       ];
     }
     
-    const tests = await ImagingTest.find(filter).sort({ name: 1 });
-    res.json({ success: true, data: tests });
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit || 100)));
+    const [tests, total] = await Promise.all([
+      ImagingTest.find(filter).sort({ name: 1 }).skip((page - 1) * limit).limit(limit).lean(),
+      ImagingTest.countDocuments(filter)
+    ]);
+    res.json({ success: true, data: tests, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
   } catch (error) {
     console.error('Error fetching imaging tests:', error);
     res.status(500).json({ error: error.message });
+  }
+};
+
+exports.getImagingTestSummary = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const baseMatch = { hospitalId, template_only: { $ne: true }, is_billable: true };
+    const [overallRows, categoryRows] = await Promise.all([
+      ImagingTest.aggregate([
+        { $match: baseMatch },
+        { $group: {
+          _id: null,
+          total: { $sum: 1 },
+          active: { $sum: { $cond: [{ $ne: ['$is_active', false] }, 1, 0] } },
+          estimatedUtilizationValue: { $sum: { $multiply: [{ $ifNull: ['$base_price', 0] }, { $ifNull: ['$usage_count', 0] }] } }
+        } }
+      ]),
+      ImagingTest.aggregate([
+        { $match: baseMatch },
+        { $group: {
+          _id: { $ifNull: ['$category', 'Other'] },
+          count: { $sum: 1 },
+          activeCount: { $sum: { $cond: [{ $ne: ['$is_active', false] }, 1, 0] } },
+          usageCount: { $sum: { $ifNull: ['$usage_count', 0] } },
+          estimatedUtilizationValue: { $sum: { $multiply: [{ $ifNull: ['$base_price', 0] }, { $ifNull: ['$usage_count', 0] }] } },
+          priceTotal: { $sum: { $ifNull: ['$base_price', 0] } }
+        } },
+        { $project: {
+          _id: 0,
+          name: '$_id',
+          count: 1,
+          activeCount: 1,
+          usageCount: 1,
+          estimatedUtilizationValue: 1,
+          avgPrice: { $cond: [{ $gt: ['$count', 0] }, { $divide: ['$priceTotal', '$count'] }, 0] }
+        } },
+        { $sort: { count: -1, name: 1 } }
+      ])
+    ]);
+    const overall = overallRows[0] || { total: 0, active: 0, estimatedUtilizationValue: 0 };
+    const categoryStats = categoryRows.map((row) => ({ ...row, name: String(row.name || 'Other').trim() || 'Other' }));
+    return res.json({ success: true, data: {
+      total: overall.total || 0,
+      active: overall.active || 0,
+      categories: Object.fromEntries(categoryStats.map((row) => [row.name, row.count])),
+      categoryStats,
+      estimatedUtilizationValue: overall.estimatedUtilizationValue || 0
+    } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.bulkMoveImagingTestCategory = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const fromCategory = String(req.body?.fromCategory || '').trim();
+    const toCategory = String(req.body?.toCategory || '').trim();
+    if (!fromCategory || !toCategory) {
+      return res.status(400).json({ success: false, error: 'fromCategory and toCategory are required' });
+    }
+    const result = await ImagingTest.updateMany(
+      { hospitalId, category: fromCategory, template_only: { $ne: true }, is_billable: true },
+      { $set: { category: toCategory, updatedBy: req.user?._id } }
+    );
+    return res.json({ success: true, modifiedCount: result.modifiedCount || 0, fromCategory, toCategory });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 };
 

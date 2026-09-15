@@ -4,6 +4,7 @@ const controller = require('../controllers/department.controller');
 const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
 router.use(protect);
+router.get('/options', controller.getDepartmentOptions);
 router.get('/', controller.getAllDepartments);
 router.get('/hods/all', controller.getAllHods);
 router.get('/id/:name', controller.getDepartmentIdByName);

@@ -15,6 +15,7 @@ const manage = requireModuleAccess('laboratory', 'manage');
 
 router.get('/search', view, withEntity(controller.list, (req) => { req.query.orderableOnly = 'true'; }));
 router.get('/popular', view, withEntity(controller.list, (req) => { req.query.orderableOnly = 'true'; }));
+router.get('/all/summary', manage, withEntity(controller.summary));
 router.get('/all', manage, withEntity(controller.list, (req) => { req.query.includeInactive = 'true'; }));
 router.get('/', view, withEntity(controller.list, (req) => { req.query.orderableOnly = req.query.includeInactive === 'true' ? 'false' : 'true'; }));
 router.post('/', manage, withEntity(controller.create));

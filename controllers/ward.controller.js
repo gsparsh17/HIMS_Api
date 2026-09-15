@@ -28,6 +28,22 @@ exports.createWard = async (req, res) => {
   }
 };
 
+exports.getWardOptions = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const filter = { hospitalId, isActive: true };
+    if (req.query.type) filter.type = req.query.type;
+    const wards = await Ward.find(filter)
+      .select('_id name code type departmentId capacity floor')
+      .populate('departmentId', '_id name')
+      .sort({ name: 1 })
+      .lean();
+    return res.json({ success: true, wards });
+  } catch (e) {
+    fail(res, e);
+  }
+};
+
 exports.getAllWards = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);

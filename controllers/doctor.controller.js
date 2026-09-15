@@ -191,6 +191,36 @@ async function addDoctorToCalendar(hospitalId, doctor) {
   }
 }
 
+// Compact doctor list for dropdowns/search controls. Avoids loading HR schedules,
+// login-user data and full doctor documents for every screen.
+exports.getDoctorOptions = async (req, res) => {
+  try {
+    const hospitalId = requireDoctorHospitalId(req);
+    const filter = { hospitalId, is_active: { $ne: false } };
+    if (req.query.departmentId) filter.department = req.query.departmentId;
+    if (req.query.isFullTime === 'true' || req.query.isFullTime === true) filter.isFullTime = true;
+    if (req.query.isFullTime === 'false' || req.query.isFullTime === false) filter.isFullTime = false;
+    if (req.query.q) {
+      const q = String(req.query.q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (q) filter.$or = [
+        { firstName: { $regex: q, $options: 'i' } },
+        { lastName: { $regex: q, $options: 'i' } },
+        { specialization: { $regex: q, $options: 'i' } }
+      ];
+    }
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit || 250)));
+    const doctors = await Doctor.find(filter)
+      .select('_id doctorId firstName lastName department specialization opdConsultationFee isFullTime licenseNumber revenuePercentage phone email paymentType amount contractStartDate contractEndDate visitsPerWeek workingDaysPerWeek timeSlots')
+      .populate('department', '_id name code')
+      .sort({ firstName: 1, lastName: 1 })
+      .limit(limit)
+      .lean();
+    return res.json(doctors);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 // Get all doctors
 exports.getAllDoctors = async (req, res) => {
   try {

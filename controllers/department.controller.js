@@ -34,6 +34,23 @@ exports.createDepartment = async (req, res) => {
   }
 };
 
+exports.getDepartmentOptions = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const departments = await Department.find({
+      hospitalId,
+      active: { $ne: false },
+      is_active: { $ne: false }
+    })
+      .select('_id name code type description head_doctor_id')
+      .sort({ name: 1 })
+      .lean();
+    return res.json(departments);
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
 exports.getAllDepartments = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);

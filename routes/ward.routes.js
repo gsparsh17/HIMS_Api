@@ -4,6 +4,7 @@ const controller = require('../controllers/ward.controller');
 const { protect, requireModuleAccess } = require('../middlewares/auth');
 router.use(protect, requireModuleAccess('ipd', 'view'));
 router.post('/', requireModuleAccess('masters_settings', 'manage'), controller.createWard);
+router.get('/options', controller.getWardOptions);
 router.get('/', controller.getAllWards);
 router.get('/:id', controller.getWardById);
 router.put('/:id', requireModuleAccess('masters_settings', 'manage'), controller.updateWard);

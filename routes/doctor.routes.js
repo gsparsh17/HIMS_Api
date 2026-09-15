@@ -4,6 +4,7 @@ const doctorController = require('../controllers/doctor.controller');
 const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
 router.use(protect, requireModuleAccess('registration_opd'));
+router.get('/options', doctorController.getDoctorOptions);
 router.get('/', doctorController.getAllDoctors);
 router.get('/department/:departmentId', doctorController.getDoctorsByDepartmentId);
 router.get('/:id/login-access', authorize('admin', 'mediqliq_super_admin'), doctorController.getDoctorLoginAccess);

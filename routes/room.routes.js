@@ -5,6 +5,7 @@ const { protect } = require('../middlewares/auth');
 
 router.use(protect);
 
+router.get('/options', controller.getRoomOptions);
 router.get('/', controller.getAllRooms);
 router.get('/:id', controller.getRoomById);
 router.post('/', controller.createRoom);

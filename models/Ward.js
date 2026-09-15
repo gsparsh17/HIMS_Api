@@ -62,5 +62,7 @@ wardSchema.pre('validate', async function(next) {
 wardSchema.index({ hospitalId: 1, code: 1 }, { unique: true });
 wardSchema.index({ hospitalId: 1, name: 1 }, { unique: true });
 addSoftDeleteFields(wardSchema);
+wardSchema.index({ hospitalId: 1, isActive: 1, name: 1 });
+wardSchema.index({ hospitalId: 1, type: 1, isActive: 1, name: 1 });
 
 module.exports = mongoose.model('Ward', wardSchema);

@@ -70,5 +70,6 @@ roomSchema.pre('validate', async function(next) {
 roomSchema.index({ hospitalId: 1, room_number: 1 }, { unique: true });
 roomSchema.index({ hospitalId: 1, wardId: 1, operationalStatus: 1 });
 addSoftDeleteFields(roomSchema);
+roomSchema.index({ hospitalId: 1, wardId: 1, room_number: 1 });
 
 module.exports = mongoose.model('Room', roomSchema);

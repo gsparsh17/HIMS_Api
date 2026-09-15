@@ -122,5 +122,7 @@ const { registerHRSyncHook } = require('../services/hrProfileSync.service');
 registerHRSyncHook(doctorSchema, 'Doctor');
 
 addSoftDeleteFields(doctorSchema);
+doctorSchema.index({ hospitalId: 1, firstName: 1, lastName: 1 });
+doctorSchema.index({ hospitalId: 1, department: 1, firstName: 1, lastName: 1 });
 
 module.exports = mongoose.model('Doctor', doctorSchema);

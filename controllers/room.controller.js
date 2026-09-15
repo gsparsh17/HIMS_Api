@@ -105,6 +105,24 @@ exports.createRoom = async (req, res) => {
   }
 };
 
+exports.getRoomOptions = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const filter = { hospitalId, is_active: { $ne: false } };
+    if (req.query.wardId) filter.wardId = req.query.wardId;
+    if (req.query.type) filter.type = req.query.type;
+    const rooms = await Room.find(filter)
+      .select('_id room_number name type wardId Department status operationalStatus floor')
+      .populate('Department', '_id name')
+      .populate('wardId', '_id name code')
+      .sort({ room_number: 1 })
+      .lean();
+    return res.json({ success: true, data: rooms });
+  } catch (e) {
+    fail(res, e);
+  }
+};
+
 exports.getAllRooms = async (req, res) => {
   try {
     const hospitalId = requireHospitalId(req);
