@@ -212,6 +212,12 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
     else if (procReq.procedure_code) procedure = await Procedure.findOne({ hospitalId, code: procReq.procedure_code }).session(session || null);
 
     if (!procedure) continue;
+    if (String(procedure.serviceDomain || '').toLowerCase() === 'surgery') {
+      const error = new Error(`${procedure.code} - ${procedure.name} is classified as Surgery. Use the Operation Theatre request workflow instead of adding it as a generic procedure.`);
+      error.statusCode = 409;
+      error.code = 'PROCEDURE_REQUIRES_OT_WORKFLOW';
+      throw error;
+    }
 
     const procedureRequest = new ProcedureRequest({
       hospitalId,
@@ -1873,6 +1879,12 @@ exports.updatePrescription = async (req, res) => {
           if (!procedure) {
             const error = new Error(`Procedure not found: ${item.procedure_code || item.procedure_name}`);
             error.statusCode = 400;
+            throw error;
+          }
+          if (String(procedure.serviceDomain || '').toLowerCase() === 'surgery') {
+            const error = new Error(`${procedure.code} - ${procedure.name} is classified as Surgery. Use the Operation Theatre request workflow instead of a generic procedure request.`);
+            error.statusCode = 409;
+            error.code = 'PROCEDURE_REQUIRES_OT_WORKFLOW';
             throw error;
           }
           Object.assign(requestDocument, {

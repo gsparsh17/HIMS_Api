@@ -3,12 +3,13 @@ const { addSoftDeleteFields } = require('../utils/softDelete');
 const bcrypt = require('bcryptjs');
 const { MAIN_FEATURE_KEYS, normalizeFeaturePermissions } = require('../utils/mainFeatureAccess');
 const { passwordPolicyErrors } = require('../services/nabhSecurity.service');
+const { OT_ACTIONS } = require('../utils/otCapabilityCatalog');
 
 // Add to the featurePermissionSchema
 const featurePermissionSchema = new mongoose.Schema({
   moduleKey: { type: String, required: true, trim: true, enum: Array.from(MAIN_FEATURE_KEYS) },
   access: { type: String, enum: ['none', 'view', 'manage', 'edit'], default: 'none' },
-  actions: [{ type: String, enum: ['approve', 'discount_override', 'refund', 'settlement', 'final_clearance', 'bulk_import_commit', 'user_access_manage', 'ot_approve', 'ot_emergency_bypass', 'stock_adjustment', 'document_sign', 'print_identity_verify', 'mis_export', 'claim_submit', 'claim_manage', 'claim_export', 'preauth_decide', 'rate_card_activate', 'tariff_mapping_approve', 'coverage_reprice', 'coverage_reprice_commit', 'transfer_reserve', 'transfer_approve', 'transfer_complete', 'payroll_publish', 'biometric_manage', 'rate_card_approve', 'pricing_override', 'billing_create', 'billing_edit', 'billing_delete_charge', 'billing_delete_issued_document', 'billing_apply_discount', 'billing_finalize', 'billing_mode_override', 'tax_override', 'ipd_admission_manage', 'ipd_round_write', 'ipd_clinical_write', 'ipd_nursing_write', 'ipd_medication_write', 'ipd_discharge_write', 'ipd_discharge_support', 'ipd_discharge_override', 'ipd_final_discharge', 'pharmacy_finance_access'] }],
+  actions: [{ type: String, enum: ['approve', 'discount_override', 'refund', 'settlement', 'final_clearance', 'bulk_import_commit', 'user_access_manage', ...OT_ACTIONS, 'stock_adjustment', 'document_sign', 'print_identity_verify', 'mis_export', 'claim_submit', 'claim_manage', 'claim_export', 'preauth_decide', 'rate_card_activate', 'tariff_mapping_approve', 'coverage_reprice', 'coverage_reprice_commit', 'transfer_reserve', 'transfer_approve', 'transfer_complete', 'payroll_publish', 'biometric_manage', 'rate_card_approve', 'pricing_override', 'billing_create', 'billing_edit', 'billing_delete_charge', 'billing_delete_issued_document', 'billing_apply_discount', 'billing_finalize', 'billing_mode_override', 'tax_override', 'ipd_admission_manage', 'ipd_round_write', 'ipd_clinical_write', 'ipd_nursing_write', 'ipd_medication_write', 'ipd_discharge_write', 'ipd_discharge_support', 'ipd_discharge_override', 'ipd_final_discharge', 'pharmacy_finance_access'] }],
   grantedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   grantedAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
@@ -35,7 +36,7 @@ const userSchema = new mongoose.Schema({
   // Optional navigation allow-list. Empty means use the normal role sidebar. Entries may
   // be exact paths or prefixes ending in * (for example /dashboard/hr*).
   sidebarAccess: { type: [String], default: [] },
-  // Deliberately high-level. There are no per-button or per-action access rows in this release.
+  // Broad module access plus explicit sensitive/clinical action grants.
   modulePermissions: { type: [featurePermissionSchema], default: [] },
   resetPasswordToken: String,
   resetPasswordExpire: Date,

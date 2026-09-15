@@ -98,6 +98,17 @@ const procedureRequestSchema = new mongoose.Schema({
   scheduledDate: {
     type: Date
   },
+  assignedDoctorId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Doctor'
+  },
+  scheduledBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  scheduledAt: {
+    type: Date
+  },
   
   // Procedure specific fields
   estimated_duration_minutes: {
@@ -153,9 +164,17 @@ const procedureRequestSchema = new mongoose.Schema({
   approvedAt: {
     type: Date
   },
+  // User who executed the workflow transition (audit actor).
   performedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
+  },
+  // Clinical performer selected from the Doctor master. Kept separate from
+  // performedBy so a registrar/OT coordinator can record the transition
+  // without becoming the clinician of record.
+  performedDoctorId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Doctor'
   },
   performedAt: {
     type: Date

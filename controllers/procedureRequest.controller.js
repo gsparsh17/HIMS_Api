@@ -2,13 +2,15 @@ const { operationNow } = require('../utils/operationTimeContext');
 const { semanticDateRange } = require('../utils/hospitalDateRange');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const Procedure = require('../models/Procedure');
+const Doctor = require('../models/Doctor');
 const IPDAdmission = require('../models/IPDAdmission');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
-const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
+const { postSourceCharge, getSourceFinancialStatus, reverseSourceFinancials } = require('../services/chargePosting.service');
 const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
+const { requiresOtWorkflow, financialCanProceed } = require('../services/procedureWorkflow.service');
 
 
 
@@ -25,6 +27,40 @@ const PROCEDURE_STATUS_TRANSITIONS = Object.freeze({
 
 const canTransitionProcedure = (from, to) =>
   from === to || (PROCEDURE_STATUS_TRANSITIONS[from] || []).includes(to);
+
+
+async function resolveProcedureMaster(request, hospitalId) {
+  if (!request?.procedureId) return null;
+  return Procedure.findOne({ _id: request.procedureId, hospitalId }).select('code name category serviceDomain duration_minutes').lean();
+}
+
+async function ensureProcedureFinancialReady(request, user) {
+  // Scheduling/starting is the recovery point for historical requests whose
+  // automatic charge creation previously failed. postSourceCharge is idempotent,
+  // so this safely creates or reuses the authoritative obligation.
+  await postSourceCharge({
+    sourceModule: 'ProcedureRequest',
+    sourceId: request._id,
+    idempotencyKey: `ProcedureRequest:${request._id}:charge`,
+    user,
+  });
+  const status = await getSourceFinancialStatus({ sourceModule: 'ProcedureRequest', sourceId: request._id, user });
+  if (!financialCanProceed(status.clearanceState)) {
+    const error = new Error(`Financial clearance is required before the procedure can proceed (${status.clearanceState || 'PAYMENT_REQUIRED'})`);
+    error.statusCode = 409;
+    error.code = 'PROCEDURE_FINANCIAL_CLEARANCE_REQUIRED';
+    error.details = {
+      clearanceState: status.clearanceState,
+      selectedMode: status.selectedMode,
+      requiredNow: status.requiredNow,
+      outstandingRequiredNow: status.outstandingRequiredNow,
+      totalInvoiced: status.totalInvoiced,
+      paidNow: status.paidNow,
+    };
+    throw error;
+  }
+  return status;
+}
 
 // ============== PROCEDURE REQUEST CRUD ==============
 
@@ -83,6 +119,13 @@ exports.createProcedureRequest = async (req, res) => {
     const procedure = await Procedure.findOne({ _id: procedureId, hospitalId, is_active: { $ne: false } });
     if (!procedure) {
       return res.status(404).json({ error: 'Procedure not found' });
+    }
+    if (requiresOtWorkflow(procedure)) {
+      return res.status(409).json({
+        error: 'This service is classified as Surgery. Create an Operation Theatre request instead of a generic ProcedureRequest.',
+        code: 'PROCEDURE_REQUIRES_OT_WORKFLOW',
+        details: { procedureId: procedure._id, procedureCode: procedure.code, serviceDomain: procedure.serviceDomain }
+      });
     }
 
     // Validate source-specific requirements
@@ -175,7 +218,8 @@ exports.createProcedureRequest = async (req, res) => {
     const populated = await ProcedureRequest.findOne({ _id: request._id, hospitalId })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('procedureId', 'code name category base_price');
+      .populate('assignedDoctorId', 'firstName lastName specialization')
+      .populate('procedureId', 'code name category base_price serviceDomain duration_minutes');
 
     res.status(201).json({ success: true, data: populated, financial: financial ? { chargeId: financial.charge?._id || null, billId: financial.bill?._id || null, invoiceId: financial.invoice?._id || null, financialPolicy: financial.financialPolicy || null } : null, financialWarning });
   } catch (error) {
@@ -219,9 +263,11 @@ exports.getProcedureRequests = async (req, res) => {
     const requests = await ProcedureRequest.find(filter)
       .populate('patientId', 'first_name last_name patientId phone')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('procedureId', 'code name category base_price')
+      .populate('assignedDoctorId', 'firstName lastName specialization')
+      .populate('procedureId', 'code name category base_price serviceDomain duration_minutes')
       .populate('approvedBy', 'name')
       .populate('performedBy', 'name')
+      .populate('performedDoctorId', 'firstName lastName specialization')
       .populate('completedBy', 'name')
       .sort({ requestedDate: -1 })
       .skip(skip)
@@ -250,9 +296,11 @@ exports.getProcedureRequestById = async (req, res) => {
     const request = await ProcedureRequest.findOne({ _id: id, hospitalId })
       .populate('patientId', 'first_name last_name patientId phone dob gender')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('procedureId', 'code name category base_price pre_procedure_instructions post_procedure_instructions')
+      .populate('assignedDoctorId', 'firstName lastName specialization')
+      .populate('procedureId', 'code name category base_price serviceDomain duration_minutes pre_procedure_instructions post_procedure_instructions')
       .populate('approvedBy', 'name')
       .populate('performedBy', 'name')
+      .populate('performedDoctorId', 'firstName lastName specialization')
       .populate('completedBy', 'name');
 
     if (!request) {
@@ -270,7 +318,15 @@ exports.getProcedureRequestById = async (req, res) => {
 exports.updateRequestStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, notes } = req.body;
+    const {
+      status,
+      notes,
+      scheduledDate,
+      scheduled_date,
+      assignedDoctorId,
+      assigned_doctor_id,
+      performed_by
+    } = req.body;
     if (status === 'Cancelled' && !String(notes || '').trim()) {
       return res.status(400).json({ error: 'Cancellation reason is required so the financial reversal is auditable' });
     }
@@ -290,7 +346,76 @@ exports.updateRequestStatus = async (req, res) => {
         allowed: PROCEDURE_STATUS_TRANSITIONS[previousStatus] || []
       });
     }
+
+    let normalizedScheduledDate = null;
+    let normalizedAssignedDoctorId = null;
+    if (status === 'Scheduled') {
+      const rawScheduledDate = scheduledDate || scheduled_date || request.scheduledDate;
+      normalizedScheduledDate = rawScheduledDate ? new Date(rawScheduledDate) : null;
+      if (!normalizedScheduledDate || Number.isNaN(normalizedScheduledDate.getTime())) {
+        return res.status(400).json({
+          error: 'A valid scheduled date/time is required before moving the procedure to Scheduled',
+          code: 'PROCEDURE_SCHEDULE_DATE_REQUIRED'
+        });
+      }
+
+      normalizedAssignedDoctorId = assignedDoctorId || assigned_doctor_id || performed_by || request.assignedDoctorId;
+      if (!normalizedAssignedDoctorId) {
+        return res.status(400).json({
+          error: 'Assign a clinician before scheduling the procedure',
+          code: 'PROCEDURE_ASSIGNED_CLINICIAN_REQUIRED'
+        });
+      }
+
+      const assignedDoctor = await Doctor.findOne({
+        _id: normalizedAssignedDoctorId,
+        hospitalId,
+        is_active: { $ne: false },
+        deleted_at: null
+      }).select('_id firstName lastName specialization').lean();
+      if (!assignedDoctor) {
+        return res.status(409).json({
+          error: 'The selected clinician is not an active doctor in this hospital',
+          code: 'PROCEDURE_ASSIGNED_CLINICIAN_INVALID'
+        });
+      }
+    }
+
+    let financial = null;
+    if (['Scheduled', 'In Progress'].includes(status)) {
+      const procedureMaster = await resolveProcedureMaster(request, hospitalId);
+      if (requiresOtWorkflow(procedureMaster || {})) {
+        return res.status(409).json({
+          error: 'This service is classified as Surgery and must continue through the Operation Theatre workflow',
+          code: 'PROCEDURE_REQUIRES_OT_WORKFLOW',
+          details: {
+            procedureId: request.procedureId,
+            procedureCode: request.procedureCode,
+            serviceDomain: procedureMaster?.serviceDomain || 'surgery',
+            admissionId: request.admissionId,
+          }
+        });
+      }
+      try {
+        financial = await ensureProcedureFinancialReady(request, req.user);
+      } catch (financialError) {
+        return res.status(financialError.statusCode || 409).json({
+          error: financialError.message,
+          code: financialError.code || 'PROCEDURE_FINANCIAL_CLEARANCE_REQUIRED',
+          details: financialError.details || null,
+        });
+      }
+    }
+
     request.status = status;
+
+    if (status === 'Scheduled') {
+      request.scheduledDate = normalizedScheduledDate;
+      request.assignedDoctorId = normalizedAssignedDoctorId;
+      request.scheduledBy = userId;
+      request.scheduledAt = operationNow();
+      if (notes !== undefined) request.surgeon_notes = String(notes || '').trim();
+    }
     
     // Update timestamps based on status
     if (status === 'Approved' && previousStatus === 'Pending') {
@@ -298,6 +423,7 @@ exports.updateRequestStatus = async (req, res) => {
       request.approvedAt = operationNow();
     } else if (status === 'In Progress') {
       request.performedBy = userId;
+      request.performedDoctorId = request.assignedDoctorId || request.performedDoctorId || null;
       request.performedAt = operationNow();
     } else if (status === 'Completed') {
       request.completedBy = userId;
@@ -308,7 +434,7 @@ exports.updateRequestStatus = async (req, res) => {
       request.cancellation_reason = notes;
     }
 
-    if (notes && status !== 'Cancelled') {
+    if (notes && status !== 'Cancelled' && status !== 'Scheduled') {
       if (status === 'In Progress') request.surgeon_notes = notes;
       else request.anesthesiologist_notes = notes;
     }
@@ -330,6 +456,14 @@ exports.updateRequestStatus = async (req, res) => {
       success: true, 
       message: `Request status updated to ${status}`, 
       data: request,
+      financial: financial ? {
+        clearanceState: financial.clearanceState,
+        selectedMode: financial.selectedMode,
+        requiredNow: financial.requiredNow,
+        outstandingRequiredNow: financial.outstandingRequiredNow,
+        totalInvoiced: financial.totalInvoiced,
+        paidNow: financial.paidNow,
+      } : null,
       financialReversal,
       financialWarning
     });
@@ -343,7 +477,7 @@ exports.updateRequestStatus = async (req, res) => {
 exports.addProcedureFindings = async (req, res) => {
   try {
     const { id } = req.params;
-    const { findings, complications, post_procedure_instructions, notes } = req.body;
+    const { findings, complications, post_procedure_instructions, notes, performedDoctorId, performed_doctor_id, performed_by } = req.body;
     const hospitalId = requireHospitalId(req);
 
     const request = await ProcedureRequest.findOne({ _id: id, hospitalId });
@@ -362,6 +496,23 @@ exports.addProcedureFindings = async (req, res) => {
     request.complications = complications || '';
     request.post_procedure_instructions = post_procedure_instructions || '';
     if (notes !== undefined) request.surgeon_notes = String(notes || '').trim();
+
+    const clinicianId = performedDoctorId || performed_doctor_id || performed_by || request.performedDoctorId || request.assignedDoctorId;
+    if (clinicianId) {
+      const clinician = await Doctor.findOne({
+        _id: clinicianId,
+        hospitalId,
+        is_active: { $ne: false },
+        deleted_at: null
+      }).select('_id').lean();
+      if (!clinician) {
+        return res.status(409).json({
+          error: 'The selected performing clinician is not an active doctor in this hospital',
+          code: 'PROCEDURE_PERFORMER_INVALID'
+        });
+      }
+      request.performedDoctorId = clinician._id;
+    }
 
     if (request.status !== 'Completed') {
       request.status = 'Completed';
@@ -450,8 +601,10 @@ exports.getRequestsByAdmission = async (req, res) => {
     })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName specialization')
-      .populate('procedureId', 'code name category base_price pre_procedure_instructions')
+      .populate('assignedDoctorId', 'firstName lastName specialization')
+      .populate('procedureId', 'code name category base_price serviceDomain duration_minutes pre_procedure_instructions')
       .populate('performedBy', 'name')
+      .populate('performedDoctorId', 'firstName lastName specialization')
       .populate('approvedBy', 'name')
       .populate('completedBy', 'name')
       .sort({ requestedDate: -1 });
@@ -478,8 +631,9 @@ exports.getPendingIPDRequests = async (req, res) => {
       sourceType: 'IPD',
       status: { $in: ['Pending', 'Approved', 'Scheduled'] }
     })
-      .populate('procedureId', 'code name category estimated_duration_minutes')
+      .populate('procedureId', 'code name category serviceDomain duration_minutes estimated_duration_minutes')
       .populate('doctorId', 'firstName lastName')
+      .populate('assignedDoctorId', 'firstName lastName specialization')
       .sort({ priority: -1, requestedDate: 1 });
     
     res.json({ success: true, data: requests });
@@ -500,8 +654,10 @@ exports.getRequestsByPatient = async (req, res) => {
     
     const hospitalId = requireHospitalId(req);
     const requests = await ProcedureRequest.find({ hospitalId, patientId })
-      .populate('procedureId', 'code name category')
+      .populate('procedureId', 'code name category serviceDomain duration_minutes')
       .populate('doctorId', 'firstName lastName')
+      .populate('assignedDoctorId', 'firstName lastName specialization')
+      .populate('performedDoctorId', 'firstName lastName specialization')
       .populate('admissionId', 'admissionNumber admissionDate')
       .sort({ requestedDate: -1 });
     

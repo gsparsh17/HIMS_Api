@@ -171,6 +171,8 @@ exports.list = async (req, res) => {
     if (req.query.status === 'active') filter[entry.activeField] = true;
     if (req.query.category) filter.category = req.query.category;
     if (req.query.specialty && entry.modelName === 'Procedure') filter.specialty = req.query.specialty;
+    if (entry.modelName === 'Procedure' && req.query.serviceDomain) filter.serviceDomain = String(req.query.serviceDomain).trim().toLowerCase();
+    if (entry.modelName === 'Procedure' && req.query.excludeServiceDomain) filter.serviceDomain = { $ne: String(req.query.excludeServiceDomain).trim().toLowerCase() };
     if (req.query.billable !== undefined) filter[entry.billableField] = req.query.billable === 'true';
     if (req.query.q) {
       const expression = new RegExp(escapeRegex(req.query.q), 'i');

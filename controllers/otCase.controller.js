@@ -36,6 +36,7 @@ const { ensurePathologyOrder } = require('../services/otPathology.service');
 const { addAdditionalProcedure } = require('../services/otAdditionalProcedure.service');
 const { clinicalClosureCheck, financialReconciliation, validateClinicalPayload } = require('../services/otClinicalCompletion.service');
 const { can: canOt } = require('../services/otAccess.service');
+const { requiresOtWorkflow } = require('../services/procedureWorkflow.service');
 
 
 const DEFAULT_SAFETY = {
@@ -172,6 +173,17 @@ exports.createCase = async (req, res, next) => {
       error.code = 'SOURCE_SERVICE_MASTER_REQUIRED';
       throw error;
     }
+    if (!requiresOtWorkflow(procedure)) {
+      const error = new Error('Only Procedure masters classified with serviceDomain=surgery can create an OT / Surgery case. Use General Procedures for non-surgical services.');
+      error.statusCode = 409;
+      error.code = 'OT_REQUIRES_SURGERY_PROCEDURE';
+      error.details = {
+        procedureId: procedure._id,
+        procedureCode: procedure.code,
+        serviceDomain: procedure.serviceDomain || 'procedure'
+      };
+      throw error;
+    }
 
     const otCase = await OTRequest.create({
       ...req.body,
@@ -258,7 +270,7 @@ exports.listCases = async (req, res, next) => {
     const filter = { hospitalId };
     const statusValues = String(req.query.statuses || req.query.status || '').split(',').map((value) => value.trim()).filter(Boolean);
     if (statusValues.length) filter.status = { $in: queryStatusesForCanonical(statusValues) };
-    for (const field of ['paymentStatus', 'admissionId', 'patientId', 'doctorId', 'urgency', 'otRoomId', 'financialClearanceState']) {
+    for (const field of ['paymentStatus', 'admissionId', 'patientId', 'doctorId', 'procedureId', 'urgency', 'otRoomId', 'financialClearanceState']) {
       if (req.query[field]) filter[field] = req.query[field];
     }
     if (req.query.surgeonId) filter.primarySurgeonId = req.query.surgeonId;

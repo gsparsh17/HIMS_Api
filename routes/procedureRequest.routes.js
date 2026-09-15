@@ -4,7 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const { tempDir } = require('../config/upload.config');
 const controller = require('../controllers/procedureRequest.controller');
-const { protect, authorize, requireAnyModuleAccess } = require('../middlewares/auth');
+const { protect, authorize, requireAnyModuleAccess, requireActionPermission } = require('../middlewares/auth');
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
@@ -59,9 +59,26 @@ const requireCareManage = requireAnyModuleAccess([
 const clinicalManage = [(req, res, next) => {
   const role = String(req.user?.role || '').toLowerCase();
   if (['admin', 'mediqliq_super_admin'].includes(role)) return next();
-  if (['doctor', 'nurse'].includes(role)) return requireCareManage(req, res, next);
-  return requireOtManage(req, res, next);
+  return requireCareManage(req, res, () => requireActionPermission('ipd_clinical_write')(req, res, next));
 }];
+
+// Creating a non-surgical ProcedureRequest from an IPD patient file is an IPD
+// clinical-ordering action, not an OT-management action. This allows a registrar
+// or other delegated staff member with IPD clinical-write authority to place the
+// request without granting broad Operation Theatre control. Surgery masters are
+// still rejected by the controller and must be created through OT.
+const procedureOrderCreate = (req, res, next) => {
+  const sourceType = String(req.body?.sourceType || 'IPD').trim().toUpperCase();
+  if (sourceType === 'IPD') {
+    return requireAnyModuleAccess([
+      { moduleKey: 'ipd', minimumAccess: 'manage' }
+    ])(req, res, () => requireActionPermission('ipd_clinical_write')(req, res, next));
+  }
+
+  return requireAnyModuleAccess([
+    { moduleKey: 'registration_opd', minimumAccess: 'manage' }
+  ])(req, res, next);
+};
 
 const billingManage = [requireAnyModuleAccess([
   { moduleKey: 'billing_finance', minimumAccess: 'manage' },
@@ -70,7 +87,7 @@ const billingManage = [requireAnyModuleAccess([
 
 // ============== PROCEDURE REQUEST ROUTES ==============
 router.get('/categories', ...view, controller.getProcedureCategories);
-router.post('/requests', ...clinicalManage, controller.createProcedureRequest);
+router.post('/requests', procedureOrderCreate, controller.createProcedureRequest);
 router.get('/requests', ...view, controller.getProcedureRequests);
 router.get('/requests/:id', ...view, controller.getProcedureRequestById);
 router.patch('/requests/:id/status', ...clinicalManage, controller.updateRequestStatus);

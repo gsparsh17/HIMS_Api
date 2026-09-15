@@ -1,31 +1,34 @@
-const ROLE_CAPABILITIES = Object.freeze({
-  'ot.case.view': ['admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'ot_staff', 'store_manager', 'inventory_manager', 'accountant', 'registrar'],
-  'ot.case.create': ['admin', 'mediqliq_super_admin', 'doctor', 'staff', 'registrar'],
-  'ot.readiness.update': ['admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'ot_staff'],
-  'ot.schedule.manage': ['admin', 'mediqliq_super_admin', 'ot_staff', 'staff', 'registrar'],
-  'ot.patient.receive': ['admin', 'mediqliq_super_admin', 'ot_staff', 'nurse'],
-  'ot.safety.update': ['admin', 'mediqliq_super_admin', 'ot_staff', 'nurse', 'doctor'],
-  'ot.consent.admission': ['admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'registrar'],
-  'ot.consent.clinical': ['admin', 'mediqliq_super_admin', 'doctor'],
-  'ot.pac.edit': ['admin', 'mediqliq_super_admin', 'doctor'],
-  'ot.anesthesia.edit': ['admin', 'mediqliq_super_admin', 'doctor'],
-  'ot.operation_note.edit': ['admin', 'mediqliq_super_admin', 'doctor'],
-  'ot.inventory.manage': ['admin', 'mediqliq_super_admin', 'ot_staff', 'nurse', 'inventory_manager', 'store_manager'],
-  'ot.specimen.manage': ['admin', 'mediqliq_super_admin', 'ot_staff', 'nurse', 'doctor'],
-  'ot.recovery.manage': ['admin', 'mediqliq_super_admin', 'ot_staff', 'nurse', 'doctor'],
-  'ot.finance.view': ['admin', 'mediqliq_super_admin', 'doctor', 'staff', 'accountant', 'registrar', 'ot_staff'],
-  'ot.finance.manage': ['admin', 'mediqliq_super_admin', 'accountant', 'registrar', 'staff'],
-  'ot.case.close': ['admin', 'mediqliq_super_admin', 'ot_staff', 'doctor'],
-  'ot.master.manage': ['admin', 'mediqliq_super_admin'],
-});
+'use strict';
 
-function roleOf(user) {
-  return String(user?.role || '').trim().toLowerCase();
+const { mainFeaturePermission, effectiveMainFeaturePermissions } = require('../utils/mainFeatureAccess');
+const { getTemplate } = require('../config/otSurgeryFormTemplates');
+const { OT_CAPABILITY_TO_ACTION } = require('../utils/otCapabilityCatalog');
+
+function normalizedRole(user) {
+  return String(user?.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function unrestricted(user) {
+  const role = normalizedRole(user);
+  return role === 'mediqliq_super_admin' || (role === 'admin' && !user?.enforceModulePermissions);
+}
+
+function hasAction(user, action) {
+  if (unrestricted(user)) return true;
+  return effectiveMainFeaturePermissions(user).some((permission) =>
+    Array.isArray(permission.actions) && permission.actions.includes(action)
+  );
 }
 
 function can(user, capability) {
-  const allowed = ROLE_CAPABILITIES[capability] || [];
-  return allowed.includes(roleOf(user));
+  if (!user) return false;
+  if (unrestricted(user)) return true;
+  const moduleAccess = mainFeaturePermission(user, 'operation_theatre').access;
+  if (!['view', 'manage'].includes(moduleAccess)) return false;
+  if (capability === 'ot.case.view') return true;
+  const action = OT_CAPABILITY_TO_ACTION[capability];
+  if (!action) return false;
+  return hasAction(user, action);
 }
 
 function requireOtCapability(capability) {
@@ -36,10 +39,10 @@ function requireOtCapability(capability) {
       success: false,
       error: `OT capability "${capability}" is not permitted for this user`,
       capability,
+      requiredAction: OT_CAPABILITY_TO_ACTION[capability] || null,
     });
   };
 }
-
 
 const TRANSITION_CAPABILITY = Object.freeze({
   approve: 'ot.readiness.update',
@@ -58,4 +61,71 @@ function requireOtTransitionCapability(req, res, next) {
   return requireOtCapability(capability)(req, res, next);
 }
 
-module.exports = { ROLE_CAPABILITIES, TRANSITION_CAPABILITY, can, requireOtCapability, requireOtTransitionCapability };
+
+const LEGACY_STATUS_CAPABILITY = Object.freeze({
+  approved: 'ot.readiness.update',
+  scheduled: 'ot.schedule.manage',
+  'patient received': 'ot.patient.receive',
+  'in progress': 'ot.safety.update',
+  recovery: 'ot.safety.update',
+  transferred: 'ot.recovery.manage',
+  completed: 'ot.case.close',
+  closed: 'ot.case.close',
+  postponed: 'ot.schedule.manage',
+  cancelled: 'ot.schedule.manage',
+});
+
+function requireOtLegacyStatusCapability(req, res, next) {
+  const status = String(req.body?.status || req.body?.newStatus || '').trim().toLowerCase();
+  const capability = LEGACY_STATUS_CAPABILITY[status] || 'ot.case.view';
+  return requireOtCapability(capability)(req, res, next);
+}
+
+function capabilityForFormTemplate(templateId) {
+  const id = String(templateId || '').trim();
+  if (!id) return 'ot.readiness.update';
+  const template = getTemplate(id);
+  if (!template) return 'ot.readiness.update';
+
+  if (id === 'general_consent') return 'ot.consent.admission';
+  if (template.category === 'consent') return 'ot.consent.clinical';
+  if (id === 'pre_anaesthesia_assessment' || id === 'pac-record') return 'ot.pac.edit';
+  if (id === 'intra_post_anaesthesia_record' || id === 'anesthesia_monitoring_chart') return 'ot.anesthesia.edit';
+  if (id === 'operation_notes' || id === 'operation-record') return 'ot.operation_note.edit';
+  if (id === 'post_anaesthesia_recovery_record') return 'ot.recovery.manage';
+  if (id === 'ot_consumables_implants' || id === 'implant_device_register') return 'ot.inventory.manage';
+  if (id === 'surgical_specimen_handover') return 'ot.specimen.manage';
+
+  switch (template.sourceModel) {
+    case 'OTReadinessChecklist': return 'ot.readiness.update';
+    case 'OTSurgicalSafetyChecklist': return 'ot.safety.update';
+    case 'OTPreAnaesthesiaAssessment': return 'ot.pac.edit';
+    case 'OTAnesthesiaRecord': return 'ot.anesthesia.edit';
+    case 'OTOperativeNote': return 'ot.operation_note.edit';
+    case 'OTRecoveryRecord': return 'ot.recovery.manage';
+    case 'OTCaseInventoryUsage': return 'ot.inventory.manage';
+    default: break;
+  }
+
+  if (template.category === 'anesthesia') return 'ot.anesthesia.edit';
+  if (template.category === 'recovery') return 'ot.recovery.manage';
+  if (template.stage === 'intraop') return 'ot.operation_note.edit';
+  return 'ot.readiness.update';
+}
+
+function requireOtFormCapability(req, res, next) {
+  const capability = capabilityForFormTemplate(req.params?.templateId);
+  return requireOtCapability(capability)(req, res, next);
+}
+
+module.exports = {
+  CAPABILITY_TO_ACTION: OT_CAPABILITY_TO_ACTION,
+  TRANSITION_CAPABILITY,
+  LEGACY_STATUS_CAPABILITY,
+  can,
+  requireOtCapability,
+  requireOtTransitionCapability,
+  requireOtLegacyStatusCapability,
+  capabilityForFormTemplate,
+  requireOtFormCapability,
+};

@@ -1,9 +1,11 @@
+const { defaultOtActionsForRole } = require('./otCapabilityCatalog');
+
 /**
  * Simple, role-oriented access model.
  *
- * This deliberately keeps permissions at hospital-workflow level. It does not
- * expose individual route/action checkboxes to administrators. A user gets
- * None, View, or Manage for each main feature.
+ * Broad hospital-workflow access model with explicit sensitive/clinical
+ * action grants layered on top. A user gets None, View, or Manage for each
+ * main feature plus optional actions managed by Staff Login / role templates.
  */
 const MAIN_FEATURES = Object.freeze([
   {
@@ -97,6 +99,7 @@ const ROLE_PRESET = Object.freeze({
     pharmacy: 'view',
     laboratory: 'view',
     radiology: 'view',
+    operation_theatre: 'view',
     abdm: 'manage',
     reports: 'view'
   },
@@ -116,6 +119,7 @@ const ROLE_PRESET = Object.freeze({
     registration_opd: 'manage',
     ipd: 'manage',
     billing_finance: 'manage',
+    operation_theatre: 'view',
     abdm: 'manage',
     reports: 'view'
   },
@@ -124,6 +128,7 @@ const ROLE_PRESET = Object.freeze({
     registration_opd: 'manage',
     ipd: 'manage',
     billing_finance: 'manage',
+    operation_theatre: 'view',
     abdm: 'manage',
     reports: 'view'
   },
@@ -245,7 +250,7 @@ const ROLE_ACTION_PRESET = Object.freeze({
   doctor: { ipd: ['ipd_round_write', 'ipd_clinical_write', 'ipd_discharge_write', 'ipd_final_discharge', 'billing_create'] },
   pathology_staff: { laboratory: ['billing_create'] },
   radiology_staff: { radiology: ['billing_create'] },
-  ot_staff: { ipd: ['transfer_complete'], operation_theatre: ['billing_create'] },
+  ot_staff: { ipd: ['transfer_complete'] },
   hr: { hr_staff: ['payroll_publish', 'biometric_manage', 'user_access_manage'] },
   hr_manager: { hr_staff: ['payroll_publish', 'biometric_manage', 'user_access_manage'] },
   accountant: {
@@ -293,7 +298,9 @@ const ROLE_ACTION_PRESET = Object.freeze({
 
 function roleDefaultActions(role, moduleKey) {
   const preset = ROLE_ACTION_PRESET[normalizeRole(role)] || {};
-  return Array.from(new Set(preset[moduleKey] || []));
+  const actions = [...(preset[moduleKey] || [])];
+  if (moduleKey === 'operation_theatre') actions.push(...defaultOtActionsForRole(role));
+  return Array.from(new Set(actions));
 }
 
 const EXACT_MODULE_MAP = Object.freeze({

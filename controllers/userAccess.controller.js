@@ -10,6 +10,7 @@ const {
 const { normalizeRole } = require('../utils/insuranceWorkflowAuthority');
 const { getSnapshot } = require('../services/licenseSnapshot.service');
 const { isEntitled } = require('../utils/entitlements');
+const { OT_ACTIONS } = require('../utils/otCapabilityCatalog');
 
 const HR_PERMISSION_MANAGER_ROLES = new Set(['hr', 'hr_manager']);
 const ADMIN_ROLES = new Set(['admin', 'mediqliq_super_admin']);
@@ -45,8 +46,7 @@ const ALLOWED_ACTIONS = new Set([
   'final_clearance',
   'bulk_import_commit',
   'user_access_manage',
-  'ot_approve',
-  'ot_emergency_bypass',
+  ...OT_ACTIONS,
   'stock_adjustment',
   'document_sign',
   'print_identity_verify',
