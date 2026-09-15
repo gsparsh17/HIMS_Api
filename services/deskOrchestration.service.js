@@ -186,6 +186,20 @@ function normalizeCart(cart, encounterType) {
   });
 }
 
+function isDeskAdmissionImmediateFee({ encounterType, payload = {}, row = {}, serviceCode }) {
+  const action = String(
+    payload.encounterAction
+      || payload.encounterDraft?._deskEncounterType
+      || payload.encounterDraft?.type
+      || ''
+  ).toUpperCase();
+  const code = String(serviceCode || row.code || '').trim().toUpperCase();
+  return String(encounterType || '').toUpperCase() === 'IPD'
+    && action === 'ADMISSION'
+    && String(row.sourceModule || '').toUpperCase() === 'ADMISSION'
+    && ['IPD-REG', 'IPD-ADM'].includes(code);
+}
+
 async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
   const rows = normalizeCart(cart, encounterType);
   const out = [];
@@ -323,6 +337,13 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
           });
         }
 
+        const immediateAdmissionFee = isDeskAdmissionImmediateFee({
+          encounterType,
+          payload,
+          row,
+          serviceCode: row.code
+        });
+
         out.push({
           ...row,
           canonicalChargeId: canonicalCharge._id,
@@ -347,6 +368,7 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
           patientLiability: resolved.amounts.patientLiability,
           sponsorLiability: resolved.amounts.sponsorLiability,
           requiredNow: resolved.requiredNow,
+          checkoutPayableNow: immediateAdmissionFee ? resolved.amounts.patientLiability : resolved.requiredNow,
           outstanding: resolved.amounts.patientLiability,
           allowedModes: resolved.allowedModes,
           defaultMode: resolved.defaultMode,
@@ -356,7 +378,7 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
           financialPolicySnapshot: resolved.policySnapshot,
           requiresDiscountApproval: Boolean(resolved.amounts.requiresDiscountApproval),
           policyPermissions: resolved.permissions,
-          billingIntent: row.billingIntent,
+          billingIntent: immediateAdmissionFee ? 'BILL_NOW' : row.billingIntent,
           pricingResultType: snap.resultType,
           pricingDifference: round((row.quantity ? contractedAmount / row.quantity : contractedAmount) - Number(row.rate || 0)),
           requestedAdjustments
@@ -496,7 +518,16 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
       : quote.resultType === 'package_included'
         ? 'PACKAGE_INCLUDED'
         : null;
-    const effectiveIntent = noLiabilityIntent || policy.billingIntent;
+    const immediateAdmissionFee = isDeskAdmissionImmediateFee({
+      encounterType,
+      payload,
+      row,
+      serviceCode: match.code
+    });
+    // Desk admission Registration + Admission fees are immediate financial
+    // documents even when the broader IPD encounter is POSTPAID. Bed, nursing
+    // and later encounter charges remain on the running IPD account.
+    const effectiveIntent = noLiabilityIntent || (immediateAdmissionFee ? 'BILL_NOW' : policy.billingIntent);
     const standardAmount = round(quote.amounts.hospitalStandard);
     const contractedAmount = round(quote.amounts.contracted);
     const unitRate = row.quantity ? round(contractedAmount / row.quantity) : contractedAmount;
@@ -527,6 +558,9 @@ async function authoritativeCart({ user, cart, encounterType, payload = {} }) {
       patientLiability: noLiabilityIntent ? 0 : policy.amounts.patientLiability,
       sponsorLiability: noLiabilityIntent ? 0 : policy.amounts.sponsorLiability,
       requiredNow: noLiabilityIntent ? 0 : policy.requiredNow,
+      checkoutPayableNow: noLiabilityIntent
+        ? 0
+        : (immediateAdmissionFee ? policy.amounts.patientLiability : policy.requiredNow),
       outstanding: noLiabilityIntent ? 0 : policy.amounts.patientLiability,
       allowedModes: policy.allowedModes,
       defaultMode: policy.defaultMode,
@@ -596,6 +630,12 @@ function previewTotals(rows) {
   const noLiability = round(rows
     .filter(row => ['PACKAGE_INCLUDED', 'NO_CHARGE', 'EXTERNAL_REFERRAL'].includes(row.billingIntent))
     .reduce((total, row) => total + Number(row.standardAmount || row.gross || 0), 0));
+  const billNowPatientLiability = round(rows
+    .filter(row => row.billingIntent === 'BILL_NOW')
+    .reduce((total, row) => total + Number(row.patientLiability || 0), 0));
+  const checkoutPayableNow = round(rows.reduce((total, row) => (
+    total + Number(row.checkoutPayableNow ?? row.requiredNow ?? 0)
+  ), 0));
   return {
     gross: sum('standardAmount'),
     standardAmount: sum('standardAmount'),
@@ -609,7 +649,8 @@ function previewTotals(rows) {
     patientLiability: sum('patientLiability'),
     sponsorLiability: sum('sponsorLiability'),
     requiredNow: sum('requiredNow'),
-    payableNow: sum('requiredNow'),
+    billNowPatientLiability,
+    payableNow: checkoutPayableNow,
     outstanding: sum('outstanding'),
     noLiability
   };

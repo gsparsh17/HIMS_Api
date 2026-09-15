@@ -22,9 +22,12 @@ function currentContext() {
   return storage.getStore() || null;
 }
 
-function operationNow(fallback = new Date()) {
+function operationNow() {
   const ctx = currentContext();
-  return cloneDate(ctx?.effectiveAt || fallback);
+  // Mongoose schema default functions may be invoked with framework-owned
+  // arguments. `operationNow` is also used directly as a schema default, so
+  // never interpret an incidental callback argument as a fallback Date.
+  return cloneDate(ctx?.effectiveAt || new Date());
 }
 
 function operationDateKey(timeZone) {
