@@ -34,29 +34,49 @@ router.use(
   authorize('admin', 'mediqliq_super_admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'ot_staff', 'radiology_staff')
 );
 
-// Generic clinical procedures are used by OPD/IPD as well as OT. Requiring the
-// Operation Theatre module for every IV infusion/dressing/nebulization made
-// non-OT clinical requests inaccessible to otherwise-authorised care teams.
+// Generic clinical procedures are visible from OPD/IPD as well as OT, but
+// administrative OPD/IPD "manage" permission must not implicitly grant clinical
+// authority to approve/start/complete procedures or enter findings.
+//
+// Clinical mutation is allowed to Doctor/Nurse roles, or to any explicitly
+// Operation-Theatre-authorised user. This keeps bedside procedures usable
+// without turning registrar/reception permissions into clinical write access.
 const view = [requireAnyModuleAccess([
   { moduleKey: 'operation_theatre', minimumAccess: 'view' },
   { moduleKey: 'registration_opd', minimumAccess: 'view' },
   { moduleKey: 'ipd', minimumAccess: 'view' }
 ])];
-const manage = [requireAnyModuleAccess([
-  { moduleKey: 'operation_theatre', minimumAccess: 'manage' },
+
+const requireOtManage = requireAnyModuleAccess([
+  { moduleKey: 'operation_theatre', minimumAccess: 'manage' }
+]);
+const requireCareManage = requireAnyModuleAccess([
   { moduleKey: 'registration_opd', minimumAccess: 'manage' },
-  { moduleKey: 'ipd', minimumAccess: 'manage' }
+  { moduleKey: 'ipd', minimumAccess: 'manage' },
+  { moduleKey: 'operation_theatre', minimumAccess: 'manage' }
+]);
+
+const clinicalManage = [(req, res, next) => {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (['admin', 'mediqliq_super_admin'].includes(role)) return next();
+  if (['doctor', 'nurse'].includes(role)) return requireCareManage(req, res, next);
+  return requireOtManage(req, res, next);
+}];
+
+const billingManage = [requireAnyModuleAccess([
+  { moduleKey: 'billing_finance', minimumAccess: 'manage' },
+  { moduleKey: 'operation_theatre', minimumAccess: 'manage' }
 ])];
 
 // ============== PROCEDURE REQUEST ROUTES ==============
 router.get('/categories', ...view, controller.getProcedureCategories);
-router.post('/requests', ...manage, controller.createProcedureRequest);
+router.post('/requests', ...clinicalManage, controller.createProcedureRequest);
 router.get('/requests', ...view, controller.getProcedureRequests);
 router.get('/requests/:id', ...view, controller.getProcedureRequestById);
-router.patch('/requests/:id/status', ...manage, controller.updateRequestStatus);
-router.post('/requests/:id/findings', ...manage, controller.addProcedureFindings);
-router.post('/requests/:id/upload', ...manage, upload.single('file'), controller.uploadAttachment);
-router.patch('/requests/:id/billed', ...manage, controller.markAsBilled);
+router.patch('/requests/:id/status', ...clinicalManage, controller.updateRequestStatus);
+router.post('/requests/:id/findings', ...clinicalManage, controller.addProcedureFindings);
+router.post('/requests/:id/upload', ...clinicalManage, upload.single('file'), controller.uploadAttachment);
+router.patch('/requests/:id/billed', ...billingManage, controller.markAsBilled);
 
 // ============== ADMISSION-BASED QUERIES ==============
 router.get('/admission/:admissionId/requests', ...view, controller.getRequestsByAdmission);

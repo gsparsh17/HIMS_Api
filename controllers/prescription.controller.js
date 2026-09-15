@@ -449,8 +449,9 @@ exports.createPrescription = async (req, res) => {
       .populate('procedure_requests.request_id', 'requestNumber status');
 
     // Lost-response retries must not duplicate the prescription or any of its
-    // generated Lab/Radiology/Procedure requests. The client key is optional for
-    // backwards compatibility, while the appointment fallback protects old UIs.
+    // generated Lab/Radiology/Procedure requests. Retries are identified by an
+    // explicit idempotency key (or the source-document / IPD-round uniqueness
+    // guards below), not merely by sharing an appointment.
     if (requestIdempotencyKey) {
       const existingByKey = await populateExistingPrescription(Prescription.findOne({
         hospitalId: prescriptionHospitalId,
@@ -476,27 +477,6 @@ exports.createPrescription = async (req, res) => {
       }
     }
 
-    if (String(source_type || 'OPD').toUpperCase() === 'OPD' && appointment_id) {
-      const existingAppointmentPrescription = await populateExistingPrescription(Prescription.findOne({
-        hospitalId: prescriptionHospitalId,
-        appointment_id,
-        patient_id,
-        doctor_id,
-        source_type: 'OPD',
-        status: { $nin: ['Cancelled', 'Expired'] },
-        is_active: { $ne: false }
-      }).sort({ createdAt: -1 }));
-      if (existingAppointmentPrescription) {
-        return res.status(200).json({
-          success: true, alreadyExists: true, message: 'Appointment prescription/orders already saved',
-          prescription: existingAppointmentPrescription,
-          lab_requests: existingAppointmentPrescription.lab_test_requests || [],
-          radiology_requests: existingAppointmentPrescription.radiology_test_requests || [],
-          procedure_requests: existingAppointmentPrescription.procedure_requests || [],
-          ipd_medications_count: 0, pharmacy_requests_created: 0, medication_safety_alerts: []
-        });
-      }
-    }
     const selectedMedicines = selectedMedicineIds.length
       ? await Medicine.find({ _id: { $in: selectedMedicineIds }, hospitalId: prescriptionHospitalId }).select('name generic_name brand dosage_form manufacturer manufacturer_brand_owner is_high_risk is_high_alert prescription_required medicationSafety').lean()
       : [];
