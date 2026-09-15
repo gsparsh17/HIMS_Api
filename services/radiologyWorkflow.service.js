@@ -18,16 +18,28 @@ async function transition({ req, request, to, hospitalId, note, patch = {} }) {
 
   Object.assign(request, patch);
 
+  if (to === 'Approved') {
+    request.approvedAt = request.approvedAt || operationNow();
+    if (req.user?.radiologyStaffId) request.approvedBy = req.user.radiologyStaffId;
+  }
+
   if (to === 'Scheduled') {
     request.scheduledStart = patch.scheduledStart || request.scheduledStart || operationNow();
   }
 
   if (to === 'In Progress') {
     request.performedAt = request.performedAt || operationNow();
+    if (req.user?.radiologyStaffId) request.performedBy = req.user.radiologyStaffId;
   }
 
   if (to === 'Result Entered') {
     request.resultEnteredAt = operationNow();
+    // Editing verified content re-opens the report for verification. Never leave
+    // stale verifier metadata attached to content that has changed.
+    if (before === 'Verified') {
+      request.verifiedAt = undefined;
+      request.verifiedByUserId = undefined;
+    }
   }
 
   if (to === 'Verified') {
@@ -38,6 +50,8 @@ async function transition({ req, request, to, hospitalId, note, patch = {} }) {
   if (to === 'Reported') {
     request.releasedAt = operationNow();
     request.releasedBy = req.user?._id;
+    request.reportedAt = request.reportedAt || operationNow();
+    if (req.user?.radiologyStaffId) request.reportedBy = req.user.radiologyStaffId;
   }
 
   await request.save();

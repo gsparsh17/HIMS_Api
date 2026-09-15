@@ -6,7 +6,7 @@ const operations = require('../controllers/pharmacyOperations.controller');
 const financial = require('../controllers/pharmacyFinancialV2.controller');
 const pharmacyLedgerSettlement = require('../controllers/pharmacyLedgerSettlement.controller');
 
-const { protect, requirePharmacyFinancialAccess } = require('../middlewares/auth');
+const { protect, requireModuleAccess, requirePharmacyFinancialAccess } = require('../middlewares/auth');
 
 const {
   createPharmacy,
@@ -24,23 +24,25 @@ const {
  */
 router.use(protect);
 
+const pharmacyView = requireModuleAccess('pharmacy', 'view');
+const pharmacyManage = requireModuleAccess('pharmacy', 'manage');
 const pharmacyFinanceView = requirePharmacyFinancialAccess('view');
 const pharmacyFinanceManage = requirePharmacyFinancialAccess('manage');
 
 // ========== SETTINGS ==========
-router.get('/settings', operations.getSettings);
-router.put('/settings', operations.updateSettings);
+router.get('/settings', pharmacyView, operations.getSettings);
+router.put('/settings', pharmacyManage, operations.updateSettings);
 
 // ========== POS ==========
-router.post('/pos/quote', financial.quotePos);
-router.post('/pos/complete', financial.completePos);
-router.get('/sales/:saleId/bill', operations.getSaleBill);
+router.post('/pos/quote', pharmacyFinanceView, financial.quotePos);
+router.post('/pos/complete', pharmacyFinanceManage, financial.completePos);
+router.get('/sales/:saleId/bill', pharmacyFinanceView, operations.getSaleBill);
 
 // ========== PATIENTS ==========
-router.get('/patients/search', operations.searchPharmacyPatients);
+router.get('/patients/search', pharmacyFinanceView, operations.searchPharmacyPatients);
 
 // ========== RETURNS ==========
-router.post('/returns/preview', financial.previewReturn);
+router.post('/returns/preview', pharmacyFinanceView, financial.previewReturn);
 router.post('/returns/complete', pharmacyFinanceManage, financial.completeReturn);
 router.post('/returns/:returnId/approve', pharmacyFinanceManage, financial.approveReturn);
 router.post('/returns/:returnId/reject', pharmacyFinanceManage, financial.rejectReturn);
@@ -60,17 +62,17 @@ router.post(
 );
 
 // ========== LEDGER ==========
-router.get('/ledger/patient/:patientId', financial.groupedLedger);
+router.get('/ledger/patient/:patientId', pharmacyFinanceView, financial.groupedLedger);
 router.get('/ledger/daily', pharmacyFinanceView, operations.getLedgerDaily);
-router.get('/inventory/ledger', operations.getInventoryLedger);
+router.get('/inventory/ledger', pharmacyView, operations.getInventoryLedger);
 
 // ========== DASHBOARD / REPORTS ==========
-router.get('/dashboard', operations.getDashboard);
-router.get('/analytics/inventory', operations.getInventoryAnalytics);
-router.get('/analytics/purchases', operations.getPurchaseAnalytics);
-router.get('/reports/doctor-commission', operations.getDoctorCommissionReport);
-router.get('/reports/doctor-bills', operations.getDoctorBillReport);
-router.get('/dose-calculation', operations.getDoseCalculation);
+router.get('/dashboard', pharmacyFinanceView, operations.getDashboard);
+router.get('/analytics/inventory', pharmacyView, operations.getInventoryAnalytics);
+router.get('/analytics/purchases', pharmacyFinanceView, operations.getPurchaseAnalytics);
+router.get('/reports/doctor-commission', pharmacyFinanceView, operations.getDoctorCommissionReport);
+router.get('/reports/doctor-bills', pharmacyFinanceView, operations.getDoctorBillReport);
+router.get('/dose-calculation', pharmacyView, operations.getDoseCalculation);
 
 // ========== IPD PHARMACY ==========
 router.get('/ipd/search-admissions', pharmacyFinanceView, operations.searchIPDAdmissions);
@@ -170,15 +172,15 @@ router.get(
 );
 
 // ========== INVENTORY / HOSPITAL ==========
-router.get('/inventory/batches', operations.getInventoryBatches);
+router.get('/inventory/batches', pharmacyView, operations.getInventoryBatches);
 router.get('/hospital/details', pharmacyFinanceView, operations.getHospitalDetails);
-router.get('/medicines/search', operations.searchMedicines);
+router.get('/medicines/search', pharmacyView, operations.searchMedicines);
 
 // ========== PHARMACY MASTER ==========
-router.post('/', createPharmacy);
-router.get('/', getAllPharmacies);
-router.get('/:id', getPharmacyById);
-router.put('/:id', updatePharmacy);
-router.delete('/:id', deletePharmacy);
+router.post('/', pharmacyManage, createPharmacy);
+router.get('/', pharmacyView, getAllPharmacies);
+router.get('/:id', pharmacyView, getPharmacyById);
+router.put('/:id', pharmacyManage, updatePharmacy);
+router.delete('/:id', pharmacyManage, deletePharmacy);
 
 module.exports = router;

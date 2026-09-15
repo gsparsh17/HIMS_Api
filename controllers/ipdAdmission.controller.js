@@ -2052,9 +2052,11 @@ exports.updatePharmacyClearance = async (req, res) => {
 // Get admissions pending pharmacy clearance
 exports.getPendingPharmacyClearance = async (req, res) => {
   try {
+    const hospitalId = requireAdmissionHospitalId(req);
     const { page = 1, limit = 20 } = req.query;
 
-    const admissions = await IPDAdmission.find({
+    const clearanceFilter = {
+      hospitalId,
       status: {
         $in: [
           'Discharge Initiated',
@@ -2065,7 +2067,9 @@ exports.getPendingPharmacyClearance = async (req, res) => {
         ]
       },
       pharmacyClearanceStatus: { $in: ['pending', 'in_progress'] }
-    })
+    };
+
+    const admissions = await IPDAdmission.find(clearanceFilter)
       .populate('patientId', 'first_name last_name patientId uhid phone pharmacy_outstanding_balance pharmacy_advance_balance')
       .populate('primaryDoctorId', 'firstName lastName')
       .populate('wardId', 'name')
@@ -2073,18 +2077,7 @@ exports.getPendingPharmacyClearance = async (req, res) => {
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
 
-    const total = await IPDAdmission.countDocuments({
-      status: {
-        $in: [
-          'Discharge Initiated',
-          'Discharge Summary Pending',
-          'Billing Pending',
-          'Payment Pending',
-          'Ready for Discharge'
-        ]
-      },
-      pharmacyClearanceStatus: { $in: ['pending', 'in_progress'] }
-    });
+    const total = await IPDAdmission.countDocuments(clearanceFilter);
 
     res.json({
       success: true,

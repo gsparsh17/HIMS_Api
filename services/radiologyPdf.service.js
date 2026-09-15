@@ -40,6 +40,31 @@ const age = (dob) => {
   return `${Math.max(0, years)} years`;
 };
 
+function buildPrintableReport(request = {}) {
+  const manual = request.manual_report?.toObject?.() || request.manual_report;
+  if (manual && Array.isArray(manual.sections) && manual.sections.length) {
+    return manual;
+  }
+
+  const sections = [
+    { key: 'findings', label: 'Findings', text: clean(request.findings) },
+    { key: 'impression', label: 'Impression', text: clean(request.impression) },
+    { key: 'recommendations', label: 'Recommendations', text: clean(request.recommendations) }
+  ].filter((section) => section.text);
+
+  return {
+    templateId: request.reportTemplateId || 'radiology-simple-report',
+    templateName: request.reportTemplateName || request.testName || 'Radiology Report',
+    templateVersion: 'clinical-result',
+    sections,
+    tables: [],
+    images: [],
+    radiologistName: clean(request.reportedBy?.name || request.reportedBy?.designation, 'Radiologist'),
+    technicianName: clean(request.performedBy?.name || request.performedBy?.designation, 'Radiologic Technologist'),
+    reportedAt: request.reportedAt || request.releasedAt || request.updatedAt
+  };
+}
+
 function ensureSpace(doc, height, redrawHeader) {
   if (doc.y + height < PAGE.height - PAGE.margin - mm(12)) return;
   doc.addPage();
@@ -209,7 +234,7 @@ function addFooters(doc) {
 async function generateRadiologyReportPdf({ request, hospital: _suppliedHospital, res }) {
   // Branding is installation-level configuration; never trust a request/admission snapshot.
   const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
-  const report = request.manual_report?.toObject?.() || request.manual_report || {};
+  const report = buildPrintableReport(request);
   const doc = new PDFDocument({ size: 'A4', margins: { top: PAGE.margin, right: PAGE.margin, bottom: PAGE.margin, left: PAGE.margin }, bufferPages: true, info: { Creator: 'MediQliq HIMS' } });
   const filename = `${clean(request.requestNumber, 'radiology-report')}.pdf`.replace(/[^a-zA-Z0-9._-]/g, '_');
   res.setHeader('Content-Type', 'application/pdf');
@@ -232,4 +257,4 @@ async function generateRadiologyReportPdf({ request, hospital: _suppliedHospital
   doc.end();
 }
 
-module.exports = { generateRadiologyReportPdf };
+module.exports = { generateRadiologyReportPdf, buildPrintableReport };

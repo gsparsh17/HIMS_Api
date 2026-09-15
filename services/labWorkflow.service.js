@@ -40,6 +40,13 @@ async function transition({ req, request, to, note, hospitalId, patch = {} }) {
 
   if (to === 'Result Entered') {
     request.resultEnteredAt = operationNow();
+    // Editing verified content re-opens the report for verification. Never leave
+    // stale verifier metadata attached to content that has changed.
+    if (before === 'Verified') {
+      request.verifiedAt = undefined;
+      request.verifierUserId = undefined;
+      request.verifiedBy = undefined;
+    }
   }
 
   if (to === 'Verified') {

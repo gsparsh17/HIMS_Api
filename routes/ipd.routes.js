@@ -248,10 +248,10 @@ router.get(
 
 router.patch(
   '/:id/pharmacy-clearance',
-  // ...read,
-  // requireModuleAccess('pharmacy.clearance', 'edit'),
-  // requireActionPermission('final_clearance'),
-  admissions.updatePharmacyClearance
+  (_req, res) => res.status(410).json({
+    success: false,
+    error: 'Legacy pharmacy-clearance mutation is retired. Use POST /api/pharmacy/clearance/:admissionId/complete so balances and ledger settlement are computed server-side.'
+  })
 );
 
 router.get(

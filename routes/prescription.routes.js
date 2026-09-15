@@ -38,7 +38,10 @@ router.use(
 router.post('/upload', upload.single('image'), prescriptionController.uploadPrescriptionImage);
 
 // ============== IPD PRESCRIPTION CONVERSION ==============
-router.post('/:prescriptionId/convert-to-ipd/:admissionId', prescriptionController.convertToIPD);
+router.post('/:prescriptionId/convert-to-ipd/:admissionId', (_req, res) => res.status(410).json({
+  success: false,
+  error: 'Legacy OPD-to-IPD prescription conversion is retired. Place IPD medication/investigation orders through the admission round/medication workflow so provenance, MAR and pharmacy links remain canonical.'
+}));
 router.get('/opd/patient/:patientId/for-ipd', prescriptionController.getOPDPrescriptionsForIPD);
 router.get('/ipd/admission/:admissionId', prescriptionController.getIPDPrescriptions);
 
@@ -55,7 +58,10 @@ router.get('/:id/opd-slip.pdf', protect, authorize('admin', 'doctor', 'nurse', '
 router.get('/:id/print', protect, authorize('admin', 'doctor', 'nurse', 'staff', 'registrar', 'receptionist', 'pharmacy', 'pathology_staff'), prescriptionController.downloadPrescriptionPdf);
 router.get('/:id', prescriptionController.getPrescriptionById);
 router.put('/:id', protect, authorize('admin', 'doctor'), prescriptionController.updatePrescription);
-router.put('/:prescriptionId/dispense/:itemIndex', authorize('admin', 'mediqliq_super_admin', 'pharmacy'), prescriptionController.dispenseMedication);
+router.put('/:prescriptionId/dispense/:itemIndex', authorize('admin', 'mediqliq_super_admin', 'pharmacy'), (_req, res) => res.status(410).json({
+  success: false,
+  error: 'Legacy direct prescription dispensing is retired. Use the canonical Pharmacy POS/IPD dispense workflow so Sale, Bill, Invoice, stock, GST and ledger records are created atomically.'
+}));
 router.delete('/:id', authorize('admin', 'mediqliq_super_admin', 'doctor'), prescriptionController.deletePrescription);
 
 module.exports = router;

@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
+const HospitalSequence = require('./HospitalSequence');
 
 const prescriptionItemSchema = new mongoose.Schema({
   medicine_name: {
@@ -117,6 +118,9 @@ const procedureRequestSchema = new mongoose.Schema({
 const prescriptionSchema = new mongoose.Schema({
   prescription_number: { type: String, unique: true },
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
+  // Optional client/business retry key. Sparse compound uniqueness makes a
+  // lost-response retry safe without affecting legacy prescriptions.
+  idempotencyKey: { type: String, trim: true },
 
   // Patient & Doctor
   patient_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true },
@@ -184,16 +188,43 @@ const prescriptionSchema = new mongoose.Schema({
   ipd_medication_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'IPDMedicationChart' }]
 }, { timestamps: true });
 
-// Generate prescription number
-prescriptionSchema.pre('save', async function (next) {
-  if (this.isNew && !this.prescription_number) {
-    const count = await mongoose.model('Prescription').countDocuments();
-    const date = operationNow();
-    const year = date.getFullYear();
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    this.prescription_number = `RX${year}${month}${(count + 1).toString().padStart(4, '0')}`;
+// Generate prescription numbers atomically. Count-based numbering races under
+// concurrent OPD/IPD prescribing and can violate the unique number index.
+prescriptionSchema.pre('save', async function () {
+  if (!this.isNew || this.prescription_number) return;
+
+  const date = operationNow();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const period = `${year}${month}`;
+  const session = this.$session?.() || null;
+
+  if (this.hospitalId) {
+    const sequence = await HospitalSequence.findOneAndUpdate(
+      { hospitalId: this.hospitalId, key: `PRESCRIPTION_${period}` },
+      { $inc: { value: 1 } },
+      { new: true, upsert: true, setDefaultsOnInsert: true, session }
+    );
+    let hospitalCode = String(this.hospitalId).slice(-6).toUpperCase();
+    try {
+      const hospital = await mongoose.model('Hospital')
+        .findById(this.hospitalId)
+        .select('tenantCode hospitalID')
+        .session(session)
+        .lean();
+      const configured = String(hospital?.tenantCode || hospital?.hospitalID || '').trim();
+      if (configured) hospitalCode = configured.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 12);
+    } catch (_) {
+      // ObjectId suffix keeps the number globally distinct if hospital metadata
+      // cannot be read during a legacy/background write.
+    }
+    this.prescription_number = `RX-${hospitalCode}-${period}-${String(sequence.value).padStart(6, '0')}`;
+    return;
   }
-  next();
+
+  // Legacy unscoped writes are retained for compatibility only. Random suffix
+  // avoids the historical countDocuments concurrency race.
+  this.prescription_number = `RX-${period}-LEGACY-${new mongoose.Types.ObjectId().toString().slice(-8).toUpperCase()}`;
 });
 
 // Virtuals
@@ -209,6 +240,7 @@ prescriptionSchema.virtual('is_fully_dispensed').get(function () {
 
 // Indexes
 prescriptionSchema.index({ hospitalId: 1, patient_id: 1, issue_date: -1 });
+prescriptionSchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } });
 prescriptionSchema.index({ patient_id: 1, issue_date: -1 });
 prescriptionSchema.index({ doctor_id: 1, issue_date: -1 });
 prescriptionSchema.index({ prescription_number: 1 });

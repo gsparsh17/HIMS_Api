@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect, authorize, requirePharmacyFinancialAccess } = require('../middlewares/auth');
+const { protect, authorize, requirePharmacyFinancialAccess, requireAnyModuleAccess } = require('../middlewares/auth');
 const {
   // Purchase Order functions
   createPurchaseOrder,
@@ -31,25 +31,38 @@ const {
 
 const pharmacyFinanceView = requirePharmacyFinancialAccess('view');
 const pharmacyFinanceManage = requirePharmacyFinancialAccess('manage');
+const purchaseOrderView = requireAnyModuleAccess([
+  { moduleKey: 'pharmacy', minimumAccess: 'view' },
+  { moduleKey: 'store_inventory', minimumAccess: 'view' }
+]);
+const purchaseOrderManage = requireAnyModuleAccess([
+  { moduleKey: 'pharmacy', minimumAccess: 'manage' },
+  { moduleKey: 'store_inventory', minimumAccess: 'manage' }
+]);
+
+// Every purchase/sale/ledger route carries patient, stock or financial data.
+// Keep authentication at the router boundary; individual permission gates below
+// then decide whether the authenticated user may view/manage the resource.
+router.use(protect);
 
 // ========== PURCHASE ORDER ROUTES ==========
 // Create new purchase order
-router.post('/purchase-orders', createPurchaseOrder);
+router.post('/purchase-orders', purchaseOrderManage, createPurchaseOrder);
 
 // Get all purchase orders with filters
-router.get('/purchase', getAllPurchaseOrders);
+router.get('/purchase', purchaseOrderView, getAllPurchaseOrders);
 
 // Get purchase order statistics
-router.get('/purchase/stats', getPurchaseOrderStatistics);
+router.get('/purchase/stats', purchaseOrderView, getPurchaseOrderStatistics);
 
 // Get purchase order GST summary (for GSTR-2 reporting)
-router.get('/purchase/gst-summary', getPurchaseOrderGSTSummary);  // NEW
+router.get('/purchase/gst-summary', purchaseOrderView, getPurchaseOrderGSTSummary);  // NEW
 
 // Receive purchase order stock
-router.post('/purchase/:id/receive', receivePurchaseOrder);
+router.post('/purchase/:id/receive', purchaseOrderManage, receivePurchaseOrder);
 
 // Get purchase order by ID
-router.get('/purchase/:id', getPurchaseOrderById);
+router.get('/purchase/:id', purchaseOrderView, getPurchaseOrderById);
 
 // ========== SALES ROUTES ==========
 // Create sale (pharmacy POS)

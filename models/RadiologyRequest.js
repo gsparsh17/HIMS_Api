@@ -165,6 +165,10 @@ const radiologyRequestSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  recommendations: {
+    type: String,
+    trim: true
+  },
   report_url: {
     type: String
   },

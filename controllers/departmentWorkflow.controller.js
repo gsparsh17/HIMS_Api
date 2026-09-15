@@ -796,13 +796,25 @@ exports.labStats = async (req, res) => {
             totalApproved: { $sum: { $cond: [{ $eq: ['$status', 'Approved'] }, 1, 0] } },
             samplesCollected: { $sum: { $cond: [{ $eq: ['$status', 'Sample Collected'] }, 1, 0] } },
             processing: { $sum: { $cond: [{ $eq: ['$status', 'Processing'] }, 1, 0] } },
-            completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
+            completed: { $sum: { $cond: [{ $in: ['$status', ['Result Entered', 'Verified', 'Reported', 'Amended', 'Completed']] }, 1, 0] } },
             referredOut: { $sum: { $cond: [{ $eq: ['$status', 'Referred Out'] }, 1, 0] } },
             todayRequests: {
               $sum: { $cond: [{ $and: [{ $gte: ['$scheduledDate', todayStart] }, { $lte: ['$scheduledDate', todayEnd] }] }, 1, 0] }
             },
             completedToday: {
-              $sum: { $cond: [{ $and: [{ $gte: ['$processing_completed_at', todayStart] }, { $lte: ['$processing_completed_at', todayEnd] }] }, 1, 0] }
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $in: ['$status', ['Result Entered', 'Verified', 'Reported', 'Amended', 'Completed']] },
+                      { $gte: [{ $ifNull: ['$releasedAt', { $ifNull: ['$verifiedAt', { $ifNull: ['$resultEnteredAt', '$processing_completed_at'] }] }] }, todayStart] },
+                      { $lte: [{ $ifNull: ['$releasedAt', { $ifNull: ['$verifiedAt', { $ifNull: ['$resultEnteredAt', '$processing_completed_at'] }] }] }, todayEnd] }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
             },
             todayCollected: {
               $sum: { $cond: [{ $and: [{ $gte: ['$sample_collected_at', todayStart] }, { $lte: ['$sample_collected_at', todayEnd] }] }, 1, 0] }
@@ -977,15 +989,31 @@ exports.enterRadiologyResult = async (req, res) => {
 
     request.findings = req.body.findings ?? request.findings;
     request.impression = req.body.impression ?? request.impression;
+    request.recommendations = req.body.recommendations ?? request.recommendations;
     request.manual_report = req.body.manual_report || request.manual_report;
 
-    const data = await radiologyWorkflow.transition({
-      req,
-      request,
-      to: 'Result Entered',
-      hospitalId,
-      note: req.body.note
-    });
+    let data;
+    if (request.status === 'In Progress' || request.status === 'Verified') {
+      data = await radiologyWorkflow.transition({
+        req,
+        request,
+        to: 'Result Entered',
+        hospitalId,
+        note: req.body.note || (request.status === 'Verified' ? 'Verified report edited; re-verification required' : 'Result entered')
+      });
+    } else if (request.status === 'Result Entered' || request.status === 'Amended') {
+      // Content may be saved repeatedly while it is awaiting verification. A
+      // self-transition is not a workflow event, so persist without fabricating one.
+      await request.save();
+      data = request;
+    } else {
+      return res.status(409).json({
+        success: false,
+        error: 'Radiology results can only be entered after the study has started and before final release.',
+        code: 'RADIOLOGY_RESULT_STATE_INVALID',
+        status: request.status
+      });
+    }
 
     res.json({ success: true, data });
   } catch (e) {
@@ -1199,7 +1227,7 @@ exports.radiologyStats = async (req, res) => {
             pending: { $sum: { $cond: [{ $eq: ['$status', 'Pending'] }, 1, 0] } },
             scheduled: { $sum: { $cond: [{ $eq: ['$status', 'Scheduled'] }, 1, 0] } },
             inProgress: { $sum: { $cond: [{ $eq: ['$status', 'In Progress'] }, 1, 0] } },
-            completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
+            completed: { $sum: { $cond: [{ $in: ['$status', ['Result Entered', 'Verified', 'Reported', 'Amended', 'Completed']] }, 1, 0] } },
             reported: { $sum: { $cond: [{ $eq: ['$status', 'Reported'] }, 1, 0] } },
             pendingBilling: {
               $sum: {

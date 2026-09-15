@@ -27,6 +27,18 @@ const roundMoney = (value) => {
   return Number(toNumber(value).toFixed(2));
 };
 
+const scopedHospitalId = (req) => {
+  const hospitalId = userHospitalId(req.user);
+  if (!hospitalId) {
+    const error = new Error('Hospital context is required');
+    error.statusCode = 403;
+    error.code = 'HOSPITAL_CONTEXT_REQUIRED';
+    throw error;
+  }
+  return hospitalId;
+};
+
+
 // Valid GST rates in India
 const VALID_GST_RATES = [0, 5, 12, 18, 28];
 const VALID_BASE_UNITS = ['tablet', 'capsule', 'ml', 'vial', 'ampoule', 'bottle', 'tube', 'sachet', 'piece', 'unit', 'other'];
@@ -329,7 +341,7 @@ exports.createPurchaseOrder = async (req, res) => {
     }
 
     const purchaseOrder = new PurchaseOrder({
-      hospitalId: userHospitalId(req.user) || null,
+      hospitalId: scopedHospitalId(req),
       supplier_id,
       items: validatedItems,
       subtotal: roundMoney(subtotal),
@@ -345,7 +357,7 @@ exports.createPurchaseOrder = async (req, res) => {
     await purchaseOrder.save();
 
     const invoice = new Invoice({
-      hospital_id: userHospitalId(req.user),
+      hospital_id: scopedHospitalId(req),
       invoice_type: 'Purchase',
       customer_type: 'Supplier',
       customer_name: 'Supplier Purchase',
@@ -411,7 +423,7 @@ exports.getAllPurchaseOrders = async (req, res) => {
       order = 'desc',
     } = req.query;
 
-    const filter = {};
+    const filter = { hospitalId: scopedHospitalId(req) };
     if (status) filter.status = status;
 
     const dateFilter = getPurchaseOrderDateFilter(date);
@@ -470,7 +482,7 @@ exports.getAllPurchaseOrders = async (req, res) => {
 exports.getPurchaseOrderById = async (req, res) => {
   try {
     const { id } = req.params;
-    const order = await PurchaseOrder.findById(id)
+    const order = await PurchaseOrder.findOne({ _id: id, hospitalId: scopedHospitalId(req) })
       .populate('supplier_id')
       .populate('items.medicine_id')
       .populate('created_by', 'name');
@@ -540,7 +552,8 @@ exports.receivePurchaseOrder = async (req, res) => {
       return res.status(400).json({ error: 'received_items array is required.' });
     }
 
-    const order = await PurchaseOrder.findById(id);
+    const hospitalId = scopedHospitalId(req);
+    const order = await PurchaseOrder.findOne({ _id: id, hospitalId });
     if (!order) return res.status(404).json({ error: 'Order not found.' });
     if (!['Ordered', 'Partially Received'].includes(order.status)) {
       return res.status(400).json({ error: `Cannot receive stock for order with status ${order.status}.` });
@@ -655,7 +668,7 @@ exports.receivePurchaseOrder = async (req, res) => {
     order.received_date = order.status === 'Received' ? operationNow() : order.received_date;
     await order.save();
 
-    const populatedOrder = await PurchaseOrder.findById(order._id)
+    const populatedOrder = await PurchaseOrder.findOne({ _id: order._id, hospitalId })
       .populate('supplier_id')
       .populate('items.medicine_id')
       .populate('created_by', 'name');
@@ -687,7 +700,8 @@ exports.getPurchaseOrderStatistics = async (req, res) => {
   try {
     const { startDate, endDate, status } = req.query;
 
-    const filter = {};
+    const hospitalId = scopedHospitalId(req);
+    const filter = { hospitalId };
     if (startDate && endDate) {
       filter.order_date = {
         $gte: new Date(startDate),
@@ -770,7 +784,8 @@ exports.getPurchaseOrderGSTSummary = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
-    const matchStage = {};
+    const hospitalId = scopedHospitalId(req);
+    const matchStage = { hospitalId };
     if (startDate && endDate) {
       matchStage.order_date = {
         $gte: new Date(startDate),
@@ -901,7 +916,7 @@ exports.createSale = async (req, res) => {
 exports.getSaleById = async (req, res) => {
   try {
     const { id } = req.params;
-    const sale = await Sale.findById(id)
+    const sale = await Sale.findOne({ _id: id, hospitalId: scopedHospitalId(req) })
       .populate('patient_id', 'first_name last_name patientId uhid phone dob gender')
       .populate('admission_id', 'admissionNumber shipNumber status')
       .populate('doctor_id', 'firstName lastName specialization')
@@ -967,7 +982,7 @@ exports.voidSale = async (req, res) => {
 
     let result;
     await session.withTransaction(async () => {
-      const sale = await Sale.findById(id).session(session);
+      const sale = await Sale.findOne({ _id: id, hospitalId: scopedHospitalId(req) }).session(session);
       if (!sale) {
         const error = new Error('Sale not found'); error.statusCode = 404; throw error;
       }
@@ -1018,11 +1033,12 @@ exports.getSalesByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
     const { limit = 50, page = 1 } = req.query;
-    const patient = await Patient.findById(patientId)
+    const hospitalId = scopedHospitalId(req);
+    const patient = await Patient.findOne({ _id: patientId, hospitalId })
       .select('first_name last_name patientId uhid');
     if (!patient) return res.status(404).json({ error: 'Patient not found' });
 
-    const filter = { patient_id: patientId };
+    const filter = { patient_id: patientId, hospitalId };
     const sales = await Sale.find(filter)
       .populate('admission_id', 'admissionNumber shipNumber')
       .populate('doctor_id', 'firstName lastName')
@@ -1045,11 +1061,12 @@ exports.getSalesByPatient = async (req, res) => {
 exports.getSalesByAdmission = async (req, res) => {
   try {
     const { admissionId } = req.params;
-    const admission = await IPDAdmission.findById(admissionId)
+    const hospitalId = scopedHospitalId(req);
+    const admission = await IPDAdmission.findOne({ _id: admissionId, hospitalId })
       .populate('patientId', 'first_name last_name patientId uhid');
     if (!admission) return res.status(404).json({ error: 'Admission not found' });
 
-    const sales = await Sale.find({ admission_id: admissionId })
+    const sales = await Sale.find({ admission_id: admissionId, hospitalId })
       .populate('doctor_id', 'firstName lastName')
       .populate('items.medicine_id', 'name hsn_code gst_rate')
       .populate('items.batch_id', 'batch_number expiry_date')
@@ -1076,6 +1093,7 @@ exports.getPendingPrescriptions = async (req, res) => {
   try {
     const { limit = 20, page = 1 } = req.query;
     const filter = {
+      hospitalId: scopedHospitalId(req),
       status: 'Active',
       $or: [
         { is_dispensed: false },
@@ -1110,7 +1128,8 @@ exports.getPendingPrescriptions = async (req, res) => {
 exports.getRecentSales = async (req, res) => {
   try {
     const { limit = 10 } = req.query;
-    const recentSales = await Sale.find({})
+    const hospitalId = scopedHospitalId(req);
+    const recentSales = await Sale.find({ hospitalId })
       .populate('patient_id', 'first_name last_name patientId')
       .populate('admission_id', 'admissionNumber')
       .populate('doctor_id', 'firstName lastName')
@@ -1122,7 +1141,7 @@ exports.getRecentSales = async (req, res) => {
     const todayStart = operationNow();
     todayStart.setHours(0, 0, 0, 0);
     const todaySales = await Sale.aggregate([
-      { $match: { sale_date: { $gte: todayStart } } },
+      { $match: { hospitalId, sale_date: { $gte: todayStart } } },
       { $group: { _id: null, total: { $sum: '$total_amount' }, tax: { $sum: '$tax' }, count: { $sum: 1 } } }
     ]);
 
@@ -1145,7 +1164,7 @@ exports.getAllSales = async (req, res) => {
   try {
     const { startDate, endDate, page = 1, limit = 10, patientId, admissionId, status } = req.query;
 
-    const filter = {};
+    const filter = { hospitalId: scopedHospitalId(req) };
     if (startDate && endDate) {
       filter.sale_date = {
         $gte: new Date(startDate),
@@ -1183,7 +1202,8 @@ exports.getSalesStatistics = async (req, res) => {
   try {
     const { startDate, endDate, groupBy = 'day' } = req.query;
 
-    const filter = {};
+    const hospitalId = scopedHospitalId(req);
+    const filter = { hospitalId };
     if (startDate && endDate) {
       filter.sale_date = {
         $gte: new Date(startDate),
@@ -1244,6 +1264,7 @@ exports.getSalesStatistics = async (req, res) => {
 
 exports.getDailySalesReport = async (req, res) => {
   try {
+    const hospitalId = scopedHospitalId(req);
     const { date } = req.query;
     const targetDate = date ? new Date(date) : operationNow();
 
@@ -1256,6 +1277,7 @@ exports.getDailySalesReport = async (req, res) => {
     const dailyStats = await Sale.aggregate([
       {
         $match: {
+          hospitalId,
           sale_date: { $gte: startOfDay, $lte: endOfDay }
         }
       },
@@ -1315,6 +1337,7 @@ exports.getDailySalesReport = async (req, res) => {
     ]);
 
     const dailySales = await Sale.find({
+      hospitalId,
       sale_date: { $gte: startOfDay, $lte: endOfDay }
     })
       .populate('patient_id', 'first_name last_name')
@@ -1344,6 +1367,7 @@ exports.getDailySalesReport = async (req, res) => {
 
 exports.getMonthlySalesReport = async (req, res) => {
   try {
+    const hospitalId = scopedHospitalId(req);
     const { year, month } = req.query;
     const targetYear = parseInt(year) || operationNow().getFullYear();
     const targetMonth = parseInt(month) || operationNow().getMonth() + 1;
@@ -1354,6 +1378,7 @@ exports.getMonthlySalesReport = async (req, res) => {
     const monthlyStats = await Sale.aggregate([
       {
         $match: {
+          hospitalId,
           sale_date: { $gte: startOfMonth, $lte: endOfMonth }
         }
       },
@@ -1390,6 +1415,7 @@ exports.getMonthlySalesReport = async (req, res) => {
     const topMedicines = await Sale.aggregate([
       {
         $match: {
+          hospitalId,
           sale_date: { $gte: startOfMonth, $lte: endOfMonth }
         }
       },
@@ -1441,6 +1467,7 @@ exports.getMonthlySalesReport = async (req, res) => {
 
 exports.getYearlySalesReport = async (req, res) => {
   try {
+    const hospitalId = scopedHospitalId(req);
     const { year } = req.query;
     const targetYear = parseInt(year) || operationNow().getFullYear();
 
@@ -1450,6 +1477,7 @@ exports.getYearlySalesReport = async (req, res) => {
     const yearlyStats = await Sale.aggregate([
       {
         $match: {
+          hospitalId,
           sale_date: { $gte: startOfYear, $lte: endOfYear }
         }
       },
@@ -1484,6 +1512,7 @@ exports.getYearlySalesReport = async (req, res) => {
     const monthlyBreakdown = await Sale.aggregate([
       {
         $match: {
+          hospitalId,
           sale_date: { $gte: startOfYear, $lte: endOfYear }
         }
       },
@@ -1526,6 +1555,7 @@ exports.getYearlySalesReport = async (req, res) => {
 
 exports.getRevenueComparison = async (req, res) => {
   try {
+    const hospitalId = scopedHospitalId(req);
     const { period = 'month', compareTo = 'previous' } = req.query;
 
     const currentDate = operationNow();
@@ -1557,6 +1587,7 @@ exports.getRevenueComparison = async (req, res) => {
       Sale.aggregate([
         {
           $match: {
+            hospitalId,
             sale_date: { $gte: currentPeriod.start, $lte: currentPeriod.end }
           }
         },
@@ -1572,6 +1603,7 @@ exports.getRevenueComparison = async (req, res) => {
       Sale.aggregate([
         {
           $match: {
+            hospitalId,
             sale_date: { $gte: previousPeriod.start, $lte: previousPeriod.end }
           }
         },

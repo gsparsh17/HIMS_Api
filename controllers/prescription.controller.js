@@ -167,6 +167,7 @@ async function createRadiologyRequests(prescription, radiologyRequests, userId, 
       requestNumber: `RAD-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       sourceType: sourceType || 'OPD',
       admissionId: admissionId || null,
+      appointmentId: prescription.appointment_id || null,
       prescriptionId: prescription._id,
       patientId: prescription.patient_id,
       doctorId: prescription.doctor_id,
@@ -217,6 +218,7 @@ async function createProcedureRequests(prescription, procedureRequests, userId, 
       requestNumber: `PROC-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       sourceType: sourceType || 'OPD',
       admissionId: admissionId || null,
+      appointmentId: prescription.appointment_id || null,
       prescriptionId: prescription._id,
       patientId: prescription.patient_id,
       doctorId: prescription.doctor_id,
@@ -387,6 +389,7 @@ async function validatePrescriptionActors(req, { hospitalId, patientId, doctorId
 exports.createPrescription = async (req, res) => {
   let writeSession = req.transactionSession || null;
   let ownsWriteSession = false;
+  let requestIdempotencyKey = '';
   try {
     const {
       patient_id,
@@ -436,6 +439,64 @@ exports.createPrescription = async (req, res) => {
       doctorId: doctor_id,
       appointmentId: appointment_id
     });
+    requestIdempotencyKey = String(req.get?.('Idempotency-Key') || req.body?.idempotencyKey || '').trim();
+
+    const populateExistingPrescription = (query) => query
+      .populate('patient_id', 'first_name last_name patientId phone')
+      .populate('doctor_id', 'firstName lastName specialization')
+      .populate('lab_test_requests.request_id', 'requestNumber status')
+      .populate('radiology_test_requests.request_id', 'requestNumber status')
+      .populate('procedure_requests.request_id', 'requestNumber status');
+
+    // Lost-response retries must not duplicate the prescription or any of its
+    // generated Lab/Radiology/Procedure requests. The client key is optional for
+    // backwards compatibility, while the appointment fallback protects old UIs.
+    if (requestIdempotencyKey) {
+      const existingByKey = await populateExistingPrescription(Prescription.findOne({
+        hospitalId: prescriptionHospitalId,
+        idempotencyKey: requestIdempotencyKey,
+        is_active: { $ne: false }
+      }));
+      if (existingByKey) {
+        const sameContext = String(existingByKey.patient_id?._id || existingByKey.patient_id) === String(patient_id)
+          && String(existingByKey.doctor_id?._id || existingByKey.doctor_id) === String(doctor_id)
+          && String(existingByKey.appointment_id || '') === String(appointment_id || '');
+        if (!sameContext) {
+          return res.status(409).json({ success: false, error: 'Idempotency key was already used for a different prescription context', code: 'IDEMPOTENCY_KEY_REUSED' });
+        }
+        return res.status(200).json({
+          success: true, alreadyExists: true, message: 'Prescription/orders already saved',
+          prescription: existingByKey,
+          lab_requests: existingByKey.lab_test_requests || [],
+          radiology_requests: existingByKey.radiology_test_requests || [],
+          procedure_requests: existingByKey.procedure_requests || [],
+          ipd_medications_count: (existingByKey.ipd_medication_ids || []).length,
+          pharmacy_requests_created: 0, medication_safety_alerts: []
+        });
+      }
+    }
+
+    if (String(source_type || 'OPD').toUpperCase() === 'OPD' && appointment_id) {
+      const existingAppointmentPrescription = await populateExistingPrescription(Prescription.findOne({
+        hospitalId: prescriptionHospitalId,
+        appointment_id,
+        patient_id,
+        doctor_id,
+        source_type: 'OPD',
+        status: { $nin: ['Cancelled', 'Expired'] },
+        is_active: { $ne: false }
+      }).sort({ createdAt: -1 }));
+      if (existingAppointmentPrescription) {
+        return res.status(200).json({
+          success: true, alreadyExists: true, message: 'Appointment prescription/orders already saved',
+          prescription: existingAppointmentPrescription,
+          lab_requests: existingAppointmentPrescription.lab_test_requests || [],
+          radiology_requests: existingAppointmentPrescription.radiology_test_requests || [],
+          procedure_requests: existingAppointmentPrescription.procedure_requests || [],
+          ipd_medications_count: 0, pharmacy_requests_created: 0, medication_safety_alerts: []
+        });
+      }
+    }
     const selectedMedicines = selectedMedicineIds.length
       ? await Medicine.find({ _id: { $in: selectedMedicineIds }, hospitalId: prescriptionHospitalId }).select('name generic_name brand dosage_form manufacturer manufacturer_brand_owner is_high_risk is_high_alert prescription_required medicationSafety').lean()
       : [];
@@ -638,6 +699,7 @@ exports.createPrescription = async (req, res) => {
     // Create prescription first
     const prescription = new Prescription({
       hospitalId: prescriptionHospitalId,
+      idempotencyKey: requestIdempotencyKey || undefined,
       patient_id,
       doctor_id,
       appointment_id: appointment_id || null,
@@ -670,7 +732,9 @@ exports.createPrescription = async (req, res) => {
       created_by: req.user?._id
     });
 
-    if (String(source_type || '').toUpperCase() === 'IPD' && !writeSession) {
+    if (!writeSession) {
+      // Prescription + generated investigations/procedures are one clinical order
+      // bundle. OPD deserves the same atomicity already used by IPD rounds.
       writeSession = await mongoose.startSession();
       writeSession.startTransaction();
       ownsWriteSession = true;
@@ -868,6 +932,48 @@ exports.createPrescription = async (req, res) => {
   } catch (err) {
     if (ownsWriteSession && writeSession?.inTransaction()) {
       try { await writeSession.abortTransaction(); } catch (abortError) { console.error('Prescription transaction rollback failed:', abortError); }
+    }
+    if (err?.code === 11000) {
+      try {
+        const hospitalId = requestHospitalId(req);
+        const body = req.body || {};
+        let replayFilter = null;
+        if (requestIdempotencyKey) {
+          replayFilter = { hospitalId, idempotencyKey: requestIdempotencyKey, is_active: { $ne: false } };
+        } else if (body.source_document_type && body.source_document_id) {
+          replayFilter = {
+            hospitalId,
+            source_document_type: String(body.source_document_type),
+            source_document_id: body.source_document_id,
+            source_document_revision: Number(body.source_document_revision) || 0,
+            is_active: { $ne: false }
+          };
+        } else if (String(body.source_type || '').toUpperCase() === 'IPD' && body.ipd_admission_id && body.round_id) {
+          replayFilter = {
+            hospitalId, ipd_admission_id: body.ipd_admission_id, round_id: body.round_id,
+            source_type: 'IPD', is_active: { $ne: false }
+          };
+        }
+        const existing = replayFilter ? await Prescription.findOne(replayFilter)
+          .populate('patient_id', 'first_name last_name patientId phone')
+          .populate('doctor_id', 'firstName lastName specialization')
+          .populate('lab_test_requests.request_id', 'requestNumber status')
+          .populate('radiology_test_requests.request_id', 'requestNumber status')
+          .populate('procedure_requests.request_id', 'requestNumber status') : null;
+        if (existing) {
+          return res.status(200).json({
+            success: true, alreadyExists: true, message: 'Prescription/orders already saved',
+            prescription: existing,
+            lab_requests: existing.lab_test_requests || [],
+            radiology_requests: existing.radiology_test_requests || [],
+            procedure_requests: existing.procedure_requests || [],
+            ipd_medications_count: (existing.ipd_medication_ids || []).length,
+            pharmacy_requests_created: 0, medication_safety_alerts: []
+          });
+        }
+      } catch (lookupError) {
+        console.error('Prescription idempotency replay lookup failed:', lookupError);
+      }
     }
     console.error('Error creating prescription:', err);
     res.status(err.statusCode || 500).json({ error: err.message, code: err.code });
@@ -2047,12 +2153,18 @@ exports.convertToIPD = async (req, res) => {
 exports.getOPDPrescriptionsForIPD = async (req, res) => {
   try {
     const { patientId } = req.params;
+    const hospitalId = requestHospitalId(req);
     const { active = 'true' } = req.query;
 
+    const patientExists = await Patient.exists({ _id: patientId, hospitalId });
+    if (!patientExists) return res.status(404).json({ error: 'Patient not found' });
+
     const filter = {
+      hospitalId,
       patient_id: patientId,
       source_type: 'OPD',
-      is_converted_to_ipd: false
+      is_converted_to_ipd: false,
+      is_active: { $ne: false }
     };
 
     if (active === 'true') {

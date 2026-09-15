@@ -12,7 +12,44 @@ const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuar
 
 
 
+
+const PROCEDURE_STATUS_TRANSITIONS = Object.freeze({
+  Pending: ['Approved', 'Cancelled'],
+  Approved: ['Scheduled', 'In Progress', 'Cancelled', 'Postponed'],
+  Scheduled: ['In Progress', 'Cancelled', 'Postponed'],
+  Postponed: ['Scheduled', 'Cancelled'],
+  'In Progress': ['Completed', 'Cancelled'],
+  Completed: [],
+  Cancelled: []
+});
+
+const canTransitionProcedure = (from, to) =>
+  from === to || (PROCEDURE_STATUS_TRANSITIONS[from] || []).includes(to);
+
 // ============== PROCEDURE REQUEST CRUD ==============
+
+
+// Active tenant-scoped procedure categories used by the operational worklist.
+// This replaces the frontend's stale hard-coded list and automatically exposes
+// legitimate non-OT categories such as General Medicine.
+exports.getProcedureCategories = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const categories = await Procedure.distinct('category', {
+      hospitalId,
+      is_active: { $ne: false },
+      is_billable: { $ne: false }
+    });
+    const cleaned = categories
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+    return res.json({ success: true, data: cleaned, categories: cleaned });
+  } catch (error) {
+    console.error('Error fetching procedure categories:', error);
+    return res.status(500).json({ error: error.message });
+  }
+};
 
 // Create procedure request (from IPD/OPD)
 exports.createProcedureRequest = async (req, res) => {
@@ -246,6 +283,13 @@ exports.updateRequestStatus = async (req, res) => {
     }
 
     const previousStatus = request.status;
+    if (!canTransitionProcedure(previousStatus, status)) {
+      return res.status(409).json({
+        error: `Invalid procedure status transition from ${previousStatus} to ${status}`,
+        code: 'PROCEDURE_STATUS_TRANSITION_INVALID',
+        allowed: PROCEDURE_STATUS_TRANSITIONS[previousStatus] || []
+      });
+    }
     request.status = status;
     
     // Update timestamps based on status
@@ -299,7 +343,7 @@ exports.updateRequestStatus = async (req, res) => {
 exports.addProcedureFindings = async (req, res) => {
   try {
     const { id } = req.params;
-    const { findings, complications, post_procedure_instructions } = req.body;
+    const { findings, complications, post_procedure_instructions, notes } = req.body;
     const hospitalId = requireHospitalId(req);
 
     const request = await ProcedureRequest.findOne({ _id: id, hospitalId });
@@ -307,9 +351,17 @@ exports.addProcedureFindings = async (req, res) => {
       return res.status(404).json({ error: 'Procedure request not found' });
     }
 
+    if (!['In Progress', 'Completed'].includes(request.status)) {
+      return res.status(409).json({
+        error: 'Procedure findings can only be finalized after the procedure has started',
+        code: 'PROCEDURE_NOT_IN_PROGRESS'
+      });
+    }
+
     request.findings = findings || '';
     request.complications = complications || '';
     request.post_procedure_instructions = post_procedure_instructions || '';
+    if (notes !== undefined) request.surgeon_notes = String(notes || '').trim();
 
     if (request.status !== 'Completed') {
       request.status = 'Completed';

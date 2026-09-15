@@ -27,6 +27,7 @@ const { appendDomainEvent } = require('../services/auditEvent.service');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
 const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
+const labWorkflow = require('../services/labWorkflow.service');
 
 // File uploads use the configured HIMS storage driver.
 
@@ -362,6 +363,13 @@ exports.saveManualReport = async (req, res) => {
     if (request.reportFinalisation?.isFinal) {
       return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
     }
+    if (!['Processing', 'Result Entered', 'Verified', 'Referred Out', 'Amended'].includes(request.status)) {
+      return res.status(409).json({
+        error: 'Laboratory results can only be entered after processing has started.',
+        code: 'LAB_RESULT_ENTRY_STATE_INVALID',
+        status: request.status
+      });
+    }
 
     const template = getTemplate(req.body.templateId || request.reportTemplateId)
       || matchTemplate(request.testName, request.testCode, request.reportTemplateId);
@@ -437,9 +445,19 @@ exports.saveManualReport = async (req, res) => {
     request.is_abnormal = observations.some((item) => item.isAbnormal || item.isCritical || /^(h|l|high|low|abnormal|positive|reactive|critical|very high|very low)$/i.test(item.printedFlag || item.derivedFlag));
     request.technician_notes = cleanText(req.body.technicianNotes || req.body.notes, request.technician_notes || '');
     request.pathologist_notes = cleanText(req.body.pathologistNotes, request.pathologist_notes || '');
-    request.status = 'Result Entered';
     request.processing_completed_at = completedAt;
-    await request.save();
+    const hospitalId = requireHospitalId(req);
+    if (['Processing', 'Verified', 'Referred Out'].includes(request.status)) {
+      await labWorkflow.transition({
+        req,
+        request,
+        to: 'Result Entered',
+        note: request.status === 'Verified' ? 'Structured result changed after verification; re-verification required' : 'Structured result entered',
+        hospitalId
+      });
+    } else {
+      await request.save();
+    }
     await rememberRequestPayerContextUsage({
       hospitalId: request.hospitalId,
       patientId: request.patientId,
@@ -847,10 +865,21 @@ exports.uploadReport = async (req, res) => {
       return res.status(400).json({ error: 'The uploaded file content does not match its PDF/image type' });
     }
 
-    // Upload through the configured HIMS storage driver
+    const hospitalId = requireHospitalId(req);
+    if (!['Processing', 'Result Entered', 'Verified', 'Referred Out', 'Amended'].includes(request.status)) {
+      safeUnlink(req.file.path);
+      return res.status(409).json({
+        error: 'A laboratory report can only be uploaded after processing has started.',
+        code: 'LAB_REPORT_UPLOAD_STATE_INVALID',
+        status: request.status
+      });
+    }
+
+    // Validate workflow eligibility before durable storage. Otherwise an invalid
+    // state request can upload a file and then return 409, leaving an orphan.
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
-    
+
     const result = await fileStorage.upload(req.file, req, {
       folder: 'lab_reports',
       resource_type: resourceType,
@@ -869,15 +898,29 @@ exports.uploadReport = async (req, res) => {
     request.manual_report = undefined;
     request.processing_completed_at = request.processing_completed_at || operationNow();
     if (req.body.notes) request.technician_notes = cleanText(req.body.notes);
-    
-    if (request.status !== 'Reported') {
-      request.status = 'Result Entered';
-    }
 
-    await request.save();
+    // Report content is not synonymous with clinical release. New or changed
+    // content must remain at Result Entered until a verifier explicitly verifies
+    // and releases it. Replacing verified content invalidates that verification.
+    if (['Processing', 'Verified', 'Referred Out'].includes(request.status)) {
+      await labWorkflow.transition({
+        req,
+        request,
+        to: 'Result Entered',
+        note: request.status === 'Verified' ? 'Report file changed after verification; re-verification required' : 'Report file uploaded',
+        hospitalId
+      });
+    } else {
+      await request.save();
+    }
     await upsertLabReportRecord(request, req.user?._id);
 
-    res.json({ success: true, message: 'Report uploaded successfully', report_url: result.secure_url, data: request });
+    res.json({
+      success: true,
+      message: 'Report uploaded. Verification and release are still required.',
+      report_url: result.secure_url,
+      data: request
+    });
   } catch (error) {
     console.error('Error uploading report:', error);
     safeUnlink(req.file?.path);

@@ -6,6 +6,7 @@ const { catalogVersion, listTemplates, getTemplate, matchTemplateDetailed } = re
 const { requireHospitalId } = require('../services/tenantScope.service');
 const { generateRadiologyReportPdf } = require('../services/radiologyPdf.service');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
+const radiologyWorkflow = require('../services/radiologyWorkflow.service');
 
 
 
@@ -56,6 +57,13 @@ exports.saveManualReport = async (req, res) => {
     if (!request) return res.status(404).json({ error: 'Radiology request not found' });
     if (request.reportFinalisation?.isFinal) {
       return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
+    }
+    if (!['In Progress', 'Result Entered', 'Verified', 'Amended'].includes(request.status)) {
+      return res.status(409).json({
+        error: 'Radiology results can only be entered after the study has started.',
+        code: 'RADIOLOGY_RESULT_ENTRY_STATE_INVALID',
+        status: request.status
+      });
     }
     const payload = JSON.parse(req.body.report || '{}');
     const template = getTemplate(payload.templateId || request.reportTemplateId);
@@ -118,10 +126,19 @@ exports.saveManualReport = async (req, res) => {
     };
     request.findings = clean(sections.find((item) => /findings/i.test(item.key))?.text || sections.find((item) => /findings/i.test(item.label))?.text);
     request.impression = clean(sections.find((item) => /impression/i.test(item.key))?.text || sections.find((item) => /impression/i.test(item.label))?.text);
-    request.status = 'Result Entered';
-    request.resultEnteredAt = operationNow();
-    await request.save();
-    res.json({ success: true, message: 'Structured radiology report saved', data: request });
+    const hospitalId = requireHospitalId(req);
+    if (request.status === 'In Progress' || request.status === 'Verified') {
+      await radiologyWorkflow.transition({
+        req,
+        request,
+        to: 'Result Entered',
+        hospitalId,
+        note: request.status === 'Verified' ? 'Structured report changed after verification; re-verification required' : 'Structured report entered'
+      });
+    } else {
+      await request.save();
+    }
+    res.json({ success: true, message: 'Structured radiology report saved; verification and release are still required', data: request });
   } catch (error) {
     console.error('Error saving structured radiology report:', error);
     res.status(500).json({ error: error.message });
@@ -135,10 +152,21 @@ exports.downloadGeneratedReport = async (req, res) => {
     const request = await RadiologyRequest.findOne({ _id: req.params.id, hospitalId: requireHospitalId(req) })
       .populate('patientId')
       .populate('doctorId')
+      .populate('performedBy', 'name designation employeeId')
+      .populate('reportedBy', 'name designation employeeId')
       .populate('admissionId', 'admissionNumber hospitalId')
       .populate('appointmentId', 'token')
       .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
-    if (!request || request.report_mode !== 'manual' || !request.manual_report) return res.status(404).json({ error: 'Structured radiology report not found' });
+    if (!request) return res.status(404).json({ error: 'Radiology request not found' });
+    const hasGeneratedContent = Boolean(
+      request.manual_report ||
+      request.findings ||
+      request.impression ||
+      request.recommendations
+    );
+    if (!hasGeneratedContent) {
+      return res.status(404).json({ error: 'No generated radiology report content is available' });
+    }
     const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
     await generateRadiologyReportPdf({ request, hospital, res });
   } catch (error) {

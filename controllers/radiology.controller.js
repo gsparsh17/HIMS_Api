@@ -15,6 +15,9 @@ const { postProviderJson } = require('../utils/functionalDomain');
 const { resolveRequestPayerContext, rememberRequestPayerContextUsage } = require('../services/requestPayerContext.service');
 const { postSourceCharge, reverseSourceFinancials } = require('../services/chargePosting.service');
 const { assertAdmissionOpenForMutation } = require('../services/ipdLifecycleGuard.service');
+const radiologyWorkflow = require('../services/radiologyWorkflow.service');
+const { generateRadiologyReportPdf } = require('../services/radiologyPdf.service');
+const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 
 
 const safeUnlink = (filePath) => {
@@ -361,57 +364,69 @@ exports.getRadiologyRequestById = async (req, res) => {
   }
 };
 
-// Update radiology request status
+// Update radiology request status. This compatibility endpoint is kept for older
+// screens, but all transitions now go through the same audited state machine as
+// the canonical schedule/start/results/verify/release endpoints.
 exports.updateRequestStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, notes } = req.body;
+    if (!status) return res.status(400).json({ error: 'Status is required' });
     if (status === 'Cancelled' && !String(notes || '').trim()) {
       return res.status(400).json({ error: 'Cancellation reason is required so the financial reversal is auditable' });
     }
-    const staffId = req.user?.radiologyStaffId;
-
-    const request = await RadiologyRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
-    if (!request) {
-      return res.status(404).json({ error: 'Radiology request not found' });
+    if (status === 'Completed') {
+      return res.status(409).json({
+        error: 'Completed is a legacy radiology status. Enter results instead.',
+        code: 'RADIOLOGY_LEGACY_STATUS_UNSUPPORTED',
+        nextStatus: 'Result Entered'
+      });
+    }
+    if (status === 'Reported') {
+      return res.status(409).json({
+        error: 'Radiology reports must be verified and released through the release endpoint.',
+        code: 'RADIOLOGY_RELEASE_ENDPOINT_REQUIRED'
+      });
     }
 
-    request.status = status;
-    
-    // Update timestamps based on status
-    if (status === 'Approved') {
-      request.approvedBy = staffId;
-      request.approvedAt = operationNow();
-    } else if (status === 'In Progress') {
-      request.performedBy = staffId;
-      request.performedAt = operationNow();
-    } else if (status === 'Reported') {
-      request.reportedBy = staffId;
-      request.reportedAt = operationNow();
+    const hospitalId = requireHospitalId(req);
+    const request = await RadiologyRequest.findOne({ _id: id, hospitalId });
+    if (!request) return res.status(404).json({ error: 'Radiology request not found' });
+    if (request.reportFinalisation?.isFinal) {
+      return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
     }
 
-    if (notes) {
-      if (status === 'In Progress') request.technician_notes = notes;
-      else request.radiologist_notes = notes;
+    const patch = {};
+    if (status === 'In Progress' && notes) patch.technician_notes = notes;
+    if (status === 'Verified' && notes) patch.radiologist_notes = notes;
+    if (status === 'Cancelled') {
+      patch.cancelled_at = operationNow();
+      patch.cancelled_by = req.user?._id;
+      patch.cancellation_reason = String(notes || '').trim();
     }
 
-    await request.save();
+    const data = await radiologyWorkflow.transition({
+      req, request, to: status, hospitalId, note: notes, patch
+    });
 
     let financialReversal = null;
     let financialWarning = null;
     if (status === 'Cancelled') {
       try {
-        financialReversal = await reverseSourceFinancials({ sourceModule: 'RadiologyRequest', sourceId: request._id, reason: notes, user: req.user });
+        financialReversal = await reverseSourceFinancials({
+          sourceModule: 'RadiologyRequest', sourceId: request._id, reason: notes, user: req.user
+        });
       } catch (financeError) {
         financialWarning = financeError.message;
         console.warn('RadiologyRequest cancellation financial reversal pending:', financeError.message);
       }
     }
 
-    res.json({ success: true, message: `Request status updated to ${status}`, data: request, financialReversal, financialWarning });
+    return res.json({ success: true, message: `Request status updated to ${status}`, data, financialReversal, financialWarning });
   } catch (error) {
-    console.error('Error updating request status:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error updating radiology request status:', error);
+    const statusCode = Number(error?.statusCode || 500);
+    return res.status(statusCode).json({ error: error.message, code: error.code });
   }
 };
 
@@ -439,10 +454,21 @@ exports.uploadReport = async (req, res) => {
       return res.status(409).json({ error: 'Final reports are immutable. Use the controlled amendment action.' });
     }
 
-    // Upload through the configured HIMS storage driver
+    const hospitalId = requireHospitalId(req);
+    if (!['In Progress', 'Result Entered', 'Verified', 'Amended'].includes(request.status)) {
+      safeUnlink(req.file.path);
+      return res.status(409).json({
+        error: 'A radiology report can only be uploaded after the study has started.',
+        code: 'RADIOLOGY_REPORT_UPLOAD_STATE_INVALID',
+        status: request.status
+      });
+    }
+
+    // Validate workflow eligibility before durable storage. Otherwise an invalid
+    // state request can upload a file and then return 409, leaving an orphan.
     const isPDF = req.file.mimetype === 'application/pdf';
     const resourceType = isPDF ? 'raw' : 'image';
-    
+
     const result = await fileStorage.upload(req.file, req, {
       folder: 'radiology_reports',
       resource_type: resourceType,
@@ -461,15 +487,27 @@ exports.uploadReport = async (req, res) => {
     request.report_mime_type = req.file.mimetype;
     request.report_file_size = req.file.size;
     request.manual_report = undefined;
-    
-    if (request.status !== 'Reported') {
-      request.status = 'Reported';
-      request.reportedAt = operationNow();
+
+    // Uploading/replacing report content never releases it. If verified content is
+    // changed, invalidate that verification and require a fresh verify/release.
+    if (request.status === 'In Progress' || request.status === 'Verified') {
+      await radiologyWorkflow.transition({
+        req,
+        request,
+        to: 'Result Entered',
+        hospitalId,
+        note: request.status === 'Verified' ? 'Report file changed after verification; re-verification required' : 'Report file uploaded'
+      });
+    } else {
+      await request.save();
     }
 
-    await request.save();
-
-    res.json({ success: true, message: 'Report uploaded successfully', report_url: result.secure_url });
+    res.json({
+      success: true,
+      message: 'Report uploaded. Verification and release are still required.',
+      report_url: result.secure_url,
+      status: request.status
+    });
   } catch (error) {
     console.error('Error uploading report:', error);
     safeUnlink(req.file?.path);
@@ -481,13 +519,24 @@ exports.uploadReport = async (req, res) => {
 exports.downloadReport = async (req, res) => {
   try {
     const { id } = req.params;
-    const request = await RadiologyRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) });
-    
-    if (!request || !request.report_url) {
-      return res.status(404).json({ error: 'Report not found' });
+    const request = await RadiologyRequest.findOne({ _id: id, hospitalId: requireHospitalId(req) })
+      .populate('patientId')
+      .populate('doctorId')
+      .populate('performedBy', 'name designation employeeId')
+      .populate('reportedBy', 'name designation employeeId')
+      .populate('admissionId', 'admissionNumber hospitalId')
+      .populate('appointmentId', 'token')
+      .populate({ path: 'prescriptionId', select: 'appointment_id', populate: { path: 'appointment_id', select: 'token' } });
+
+    if (!request) return res.status(404).json({ error: 'Report not found' });
+    if (request.report_url) return res.redirect(request.report_url);
+
+    if (request.manual_report || request.findings || request.impression || request.recommendations) {
+      const hospital = await getHospitalPrintIdentity({ includeLogoBuffer: true });
+      return generateRadiologyReportPdf({ request, hospital, res });
     }
 
-    res.redirect(request.report_url);
+    return res.status(404).json({ error: 'Report not found' });
   } catch (error) {
     console.error('Error downloading report:', error);
     res.status(500).json({ error: error.message });
