@@ -179,6 +179,16 @@ const otRequestSchema = new mongoose.Schema({
   startedAt: Date,
   completedAt: Date,
   patientReceivedAt: Date,
+  patientReceipt: {
+    identityConfirmed: { type: Boolean, default: false },
+    procedureConfirmed: { type: Boolean, default: false },
+    siteConfirmed: { type: Boolean, default: false },
+    handoverReceived: { type: Boolean, default: false },
+    sourceWard: String,
+    handoverNotes: String,
+    receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    receivedAt: Date
+  },
   recoveryStartedAt: Date,
   transferredAt: Date,
   closedAt: Date,

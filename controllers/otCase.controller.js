@@ -23,10 +23,11 @@ const {
   decorateCase, queryStatusesForCanonical, legacyActionForStatus, buildTransitionDefinitions,
   financialCanProceed, canonicalStatus, OT_WORKFLOW_POLICY_VERSION
 } = require('../services/otWorkflow.service');
-const { getOrCreateReadiness, evaluateReadiness, syncFinancialItem } = require('../services/otReadiness.service');
+const { getOrCreateReadiness, evaluateReadiness, reconcileOtReadiness, DERIVED_READINESS_KEYS } = require('../services/otReadiness.service');
 const { ensureOTFinancialObligation, refreshOTFinancialState } = require('../services/otFinancialClearance.service');
+const { findSchedulingConflicts, teamAssignments, validateDuration, clampMinutes } = require('../services/otScheduling.service');
+const { _hasActionPermission } = require('../middlewares/auth');
 
-const ACTIVE_SCHEDULE_STATUSES = ['Scheduled', 'In Progress'];
 
 const DEFAULT_SAFETY = {
   signIn: [
@@ -286,7 +287,7 @@ exports.getWorkspace = async (req, res, next) => {
     res.json({
       success: true,
       data: {
-        case: decorateCase(populated),
+        case: decorateCase(populated, { safety }),
         financial: financial.summary,
         readiness: financial.readiness,
         safety, pac, anesthesia, operative, recovery, inventory, specimens, schedule
@@ -307,23 +308,27 @@ exports.getFinancial = async (req, res, next) => {
 exports.getReadiness = async (req, res, next) => {
   try {
     const otCase = await findCase(req, req.params.id);
-    const checklist = await getOrCreateReadiness(otCase, req.user._id);
-    res.json({ success: true, data: checklist });
+    await refreshOTFinancialState({ otCase, user: req.user, syncReadiness: false });
+    const checklist = await reconcileOtReadiness({ otCase, userId: req.user._id, autoApprove: true });
+    res.json({ success: true, data: checklist, case: decorateCase(otCase) });
   } catch (error) { next(error); }
 };
 
 exports.updateReadiness = async (req, res, next) => {
   try {
     const otCase = await findCase(req, req.params.id);
-    // Financial clearance is server-derived and may never be manually ticked.
-    await refreshOTFinancialState({ otCase, user: req.user, syncReadiness: true });
-    const checklist = await getOrCreateReadiness(otCase, req.user._id);
+    // Derived readiness items are reconciled from their source records first.
+    await refreshOTFinancialState({ otCase, user: req.user, syncReadiness: false });
+    const checklist = await reconcileOtReadiness({ otCase, userId: req.user._id, autoApprove: false });
     const updates = new Map((req.body.items || []).map((item) => [item.key, item]));
     checklist.items.forEach((item) => {
-      if (item.key === 'financial_clearance') return;
+      if (DERIVED_READINESS_KEYS.includes(item.key)) return;
       const update = updates.get(item.key);
       if (!update) return;
-      if (update.status === 'Bypassed' && !req.body.bypassApproved) throw transitionError(`Bypass approval is required for ${item.label}`, 403);
+      if (update.status === 'Bypassed') {
+        if (!String(update.bypassReason || update.notes || '').trim()) throw transitionError(`A bypass reason is required for ${item.label}`, 400);
+        if (!_hasActionPermission(req.user, 'ot_emergency_bypass')) throw transitionError(`You are not permitted to bypass ${item.label}`, 403);
+      }
       item.status = update.status || item.status;
       item.value = update.value;
       item.notes = update.notes;
@@ -332,19 +337,14 @@ exports.updateReadiness = async (req, res, next) => {
       item.bypassReason = update.bypassReason;
       item.bypassApprovedBy = item.status === 'Bypassed' ? req.user._id : undefined;
     });
-    syncFinancialItem(checklist, otCase, req.user._id);
     checklist.evaluatedBy = req.user._id;
     evaluateReadiness(checklist);
     await checklist.save();
-    otCase.readinessStatus = checklist.overallStatus;
-    if (checklist.overallStatus !== 'Pending' && canonicalStatus(otCase.status, otCase) === 'Readiness Pending') {
-      otCase.status = 'Approved';
-      otCase.approvedBy = req.user._id;
-      otCase.approvedAt = operationNow();
-    }
+    const reconciled = await reconcileOtReadiness({ otCase, userId: req.user._id, autoApprove: true });
+    otCase.readinessStatus = reconciled.overallStatus;
     await otCase.save();
-    await appendDomainEvent({ req, eventType: 'ot.case.readiness_updated', entityType: 'OTReadinessChecklist', entityId: checklist._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, revision: checklist.version, afterSummary: { overallStatus: checklist.overallStatus, financialClearanceState: otCase.financialClearanceState } });
-    res.json({ success: true, message: `Readiness is ${checklist.overallStatus}`, data: checklist, case: decorateCase(otCase) });
+    await appendDomainEvent({ req, eventType: 'ot.case.readiness_updated', entityType: 'OTReadinessChecklist', entityId: checklist._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, revision: checklist.version, afterSummary: { overallStatus: otCase.readinessStatus, financialClearanceState: otCase.financialClearanceState } });
+    res.json({ success: true, message: `Readiness is ${otCase.readinessStatus}`, data: await getOrCreateReadiness(otCase, req.user._id), case: decorateCase(otCase) });
   } catch (error) { next(error); }
 };
 
@@ -361,6 +361,15 @@ exports.updateSafety = async (req, res, next) => {
     const checklist = await getOrCreateSafety(otCase);
     const sectionName = req.body.section;
     if (!['signIn', 'timeOut', 'signOut'].includes(sectionName)) return res.status(400).json({ error: 'Invalid safety checklist section' });
+    const canonical = canonicalStatus(otCase.status, otCase);
+    const allowedStatuses = {
+      signIn: ['Scheduled', 'Patient Received'],
+      timeOut: ['Patient Received', 'In Progress'],
+      signOut: ['In Progress']
+    };
+    if (!allowedStatuses[sectionName].includes(canonical)) {
+      throw transitionError(`${sectionName} cannot be completed while OT case status is ${canonical}`, 409, { allowedStatuses: allowedStatuses[sectionName] });
+    }
     const section = checklist[sectionName];
     const updates = new Map((req.body.items || []).map((item) => [item.key, item]));
     section.items.forEach((item) => {
@@ -373,8 +382,10 @@ exports.updateSafety = async (req, res, next) => {
     });
     const incomplete = section.items.filter((item) => !['Yes', 'Not Applicable'].includes(item.response));
     if (req.body.bypass) {
+      if (!String(req.body.bypassReason || '').trim()) throw transitionError('Safety bypass reason is required', 400);
+      if (!_hasActionPermission(req.user, 'ot_emergency_bypass')) throw transitionError('You are not permitted to bypass the surgical safety checklist', 403);
       section.status = 'Bypassed';
-      section.bypassReason = req.body.bypassReason;
+      section.bypassReason = String(req.body.bypassReason).trim();
       section.bypassApprovedBy = req.user._id;
     } else {
       section.status = incomplete.length ? 'Pending' : 'Completed';
@@ -383,7 +394,85 @@ exports.updateSafety = async (req, res, next) => {
     section.attestedAt = operationNow();
     checklist.version = Number(checklist.version || 0) + 1;
     await checklist.save();
-    res.json({ success: true, data: checklist });
+    await appendDomainEvent({
+      req, eventType: `ot.safety.${sectionName}.${section.status.toLowerCase()}`, entityType: 'OTSurgicalSafetyChecklist',
+      entityId: checklist._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId,
+      revision: checklist.version, afterSummary: { section: sectionName, status: section.status }
+    });
+    res.json({ success: true, data: checklist, case: decorateCase(otCase, { safety: checklist }) });
+  } catch (error) { next(error); }
+};
+
+async function evaluateScheduleRequest(req, otCase, session, { persistCase = true } = {}) {
+  await refreshOTFinancialState({ otCase, user: req.user, session, syncReadiness: false });
+  await reconcileOtReadiness({ otCase, userId: req.user._id, session, autoApprove: true, saveCase: false });
+  if (persistCase) await otCase.save(session ? { session } : undefined);
+
+  const canonical = canonicalStatus(otCase.status, otCase);
+  if (!['Approved', 'Scheduled', 'Postponed'].includes(canonical)) {
+    throw transitionError(`Case cannot be scheduled while status is ${canonical}`);
+  }
+  if (!['Ready', 'Ready With Bypass'].includes(otCase.readinessStatus) && !otCase.emergencyOverride?.enabled) {
+    throw transitionError('OT readiness is incomplete');
+  }
+  if (!financialCanProceed(otCase.financialClearanceState, otCase)) {
+    throw transitionError(`Financial clearance is required before scheduling (${otCase.financialClearanceState || 'PAYMENT_REQUIRED'})`);
+  }
+
+  const scheduledStart = parseDateTime(req.body.scheduledStart || req.body.scheduledDate, req.body.scheduledTime);
+  if (!scheduledStart || Number.isNaN(scheduledStart.getTime())) throw Object.assign(new Error('Valid schedule start is required'), { statusCode: 400 });
+  const duration = validateDuration(req.body.durationMinutes || req.body.estimated_duration_minutes || otCase.estimated_duration_minutes || 60);
+  const scheduledEnd = req.body.scheduledEnd ? new Date(req.body.scheduledEnd) : new Date(scheduledStart.getTime() + duration * 60000);
+  if (Number.isNaN(scheduledEnd.getTime()) || scheduledEnd <= scheduledStart) throw Object.assign(new Error('Valid schedule end is required'), { statusCode: 400 });
+  const roomId = req.body.otRoomId || otCase.otRoomId;
+  if (!roomId) throw Object.assign(new Error('OT room is required'), { statusCode: 400 });
+  const roomQuery = Room.findOne({ _id: roomId, hospitalId: otCase.hospitalId });
+  if (session) roomQuery.session(session);
+  const room = await roomQuery;
+  if (!room || !['Operation Theater', 'Operation Theatre', 'OT'].includes(room.type) || ['Maintenance', 'Closed'].includes(room.status) || ['maintenance', 'closed'].includes(room.operationalStatus)) {
+    throw Object.assign(new Error('Valid operational theatre room not found'), { statusCode: 404 });
+  }
+
+  const setupBufferMinutes = clampMinutes(req.body.setupBufferMinutes ?? otCase.setupBufferMinutes ?? 15, 15);
+  const cleaningBufferMinutes = clampMinutes(req.body.cleaningBufferMinutes ?? otCase.cleaningBufferMinutes ?? 20, 20);
+  const suppliedOrExisting = (field, fallback) => Object.prototype.hasOwnProperty.call(req.body, field)
+    ? (req.body[field] || null)
+    : fallback;
+  const team = {
+    primarySurgeonId: suppliedOrExisting('primarySurgeonId', otCase.primarySurgeonId || otCase.doctorId),
+    assistantSurgeonId: suppliedOrExisting('assistantSurgeonId', otCase.assistantSurgeonId),
+    anesthetistId: suppliedOrExisting('anesthetistId', otCase.anesthetistId),
+    scrubNurseId: suppliedOrExisting('scrubNurseId', otCase.scrubNurseId),
+    circulatingNurseId: suppliedOrExisting('circulatingNurseId', otCase.circulatingNurseId),
+    otStaffId: suppliedOrExisting('otStaffId', otCase.otStaffId)
+  };
+  const availability = await findSchedulingConflicts({
+    hospitalId: otCase.hospitalId,
+    requestId: otCase._id,
+    roomId,
+    scheduledStart,
+    scheduledEnd,
+    setupBufferMinutes,
+    cleaningBufferMinutes,
+    team,
+    session
+  });
+  return { room, roomId, scheduledStart, scheduledEnd, duration, setupBufferMinutes, cleaningBufferMinutes, team, availability };
+}
+
+exports.previewSchedule = async (req, res, next) => {
+  try {
+    const otCase = await findCase(req, req.params.id);
+    const plan = await evaluateScheduleRequest(req, otCase, undefined, { persistCase: false });
+    res.json({
+      success: true,
+      available: plan.availability.conflicts.length === 0,
+      conflicts: plan.availability.conflicts,
+      blockedStart: plan.availability.blockedStart,
+      blockedEnd: plan.availability.blockedEnd,
+      readinessStatus: otCase.readinessStatus,
+      financialClearanceState: otCase.financialClearanceState
+    });
   } catch (error) { next(error); }
 };
 
@@ -395,65 +484,138 @@ exports.scheduleCase = async (req, res, next) => {
     let result;
     await session.withTransaction(async () => {
       const otCase = await findCase(req, req.params.id, session);
-      const canonical = canonicalStatus(otCase.status, otCase);
-      if (!['Approved', 'Scheduled', 'Postponed'].includes(canonical)) throw transitionError(`Case cannot be scheduled while status is ${canonical}`);
-      if (otCase.readinessStatus === 'Pending' && otCase.urgency !== 'Emergency' && !otCase.emergencyOverride?.enabled) throw transitionError('OT readiness is incomplete');
-      if (!financialCanProceed(otCase.financialClearanceState, otCase)) {
-        throw transitionError(`Financial clearance is required before scheduling (${otCase.financialClearanceState || 'PAYMENT_REQUIRED'})`);
+      const plan = await evaluateScheduleRequest(req, otCase, session);
+      if (plan.availability.conflicts.length) {
+        throw transitionError('The selected OT slot or team has scheduling conflicts', 409, {
+          conflicts: plan.availability.conflicts,
+          blockedStart: plan.availability.blockedStart,
+          blockedEnd: plan.availability.blockedEnd
+        });
       }
-      const scheduledStart = parseDateTime(req.body.scheduledStart || req.body.scheduledDate, req.body.scheduledTime);
-      if (!scheduledStart || Number.isNaN(scheduledStart.getTime())) throw Object.assign(new Error('Valid schedule start is required'), { statusCode: 400 });
-      const duration = Number(req.body.durationMinutes || req.body.estimated_duration_minutes || otCase.estimated_duration_minutes || 60);
-      const scheduledEnd = req.body.scheduledEnd ? new Date(req.body.scheduledEnd) : new Date(scheduledStart.getTime() + duration * 60000);
-      if (Number.isNaN(scheduledEnd.getTime()) || scheduledEnd <= scheduledStart) throw Object.assign(new Error('Valid schedule end is required'), { statusCode: 400 });
-      const roomId = req.body.otRoomId || otCase.otRoomId;
-      if (!roomId) throw Object.assign(new Error('OT room is required'), { statusCode: 400 });
-      const room = await Room.findById(roomId).session(session);
-      if (!room || !/operation/i.test(room.type || '')) throw Object.assign(new Error('Valid operation theatre room not found'), { statusCode: 404 });
-      const conflict = await OTSchedule.findOne({
-        hospitalId,
-        otRoomId: roomId,
-        requestId: { $ne: otCase._id },
-        status: { $in: ACTIVE_SCHEDULE_STATUSES },
-        scheduledStart: { $lt: scheduledEnd },
-        scheduledEnd: { $gt: scheduledStart }
-      }).session(session);
-      if (conflict) throw transitionError('The selected theatre already has an overlapping active case', 409, { conflictId: conflict._id });
-      const setupBufferMinutes = Number(req.body.setupBufferMinutes ?? otCase.setupBufferMinutes ?? 15);
-      const cleaningBufferMinutes = Number(req.body.cleaningBufferMinutes ?? otCase.cleaningBufferMinutes ?? 20);
-      const teamSnapshot = req.body.teamSnapshot || [];
+
+      const currentSchedule = await OTSchedule.findOne({ hospitalId, requestId: otCase._id }).session(session);
+      const changed = Boolean(currentSchedule && (
+        String(currentSchedule.otRoomId) !== String(plan.roomId)
+        || new Date(currentSchedule.scheduledStart).getTime() !== plan.scheduledStart.getTime()
+        || new Date(currentSchedule.scheduledEnd).getTime() !== plan.scheduledEnd.getTime()
+      ));
+      const rescheduleReason = String(req.body.rescheduleReason || req.body.reason || '').trim();
+      if (changed && !rescheduleReason) throw transitionError('A reschedule reason is required when changing an existing OT slot', 400);
+
+      const teamSnapshot = teamAssignments(plan.team).map((member) => ({
+        role: member.role,
+        resourceType: member.kind,
+        userId: member.id
+      }));
+      const update = {
+        $set: {
+          hospitalId,
+          otRoomId: plan.roomId,
+          requestId: otCase._id,
+          scheduledDate: plan.scheduledStart,
+          startTime: plan.scheduledStart.toTimeString().slice(0, 5),
+          endTime: plan.scheduledEnd.toTimeString().slice(0, 5),
+          scheduledStart: plan.scheduledStart,
+          scheduledEnd: plan.scheduledEnd,
+          blockedStart: plan.availability.blockedStart,
+          blockedEnd: plan.availability.blockedEnd,
+          duration_minutes: plan.duration,
+          setupBufferMinutes: plan.setupBufferMinutes,
+          cleaningBufferMinutes: plan.cleaningBufferMinutes,
+          conflictKey: `${plan.roomId}:${plan.availability.blockedStart.toISOString()}:${plan.availability.blockedEnd.toISOString()}`,
+          status: 'Scheduled',
+          notes: req.body.notes,
+          rescheduleReason: changed ? rescheduleReason : undefined,
+          teamSnapshot,
+          assignedBy: req.user._id
+        },
+        $inc: { version: 1 }
+      };
+      if (currentSchedule && changed) {
+        update.$push = {
+          history: {
+            version: currentSchedule.version,
+            status: currentSchedule.status,
+            otRoomId: currentSchedule.otRoomId,
+            scheduledStart: currentSchedule.scheduledStart,
+            scheduledEnd: currentSchedule.scheduledEnd,
+            blockedStart: currentSchedule.blockedStart,
+            blockedEnd: currentSchedule.blockedEnd,
+            setupBufferMinutes: currentSchedule.setupBufferMinutes,
+            cleaningBufferMinutes: currentSchedule.cleaningBufferMinutes,
+            duration_minutes: currentSchedule.duration_minutes,
+            teamSnapshot: currentSchedule.teamSnapshot,
+            changedAt: operationNow(),
+            changedBy: req.user._id,
+            reason: rescheduleReason
+          }
+        };
+      }
       const schedule = await OTSchedule.findOneAndUpdate(
         { hospitalId, requestId: otCase._id },
-        { $set: { hospitalId, otRoomId: roomId, requestId: otCase._id, scheduledDate: scheduledStart, startTime: scheduledStart.toTimeString().slice(0, 5), endTime: scheduledEnd.toTimeString().slice(0, 5), scheduledStart, scheduledEnd, duration_minutes: duration, setupBufferMinutes, cleaningBufferMinutes, conflictKey: `${roomId}:${scheduledStart.toISOString()}`, status: 'Scheduled', notes: req.body.notes, teamSnapshot, assignedBy: req.user._id }, $inc: { version: 1 } },
+        update,
         { new: true, upsert: true, setDefaultsOnInsert: true, session }
       );
+
       Object.assign(otCase, {
-        otRoomId: roomId,
-        scheduledDate: scheduledStart,
+        otRoomId: plan.roomId,
+        scheduledDate: plan.scheduledStart,
         scheduledTime: schedule.startTime,
-        scheduledStart,
-        scheduledEnd,
-        estimated_duration_minutes: duration,
-        setupBufferMinutes,
-        cleaningBufferMinutes,
-        primarySurgeonId: req.body.primarySurgeonId || otCase.primarySurgeonId,
-        assistantSurgeonId: req.body.assistantSurgeonId || otCase.assistantSurgeonId,
-        anesthetistId: req.body.anesthetistId || otCase.anesthetistId,
-        scrubNurseId: req.body.scrubNurseId || otCase.scrubNurseId,
-        circulatingNurseId: req.body.circulatingNurseId || otCase.circulatingNurseId,
-        otStaffId: req.body.otStaffId || otCase.otStaffId,
+        scheduledStart: plan.scheduledStart,
+        scheduledEnd: plan.scheduledEnd,
+        estimated_duration_minutes: plan.duration,
+        setupBufferMinutes: plan.setupBufferMinutes,
+        cleaningBufferMinutes: plan.cleaningBufferMinutes,
+        ...plan.team,
         status: 'Scheduled',
         version: Number(otCase.version || 0) + 1
       });
       await otCase.save({ session });
-      await appendDomainEvent({ req, eventType: 'ot.case.scheduled', entityType: 'OTRequest', entityId: otCase._id, hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, revision: otCase.version, afterSummary: { scheduledStart, scheduledEnd, roomId }, session });
-      result = { otCase, schedule };
+      await appendDomainEvent({
+        req,
+        eventType: changed ? 'ot.case.rescheduled' : 'ot.case.scheduled',
+        entityType: 'OTRequest',
+        entityId: otCase._id,
+        hospitalId,
+        patientId: otCase.patientId,
+        encounterId: otCase.admissionId,
+        revision: otCase.version,
+        afterSummary: {
+          scheduledStart: plan.scheduledStart,
+          scheduledEnd: plan.scheduledEnd,
+          blockedStart: plan.availability.blockedStart,
+          blockedEnd: plan.availability.blockedEnd,
+          roomId: plan.roomId,
+          rescheduleReason: changed ? rescheduleReason : undefined
+        },
+        session
+      });
+      result = { otCase, schedule, changed };
     });
-    res.json({ success: true, message: 'OT case scheduled', data: decorateCase(result.otCase), schedule: result.schedule });
+    res.json({ success: true, message: result.changed ? 'OT case rescheduled' : 'OT case scheduled', data: decorateCase(result.otCase), schedule: result.schedule });
   } catch (error) { next(error); } finally { if (session) await session.endSession(); }
 };
 
 const transitions = buildTransitionDefinitions({
+  receiptGuard: (_doc, req) => {
+    const required = ['identityConfirmed', 'procedureConfirmed', 'siteConfirmed', 'handoverReceived'];
+    const missing = required.filter((key) => req.body[key] !== true);
+    if (missing.length) return `Patient receipt confirmation is incomplete: ${missing.join(', ')}`;
+    return true;
+  },
+  safetyGuard: async (stage, doc) => {
+    const checklist = await getOrCreateSafety(doc);
+    if (stage === 'start') {
+      return ['Completed', 'Bypassed'].includes(checklist.signIn?.status)
+        ? true
+        : 'WHO Surgical Safety Sign In must be completed or formally bypassed before surgery starts';
+    }
+    if (stage === 'recover') {
+      if (!['Completed', 'Bypassed'].includes(checklist.timeOut?.status)) return 'WHO Surgical Safety Time Out must be completed or formally bypassed before recovery';
+      if (!['Completed', 'Bypassed'].includes(checklist.signOut?.status)) return 'WHO Surgical Safety Sign Out must be completed or formally bypassed before recovery';
+    }
+    return true;
+  },
   closeGuard: async (doc) => {
     const [operative, anesthesia, recovery, inventory] = await Promise.all([
       OTOperativeNote.findOne({ hospitalId: doc.hospitalId, caseId: doc._id }),
@@ -473,9 +635,28 @@ exports.transitionCase = async (req, res, next) => {
   try {
     const otCase = await findCase(req, req.params.id);
     const action = req.params.action || req.body.action;
-    if (['approve', 'receive'].includes(action)) await refreshOTFinancialState({ otCase, user: req.user, syncReadiness: true });
+    if (action === 'approve' && !_hasActionPermission(req.user, 'ot_approve')) throw transitionError('You are not permitted to manually approve OT cases', 403);
+    if (['cancel', 'postpone'].includes(action) && !String(req.body.reason || '').trim()) throw transitionError(`A reason is required to ${action} an OT case`, 400);
+    if (['approve', 'receive'].includes(action)) {
+      await refreshOTFinancialState({ otCase, user: req.user, syncReadiness: false });
+      await reconcileOtReadiness({ otCase, userId: req.user._id, autoApprove: action !== 'approve' });
+    }
     const updated = await transitionDocument({ document: otCase, action, definitions: transitions, req, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, reasonCode: req.body.reasonCode, comments: req.body.comments || req.body.reason, extraUpdate: action === 'cancel' ? { cancellationReason: req.body.reason } : action === 'postpone' ? { postponementReason: req.body.reason } : {} });
-    if (['cancel', 'postpone'].includes(action)) await OTSchedule.findOneAndUpdate({ hospitalId: otCase.hospitalId, requestId: otCase._id }, { $set: { status: action === 'cancel' ? 'Cancelled' : 'Rescheduled' } });
+    if (['cancel', 'postpone'].includes(action)) {
+      const schedule = await OTSchedule.findOne({ hospitalId: otCase.hospitalId, requestId: otCase._id });
+      if (schedule) {
+        schedule.history = schedule.history || [];
+        schedule.history.push({
+          version: schedule.version, status: schedule.status, otRoomId: schedule.otRoomId, scheduledStart: schedule.scheduledStart, scheduledEnd: schedule.scheduledEnd,
+          blockedStart: schedule.blockedStart, blockedEnd: schedule.blockedEnd, setupBufferMinutes: schedule.setupBufferMinutes, cleaningBufferMinutes: schedule.cleaningBufferMinutes,
+          duration_minutes: schedule.duration_minutes, teamSnapshot: schedule.teamSnapshot, changedAt: operationNow(), changedBy: req.user._id, reason: req.body.reason
+        });
+        schedule.status = action === 'cancel' ? 'Cancelled' : 'Rescheduled';
+        schedule.rescheduleReason = req.body.reason;
+        schedule.version = Number(schedule.version || 0) + 1;
+        await schedule.save();
+      }
+    }
     if (action === 'start') await OTSchedule.findOneAndUpdate({ hospitalId: otCase.hospitalId, requestId: otCase._id }, { $set: { status: 'In Progress' } });
     if (['recover', 'close'].includes(action)) await OTSchedule.findOneAndUpdate({ hospitalId: otCase.hospitalId, requestId: otCase._id }, { $set: { status: 'Completed' } });
     let financialReversal = null;
@@ -488,7 +669,26 @@ exports.transitionCase = async (req, res, next) => {
         await OTRequest.updateOne({ _id: otCase._id, hospitalId: otCase.hospitalId }, { $set: { billingClosureStatus: 'Pending', financialClearanceState: 'HOLD' } });
       }
     }
-    res.json({ success: true, message: `OT case ${action} completed`, data: decorateCase(updated), financialReversal });
+    const safety = await getOrCreateSafety(updated);
+    res.json({ success: true, message: `OT case ${action} completed`, data: decorateCase(updated, { safety }), financialReversal });
+  } catch (error) { next(error); }
+};
+
+exports.setEmergencyOverride = async (req, res, next) => {
+  try {
+    if (!_hasActionPermission(req.user, 'ot_emergency_bypass')) throw transitionError('You are not permitted to manage OT emergency overrides', 403);
+    const otCase = await findCase(req, req.params.id);
+    const enabled = req.body.enabled !== false;
+    const reason = String(req.body.reason || '').trim();
+    if (enabled && !reason) throw transitionError('Emergency override reason is required', 400);
+    if (['In Progress', 'Recovery', 'Transferred', 'Closed', 'Cancelled'].includes(canonicalStatus(otCase.status, otCase))) {
+      throw transitionError('Emergency override can only be changed before surgery starts', 409);
+    }
+    otCase.emergencyOverride = enabled ? { enabled: true, reason, approvedBy: req.user._id, approvedAt: operationNow() } : { enabled: false };
+    otCase.version = Number(otCase.version || 0) + 1;
+    await otCase.save();
+    await appendDomainEvent({ req, eventType: enabled ? 'ot.case.emergency_override_enabled' : 'ot.case.emergency_override_disabled', entityType: 'OTRequest', entityId: otCase._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, revision: otCase.version, comments: reason, afterSummary: { enabled, reason } });
+    res.json({ success: true, data: decorateCase(otCase), message: enabled ? 'Emergency override enabled' : 'Emergency override disabled' });
   } catch (error) { next(error); }
 };
 
@@ -509,7 +709,7 @@ async function getForm(req, res, next, Model, createDefaults = {}) {
   } catch (error) { next(error); }
 }
 
-async function saveForm(req, res, next, Model, eventType) {
+async function saveForm(req, res, next, Model, eventType, afterSave) {
   try {
     const otCase = await findCase(req, req.params.id);
     const safe = { ...req.body };
@@ -520,12 +720,13 @@ async function saveForm(req, res, next, Model, eventType) {
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
     );
     await appendDomainEvent({ req, eventType, entityType: Model.modelName, entityId: record._id, hospitalId: otCase.hospitalId, patientId: otCase.patientId, encounterId: otCase.admissionId, revision: record.version, afterSummary: { status: record.status || record.overallStatus } });
-    res.json({ success: true, message: 'OT clinical record saved', data: record });
+    const extra = afterSave ? await afterSave({ otCase, record, req }) : null;
+    res.json({ success: true, message: 'OT clinical record saved', data: record, ...(extra || {}) });
   } catch (error) { next(error); }
 }
 
 exports.getPac = (req, res, next) => getForm(req, res, next, OTPreAnaesthesiaAssessment);
-exports.savePac = (req, res, next) => saveForm(req, res, next, OTPreAnaesthesiaAssessment, 'ot.pac.updated');
+exports.savePac = (req, res, next) => saveForm(req, res, next, OTPreAnaesthesiaAssessment, 'ot.pac.updated', async ({ otCase }) => ({ readiness: await reconcileOtReadiness({ otCase, userId: req.user._id, autoApprove: true }) }));
 exports.getAnesthesia = (req, res, next) => getForm(req, res, next, OTAnesthesiaRecord);
 exports.saveAnesthesia = (req, res, next) => saveForm(req, res, next, OTAnesthesiaRecord, 'ot.anesthesia.updated');
 exports.getOperative = (req, res, next) => getForm(req, res, next, OTOperativeNote);

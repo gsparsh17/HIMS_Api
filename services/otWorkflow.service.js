@@ -60,19 +60,27 @@ function readinessCanProceed(doc = {}) {
     || Boolean(doc?.emergencyOverride?.enabled);
 }
 
-function allowedActions(doc = {}) {
+function safetySectionComplete(section) {
+  return Boolean(section && ['Completed', 'Bypassed'].includes(section.status));
+}
+
+function allowedActions(doc = {}, context = {}) {
   const status = canonicalStatus(doc.status, doc);
   const financeReady = financialCanProceed(doc.financialClearanceState, doc);
   const readinessReady = readinessCanProceed(doc);
   const emergency = doc.urgency === 'Emergency' || Boolean(doc?.emergencyOverride?.enabled);
 
+  const safety = context.safety || doc.safety || null;
+  const signInReady = safety ? safetySectionComplete(safety.signIn) : true;
+  const timeOutReady = safety ? safetySectionComplete(safety.timeOut) : true;
+  const signOutReady = safety ? safetySectionComplete(safety.signOut) : true;
   return {
     approve: status === 'Readiness Pending' && (readinessReady || emergency),
     schedule: ['Approved', 'Postponed', 'Scheduled'].includes(status) && financeReady && readinessReady,
     reschedule: status === 'Scheduled' && financeReady && readinessReady,
-    receive: status === 'Scheduled' && readinessReady,
-    start: status === 'Patient Received',
-    recover: status === 'In Progress',
+    receive: status === 'Scheduled' && readinessReady && financeReady,
+    start: status === 'Patient Received' && signInReady,
+    recover: status === 'In Progress' && timeOutReady && signOutReady,
     transfer: status === 'Recovery',
     close: status === 'Transferred',
     postpone: ['Approved', 'Scheduled', 'Patient Received'].includes(status),
@@ -81,7 +89,7 @@ function allowedActions(doc = {}) {
   };
 }
 
-function workflowView(doc = {}) {
+function workflowView(doc = {}, context = {}) {
   const status = canonicalStatus(doc.status, doc);
   return {
     policyVersion: OT_WORKFLOW_POLICY_VERSION,
@@ -91,14 +99,19 @@ function workflowView(doc = {}) {
     readinessStatus: doc.readinessStatus || 'Not Evaluated',
     financialClearanceState: doc.financialClearanceState || 'PAYMENT_REQUIRED',
     financialCanProceed: financialCanProceed(doc.financialClearanceState, doc),
-    allowedActions: allowedActions(doc)
+    allowedActions: allowedActions(doc, context),
+    safetyGates: context.safety ? {
+      signIn: safetySectionComplete(context.safety.signIn),
+      timeOut: safetySectionComplete(context.safety.timeOut),
+      signOut: safetySectionComplete(context.safety.signOut)
+    } : undefined
   };
 }
 
-function decorateCase(doc) {
+function decorateCase(doc, context = {}) {
   if (!doc) return doc;
   const raw = typeof doc.toObject === 'function' ? doc.toObject({ virtuals: true }) : { ...doc };
-  const workflow = workflowView(raw);
+  const workflow = workflowView(raw, context);
   return {
     ...raw,
     status: workflow.canonicalStatus,
@@ -142,7 +155,7 @@ function legacyActionForStatus(status) {
   return Object.prototype.hasOwnProperty.call(mapping, status) ? mapping[status] : undefined;
 }
 
-function buildTransitionDefinitions({ closeGuard }) {
+function buildTransitionDefinitions({ closeGuard, receiptGuard, safetyGuard }) {
   return {
     approve: {
       from: ['Requested', 'Readiness Pending', 'Payment Pending', 'Payment Received'],
@@ -155,19 +168,38 @@ function buildTransitionDefinitions({ closeGuard }) {
       from: ['Scheduled'],
       to: 'Patient Received',
       eventType: 'ot.case.patient_received',
-      guard: (doc) => readinessCanProceed(doc),
-      update: () => ({ patientReceivedAt: operationNow(), workflowPolicyVersion: OT_WORKFLOW_POLICY_VERSION })
+      guard: async (doc, req) => {
+        if (!readinessCanProceed(doc)) return 'OT readiness is incomplete';
+        if (!financialCanProceed(doc.financialClearanceState, doc)) return `Financial clearance is required before receiving the patient (${doc.financialClearanceState || 'PAYMENT_REQUIRED'})`;
+        return receiptGuard ? receiptGuard(doc, req) : true;
+      },
+      update: (_doc, req) => ({
+        patientReceivedAt: operationNow(),
+        patientReceipt: {
+          identityConfirmed: Boolean(req.body.identityConfirmed),
+          procedureConfirmed: Boolean(req.body.procedureConfirmed),
+          siteConfirmed: Boolean(req.body.siteConfirmed),
+          handoverReceived: Boolean(req.body.handoverReceived),
+          sourceWard: req.body.sourceWard,
+          handoverNotes: req.body.handoverNotes,
+          receivedBy: req.user._id,
+          receivedAt: operationNow()
+        },
+        workflowPolicyVersion: OT_WORKFLOW_POLICY_VERSION
+      })
     },
     start: {
       from: ['Patient Received'],
       to: 'In Progress',
       eventType: 'ot.case.started',
+      guard: (doc, req) => safetyGuard ? safetyGuard('start', doc, req) : true,
       update: () => ({ startedAt: operationNow(), workflowPolicyVersion: OT_WORKFLOW_POLICY_VERSION })
     },
     recover: {
       from: ['In Progress'],
       to: 'Recovery',
       eventType: 'ot.case.recovery_started',
+      guard: (doc, req) => safetyGuard ? safetyGuard('recover', doc, req) : true,
       update: () => ({ recoveryStartedAt: operationNow(), completedAt: operationNow(), workflowPolicyVersion: OT_WORKFLOW_POLICY_VERSION })
     },
     transfer: {
@@ -207,6 +239,7 @@ module.exports = {
   canonicalStatus,
   financialCanProceed,
   readinessCanProceed,
+  safetySectionComplete,
   allowedActions,
   workflowView,
   decorateCase,

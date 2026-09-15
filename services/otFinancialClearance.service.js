@@ -1,5 +1,5 @@
 const { getSourceFinancialStatus, postSourceCharge } = require('./chargePosting.service');
-const { getOrCreateReadiness, syncFinancialItem, persistReadinessAndCase } = require('./otReadiness.service');
+const { reconcileOtReadiness } = require('./otReadiness.service');
 const { financialCanProceed } = require('./otWorkflow.service');
 
 function money(value) {
@@ -59,9 +59,7 @@ async function refreshOTFinancialState({ otCase, user, userId = user?._id, sessi
 
   let readiness = null;
   if (syncReadiness) {
-    readiness = await getOrCreateReadiness(otCase, userId, session);
-    syncFinancialItem(readiness, otCase, userId);
-    await persistReadinessAndCase({ checklist: readiness, otCase, userId, session, autoApprove: true });
+    readiness = await reconcileOtReadiness({ otCase, userId, session, autoApprove: true, saveCase: false });
   }
   await otCase.save(session ? { session } : undefined);
   return { status, readiness, summary: financialSummary(status, otCase), otCase };

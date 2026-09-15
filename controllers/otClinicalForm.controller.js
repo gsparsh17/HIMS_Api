@@ -12,6 +12,7 @@ const DocumentSignature = require('../models/DocumentSignature');
 const EncounterDocument = require('../models/EncounterDocument');
 const RenderedDocument = require('../models/RenderedDocument');
 const { requireHospitalId } = require('../services/tenantScope.service');
+const { reconcileOtReadiness, CONSENT_TEMPLATE_BY_KEY } = require('../services/otReadiness.service');
 
 const { appendDomainEvent } = require('../services/auditEvent.service');
 const { getTemplate, listTemplates } = require('../config/otSurgeryFormTemplates');
@@ -27,6 +28,13 @@ const nativeModels = {
   OTRecoveryRecord,
   OTCaseInventoryUsage,
 };
+
+const readinessTemplateIds = new Set(Object.values(CONSENT_TEMPLATE_BY_KEY));
+
+async function reconcileReadinessForTemplate(otCase, templateId, userId) {
+  if (!readinessTemplateIds.has(templateId)) return null;
+  return reconcileOtReadiness({ otCase, userId, autoApprove: true });
+}
 
 function publicRecord(record) {
   if (!record) return null;
@@ -285,22 +293,24 @@ exports.saveCaseForm = async (req, res, next) => {
       encounterId: record.admissionId,
       metadata: { caseId: String(otCase._id), templateId: template.id, status: record.status, version: record.version },
     }).catch(() => null);
+    const readiness = await reconcileReadinessForTemplate(otCase, template.id, req.user._id);
 
-    res.json({ success: true, message: `${template.title} saved`, data: record });
+    res.json({ success: true, message: `${template.title} saved`, data: record, readiness });
   } catch (error) { next(error); }
 };
 
 exports.resetCaseForm = async (req, res, next) => {
   try {
     const hospitalId = requireHospitalId(req);
-    await findCase(req, req.params.id);
+    const otCase = await findCase(req, req.params.id);
     const template = getTemplate(req.params.templateId);
     if (!template || template.implementation !== 'structured') return res.status(404).json({ error: 'Structured surgery form not found' });
     const record = await OTClinicalForm.findOne({ hospitalId, caseId: req.params.id, templateId: template.id });
     if (!record) return res.status(404).json({ error: 'Surgery form record not found' });
     if (record.status === 'Signed') return res.status(409).json({ error: 'A signed form cannot be reset; create an amendment instead' });
     await record.deleteOne();
-    res.json({ success: true, message: `${template.title} reset` });
+    const readiness = await reconcileReadinessForTemplate(otCase, template.id, req.user._id);
+    res.json({ success: true, message: `${template.title} reset`, readiness });
   } catch (error) { next(error); }
 };
 
@@ -351,6 +361,7 @@ exports.finalizeCaseFormPdf = async (req, res, next) => {
     if (signatureState.complete && record.status !== 'Signed') {
       record.status = 'Signed'; record.signedAt = operationNow(); await record.save();
     }
+    await reconcileReadinessForTemplate(otCase, template.id, req.user._id);
     const encounterDocument = await registerEncounterDocument(req, otCase, template, record);
     if (encounterDocument) {
       encounterDocument.status = signatureState.complete ? 'Final/Signed' : (record.status === 'Completed' ? 'Completed/Unsigned' : 'Draft');

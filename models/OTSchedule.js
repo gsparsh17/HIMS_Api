@@ -17,6 +17,8 @@ const otScheduleSchema = new mongoose.Schema({
   endTime: String,
   scheduledStart: { type: Date, required: true, index: true },
   scheduledEnd: { type: Date, required: true, index: true },
+  blockedStart: { type: Date, index: true },
+  blockedEnd: { type: Date, index: true },
   setupBufferMinutes: { type: Number, default: 15 },
   cleaningBufferMinutes: { type: Number, default: 20 },
   conflictKey: { type: String, trim: true, index: true },
@@ -28,11 +30,29 @@ const otScheduleSchema = new mongoose.Schema({
     default: 'Scheduled'
   },
   notes: String,
-  teamSnapshot: [{ role: String, userId: mongoose.Schema.Types.ObjectId, name: String }],
+  rescheduleReason: String,
+  history: [{
+    version: Number,
+    status: String,
+    otRoomId: { type: mongoose.Schema.Types.ObjectId, ref: 'Room' },
+    scheduledStart: Date,
+    scheduledEnd: Date,
+    blockedStart: Date,
+    blockedEnd: Date,
+    setupBufferMinutes: Number,
+    cleaningBufferMinutes: Number,
+    duration_minutes: Number,
+    teamSnapshot: [{ role: String, resourceType: String, userId: mongoose.Schema.Types.ObjectId, name: String }],
+    changedAt: Date,
+    changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    reason: String
+  }],
+  teamSnapshot: [{ role: String, resourceType: String, userId: mongoose.Schema.Types.ObjectId, name: String }],
   assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
 otScheduleSchema.index({ hospitalId: 1, otRoomId: 1, scheduledStart: 1, scheduledEnd: 1 });
+otScheduleSchema.index({ hospitalId: 1, otRoomId: 1, status: 1, blockedStart: 1, blockedEnd: 1 });
 otScheduleSchema.index({ requestId: 1 }, { unique: true, name: 'requestId_1' });
 otScheduleSchema.index({ hospitalId: 1, scheduledDate: 1, status: 1 });
 
