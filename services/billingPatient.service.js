@@ -1467,8 +1467,32 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     transactions.reduce((sum, transaction) => sum + externalReceiptAmount(transaction), 0) + legacyPaymentsTotal
   );
   const paymentRefunds = asNumber(transactionAmount(['REFUND']));
-  const settlementDiscounts = asNumber(transactionAmount(['SETTLEMENT']));
-  const creditNotes = asNumber(transactionAmount(['CREDIT_NOTE']));
+  const transactionSettlementDiscounts = asNumber(transactionAmount(['SETTLEMENT']));
+  const transactionCreditNotes = asNumber(transactionAmount(['CREDIT_NOTE']));
+
+  // OPD Bill/Invoice totals are immutable accounting snapshots. Cancellation of
+  // an invoiced Lab/Procedure/Radiology item is represented by a credit note
+  // (and, when already paid, a refund), so the original gross total remains
+  // auditable. Expose the effective current bill after those liability
+  // adjustments instead of forcing the UI to guess from the original total.
+  // Use the larger of document projections and posted transactions so legacy
+  // records that are missing one projection still reconcile without double
+  // counting the same adjustment on both Bill and Invoice.
+  const billSettlementDiscounts = bills.reduce((sum, bill) => sum + asNumber(bill.settlement_discount_amount), 0);
+  const invoiceSettlementDiscounts = collectibleInvoices.reduce((sum, invoice) => sum + asNumber(invoice.settlement_discount_amount), 0);
+  const documentSettlementDiscounts = asNumber(Math.max(billSettlementDiscounts, invoiceSettlementDiscounts));
+  const settlementDiscounts = asNumber(Math.max(transactionSettlementDiscounts, documentSettlementDiscounts));
+
+  const billCreditNotes = bills.reduce((sum, bill) => sum + asNumber(bill.credit_note_amount), 0);
+  const invoiceCreditNotes = collectibleInvoices.reduce((sum, invoice) => sum + asNumber(invoice.credit_note_total), 0);
+  const documentCreditNotes = asNumber(Math.max(billCreditNotes, invoiceCreditNotes));
+  const creditNotes = asNumber(Math.max(transactionCreditNotes, documentCreditNotes));
+
+  const grossBill = asNumber(totalBill);
+  const netBill = admissionId
+    ? grossBill
+    : asNumber(Math.max(0, grossBill - settlementDiscounts - creditNotes));
+  const billAdjustments = asNumber(Math.max(0, grossBill - netBill));
   const totalCollectedAmount = asNumber(externalPaidAmount + advanceTotals.received);
   const netCollectedAmount = asNumber(Math.max(0, totalCollectedAmount - paymentRefunds - advanceTotals.refunded));
   const ledgerTotals = {
@@ -1525,7 +1549,13 @@ async function getPatientBillingDetails({ hospitalId, patientId, admissionId, ap
     ledgerEntries,
     ledgerTotals,
     summary: {
+      // `totalBill` remains the historical gross document value for backward
+      // compatibility. New UI should display `netBill` as the current OPD bill
+      // after posted settlement discounts / credit notes.
       totalBill,
+      grossBill,
+      netBill,
+      billAdjustments,
       invoiceTotal,
       billTotal,
       unbilledTotal,
