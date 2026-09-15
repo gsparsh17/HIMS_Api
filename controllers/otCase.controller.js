@@ -35,6 +35,7 @@ const { saveInventoryUsage } = require('../services/otInventoryIntegration.servi
 const { ensurePathologyOrder } = require('../services/otPathology.service');
 const { addAdditionalProcedure } = require('../services/otAdditionalProcedure.service');
 const { clinicalClosureCheck, financialReconciliation, validateClinicalPayload } = require('../services/otClinicalCompletion.service');
+const { can: canOt } = require('../services/otAccess.service');
 
 
 const DEFAULT_SAFETY = {
@@ -260,6 +261,26 @@ exports.listCases = async (req, res, next) => {
     for (const field of ['paymentStatus', 'admissionId', 'patientId', 'doctorId', 'urgency', 'otRoomId', 'financialClearanceState']) {
       if (req.query[field]) filter[field] = req.query[field];
     }
+    if (req.query.surgeonId) filter.primarySurgeonId = req.query.surgeonId;
+    if (req.query.anesthetistId) filter.anesthetistId = req.query.anesthetistId;
+    if (req.query.staffId) filter.otStaffId = req.query.staffId;
+    if (req.query.nurseId) {
+      filter.$or = [
+        { scrubNurseId: req.query.nurseId },
+        { circulatingNurseId: req.query.nurseId }
+      ];
+    }
+    const search = String(req.query.search || '').trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const searchOr = [
+        { requestNumber: { $regex: escaped, $options: 'i' } },
+        { procedureName: { $regex: escaped, $options: 'i' } },
+        { procedureCode: { $regex: escaped, $options: 'i' } }
+      ];
+      if (filter.$or) filter.$and = [{ $or: filter.$or }, { $or: searchOr }], delete filter.$or;
+      else filter.$or = searchOr;
+    }
     if (req.query.startDate || req.query.endDate) {
       filter.requestedDate = semanticDateRange(req.query.startDate, req.query.endDate);
     }
@@ -302,6 +323,25 @@ exports.getWorkspace = async (req, res, next) => {
       success: true,
       data: {
         case: decorateCase(populated, { safety }),
+        capabilities: {
+          view: canOt(req.user, 'ot.case.view'),
+          create: canOt(req.user, 'ot.case.create'),
+          readiness: canOt(req.user, 'ot.readiness.update'),
+          schedule: canOt(req.user, 'ot.schedule.manage'),
+          receive: canOt(req.user, 'ot.patient.receive'),
+          safety: canOt(req.user, 'ot.safety.update'),
+          consentAdmission: canOt(req.user, 'ot.consent.admission'),
+          consentClinical: canOt(req.user, 'ot.consent.clinical'),
+          pac: canOt(req.user, 'ot.pac.edit'),
+          anesthesia: canOt(req.user, 'ot.anesthesia.edit'),
+          operative: canOt(req.user, 'ot.operation_note.edit'),
+          inventory: canOt(req.user, 'ot.inventory.manage'),
+          specimen: canOt(req.user, 'ot.specimen.manage'),
+          recovery: canOt(req.user, 'ot.recovery.manage'),
+          financeView: canOt(req.user, 'ot.finance.view'),
+          financeManage: canOt(req.user, 'ot.finance.manage'),
+          close: canOt(req.user, 'ot.case.close')
+        },
         financial: { ...financial.summary, reconciliation },
         readiness: financial.readiness,
         safety, pac, anesthesia, operative, recovery, inventory, specimens, schedule, additionalProcedures

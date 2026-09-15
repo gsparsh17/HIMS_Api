@@ -10,6 +10,8 @@ const OTStaff = require('../models/OTStaff');
 const OTRequest = require('../models/OTRequest');
 const { protect, authorize, requireActionPermission } = require('../middlewares/auth');
 const { requireHospitalId } = require('../services/tenantScope.service');
+const insights = require('../controllers/otInsights.controller');
+const { requireOtCapability, requireOtTransitionCapability } = require('../services/otAccess.service');
 
 const router = express.Router();
 const uploadDir = path.join(tempDir, 'ot');
@@ -41,6 +43,9 @@ async function ensureCaseTenant(req, res, next) {
 
 // Complete surgery-form registry based on the hospital surgical patient file.
 router.get('/form-templates', clinicalForms.listTemplates);
+router.get('/dashboard', requireOtCapability('ot.case.view'), insights.dashboard);
+router.get('/reports/overview', requireOtCapability('ot.case.view'), insights.reports);
+router.get('/cases/:id/audit', requireOtCapability('ot.case.view'), insights.audit);
 router.get('/cases/:id/forms', clinicalForms.listCaseForms);
 router.get('/cases/:id/forms/:templateId/preview.pdf', clinicalForms.previewCaseFormPdf);
 router.post('/cases/:id/forms/:templateId/finalize.pdf', clinicalForms.finalizeCaseFormPdf);
@@ -50,47 +55,47 @@ router.put('/cases/:id/forms/:templateId', clinicalForms.saveCaseForm);
 router.delete('/cases/:id/forms/:templateId', clinicalForms.resetCaseForm);
 
 // Full OT case workspace.
-router.post('/cases', cases.createCase);
+router.post('/cases', requireOtCapability('ot.case.create'), cases.createCase);
 router.get('/cases', cases.listCases);
 router.get('/cases/:id', cases.getCase);
-router.get('/cases/:id/workspace', cases.getWorkspace);
-router.get('/cases/:id/financial', cases.getFinancial);
-router.get('/cases/:id/financial/reconciliation', cases.getFinancialReconciliation);
-router.post('/cases/:id/financial/refresh', cases.getFinancial);
-router.post('/cases/:id/schedule/check', cases.previewSchedule);
-router.put('/cases/:id/schedule', cases.scheduleCase);
+router.get('/cases/:id/workspace', requireOtCapability('ot.case.view'), cases.getWorkspace);
+router.get('/cases/:id/financial', requireOtCapability('ot.finance.view'), cases.getFinancial);
+router.get('/cases/:id/financial/reconciliation', requireOtCapability('ot.finance.view'), cases.getFinancialReconciliation);
+router.post('/cases/:id/financial/refresh', requireOtCapability('ot.finance.view'), cases.getFinancial);
+router.post('/cases/:id/schedule/check', requireOtCapability('ot.schedule.manage'), cases.previewSchedule);
+router.put('/cases/:id/schedule', requireOtCapability('ot.schedule.manage'), cases.scheduleCase);
 router.put('/cases/:id/emergency-override', requireActionPermission('ot_emergency_bypass'), cases.setEmergencyOverride);
-router.post('/cases/:id/transition', cases.transitionCase);
+router.post('/cases/:id/transition', requireOtTransitionCapability, cases.transitionCase);
 router.get('/cases/:id/readiness', cases.getReadiness);
-router.put('/cases/:id/readiness', cases.updateReadiness);
+router.put('/cases/:id/readiness', requireOtCapability('ot.readiness.update'), cases.updateReadiness);
 router.get('/cases/:id/safety-checklist', cases.getSafety);
-router.put('/cases/:id/safety-checklist', cases.updateSafety);
+router.put('/cases/:id/safety-checklist', requireOtCapability('ot.safety.update'), cases.updateSafety);
 router.get('/cases/:id/pac', cases.getPac);
-router.put('/cases/:id/pac', cases.savePac);
+router.put('/cases/:id/pac', requireOtCapability('ot.pac.edit'), cases.savePac);
 router.get('/cases/:id/anesthesia-record', cases.getAnesthesia);
-router.put('/cases/:id/anesthesia-record', cases.saveAnesthesia);
+router.put('/cases/:id/anesthesia-record', requireOtCapability('ot.anesthesia.edit'), cases.saveAnesthesia);
 router.get('/cases/:id/operative-note', cases.getOperative);
-router.put('/cases/:id/operative-note', cases.saveOperative);
+router.put('/cases/:id/operative-note', requireOtCapability('ot.operation_note.edit'), cases.saveOperative);
 router.get('/cases/:id/recovery', cases.getRecovery);
-router.put('/cases/:id/recovery', cases.saveRecovery);
+router.put('/cases/:id/recovery', requireOtCapability('ot.recovery.manage'), cases.saveRecovery);
 router.get('/cases/:id/inventory', cases.getInventory);
 router.get('/cases/:id/inventory/options', cases.getInventoryOptions);
-router.put('/cases/:id/inventory', cases.saveInventory);
-router.post('/cases/:id/specimens', cases.createSpecimen);
-router.patch('/cases/:id/specimens/:specimenId', cases.updateSpecimen);
-router.post('/cases/:id/additional-procedures', cases.addAdditionalProcedure);
+router.put('/cases/:id/inventory', requireOtCapability('ot.inventory.manage'), cases.saveInventory);
+router.post('/cases/:id/specimens', requireOtCapability('ot.specimen.manage'), cases.createSpecimen);
+router.patch('/cases/:id/specimens/:specimenId', requireOtCapability('ot.specimen.manage'), cases.updateSpecimen);
+router.post('/cases/:id/additional-procedures', requireOtCapability('ot.operation_note.edit'), cases.addAdditionalProcedure);
 router.get('/cases/:id/packet.pdf', clinicalForms.casePacketPdf);
 router.get('/cases/:id/packet', cases.getCasePacket);
 
 // Backward-compatible request URLs now use the tenant-scoped case workflow.
-router.post('/requests', cases.createCase);
+router.post('/requests', requireOtCapability('ot.case.create'), cases.createCase);
 router.get('/requests', cases.listCases);
 router.get('/requests/:id', cases.getCase);
 router.patch('/requests/:id/status', cases.legacyStatusTransition);
-router.put('/requests/:id/assign', cases.scheduleCase);
-router.patch('/requests/:id/start', (req, _res, next) => { req.body.action = 'start'; next(); }, cases.transitionCase);
+router.put('/requests/:id/assign', requireOtCapability('ot.schedule.manage'), cases.scheduleCase);
+router.patch('/requests/:id/start', (req, _res, next) => { req.body.action = 'start'; next(); }, requireOtTransitionCapability, cases.transitionCase);
 router.post('/requests/:id/complete', cases.completeSurgeryLegacy);
-router.patch('/requests/:id/cancel', (req, _res, next) => { req.body.action = 'cancel'; next(); }, cases.transitionCase);
+router.patch('/requests/:id/cancel', (req, _res, next) => { req.body.action = 'cancel'; next(); }, requireOtTransitionCapability, cases.transitionCase);
 
 // Existing payment/report/billing adapters retained for compatibility.
 router.post('/requests/:id/payment', ensureCaseTenant, requireActionPermission('settlement'), legacy.processOTPayment);
@@ -116,7 +121,7 @@ router.delete('/staff/:id', legacy.deleteOTStaff);
 router.get('/schedule/:date', legacy.getDailySchedule);
 router.get('/admission/:admissionId/requests', (req, res, next) => { req.query.admissionId = req.params.admissionId; return cases.listCases(req, res, next); });
 router.get('/doctor/:doctorId/requests', (req, res, next) => { req.query.doctorId = req.params.doctorId; return cases.listCases(req, res, next); });
-router.get('/dashboard/stats', legacy.getDashboardStats);
+router.get('/dashboard/stats', requireOtCapability('ot.case.view'), insights.dashboard);
 router.get('/reports/monthly', legacy.getMonthlyReports);
 router.get('/reports/procedures', legacy.getProcedureStats);
 router.get('/reports/surgeons', legacy.getSurgeonStats);

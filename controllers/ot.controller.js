@@ -1000,9 +1000,12 @@ exports.getDailySchedule = async (req, res) => {
 
     const requests = await OTRequest.find({
       hospitalId: requireHospitalId(req),
-      scheduledDate: { $gte: targetDate, $lt: nextDate },
-      status: { $in: ['Scheduled', 'In Progress', 'Completed'] },
-      paymentStatus: 'Completed'  // Only show paid requests
+      scheduledStart: { $gte: targetDate, $lt: nextDate },
+      status: { $in: ['Scheduled', 'Patient Received', 'In Progress', 'Recovery', 'Transferred', 'Closed'] },
+      $or: [
+        { financialClearanceState: { $in: ['CLEARED', 'POSTPAID_ALLOWED', 'EXCEPTION_APPROVED'] } },
+        { 'emergencyOverride.enabled': true }
+      ]
     })
       .populate('patientId', 'first_name last_name patientId')
       .populate('doctorId', 'firstName lastName')
@@ -1035,13 +1038,13 @@ exports.getMonthlyReports = async (req, res) => {
       {
         $match: {
           hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
-          status: 'Completed',
-          completedAt: completedRange
+          status: 'Closed',
+          closedAt: completedRange
         }
       },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m", date: "$completedAt" } },
+          _id: { $dateToString: { format: "%Y-%m", date: "$closedAt" } },
           surgeries: { $sum: 1 },
           revenue: { $sum: "$total_cost" }
         }
@@ -1074,8 +1077,8 @@ exports.getProcedureStats = async (req, res) => {
       {
         $match: {
           hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
-          status: 'Completed',
-          completedAt: completedRange
+          status: 'Closed',
+          closedAt: completedRange
         }
       },
       {
@@ -1111,8 +1114,8 @@ exports.getSurgeonStats = async (req, res) => {
       {
         $match: {
           hospitalId: new mongoose.Types.ObjectId(requireHospitalId(req)),
-          status: 'Completed',
-          completedAt: completedRange
+          status: 'Closed',
+          closedAt: completedRange
         }
       },
       {
@@ -1150,11 +1153,13 @@ exports.exportOTReports = async (req, res) => {
 
     const requests = await OTRequest.find({
       hospitalId: requireHospitalId(req),
-      status: 'Completed',
-      completedAt: completedRange
+      $or: [
+        { status: 'Closed', closedAt: completedRange },
+        { status: 'Completed', completedAt: completedRange }
+      ]
     }).populate('patientId', 'first_name last_name patientId')
       .populate('primarySurgeonId', 'firstName lastName')
-      .sort({ completedAt: 1 });
+      .sort({ closedAt: 1, completedAt: 1 });
 
     let csv = '';
     if (type === 'summary') {
