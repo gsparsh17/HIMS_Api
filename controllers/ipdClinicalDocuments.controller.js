@@ -1026,7 +1026,7 @@ exports.saveNursingAdmissionAssessment = async (req, res) => {
 
 exports.createVitals = async (req, res) => {
   try {
-    if (!['nurse', 'staff', 'doctor', 'admin', 'mediqliq_super_admin'].includes(req.user.role)) {
+    if (!['nurse', 'staff', 'doctor', 'admin', 'mediqliq_super_admin', 'receptionist', 'registrar'].includes(req.user.role)) {
       throw statusError(403, 'Clinical role required');
     }
 
