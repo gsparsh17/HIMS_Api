@@ -169,7 +169,10 @@ exports.listBillingAdmissions = async (req, res) => {
 
 exports.getIPDFinanceWorkspace = async (req, res) => {
   try {
-    res.json(await financial.getFinanceWorkspace(req.params.admissionId, req.user));
+    // Backward-compatible by default. Only callers that explicitly request
+    // compact=1 receive the lightweight interactive Billing projection.
+    const compact = ['1', 'true', 'yes'].includes(String(req.query.compact || '').toLowerCase());
+    res.json(await financial.getFinanceWorkspace(req.params.admissionId, req.user, { compact }));
   } catch (error) { sendError(res, error); }
 };
 

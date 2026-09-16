@@ -31,6 +31,7 @@ const { _hasActionPermission } = require('../middlewares/auth');
 const { assertAdmissionOpenForMutation } = require('./ipdLifecycleGuard.service');
 const { policyFromAdmission, ipdOwnsPharmacyBilling } = require('./ipdPharmacyBillingPolicy.service');
 const { getIpdSharedAdvanceBalance, debitIpdSharedAdvance } = require('./ipdAdvanceWallet.service');
+const { compactFinanceWorkspacePayload } = require('../utils/financeWorkspaceProjection');
 
 const ACTIVE_CHARGE_FILTER = {
   $or: [
@@ -642,23 +643,66 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   const admission = await findAdmission(admissionId, session, user);
   const hospitalId = admission.hospitalId;
 
-  const charges = await IPDCharge.find(
+  // This snapshot is read far more often than it is mutated. Run the four
+  // independent ledger reads in parallel, and use lean documents on read-only
+  // paths. The previous implementation awaited charges, then invoices, then
+  // ledgers serially and hydrated every row as a Mongoose document even when
+  // the caller only needed a JSON projection.
+  const chargeQuery = IPDCharge.find(
     { hospitalId, admissionId, ...ACTIVE_CHARGE_FILTER },
     null,
     sessionOptions(session)
   ).sort({ chargeDate: 1, createdAt: 1 });
+  const invoiceFilter = {
+    ...invoiceFilterForAdmission(admissionId),
+    hospital_id: hospitalId
+  };
+  const invoiceQuery = Invoice.find(invoiceFilter, null, sessionOptions(session))
+    .sort({ issue_date: 1, created_at: 1 });
+  const sponsorLedgerQuery = SponsorLedgerEntry.find(
+    { hospitalId, admissionId },
+    null,
+    sessionOptions(session)
+  ).sort({ occurredAt: 1 });
+  const advanceLedgerQuery = PatientAdvanceLedger.find(
+    { hospitalId, admissionId, walletType: 'IPD_SHARED', status: 'POSTED' },
+    null,
+    sessionOptions(session)
+  ).sort({ postedAt: 1, createdAt: 1 });
+
+  if (!persist) {
+    chargeQuery.lean();
+    invoiceQuery.lean();
+    sponsorLedgerQuery.lean();
+    advanceLedgerQuery.lean();
+  }
+
+  let charges;
+  let invoices;
+  let sponsorLedger;
+  let patientAdvanceLedger;
+
+  if (persist) {
+    // Preserve the established mutation/transaction ordering on write paths.
+    charges = await chargeQuery;
+    invoices = await invoiceQuery;
+    [sponsorLedger, patientAdvanceLedger] = await Promise.all([
+      sponsorLedgerQuery,
+      advanceLedgerQuery
+    ]);
+  } else {
+    [charges, invoices, sponsorLedger, patientAdvanceLedger] = await Promise.all([
+      chargeQuery,
+      invoiceQuery,
+      sponsorLedgerQuery,
+      advanceLedgerQuery
+    ]);
+  }
 
   const unbilledCharges = charges.filter(
     (charge) => !charge.isBilled && (!charge.status || charge.status === 'ACTIVE')
   );
 
-  const invoiceFilter = {
-    ...invoiceFilterForAdmission(admissionId),
-    hospital_id: hospitalId
-  };
-
-  const invoices = await Invoice.find(invoiceFilter, null, sessionOptions(session))
-    .sort({ issue_date: 1, created_at: 1 });
   const pharmacyInvoices = invoices.filter(isPharmacyControlledInvoice);
   const ipdInvoices = invoices.filter((invoice) => !isPharmacyControlledInvoice(invoice));
   const pharmacyBillingPolicy = policyFromAdmission(admission);
@@ -670,19 +714,6 @@ async function calculateAdmissionFinancials(admissionId, { session, persist = tr
   // they are patient-liability rows collected by the consolidated IPD invoice.
   const ipdCharges = includePharmacyInIpd ? charges : nonPharmacyCharges;
   const ipdUnbilledCharges = includePharmacyInIpd ? unbilledCharges : nonPharmacyUnbilledCharges;
-
-  const [sponsorLedger, patientAdvanceLedger] = await Promise.all([
-    SponsorLedgerEntry.find(
-      { hospitalId, admissionId },
-      null,
-      sessionOptions(session)
-    ).sort({ occurredAt: 1 }),
-    PatientAdvanceLedger.find(
-      { hospitalId, admissionId, walletType: 'IPD_SHARED', status: 'POSTED' },
-      null,
-      sessionOptions(session)
-    ).sort({ postedAt: 1, createdAt: 1 })
-  ]);
 
   // The append-only advance ledger is the authoritative patient-credit source.
   // Admission advance* fields are projections only and can become stale after
@@ -997,38 +1028,51 @@ async function getRunningBill(admissionId, user, options = {}) {
   }
   const snapshot = options.snapshot || await calculateAdmissionFinancials(admissionId, { user });
 
-  const admission = await IPDAdmission.findOne({
-    _id: admissionId,
-    hospitalId: snapshot.admission.hospitalId
-  })
+  const hospitalId = snapshot.admission.hospitalId;
+  const admissionQuery = IPDAdmission.findOne({ _id: admissionId, hospitalId })
     .populate('patientId', 'salutation first_name middle_name last_name patientId uhid phone dob dobPrecision ageEntrySource enteredAgeYears enteredAgeMonths enteredAgeDays ageAsOf age gender address city state zipCode village district tehsil emergency_contact emergency_phone emergency_relationship')
     .populate('primaryDoctorId', 'firstName lastName specialization')
     .populate('departmentId', 'name')
     .populate('wardId', 'name wardName')
     .populate('roomId', 'room_number roomNumber name type')
-    .populate('bedId', 'bedNumber bed_number');
+    .populate('bedId', 'bedNumber bed_number')
+    .lean();
 
-  const receipts = options.transactions
-    ? [...options.transactions].sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)).slice(0, 100)
-    : await FinancialTransaction.find({
-        hospitalId: admission.hospitalId,
-        admissionId,
-        status: 'POSTED'
-      })
+  const receiptPromise = options.transactions
+    ? Promise.resolve([...options.transactions].sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)).slice(0, 100))
+    : FinancialTransaction.find({ hospitalId, admissionId, status: 'POSTED' })
         .sort({ createdAt: -1 })
         .limit(100)
         .lean();
 
-  const advanceLedger = options.advanceLedger
-    ? [...options.advanceLedger].sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)).slice(0, 100)
-    : await PatientAdvanceLedger.find({
-        hospitalId: admission.hospitalId,
-        admissionId,
-        status: 'POSTED'
-      })
+  const advanceLedgerPromise = options.advanceLedger
+    ? Promise.resolve([...options.advanceLedger].sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0)).slice(0, 100))
+    : PatientAdvanceLedger.find({ hospitalId, admissionId, status: 'POSTED' })
         .sort({ createdAt: -1 })
         .limit(100)
         .lean();
+
+  // These reads are independent once the shared financial snapshot has been
+  // calculated. Running them together removes three extra serial database
+  // round-trips from every Billing-tab refresh.
+  const [admission, receipts, advanceLedger, pendingDiscountApprovals, reversedBilledCharges] = await Promise.all([
+    admissionQuery,
+    receiptPromise,
+    advanceLedgerPromise,
+    ApprovalRequest.find({
+      hospitalId,
+      admissionId,
+      requestType: 'DISCOUNT_APPROVAL',
+      status: 'Pending'
+    }).select('_id details requestedBy createdAt').lean(),
+    IPDCharge.find({
+      hospitalId,
+      admissionId,
+      isBilled: true,
+      status: 'REVERSED',
+      ...(snapshot.includePharmacyInIpd ? {} : { sourceModule: { $ne: 'Pharmacy' } })
+    }).sort({ chargeDate: 1, createdAt: 1 }).lean()
+  ]);
 
   const ipdInvoiceIdsForReceipts = new Set((snapshot.ipdInvoices || []).map((row) => String(row._id)));
   const isIpdControlledTransaction = (transaction = {}) => {
@@ -1055,26 +1099,12 @@ async function getRunningBill(admissionId, user, options = {}) {
     ipdTotalCollectedAmount - ipdPaymentRefunds - snapshot.advanceRefunded
   ));
 
-  const pendingDiscountApprovals = await ApprovalRequest.find({
-    hospitalId: admission.hospitalId,
-    admissionId,
-    requestType: 'DISCOUNT_APPROVAL',
-    status: 'Pending'
-  }).select('_id details requestedBy createdAt').lean();
-
   const unbilledChargesByDate = snapshot.ipdUnbilledCharges.reduce((result, charge) => {
     const key = dateKey(charge.chargeDate);
     (result[key] ||= []).push(charge);
     return result;
   }, {});
 
-  const reversedBilledCharges = await IPDCharge.find({
-    hospitalId: admission.hospitalId,
-    admissionId,
-    isBilled: true,
-    status: 'REVERSED',
-    ...(snapshot.includePharmacyInIpd ? {} : { sourceModule: { $ne: 'Pharmacy' } })
-  }).sort({ chargeDate: 1, createdAt: 1 }).lean();
   const billedCharges = [
     ...snapshot.ipdCharges.filter((charge) => charge.isBilled),
     ...reversedBilledCharges
@@ -4463,14 +4493,12 @@ async function getFinancialClearance(admissionId, user, options = {}) {
   const pharmacyBillingPolicy = snapshot.pharmacyBillingPolicy || policyFromAdmission(admission);
   const consolidatedPharmacyBilling = ipdOwnsPharmacyBilling(pharmacyBillingPolicy);
 
-  const eligibleUnbilledFilter = {
-    hospitalId: admission.hospitalId,
-    admissionId,
-    ...UNBILLED_CHARGE_FILTER
-  };
-  if (!consolidatedPharmacyBilling) eligibleUnbilledFilter.sourceModule = { $ne: 'Pharmacy' };
+  // The shared snapshot already contains the exact IPD-eligible unbilled
+  // charge set (including the Pharmacy ownership rule). Re-querying IPDCharge
+  // here duplicated work on every workspace load.
+  const eligibleUnbilled = snapshot.ipdUnbilledCharges || [];
 
-  const [pendingPharmacySales, hasPharmacyTransactions, pharmacyAdvanceRow, eligibleUnbilled] = await Promise.all([
+  const [pendingPharmacySales, hasPharmacyTransactions, pharmacyAdvanceRow] = await Promise.all([
     Sale.find({
       hospitalId: admission.hospitalId,
       admission_id: admissionId,
@@ -4480,8 +4508,7 @@ async function getFinancialClearance(admissionId, user, options = {}) {
       include_in_discharge_clearance: { $ne: false }
     }).select('sale_number balance_due total_amount payment_deferred include_in_discharge_clearance sale_date billing_owner collection_mode').lean(),
     Sale.exists({ hospitalId: admission.hospitalId, admission_id: admissionId, status: { $ne: 'Cancelled' } }),
-    PatientAdvanceLedger.findOne({ hospitalId: admission.hospitalId, admissionId, walletType: 'PHARMACY_IPD', status: 'POSTED' }).sort({ createdAt: -1 }).select('balanceAfter').lean(),
-    IPDCharge.find(eligibleUnbilledFilter).select('netAmount sourceModule').lean()
+    PatientAdvanceLedger.findOne({ hospitalId: admission.hospitalId, admissionId, walletType: 'PHARMACY_IPD', status: 'POSTED' }).sort({ createdAt: -1 }).select('balanceAfter').lean()
   ]);
 
   // In IPD-consolidated mode Pharmacy Sale/Invoice rows remain authoritative
@@ -4579,12 +4606,17 @@ async function getFinancialClearance(admissionId, user, options = {}) {
     pharmacyInvoices: snapshot.pharmacyInvoices
   };
 }
-async function getFinanceWorkspace(admissionId, user) {
-  // Load the canonical IPD financial snapshot once. The previous UI called
-  // running-bill, ledger and clearance independently, causing the same costly
-  // admission calculation to run three times for every workspace open/refresh.
+async function getFinanceWorkspace(admissionId, user, options = {}) {
+  // Load the canonical IPD financial snapshot once. Running bill, ledger and
+  // clearance all reuse this same snapshot and transaction set.
   await ensureAdmissionDailyCharges(admissionId, operationNow(), user);
-  const snapshot = await calculateAdmissionFinancials(admissionId, { user });
+  const compact = options.compact === true;
+  // Preserve the historical workspace/read semantics for every existing caller.
+  // Only the explicitly opt-in compact Billing request uses a non-persisting
+  // read snapshot.
+  const snapshot = compact
+    ? await calculateAdmissionFinancials(admissionId, { user, persist: false })
+    : await calculateAdmissionFinancials(admissionId, { user });
   const hospitalId = snapshot.admission.hospitalId;
 
   const [transactions, advanceLedger] = await Promise.all([
@@ -4598,7 +4630,12 @@ async function getFinanceWorkspace(admissionId, user) {
     getFinancialClearance(admissionId, user, { snapshot, skipEnsure: true })
   ]);
 
-  return { success: true, runningBill, ledger, clearance };
+  // Backward compatibility: callers that do not opt in keep the historical
+  // full nested workspace shape. The current Billing screen is the only caller
+  // that requests compact=1.
+  if (!compact) return { success: true, runningBill, ledger, clearance };
+
+  return compactFinanceWorkspacePayload({ runningBill, ledger, clearance });
 }
 
 async function finaliseFinancialClearance(admissionId, payload = {}, user) {

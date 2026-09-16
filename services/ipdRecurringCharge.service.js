@@ -410,16 +410,47 @@ async function ensureAdmissionDailyCharges(
 
   const keys = dateKeysBetween(effectiveFrom, effectiveThrough);
 
-  const segments = await IPDAccommodationSegment.find({
-    admissionId: admission._id
-  })
-    .sort({ startedAt: 1 })
-    .lean();
-
-  const [fallbackRows, workflowPolicy] = await Promise.all([
+  // Workspace/running-bill reads call this guard frequently. Previously every
+  // call walked every admission day, fetched the bed again, and then performed
+  // one existence query per recurring charge even when every row already
+  // existed. Prefetch the admission calendar state once so the common no-op
+  // path is a handful of queries rather than O(days * charge-types) queries.
+  const [segments, fallbackRows, workflowPolicy, existingDailyCharges] = await Promise.all([
+    IPDAccommodationSegment.find({ admissionId: admission._id })
+      .sort({ startedAt: 1 })
+      .lean(),
     dailyFallbackRows(hospitalId, effectiveThrough),
-    loadIPDWorkflowPolicy(hospitalId)
+    loadIPDWorkflowPolicy(hospitalId),
+    IPDCharge.find({
+      hospitalId,
+      admissionId: admission._id,
+      chargeDateKey: { $in: keys },
+      status: { $nin: ['VOIDED', 'CANCELLED'] },
+      $or: [
+        { idempotencyKey: { $regex: `^daily:${String(hospitalId)}:${String(admission._id)}:` } },
+        { chargeType: 'Bed' }
+      ]
+    }).lean()
   ]);
+
+  const bedIds = [...new Set([
+    normalizeObjectId(admission.bedId),
+    ...segments.map((segment) => normalizeObjectId(segment?.bedId))
+  ].filter(Boolean).map(String))];
+  const beds = bedIds.length
+    ? await Bed.find({ _id: { $in: bedIds }, hospitalId }).lean()
+    : [];
+  const bedById = new Map(beds.map((bed) => [String(bed._id), bed]));
+  const existingByIdempotency = new Map(
+    existingDailyCharges
+      .filter((charge) => charge.idempotencyKey)
+      .map((charge) => [String(charge.idempotencyKey), charge])
+  );
+  const existingBedByDate = new Map(
+    existingDailyCharges
+      .filter((charge) => charge.chargeType === 'Bed' && charge.chargeDateKey)
+      .map((charge) => [String(charge.chargeDateKey), charge])
+  );
 
   const result = {
     admissionId: admission._id,
@@ -434,18 +465,11 @@ async function ensureAdmissionDailyCharges(
     const chargeDate = keyToChargeDate(key);
     const fallback = recurringFallbackRates(fallbackRows, chargeDate);
     const segment = segmentForDate(segments, key);
-    let bed = null;
-
     const segmentBedId = normalizeObjectId(segment?.bedId);
     const admissionBedId = normalizeObjectId(admission.bedId);
-
-    if (segmentBedId) {
-      bed = await Bed.findOne({ _id: segmentBedId, hospitalId }).lean();
-    }
-
-    if (!bed && admissionBedId) {
-      bed = await Bed.findOne({ _id: admissionBedId, hospitalId }).lean();
-    }
+    const bed = (segmentBedId && bedById.get(String(segmentBedId)))
+      || (admissionBedId && bedById.get(String(admissionBedId)))
+      || null;
 
     const ward = segment?.bedType || bed?.bedType || 'General';
 
@@ -483,6 +507,16 @@ async function ensureAdmissionDailyCharges(
         continue;
       }
 
+      const idempotencyKey = `daily:${admission.hospitalId}:${admission._id}:${key}:${kind}`;
+      const prefetched = existingByIdempotency.get(idempotencyKey)
+        || (kind === 'bed' ? existingBedByDate.get(key) : null);
+
+      if (prefetched) {
+        result.charges.push(prefetched);
+        result.existing += 1;
+        continue;
+      }
+
       const posted = await createDailyCharge({
         admission,
         key,
@@ -501,6 +535,10 @@ async function ensureAdmissionDailyCharges(
       } else {
         result.created += 1;
       }
+
+      const postedPlain = posted.charge?.toObject ? posted.charge.toObject() : posted.charge;
+      if (postedPlain?.idempotencyKey) existingByIdempotency.set(String(postedPlain.idempotencyKey), postedPlain);
+      if (kind === 'bed' && postedPlain?.chargeDateKey) existingBedByDate.set(String(postedPlain.chargeDateKey), postedPlain);
     }
 
     result.processedDays += 1;
