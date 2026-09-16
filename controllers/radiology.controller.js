@@ -105,6 +105,29 @@ exports.createImagingTest = async (req, res) => {
   }
 };
 
+// Compact active-test options used by the request-creation modal. Keeping this
+// separate from the master-data listing avoids downloading hundreds of fields
+// and prevents the worklist page from loading imaging masters until needed.
+exports.getImagingTestOptions = async (req, res) => {
+  try {
+    const hospitalId = requireHospitalId(req);
+    const tests = await ImagingTest.find({
+      hospitalId,
+      is_active: true,
+      template_only: false,
+      is_billable: true
+    })
+      .select('_id code name category base_price')
+      .sort({ name: 1 })
+      .lean();
+
+    return res.json({ success: true, data: tests });
+  } catch (error) {
+    console.error('Error fetching imaging test options:', error);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 // Get all imaging tests
 exports.getImagingTests = async (req, res) => {
   try {

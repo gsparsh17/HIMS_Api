@@ -3,6 +3,7 @@ const { semanticDateRange } = require('../utils/hospitalDateRange');
 const ProcedureRequest = require('../models/ProcedureRequest');
 const Procedure = require('../models/Procedure');
 const Doctor = require('../models/Doctor');
+const Patient = require('../models/Patient');
 const IPDAdmission = require('../models/IPDAdmission');
 const fileStorage = require('../services/fileStorage.service');
 const fs = require('fs');
@@ -230,6 +231,8 @@ exports.createProcedureRequest = async (req, res) => {
 };
 
 // Get procedure requests (with filters)
+const escapeRegex = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 exports.getProcedureRequests = async (req, res) => {
   try {
     const {
@@ -239,10 +242,13 @@ exports.getProcedureRequests = async (req, res) => {
       admissionId,
       appointmentId,
       sourceType,
+      category,
+      billing,
+      q,
       startDate,
       endDate,
       page = 1,
-      limit = 20
+      limit = 50
     } = req.query;
 
     const hospitalId = requireHospitalId(req);
@@ -253,34 +259,86 @@ exports.getProcedureRequests = async (req, res) => {
     if (admissionId) filter.admissionId = admissionId;
     if (appointmentId) filter.appointmentId = appointmentId;
     if (sourceType) filter.sourceType = sourceType;
-    
+    if (category) filter.category = category;
+
+    if (billing === 'billed') {
+      filter.billingState = 'INVOICED';
+    } else if (billing === 'pending') {
+      filter.financialClearanceState = {
+        $in: ['PAYMENT_REQUIRED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'HOLD']
+      };
+    }
+
     if (startDate || endDate) {
       filter.requestedDate = semanticDateRange(startDate, endDate);
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    const requests = await ProcedureRequest.find(filter)
-      .populate('patientId', 'first_name last_name patientId phone')
-      .populate('doctorId', 'firstName lastName specialization')
-      .populate('assignedDoctorId', 'firstName lastName specialization')
-      .populate('procedureId', 'code name category base_price serviceDomain duration_minutes')
-      .populate('approvedBy', 'name')
-      .populate('performedBy', 'name')
-      .populate('performedDoctorId', 'firstName lastName specialization')
-      .populate('completedBy', 'name')
-      .sort({ requestedDate: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
+    const trimmedQuery = String(q || '').trim();
+    if (trimmedQuery) {
+      const regex = new RegExp(escapeRegex(trimmedQuery), 'i');
+      const [patientMatches, doctorMatches] = await Promise.all([
+        Patient.find({
+          hospitalId,
+          $or: [
+            { first_name: regex },
+            { last_name: regex },
+            { patientId: regex },
+            { uhid: regex },
+            { phone: regex }
+          ]
+        }).select('_id').limit(250).lean(),
+        Doctor.find({
+          hospitalId,
+          $or: [
+            { firstName: regex },
+            { lastName: regex },
+            { specialization: regex }
+          ]
+        }).select('_id').limit(250).lean()
+      ]);
 
-    const total = await ProcedureRequest.countDocuments(filter);
+      const searchClauses = [
+        { requestNumber: regex },
+        { procedureCode: regex },
+        { procedureName: regex },
+        { category: regex },
+        { subcategory: regex },
+        { clinical_indication: regex },
+        { clinical_history: regex }
+      ];
+      if (patientMatches.length) searchClauses.push({ patientId: { $in: patientMatches.map((row) => row._id) } });
+      if (doctorMatches.length) searchClauses.push({ doctorId: { $in: doctorMatches.map((row) => row._id) } });
+      filter.$or = searchClauses;
+    }
+
+    const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+    const safeLimit = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 50));
+    const skip = (safePage - 1) * safeLimit;
+
+    const [requests, total] = await Promise.all([
+      ProcedureRequest.find(filter)
+        .populate('patientId', 'first_name last_name patientId uhid phone')
+        .populate('doctorId', 'firstName lastName specialization')
+        .populate('assignedDoctorId', 'firstName lastName specialization')
+        .populate('procedureId', 'code name category base_price serviceDomain duration_minutes')
+        .populate('approvedBy', 'name')
+        .populate('performedBy', 'name')
+        .populate('performedDoctorId', 'firstName lastName specialization')
+        .populate('completedBy', 'name')
+        .sort({ requestedDate: -1, _id: -1 })
+        .skip(skip)
+        .limit(safeLimit)
+        .lean(),
+      ProcedureRequest.countDocuments(filter)
+    ]);
 
     res.json({
       success: true,
       data: requests,
       total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / limit)
+      page: safePage,
+      limit: safeLimit,
+      totalPages: Math.max(1, Math.ceil(total / safeLimit))
     });
   } catch (error) {
     console.error('Error fetching procedure requests:', error);
@@ -701,33 +759,92 @@ exports.getDashboardStats = async (req, res) => {
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
 
-    const [pending, todayScheduled, totalRequests, completedToday] = await Promise.all([
-      ProcedureRequest.countDocuments({ hospitalId, status: 'Pending' }),
-      ProcedureRequest.countDocuments({ 
-        hospitalId, scheduledDate: { $gte: today, $lt: tomorrow },
-        status: { $in: ['Scheduled', 'Approved'] }
-      }),
-      ProcedureRequest.countDocuments({ hospitalId }),
-      ProcedureRequest.countDocuments({ 
-        hospitalId, status: 'Completed',
-        completedAt: { $gte: today, $lt: tomorrow }
-      })
+    const [summaryRows, categoryBreakdown] = await Promise.all([
+      ProcedureRequest.aggregate([
+        { $match: { hospitalId } },
+        {
+          $group: {
+            _id: null,
+            totalRequests: { $sum: 1 },
+            totalPending: { $sum: { $cond: [{ $eq: ['$status', 'Pending'] }, 1, 0] } },
+            scheduled: { $sum: { $cond: [{ $eq: ['$status', 'Scheduled'] }, 1, 0] } },
+            inProgress: { $sum: { $cond: [{ $eq: ['$status', 'In Progress'] }, 1, 0] } },
+            todayProcedures: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $gte: ['$scheduledDate', today] }, { $lt: ['$scheduledDate', tomorrow] }] },
+                  1,
+                  0
+                ]
+              }
+            },
+            completedToday: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ['$status', 'Completed'] },
+                      { $gte: ['$completedAt', today] },
+                      { $lt: ['$completedAt', tomorrow] }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+            pendingPayments: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: ['$status', 'Cancelled'] },
+                      { $in: ['$financialClearanceState', ['PAYMENT_REQUIRED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'HOLD']] }
+                    ]
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+            completedOperationalValue: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$status', 'Completed'] },
+                  {
+                    $convert: {
+                      input: { $ifNull: ['$pricingSnapshot.amounts.contracted', '$pricingSnapshot.contractedAmount'] },
+                      to: 'double',
+                      onError: 0,
+                      onNull: 0
+                    }
+                  },
+                  0
+                ]
+              }
+            }
+          }
+        }
+      ]),
+      ProcedureRequest.aggregate([
+        { $match: { hospitalId } },
+        { $group: { _id: '$category', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ])
     ]);
 
-    // Category-wise breakdown
-    const categoryBreakdown = await ProcedureRequest.aggregate([
-      { $match: { hospitalId } },
-      { $group: { _id: '$category', count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]);
-
+    const summary = summaryRows[0] || {};
     res.json({
       success: true,
       stats: {
-        pending,
-        todayScheduled,
-        totalRequests,
-        completedToday,
+        totalRequests: Number(summary.totalRequests || 0),
+        totalPending: Number(summary.totalPending || 0),
+        scheduled: Number(summary.scheduled || 0),
+        inProgress: Number(summary.inProgress || 0),
+        todayProcedures: Number(summary.todayProcedures || 0),
+        completedToday: Number(summary.completedToday || 0),
+        pendingPayments: Number(summary.pendingPayments || 0),
+        completedOperationalValue: Number(summary.completedOperationalValue || 0),
         categoryBreakdown
       }
     });
