@@ -9,6 +9,7 @@ const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const LabRequest = require('../models/LabRequest');
 const RadiologyRequest = require('../models/RadiologyRequest');
 const ProcedureRequest = require('../models/ProcedureRequest');
+const OTRequest = require('../models/OTRequest');
 const FinancialReconciliationIssue = require('../models/FinancialReconciliationIssue');
 const {
   money,
@@ -540,7 +541,23 @@ async function scanAdvanceLedger(hospitalId, transactions = []) {
 
 async function scanSourceState(hospitalId, invoiceMap) {
   const results = [];
-  const configs = [[LabRequest, 'LabRequest'], [RadiologyRequest, 'RadiologyRequest'], [ProcedureRequest, 'ProcedureRequest']];
+  const configs = [[LabRequest, 'LabRequest'], [RadiologyRequest, 'RadiologyRequest'], [ProcedureRequest, 'ProcedureRequest'], [OTRequest, 'OTRequest']];
+  const sourceModules = ['LabRequest', 'Lab', 'RadiologyRequest', 'Radiology', 'ProcedureRequest', 'Procedure', 'OTRequest', 'OT'];
+  const canonicalCharges = await IPDCharge.find({
+    hospitalId,
+    sourceModule: { $in: sourceModules },
+    sourceId: { $ne: null },
+    status: { $nin: ['VOIDED', 'CANCELLED', 'REVERSED'] }
+  }).select('sourceModule sourceId isBilled status invoiceId billId').lean();
+
+  const chargesBySource = new Map();
+  for (const charge of canonicalCharges) {
+    const key = String(charge.sourceId || '');
+    if (!key) continue;
+    if (!chargesBySource.has(key)) chargesBySource.set(key, []);
+    chargesBySource.get(key).push(charge);
+  }
+
   for (const [Model, entityType] of configs) {
     const rows = await Model.find({ $or: [{ hospitalId }, { hospital_id: hospitalId }] })
       .select('billingState billing_state chargeIds charge_ids invoiceIds invoice_ids is_billed invoiceId').lean();
@@ -548,13 +565,50 @@ async function scanSourceState(hospitalId, invoiceMap) {
       const chargeIds = row.chargeIds || row.charge_ids || [];
       const invoiceIds = Array.from(new Set([...(row.invoiceIds || row.invoice_ids || []), ...(row.invoiceId ? [row.invoiceId] : [])].map(idOf).filter(Boolean)));
       const state = row.billingState || row.billing_state;
-      if ((state === 'INVOICED' || row.is_billed) && !invoiceIds.length) {
+      // invoiceId is only a link; the operational projection is consistent only
+      // when both the lifecycle state and compatibility billed flag agree.
+      const sourceSaysInvoiced = String(state || '').toUpperCase() === 'INVOICED' && row.is_billed === true;
+      const canonical = chargesBySource.get(idOf(row)) || [];
+      const canonicalInvoiced = canonical.filter((charge) => charge.isBilled === true || charge.status === 'INVOICED' || charge.invoiceId);
+      const canonicalInvoiceIds = Array.from(new Set(canonicalInvoiced.map((charge) => idOf(charge.invoiceId)).filter(Boolean)));
+
+      if (sourceSaysInvoiced && !invoiceIds.length) {
         results.push(issue('SOURCE_STATE_MISMATCH', 'HIGH', entityType, row._id,
           'Source request says invoiced but has no invoice link.', { state, chargeIds, invoiceIds }));
       } else if (state === 'CHARGE_POSTED' && !chargeIds.length) {
         results.push(issue('SOURCE_STATE_MISMATCH', 'MEDIUM', entityType, row._id,
           'Source request says charge posted but has no charge link.', { state }));
       }
+
+      // Canonical IPDCharge is the financial authority. This inverse drift was
+      // previously missed, which allowed Patient File tabs to display Unbilled
+      // even though the charge was already on an issued invoice.
+      if (canonicalInvoiced.length && !sourceSaysInvoiced) {
+        results.push(issue('SOURCE_STATE_MISMATCH', 'HIGH', entityType, row._id,
+          'Canonical IPD charge is invoiced but the clinical source request is still marked unbilled.', {
+            state,
+            is_billed: row.is_billed,
+            canonicalChargeIds: canonicalInvoiced.map((charge) => idOf(charge._id)),
+            canonicalInvoiceIds
+          }, {
+            discriminator: 'CANONICAL_INVOICED_SOURCE_UNBILLED',
+            deterministicFix: true,
+            suggestedAction: 'Synchronize billingState/is_billed and invoice links from the canonical IPDCharge.'
+          }));
+      }
+
+      if (canonicalInvoiceIds.length && invoiceIds.length) {
+        const missingCanonicalLinks = canonicalInvoiceIds.filter((invoiceId) => !invoiceIds.includes(invoiceId));
+        if (missingCanonicalLinks.length) {
+          results.push(issue('SOURCE_STATE_MISMATCH', 'HIGH', entityType, row._id,
+            'Clinical source request invoice links do not match its canonical invoiced IPD charge.', {
+              sourceInvoiceIds: invoiceIds,
+              canonicalInvoiceIds,
+              missingCanonicalLinks
+            }, { discriminator: 'CANONICAL_INVOICE_LINK_MISMATCH' }));
+        }
+      }
+
       const activeInvoiceIds = invoiceIds.filter((invoiceId) => {
         const invoice = invoiceMap.get(invoiceId);
         return invoice && invoice.document_stage !== 'VOID' && invoice.status !== 'Cancelled';

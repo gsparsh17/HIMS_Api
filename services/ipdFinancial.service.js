@@ -2750,13 +2750,30 @@ async function recordIPDPayment(admissionId, payload = {}, user) {
     invoices = await Invoice.find({ ...ipdCollectibleInvoiceFilterForAdmission(admissionId), hospital_id: admission.hospitalId }, null, sessionOptions(session))
       .sort({ issue_date: 1, created_at: 1 });
     selected = payload.invoiceId ? invoices.filter((invoice) => String(invoice._id) === String(payload.invoiceId)) : invoices;
+    const existingAuthorisedCredit = money(selected.reduce((sum, invoice) => (
+      sum + activeAuthorisedCredit(invoice)
+    ), 0));
+    const selectedBalanceDue = money(selected.reduce((sum, invoice) => (
+      sum + Number(invoice.balance_due || 0)
+    ), 0));
     const newCreditCapacity = money(selected.reduce((sum, invoice) => (
       sum + Math.max(0, Number(invoice.balance_due || 0) - activeAuthorisedCredit(invoice))
     ), 0));
     const deferredCreditAmount = deferRemaining ? newCreditCapacity : explicitDeferredCredit;
     if (deferredCreditAmount > newCreditCapacity + 0.01) {
-      const error = new Error('Credit / Pay Later amount cannot exceed the remaining uncovered invoice balance');
+      const error = new Error(
+        existingAuthorisedCredit > 0
+          ? 'Additional Credit / Pay Later exceeds the uncovered invoice balance after existing authorised credit'
+          : 'Credit / Pay Later amount cannot exceed the remaining uncovered invoice balance'
+      );
       error.statusCode = 400;
+      error.code = 'DEFERRED_CREDIT_EXCEEDS_UNCOVERED_BALANCE';
+      error.details = {
+        requestedDeferredCredit: money(deferredCreditAmount),
+        remainingInvoiceBalance: selectedBalanceDue,
+        existingAuthorisedCredit,
+        additionalCreditCapacity: newCreditCapacity
+      };
       throw error;
     }
 

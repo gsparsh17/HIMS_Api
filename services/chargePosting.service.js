@@ -668,6 +668,35 @@ async function getSourceFinancialStatus({ sourceModule, sourceId, user, session 
     selectedMode = charge?.selectedBillingMode || null;
     requiredNow = money(charge?.requiredNowAmount || 0);
     policySnapshot = charge?.financialPolicySnapshot || {};
+
+    // IPDCharge is the financial authority. A source request may retain a stale
+    // PENDING_CHARGE/is_billed=false projection even though it already carries
+    // an invoice link. Repair that projection whenever financial status is read
+    // so future clinical screens and exports converge automatically.
+    const canonicalInvoiced = charge && (charge.isBilled === true || charge.status === 'INVOICED' || charge.invoiceId);
+    if (canonicalInvoiced) {
+      const requestInvoiceIds = [...new Set([...(request.invoiceIds || []), request.invoiceId].filter(Boolean).map(String))];
+      const needsProjectionSync = request.is_billed !== true
+        || String(request.billingState || '').toUpperCase() !== BILLING_STATES.INVOICED
+        || (charge.invoiceId && !requestInvoiceIds.includes(String(charge.invoiceId)));
+      if (needsProjectionSync) {
+        const set = { is_billed: true, billingState: BILLING_STATES.INVOICED };
+        if (charge.invoiceId) set.invoiceId = charge.invoiceId;
+        const addToSet = {};
+        if (charge._id) addToSet.chargeIds = charge._id;
+        if (charge.billId) addToSet.billIds = charge.billId;
+        if (charge.invoiceId) addToSet.invoiceIds = charge.invoiceId;
+        const update = { $set: set };
+        if (Object.keys(addToSet).length) update.$addToSet = addToSet;
+        await config.Model.updateOne({ _id: request._id, hospitalId: user.hospital_id }, update, opts(session));
+        request.is_billed = true;
+        request.billingState = BILLING_STATES.INVOICED;
+        if (charge.invoiceId) {
+          request.invoiceId = charge.invoiceId;
+          request.invoiceIds = [...new Set([...(request.invoiceIds || []).map(String), String(charge.invoiceId)])];
+        }
+      }
+    }
   } else {
     const billIds = (request.billIds || []).filter(Boolean);
     if (billIds.length) {
