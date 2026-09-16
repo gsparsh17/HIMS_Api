@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const IPDAdmission = require('../models/IPDAdmission');
 const Patient = require('../models/Patient');
 const IPDCharge = require('../models/IPDCharge');
+const IPDAccommodationSegment = require('../models/IPDAccommodationSegment');
 const Invoice = require('../models/Invoice');
 const Bill = require('../models/Bill');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
@@ -342,6 +343,131 @@ async function financialPrintSnapshots(admission, session) {
 
 function dateKey(value = operationNow()) {
   return hospitalDateKey(value);
+}
+
+const DAILY_ACCOMMODATION_HEADS = Object.freeze({
+  Bed: 'Room/Bed Charges',
+  Nursing: 'Nursing Charges',
+  'RMO / Duty Doctor': 'RMO / Duty Doctor Charges'
+});
+
+function entityDisplayValue(entity, fields = []) {
+  if (!entity || typeof entity !== 'object') return '';
+  for (const field of fields) {
+    const value = entity[field];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return '';
+}
+
+function dateKeyOrdinal(key) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ''));
+  if (!match) return null;
+  const millis = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isFinite(millis) ? Math.floor(millis / 86400000) : null;
+}
+
+function accommodationLocationLabel(segment, admission, charge) {
+  const room = entityDisplayValue(segment?.roomId, ['roomNumber', 'room_number', 'name']);
+  const bed = entityDisplayValue(segment?.bedId, ['bedNumber', 'bed_number', 'name']);
+  if (room && bed) return `Room ${room} / Bed ${bed}`;
+  if (bed) return `Bed ${bed}`;
+  if (room) return `Room ${room}`;
+  if (segment?.bedType) return String(segment.bedType);
+
+  const sourceId = String(charge?.sourceId?._id || charge?.sourceId || '');
+  const currentBedId = String(admission?.bedId?._id || admission?.bedId || '');
+  if (sourceId && currentBedId && sourceId === currentBedId) {
+    const currentBed = entityDisplayValue(admission?.bedId, ['bedNumber', 'bed_number', 'name']);
+    if (currentBed) return `Bed ${currentBed}`;
+  }
+  return '—';
+}
+
+/**
+ * Collapse per-day Bed/Nursing/RMO IPDCharge rows into contiguous display ranges.
+ * Presentation-only: preserves original charge ids so the UI can expand each range.
+ */
+async function buildDailyAccommodationSummary(charges = [], admission = null) {
+  const eligible = (Array.isArray(charges) ? charges : [])
+    .filter((charge) => DAILY_ACCOMMODATION_HEADS[charge?.chargeType])
+    .map((charge) => ({
+      ...charge,
+      _summaryDateKey: String(charge.chargeDateKey || dateKey(charge.chargeDate || charge.createdAt || operationNow()))
+    }))
+    .sort((left, right) => {
+      const headOrder = { Bed: 0, Nursing: 1, 'RMO / Duty Doctor': 2 };
+      return (headOrder[left.chargeType] ?? 99) - (headOrder[right.chargeType] ?? 99)
+        || left._summaryDateKey.localeCompare(right._summaryDateKey)
+        || String(left._id || '').localeCompare(String(right._id || ''));
+    });
+
+  if (!eligible.length) return [];
+
+  const segmentIds = [...new Set(
+    eligible
+      .map((charge) => String(charge.accommodationSegmentId?._id || charge.accommodationSegmentId || ''))
+      .filter(Boolean)
+  )];
+
+  let segments = [];
+  if (segmentIds.length) {
+    const segmentFilter = { _id: { $in: segmentIds } };
+    if (admission?.hospitalId) segmentFilter.hospitalId = admission.hospitalId;
+    if (admission?._id) segmentFilter.admissionId = admission._id;
+    segments = await IPDAccommodationSegment.find(segmentFilter)
+      .populate('roomId', 'name roomNumber room_number')
+      .populate('bedId', 'name bedNumber bed_number bedType')
+      .lean();
+  }
+  const segmentById = new Map(segments.map((segment) => [String(segment._id), segment]));
+
+  const groups = [];
+  for (const charge of eligible) {
+    const segmentId = String(charge.accommodationSegmentId?._id || charge.accommodationSegmentId || '');
+    const segment = segmentId ? segmentById.get(segmentId) : null;
+    const chargeHead = DAILY_ACCOMMODATION_HEADS[charge.chargeType];
+    const roomBedNo = accommodationLocationLabel(segment, admission, charge);
+    const rate = money(charge.rate ?? charge.grossAmount ?? charge.amount ?? 0);
+    const discount = money(charge.discountAmount ?? charge.discount ?? 0);
+    const netAmount = money(charge.netAmount ?? charge.amount ?? 0);
+    const ordinal = dateKeyOrdinal(charge._summaryDateKey);
+    const fingerprint = [chargeHead, segmentId || roomBedNo, rate].join('|');
+    const previous = groups[groups.length - 1];
+    const canExtend = Boolean(
+      previous
+      && previous._fingerprint === fingerprint
+      && ordinal !== null
+      && previous._lastOrdinal !== null
+      && ordinal === previous._lastOrdinal + 1
+    );
+
+    if (canExtend) {
+      previous.tillDate = charge._summaryDateKey;
+      previous.days += 1;
+      previous.discount = money(previous.discount + discount);
+      previous.netAmount = money(previous.netAmount + netAmount);
+      previous.chargeIds.push(charge._id);
+      previous._lastOrdinal = ordinal;
+      continue;
+    }
+
+    groups.push({
+      chargeHead,
+      roomBedNo,
+      fromDate: charge._summaryDateKey,
+      tillDate: charge._summaryDateKey,
+      chargePerDay: rate,
+      discount,
+      days: 1,
+      netAmount,
+      chargeIds: [charge._id],
+      _fingerprint: fingerprint,
+      _lastOrdinal: ordinal
+    });
+  }
+
+  return groups.map(({ _fingerprint, _lastOrdinal, ...group }) => group);
 }
 
 async function syncLinkedBillFromInvoice(invoice, paymentMethod, session) {
@@ -4658,6 +4784,7 @@ async function finaliseFinancialClearance(admissionId, payload = {}, user) {
 }
 
 module.exports = {
+  buildDailyAccommodationSummary,
   calculateAdmissionFinancials,
   listBillingAdmissions,
   getRunningBill,
