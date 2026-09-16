@@ -1,8 +1,19 @@
-const BILLING_INTENTS = Object.freeze([
+// These enums are intentionally arrays *and* named constant maps. Mongoose
+// needs the array values for schema enum validation, while finance services use
+// named access such as BILLING_STATES.INVOICED. The previous implementation
+// exported plain frozen arrays, so BILLING_STATES.INVOICED and
+// BILLING_INTENTS.BILL_NOW were undefined. That prevented IPD source requests
+// from moving to CHARGE_POSTED/INVOICED and disabled policy-driven BILL_NOW
+// invoice issuance.
+function namedEnum(values) {
+  return Object.freeze(Object.assign([...values], Object.fromEntries(values.map((value) => [value, value]))));
+}
+
+const BILLING_INTENTS = namedEnum([
   'DEFER_TO_ENCOUNTER', 'BILL_NOW', 'ADD_TO_OPD_CART',
   'PACKAGE_INCLUDED', 'NO_CHARGE', 'EXTERNAL_REFERRAL'
 ]);
-const BILLING_STATES = Object.freeze([
+const BILLING_STATES = namedEnum([
   'NOT_APPLICABLE', 'PENDING_CHARGE', 'CHARGE_POSTED', 'PARTIALLY_INVOICED',
   'INVOICED', 'CREDITED', 'REFUNDED', 'VOIDED'
 ]);
