@@ -137,7 +137,11 @@ async function syncHRProfileFromSource(sourceModel, sourceDoc, options = {}) {
   if (!sourceDoc || !SUPPORTED_SOURCE_MODELS.includes(sourceModel)) return null;
   const email = firstDefined(sourceDoc.email, options.email);
   const user = await getUser(firstDefined(sourceDoc.user_id, sourceDoc.userId), email);
-  const hospitalId = firstDefined(options.hospital_id, user?.hospital_id, await defaultHospitalId());
+  const sourceHospitalId = firstDefined(sourceDoc.hospitalId, sourceDoc.hospital_id, user?.hospital_id);
+  if (options.hospital_id && sourceHospitalId && String(sourceHospitalId) !== String(options.hospital_id)) {
+    return null;
+  }
+  const hospitalId = firstDefined(sourceHospitalId, options.hospital_id, await defaultHospitalId());
   const payload = sourceToProfilePayload(sourceModel, sourceDoc, user, hospitalId);
   if (!payload.email && !payload.user_id && !payload.source_id) return null;
 
@@ -192,7 +196,10 @@ async function syncAllExistingHRProfiles(options = {}) {
   const results = [];
   for (const modelName of SUPPORTED_SOURCE_MODELS) {
     const Model = require(`../models/${modelName}`);
-    const records = await Model.find({});
+    const query = options.hospital_id && Model.schema?.path('hospitalId')
+      ? { hospitalId: options.hospital_id }
+      : {};
+    const records = await Model.find(query);
     let synced = 0;
     let skipped = 0;
     for (const record of records) {

@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { protect, authorize, requireActionPermission } = require('../middlewares/auth');
+const { protect, authorize, requireModuleAccess, requireActionPermission } = require('../middlewares/auth');
 const controller = require('../controllers/userAccess.controller');
 
 const requireAuth = [
   protect,
-  authorize('admin', 'mediqliq_super_admin', 'hr', 'hr_manager'),
+  requireModuleAccess('hr_staff', 'manage'),
   requireActionPermission('user_access_manage')
 ];
 

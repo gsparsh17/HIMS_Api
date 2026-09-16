@@ -340,6 +340,12 @@ const EXACT_MODULE_MAP = Object.freeze({
   users: 'masters_settings',
   imports: 'masters_settings',
   charges: 'masters_settings',
+  insurance_tpa: 'billing_finance',
+  advanced_mis: 'reports',
+  nabh: 'masters_settings',
+  clinical_ai: 'ipd',
+  voice_dictation: 'registration_opd',
+  patient_media: 'registration_opd',
   departments: 'masters_settings',
   rooms: 'masters_settings'
 });
@@ -470,15 +476,18 @@ function normalizeFeaturePermissions(input, role, meta = {}, options = {}) {
 
   return MAIN_FEATURES.map(({ key }) => {
     const grant = grants.get(key) || {};
+    const access = combined.has(key)
+      ? combined.get(key)
+      : (options.preserveExplicitNone ? 'none' : roleDefaultAccess(role, key));
 
     return {
       moduleKey: key,
-      access: combined.has(key)
-        ? combined.get(key)
-        : (options.preserveExplicitNone ? 'none' : roleDefaultAccess(role, key)),
-      actions: Array.from(
-        actions.get(key) || new Set(options.preserveExplicitNone ? [] : roleDefaultActions(role, key))
-      ),
+      access,
+      // An action can never outlive its parent module. This also repairs older
+      // rows such as hr_staff=none + user_access_manage when the user is saved.
+      actions: access === 'none'
+        ? []
+        : Array.from(actions.get(key) || new Set(options.preserveExplicitNone ? [] : roleDefaultActions(role, key))),
       grantedBy: grant.grantedBy || meta.grantedBy,
       grantedAt: grant.grantedAt || meta.grantedAt || new Date(),
       updatedAt: new Date()

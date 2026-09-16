@@ -5,7 +5,8 @@ const Hospital = require('../models/Hospital');
 const {
   MAIN_FEATURE_KEYS,
   toMainFeatureKey,
-  defaultFeaturePermissions
+  defaultFeaturePermissions,
+  dashboardAccessFromFeatures
 } = require('../utils/mainFeatureAccess');
 const { normalizeRole } = require('../utils/insuranceWorkflowAuthority');
 const { getSnapshot } = require('../services/licenseSnapshot.service');
@@ -126,7 +127,8 @@ function normalizePermissions(rows, actor) {
     return {
       moduleKey,
       access,
-      actions: Array.from(new Set(row?.actions || [])),
+      // A disabled module cannot retain sensitive action grants.
+      actions: access === 'none' ? [] : Array.from(new Set(row?.actions || [])),
       grantedBy: actor,
       grantedAt: new Date(),
       updatedAt: new Date()
@@ -463,6 +465,7 @@ exports.updateUserPermissions = async (req, res) => {
     }
 
     user.modulePermissions = permissions;
+    user.dashboard_access = dashboardAccessFromFeatures(permissions);
     // This endpoint represents an explicit administrator choice. Persist `none`
     // exactly as selected so future role presets cannot silently reopen access.
     user.enforceModulePermissions = true;

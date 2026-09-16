@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const { addSoftDeleteFields } = require('../utils/softDelete');
 const bcrypt = require('bcryptjs');
-const { MAIN_FEATURE_KEYS, normalizeFeaturePermissions } = require('../utils/mainFeatureAccess');
+const { MAIN_FEATURE_KEYS, normalizeFeaturePermissions, dashboardAccessFromFeatures } = require('../utils/mainFeatureAccess');
 const { passwordPolicyErrors } = require('../services/nabhSecurity.service');
 const { OT_ACTIONS } = require('../utils/otCapabilityCatalog');
 
@@ -77,6 +77,9 @@ userSchema.pre('validate', function normalizeFeatureRows(next) {
     { grantedAt: this.createdAt || new Date() },
     { preserveExplicitNone: Boolean(this.enforceModulePermissions) }
   );
+  // dashboard_access is a legacy compatibility field. Keep it derived from the
+  // canonical module permissions so older consumers cannot drift from RBAC.
+  this.dashboard_access = dashboardAccessFromFeatures(this.modulePermissions);
   next();
 });
 

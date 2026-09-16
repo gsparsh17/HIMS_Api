@@ -3,12 +3,15 @@ const mongoose = require('mongoose');
 const { addSoftDeleteFields } = require('../utils/softDelete');
 const otStaffSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
+  // Login is optional during employee onboarding. Keep uniqueness within this
+  // hospital database only when a real User ObjectId is present.
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-    unique: true
+    required: false
   },
+  // Deployment model is one MongoDB database per hospital, so employeeId only
+  // needs to be unique inside this database (not hospitalId+employeeId).
   employeeId: {
     type: String,
     unique: true,
@@ -22,10 +25,10 @@ const otStaffSchema = new mongoose.Schema({
       'Scrub Nurse', 
       'Circulating Nurse', 
       'Anesthesia Assistant',
-      'OT Staff',           // Added
-      'OT Nurse',           // Added
-      'Surgical Assistant', // Added
-      'Sterilization Technician' // Added
+      'OT Staff',
+      'OT Nurse',
+      'Surgical Assistant',
+      'Sterilization Technician'
     ],
     required: true
   },
@@ -59,7 +62,17 @@ const otStaffSchema = new mongoose.Schema({
   maxSimultaneousCases: { type: Number, default: 1, min: 1 }
 }, { timestamps: true });
 
-otStaffSchema.index({ hospitalId: 1, employeeId: 1 }, { unique: true });
+// Multiple OT staff may intentionally have no login account. A normal unique
+// userId index would allow only one missing/null value. The partial unique index
+// enforces one OT profile per real User while excluding no-login employees.
+otStaffSchema.index(
+  { userId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { userId: { $type: 'objectId' } }
+  }
+);
+
 otStaffSchema.index({ hospitalId: 1, designation: 1, is_active: 1 });
 otStaffSchema.index({ is_active: 1 });
 
