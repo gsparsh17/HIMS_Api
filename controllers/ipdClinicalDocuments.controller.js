@@ -1037,7 +1037,7 @@ exports.createVitals = async (req, res) => {
     body.recordedTimezone = DEFAULT_TIMEZONE;
 
     if (req.body.sign === true || req.body.status === 'Signed') {
-      if (!['nurse', 'admin', 'mediqliq_super_admin'].includes(req.user.role)) {
+      if (!['nurse', 'admin', 'mediqliq_super_admin', 'staff', 'receptionist', 'registrar'].includes(req.user.role)) {
         throw statusError(403, 'Only nursing roles may sign vitals');
       }
       if (!EWS_CONFIG.approved) {
@@ -1097,7 +1097,7 @@ exports.updateVitals = async (req, res) => {
     record.set(patch);
 
     if (req.body.sign === true || req.body.status === 'Signed') {
-      if (!['nurse', 'admin', 'mediqliq_super_admin'].includes(req.user.role)) {
+      if (!['nurse', 'admin', 'mediqliq_super_admin', 'staff', 'receptionist', 'registrar'].includes(req.user.role)) {
         throw statusError(403, 'Only nursing roles may sign vitals');
       }
       if (!EWS_CONFIG.approved) {
