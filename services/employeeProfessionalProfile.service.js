@@ -99,7 +99,7 @@ async function syncProfessionalProfile({ body, profile, user, departmentId, hosp
     if (accessibleTestIds !== undefined) update.accessible_test_ids = accessibleTestIds;
 
     const pathology = await PathologyStaff.findOneAndUpdate(
-      { hospitalId, ...(email ? { email } : { staffId }) },
+      profile.pathology_staff_id ? { _id: profile.pathology_staff_id, hospitalId } : { hospitalId, ...(email ? { email } : { staffId }) },
       { $set: update, $setOnInsert: { staffId, created_by: body.created_by } },
       { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
     );
@@ -113,7 +113,7 @@ async function syncProfessionalProfile({ body, profile, user, departmentId, hosp
     const specializations = valueList(body.radiology_specializations || body.specializations)
       .filter((value) => RADIOLOGY_SPECIALIZATIONS.has(value));
     const radiology = await RadiologyStaff.findOneAndUpdate(
-      { hospitalId, ...(email ? { email } : { employeeId }) },
+      profile.radiology_staff_id ? { _id: profile.radiology_staff_id, hospitalId } : { hospitalId, ...(email ? { email } : { employeeId }) },
       {
         $set: {
           hospitalId,

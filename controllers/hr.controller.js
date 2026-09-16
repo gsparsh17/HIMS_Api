@@ -341,7 +341,7 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
   if (staffType !== 'doctor') {
     const generatedStaffId = `HR-${String(hospitalId || 'HOSP').slice(-6).toUpperCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     staff = await Staff.findOneAndUpdate(
-      { email: normalizedEmail },
+      profile?.staff_id ? { _id: profile.staff_id, hospitalId } : { hospitalId, email: normalizedEmail },
       {
         $set: {
           hospitalId,
@@ -374,7 +374,7 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
 
   if (staffType === 'nurse') {
     nurse = await Nurse.findOneAndUpdate(
-      { email: normalizedEmail },
+      profile?.nurse_id ? { _id: profile.nurse_id, hospitalId } : { hospitalId, email: normalizedEmail },
       {
         hospitalId,
         first_name: firstName,
@@ -405,7 +405,7 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
     const workflowRaw = body.opd_workflow_mode ?? body.opdWorkflowModeOverride;
 
     doctor = await Doctor.findOneAndUpdate(
-      { hospitalId, email: normalizedEmail },
+      profile?.doctor_id ? { _id: profile.doctor_id, hospitalId } : { hospitalId, email: normalizedEmail },
       {
         $set: {
           hospitalId,
@@ -431,11 +431,11 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
           paymentType: normalizedDoctorPaymentType(body.salary_type || body.paymentType),
           amount: toNumber(body.salary_amount ?? body.amount, 0),
           opdWorkflowModeOverride: workflowRaw || undefined,
-          opdConsultationFee: opdFeeRaw === '' || opdFeeRaw === undefined ? null : toNumber(opdFeeRaw, 0),
-          revenuePercentage: revenueRaw === '' || revenueRaw === undefined ? (isFullTime ? 100 : 80) : toNumber(revenueRaw, isFullTime ? 100 : 80),
+          opdConsultationFee: opdFeeRaw === '' || opdFeeRaw == null ? null : toNumber(opdFeeRaw, 0),
+          revenuePercentage: revenueRaw === '' || revenueRaw == null ? (isFullTime ? 100 : 80) : toNumber(revenueRaw, isFullTime ? 100 : 80),
           contractStartDate: body.contract_start_date || body.contractStartDate || null,
           contractEndDate: body.contract_end_date || body.contractEndDate || null,
-          visitsPerWeek: visitsRaw === '' || visitsRaw === undefined ? null : toNumber(visitsRaw, 0),
+          visitsPerWeek: visitsRaw === '' || visitsRaw == null ? null : toNumber(visitsRaw, 0),
           aadharNumber: body.aadhar_number || body.aadharNumber,
           panNumber: body.pan_number || body.panNumber,
           notes: body.notes
@@ -454,35 +454,6 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
 
   return { staff, nurse, doctor };
 }
-
-async function syncExistingToHR(hospitalId) {
-  // Compatibility backfill for older role collections. Only read records that
-  // belong to the current hospital; never project another hospital's records
-  // into the active HR employee master.
-  const sourceModels = [
-    ['Doctor', Doctor],
-    ['Nurse', Nurse],
-    ['Staff', Staff],
-    ['PathologyStaff', require('../models/PathologyStaff')],
-    ['RadiologyStaff', require('../models/RadiologyStaff')],
-    ['OTStaff', require('../models/OTStaff')]
-  ];
-
-  try {
-    for (const [sourceModel, Model] of sourceModels) {
-      const records = await Model.find({ hospitalId });
-      for (const record of records) {
-        try {
-          await syncHRProfileFromSource(sourceModel, record, { hospital_id: hospitalId });
-        } catch (error) {
-          console.error(`HR compatibility sync failed for ${sourceModel} ${record?._id}:`, error.message);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Error in syncExistingToHR:', error);
-  }
- }
 
 exports.hrLogin = async (req, res) => {
   try {
@@ -517,7 +488,7 @@ exports.hrLogin = async (req, res) => {
 
 exports.createEmployee = async (req, res) => {
   try {
-    const body = req.body;
+    const body = { ...req.body };
     const fullName = body.full_name || body.fullName || body.name;
     if (!fullName || !body.email) return res.status(400).json({ error: 'Full name and email are required' });
     body.email = String(body.email).trim().toLowerCase();
@@ -643,10 +614,39 @@ exports.createEmployee = async (req, res) => {
   }
 };
 
+exports.getEmployeeOptions = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const filter = { hospital_id: hospitalId, employment_status: { $ne: 'Inactive' }, is_active: { $ne: false } };
+    if (req.query.status) filter.employment_status = req.query.status;
+    if (req.query.staff_type) filter.staff_type = req.query.staff_type;
+    if (req.query.staff_group === 'other') filter.staff_type = { $nin: ['doctor', 'nurse'] };
+    if (req.query.search) {
+      filter.$or = [
+        { full_name: { $regex: req.query.search, $options: 'i' } },
+        { employee_code: { $regex: req.query.search, $options: 'i' } },
+        { email: { $regex: req.query.search, $options: 'i' } },
+        { phone: { $regex: req.query.search, $options: 'i' } },
+        { designation: { $regex: req.query.search, $options: 'i' } }
+      ];
+    }
+
+    const rows = await HRStaffProfile.find(filter)
+      .select('_id employee_code full_name email phone staff_type designation department department_name availability_status employment_status user_id')
+      .populate('department', 'name')
+      .populate('user_id', 'role is_active')
+      .sort({ full_name: 1 })
+      .lean();
+
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 exports.getEmployees = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
-    await syncExistingToHR(hospitalId);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
     if (req.query.staff_type) filter.staff_type = req.query.staff_type;
     else if (req.query.staff_group === 'other') filter.staff_type = { $nin: ['doctor', 'nurse'] };
@@ -667,24 +667,22 @@ exports.getEmployees = async (req, res) => {
     const limit = Math.max(1, Math.min(200, parseInt(req.query.limit || '50', 10)));
     const skip = (page - 1) * limit;
 
+    // Employee list intentionally returns a compact projection. Full professional
+    // profiles, permissions and weekly schedule are fetched only when View/Edit is opened.
     const [employees, total] = await Promise.all([
       HRStaffProfile.find(filter)
-        .populate('user_id', 'name email role is_active modulePermissions dashboard_access')
+        .select('employee_code full_name email phone staff_type role_label designation department department_name employment_status availability_status salary_type salary_amount basic_salary login_enabled user_id createdAt')
+        .populate('user_id', 'name email role is_active')
         .populate('department', 'name')
-        .populate('shift', 'name startTime endTime')
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(limit),
+        .limit(limit)
+        .lean(),
       HRStaffProfile.countDocuments(filter)
     ]);
 
-    const schedules = await StaffSchedule.find({ hospital_id: hospitalId, employee_id: { $in: employees.map((row) => row._id) }, is_active: true }).lean();
-    const scheduleMap = new Map(schedules.map((row) => [String(row.employee_id), row]));
     res.json({
-      employees: employees.map((employee) => ({
-        ...employee.toObject(),
-        weekly_schedule: scheduleMap.get(String(employee._id))?.weekly || null
-      })),
+      employees,
       pagination: { total, page, limit, pages: Math.ceil(total / limit) }
     });
   } catch (error) {
@@ -724,6 +722,58 @@ exports.getEmployeeById = async (req, res) => {
   }
 };
 
+async function mergeExistingProfessionalFields(employee, body, hospitalId) {
+  const merged = { ...body };
+  const fill = (key, value) => {
+    if (merged[key] === undefined && value !== undefined) merged[key] = value;
+  };
+
+  if (employee.doctor_id) {
+    const doctor = await Doctor.findOne({ _id: employee.doctor_id, hospitalId }).lean();
+    if (doctor) {
+      fill('experience_years', doctor.experience);
+      fill('opd_workflow_mode', doctor.opdWorkflowModeOverride);
+      fill('opd_consultation_fee', doctor.opdConsultationFee);
+      fill('revenue_percentage', doctor.revenuePercentage);
+      fill('contract_start_date', doctor.contractStartDate);
+      fill('contract_end_date', doctor.contractEndDate);
+      fill('visits_per_week', doctor.visitsPerWeek);
+    }
+  }
+
+  if (employee.pathology_staff_id) {
+    const pathology = await require('../models/PathologyStaff').findOne({ _id: employee.pathology_staff_id, hospitalId }).lean();
+    if (pathology) {
+      fill('pathology_role', pathology.role);
+      fill('assigned_lab_tests', pathology.assigned_lab_tests);
+      fill('accessible_test_ids', pathology.accessible_test_ids);
+    }
+  }
+
+  if (employee.radiology_staff_id) {
+    const radiology = await require('../models/RadiologyStaff').findOne({ _id: employee.radiology_staff_id, hospitalId }).lean();
+    if (radiology) {
+      fill('radiology_designation', radiology.designation);
+      fill('radiology_specializations', radiology.specializations);
+      fill('modality_assignments', radiology.modalityAssignments);
+      fill('experience_years', radiology.experience_years);
+    }
+  }
+
+  if (employee.ot_staff_id) {
+    const ot = await require('../models/OTStaff').findOne({ _id: employee.ot_staff_id, hospitalId }).lean();
+    if (ot) {
+      fill('ot_designation', ot.designation);
+      fill('ot_specializations', ot.specializations);
+      fill('experience_years', ot.experience_years);
+      fill('credential_valid_until', ot.credential_valid_until);
+      fill('max_simultaneous_cases', ot.maxSimultaneousCases);
+    }
+  }
+
+  return merged;
+}
+
 exports.updateEmployee = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
@@ -762,7 +812,25 @@ exports.updateEmployee = async (req, res) => {
       }
     }
 
-    const updateSyncBody = { ...body, full_name: employee.full_name, email: employee.email, staff_type: employee.staff_type, designation: employee.designation, phone: employee.phone, updated_by: getUserId(req) };
+    const preservedProfessionalBody = await mergeExistingProfessionalFields(employee, body, hospitalId);
+    const updateSyncBody = {
+      ...preservedProfessionalBody,
+      full_name: employee.full_name,
+      email: employee.email,
+      staff_type: employee.staff_type,
+      designation: employee.designation,
+      phone: employee.phone,
+      shift: employee.shift,
+      specialization: employee.specialization,
+      qualification: employee.qualification,
+      license_number: employee.license_number,
+      employment_type: employee.employment_type,
+      employment_status: employee.employment_status,
+      salary_type: employee.salary_type,
+      salary_amount: employee.salary_amount,
+      joining_date: employee.joining_date,
+      updated_by: getUserId(req)
+    };
     await syncRoleCollections({ body: updateSyncBody, user: employee.user_id, departmentId, profile: employee });
     await syncProfessionalProfile({ body: updateSyncBody, profile: employee, user: employee.user_id, departmentId, hospitalId });
 
@@ -955,7 +1023,6 @@ exports.deactivateEmployee = async (req, res) => {
 exports.getDashboard = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
-    await syncExistingToHR(hospitalId);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
     const timezone = await hospitalZoneFor(hospitalId);
     const todayKey = hospitalDateKey(new Date(), timezone);
@@ -1258,7 +1325,6 @@ exports.setAvailability = async (req, res) => {
 exports.getAvailability = async (req, res) => {
   try {
     const hospitalId = await resolveHospitalId(req);
-    await syncExistingToHR(hospitalId);
     const filter = hospitalId ? { hospital_id: hospitalId } : {};
     if (req.query.status) filter.availability_status = req.query.status;
     if (req.query.staff_type) filter.staff_type = req.query.staff_type;

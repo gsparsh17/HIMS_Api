@@ -32,6 +32,7 @@ router.get('/dashboard', hrView, hrController.getDashboard);
 router.post('/sync-profiles', hrManage, hrController.syncHRProfiles);
 router.post('/employees', hrManage, hrController.createEmployee);
 router.get('/employees', hrView, hrController.getEmployees);
+router.get('/employees/options', hrView, hrController.getEmployeeOptions);
 router.get('/employees/:id', hrView, hrController.getEmployeeById);
 router.put('/employees/:id', hrManage, hrController.updateEmployee);
 router.put('/employees/:id/login', loginAccess, hrController.setEmployeeLogin);
