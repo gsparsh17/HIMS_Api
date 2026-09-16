@@ -54,6 +54,7 @@ const uploadImages = multer({
 // Test management
 router.post('/tests', ...manage, controller.createImagingTest);
 router.get('/tests/summary', ...view, controller.getImagingTestSummary);
+router.get('/tests/options', ...view, controller.getImagingTestOptions);
 router.patch('/tests/categories/move', ...manage, controller.bulkMoveImagingTestCategory);
 router.get('/tests', ...view, controller.getImagingTests);
 router.put('/tests/:id', ...manage, controller.updateImagingTest);
