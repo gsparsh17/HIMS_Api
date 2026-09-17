@@ -42,6 +42,7 @@ router.get('/sales/:saleId/bill', pharmacyFinanceView, operations.getSaleBill);
 router.get('/patients/search', pharmacyFinanceView, operations.searchPharmacyPatients);
 
 // ========== RETURNS ==========
+router.get('/returns/candidates', pharmacyFinanceView, financial.getReturnCandidates);
 router.post('/returns/preview', pharmacyFinanceView, financial.previewReturn);
 router.post('/returns/complete', pharmacyFinanceManage, financial.completeReturn);
 router.post('/returns/:returnId/approve', pharmacyFinanceManage, financial.approveReturn);

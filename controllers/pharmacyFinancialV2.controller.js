@@ -22,6 +22,7 @@ const {
   getClearanceSnapshot,
   completeFinalClearance,
 } = require('../services/pharmacyReturnClearance.service');
+const { getReturnCandidates } = require('../services/pharmacyReturnCandidate.service');
 
 const MONEY_EPSILON = 0.009;
 
@@ -531,6 +532,33 @@ exports.completePos = async (req, res) => {
       code: error.code,
       message: error.message,
       details: error.details,
+    });
+  }
+};
+
+/**
+ * Canonical read model for OPD/IPD/walk-in medicine returns. The browser no
+ * longer reconstructs returnability from separate sale, return and bedside
+ * stock requests; every active return screen consumes this projection.
+ */
+exports.getReturnCandidates = async (req, res) => {
+  try {
+    const hospitalId = getHospitalId(req);
+    const result = await getReturnCandidates({
+      hospitalId,
+      encounterType: req.query.encounterType,
+      patientId: req.query.patientId,
+      admissionId: req.query.admissionId,
+      saleId: req.query.saleId,
+      limit: req.query.limit,
+    });
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(error.status || error.statusCode || 400).json({
+      success: false,
+      code: error.code,
+      message: error.message,
     });
   }
 };
