@@ -332,6 +332,7 @@ ipdChargeSchema.index({ patientId: 1, chargeDate: -1 });
 ipdChargeSchema.index({ sourceModule: 1, sourceId: 1 });
 ipdChargeSchema.index({ admissionId: 1, isBilled: 1, status: 1 });
 ipdChargeSchema.index({ admissionId: 1, chargeDateKey: 1, chargeType: 1, status: 1 });
+ipdChargeSchema.index({ hospitalId: 1, chargeDate: -1, status: 1, invoiceId: 1 });
 ipdChargeSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
 
 addSoftDeleteFields(ipdChargeSchema);

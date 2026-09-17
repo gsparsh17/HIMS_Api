@@ -116,10 +116,66 @@ function applyInvoiceFilters(invoices, query = {}) {
   });
 }
 
-function applyTransactionFilters(transactions, query = {}) {
+function applyTransactionFilters(transactions, query = {}, filteredInvoiceIds = new Set()) {
+  const invoiceDimensionFilterActive = [
+    query.doctorId,
+    query.departmentId,
+    query.serviceSource,
+    query.invoiceType,
+    query.status,
+    query.minAmount,
+    query.maxAmount
+  ].some((value) => value !== undefined && value !== null && value !== '' && value !== 'all');
+
   return transactions.filter((tx) => {
     if (query.paymentMethod && query.paymentMethod !== 'all' && tx.paymentMethod !== query.paymentMethod) return false;
     if (query.transactionType && query.transactionType !== 'all' && tx.transactionType !== query.transactionType) return false;
+
+    if (query.encounterSource && query.encounterSource !== 'all') {
+      const requested = String(query.encounterSource).toUpperCase();
+      const sourceModule = String(tx.sourceModule || '').toUpperCase();
+      const isIpd = Boolean(tx.admissionId) || ['IPD', 'DISCHARGE'].includes(sourceModule);
+      const isPharmacy = sourceModule === 'PHARMACY';
+      if (requested === 'IPD' && !isIpd) return false;
+      if (requested === 'PHARMACY' && !isPharmacy) return false;
+      if (requested === 'OPD' && (isIpd || isPharmacy)) return false;
+      if (requested === 'EMERGENCY' && sourceModule !== 'EMERGENCY') return false;
+    }
+
+    // Doctor/department/service/status/amount filters belong to invoices.
+    // Transactions without an invoice cannot be attributed to those dimensions
+    // without inventing accounting ownership, so omit them from filtered totals.
+    if (invoiceDimensionFilterActive) {
+      const invoiceId = textId(tx.invoiceId || tx.invoice_id);
+      if (!invoiceId || !filteredInvoiceIds.has(invoiceId)) return false;
+    }
+
+    return true;
+  });
+}
+
+function chargeServiceSource(charge = {}) {
+  const type = String(charge.chargeType || '').toLowerCase();
+  if (type.includes('lab')) return 'Lab';
+  if (type.includes('radiology') || type.includes('imaging')) return 'Radiology';
+  if (type.includes('procedure') || type.includes('surgery') || type.includes('ot')) return 'Procedure';
+  if (type.includes('bed') || type.includes('room')) return 'Bed';
+  if (type.includes('pharmacy')) return 'Pharmacy';
+  if (type.includes('doctor') || type.includes('consult')) return 'Appointment';
+  return charge.chargeType || 'Other';
+}
+
+function applyUnbilledFilters(charges, query = {}) {
+  if (query.encounterSource && query.encounterSource !== 'all' && String(query.encounterSource).toUpperCase() !== 'IPD') return [];
+  return (charges || []).filter((charge) => {
+    if (query.serviceSource && query.serviceSource !== 'all' && chargeServiceSource(charge) !== query.serviceSource) return false;
+    const departmentId = textId(charge.financialPolicySnapshot?.context?.departmentId || charge.financialPolicySnapshot?.context?.department_id);
+    if (query.departmentId && query.departmentId !== 'all' && departmentId !== String(query.departmentId)) return false;
+    const doctorId = textId(charge.pricingSnapshot?.inputs?.doctorId || charge.pricingSnapshot?.inputs?.doctor_id);
+    if (query.doctorId && query.doctorId !== 'all' && doctorId !== String(query.doctorId)) return false;
+    const amount = Number(charge.netAmount ?? charge.amount ?? 0);
+    if (query.minAmount && amount < Number(query.minAmount)) return false;
+    if (query.maxAmount && amount > Number(query.maxAmount)) return false;
     return true;
   });
 }
@@ -151,17 +207,19 @@ async function load({ query = {}, user = {} }) {
     }).lean(),
     IPDCharge.find({
       ...hospitalFilter(hospitalId, 'hospitalId'),
-      serviceDate: { $gte: range.from, $lte: range.to },
+      chargeDate: { $gte: range.from, $lte: range.to },
       status: { $in: ['ACTIVE', 'UNBILLED'] },
       $or: [{ invoiceId: null }, { invoiceId: { $exists: false } }]
     }).lean()
   ]);
+  const invoices = applyInvoiceFilters(rawInvoices, query);
+  const filteredInvoiceIds = new Set(invoices.map((invoice) => textId(invoice._id)));
   return {
     range,
     hospitalId,
-    invoices: applyInvoiceFilters(rawInvoices, query),
-    transactions: applyTransactionFilters(rawTransactions, query),
-    unbilledCharges
+    invoices,
+    transactions: applyTransactionFilters(rawTransactions, query, filteredInvoiceIds),
+    unbilledCharges: applyUnbilledFilters(unbilledCharges, query)
   };
 }
 
@@ -169,8 +227,14 @@ function invoiceRow(invoice) {
   const doctor = doctorMeta(invoice);
   const department = departmentMeta(invoice);
   const gross = money(invoice.gross_amount ?? invoice.subtotal ?? invoice.total);
+  const lineDiscount = money(invoice.line_discount_total || 0);
+  const billDiscount = money(invoice.bill_discount_total || 0);
+  const legacyDiscount = money(invoice.discount ?? invoice.discount_amount ?? 0);
+  const baseDiscount = lineDiscount || billDiscount ? money(lineDiscount + billDiscount) : legacyDiscount;
+  const settlementDiscount = money(invoice.settlement_discount_amount || 0);
   const creditNotes = money(invoice.credit_note_total || 0);
-  const netRevenue = money((invoice.total || 0) - creditNotes);
+  const recognisedAdjustments = money(settlementDiscount + creditNotes);
+  const netRevenue = money(Math.max(0, Number(invoice.total || 0) - recognisedAdjustments));
   return {
     id: invoice._id,
     date: invoice.issue_date,
@@ -186,7 +250,9 @@ function invoiceRow(invoice) {
     departmentName: department.name,
     status: invoice.status,
     gross,
-    discount: money(invoice.discount || invoice.discount_amount || 0),
+    discount: money(baseDiscount + settlementDiscount),
+    baseDiscount,
+    settlementDiscount,
     tax: money(invoice.tax || invoice.tax_amount || 0),
     creditNotes,
     netRevenue,
@@ -281,10 +347,10 @@ function serviceRowsForInvoice(invoice) {
       lineId: textId(line._id || line.charge_id || line.chargeId) || `${textId(parent.id)}:${index}`,
       service: lineServiceSource(line),
       grossBilled: gross,
-      netRevenue: money(net - (parent.creditNotes * weight)),
+      netRevenue: money(Math.max(0, net - ((parent.settlementDiscount + parent.creditNotes) * weight))),
       outstanding: money(parent.outstanding * weight),
       doctorCommission: money(parent.doctorCommission * weight),
-      hospitalShare: money((net - (parent.creditNotes * weight)) - (parent.doctorCommission * weight))
+      hospitalShare: money(Math.max(0, net - ((parent.settlementDiscount + parent.creditNotes) * weight)) - (parent.doctorCommission * weight))
     };
   });
 }
@@ -377,7 +443,10 @@ async function getKpis(query, user) {
 async function getReport(reportKey, query, user) {
   const data = await load({ query, user });
   const projection = project(data);
-  const common = { ...projection, reportKey };
+  // Report tabs only need their own rows plus the shared summary/range.
+  // Returning every projection (daily/service/doctor/transaction arrays) on every
+  // tab made the Income page payload grow unnecessarily with reporting volume.
+  const common = { range: projection.range, summary: projection.summary, reportKey };
   if (reportKey === 'revenue') return { ...common, rows: projection.invoiceRows };
   if (reportKey === 'collections') return { ...common, rows: projection.transactionRows.filter((r) => r.externalMoneyMovement || ['REFUND', 'ADVANCE_REFUND', 'ADVANCE_UTILISATION'].includes(r.transactionType)) };
   if (reportKey === 'unbilled') return { ...common, rows: data.unbilledCharges };

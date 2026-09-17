@@ -1083,13 +1083,35 @@ exports.getInvoicePrintData = async (req, res) => {
   }
 };
 
-// Get invoice by ID
+// Get invoice by ID. `compact=1` is opt-in for the Admin invoice detail screen;
+// the legacy/default response shape remains unchanged for every other caller.
 exports.getInvoiceById = async (req, res) => {
   try {
-    const invoice = await Invoice.findOne(invoiceScope(req, { _id: req.params.id }))
-      .populate('patient_id')
+    const compactView = ['1', 'true', 'yes'].includes(String(req.query.compact || '').toLowerCase());
+    let query = Invoice.findOne(invoiceScope(req, { _id: req.params.id }));
+
+    if (compactView) {
+      query = query.select([
+        'invoice_number', 'invoice_type', 'document_stage', 'is_final_ipd_invoice',
+        'issue_date', 'due_date', 'bill_date', 'status',
+        'gross_amount', 'subtotal', 'total', 'line_discount_total', 'bill_discount_total',
+        'discount', 'discount_amount', 'taxable_amount', 'tax', 'tax_amount', 'rounding_adjustment',
+        'amount_paid', 'paid_amount', 'balance_due', 'settlement_discount_amount',
+        'credit_note_total', 'refunded_amount', 'advance_applied', 'advance_available',
+        'payer_allocation', 'has_insurance', 'patient_type', 'sponsor_liability',
+        'patient_id', 'appointment_id', 'admission_id', 'doctor_id', 'department', 'department_id',
+        'customer_name', 'customer_phone', 'payment_history', 'notes',
+        'service_items', 'medicine_items', 'procedure_items', 'lab_test_items', 'radiology_items', 'items',
+        'is_pharmacy_sale', 'sale_id', 'bill_id', 'bill_ids', 'prescription_id',
+        'collection_owner', 'collection_mode', 'collection_transferred_to_ipd', 'collection_transferred_amount'
+      ].join(' '));
+    }
+
+    query = query
+      .populate('patient_id', compactView ? 'first_name last_name phone patientId uhid' : undefined)
       .populate({
         path: 'appointment_id',
+        select: compactView ? 'appointment_date doctor_id department_id type' : undefined,
         populate: [
           { path: 'doctor_id', select: 'firstName lastName specialization phone department' },
           { path: 'department_id', select: 'name code' }
@@ -1097,6 +1119,7 @@ exports.getInvoiceById = async (req, res) => {
       })
       .populate({
         path: 'admission_id',
+        select: compactView ? 'admissionNumber admissionDate admissionType dischargeType primaryDoctorId departmentId wardId bedId roomId' : undefined,
         populate: [
           { path: 'primaryDoctorId', select: 'firstName lastName specialization' },
           { path: 'departmentId', select: 'name code' },
@@ -1104,18 +1127,18 @@ exports.getInvoiceById = async (req, res) => {
           { path: 'bedId', select: 'bedNumber roomNumber' }
         ]
       })
-      .populate('bill_id')
-      .populate('bill_ids')
-      .populate('sale_id')
-      .populate('prescription_id');
+      .populate('bill_id', compactView ? '_id bill_number' : undefined)
+      .populate('bill_ids', compactView ? '_id bill_number' : undefined)
+      .populate('sale_id', compactView ? '_id sale_number' : undefined);
 
-    if (!invoice) {
-      return res.status(404).json({ error: 'Invoice not found' });
-    }
+    if (!compactView) query = query.populate('prescription_id');
 
-    res.json(invoice);
+    const invoice = compactView ? await query.lean() : await query;
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+
+    return res.json(invoice);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
 
@@ -1813,12 +1836,17 @@ function addFooter(doc, invoice) {
     row('Balance Due:', due, { bold: true });
   }
 
-  if (n(payer.standard_amount) || n(payer.contracted_amount) || n(payer.sponsor_liability)) {
+  const hasMeaningfulPayerSplit = n(payer.sponsor_liability) > 0 ||
+    n(payer.non_admissible_amount) > 0 ||
+    n(payer.contractual_adjustment) > 0 ||
+    n(payer.hospital_concession) > 0 ||
+    n(payer.package_absorbed) > 0;
+  if (hasMeaningfulPayerSplit) {
     y += 5;
-    row('Hospital Standard:', payer.standard_amount);
-    row('Contracted Amount:', payer.contracted_amount);
-    row('Sponsor Part:', payer.sponsor_liability);
-    row('Patient Part:', payer.patient_liability);
+    row('Hospital Rate:', payer.standard_amount);
+    row('Approved Rate:', payer.contracted_amount);
+    row('Covered by Payer:', payer.sponsor_liability);
+    row('Patient Payable:', payer.patient_liability);
     if (n(payer.non_admissible_amount) > 0) row('Non-admissible:', payer.non_admissible_amount);
     if (n(payer.contractual_adjustment) > 0) row('Contract Adjustment:', payer.contractual_adjustment);
     if (n(payer.hospital_concession) > 0) row('Hospital Concession:', payer.hospital_concession);
