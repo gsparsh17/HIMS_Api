@@ -29,6 +29,7 @@ const ROUTE_ENTITLEMENTS = [
   ['/procedurerequests', 'operation_theatre'],
   ['/procedures', 'operation_theatre'],
   ['/store', 'store_inventory'],
+  ['/inventory', 'store_inventory'],
   ['/hr/dashboard', 'hr_staff'],
   ['/hr/attendance', 'hr_staff'],
   ['/hr/availability', 'hr_staff'],

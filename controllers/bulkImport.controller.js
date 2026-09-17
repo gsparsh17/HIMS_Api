@@ -69,11 +69,11 @@ const ENTITY = {
     }
   },
   medicines: {
-    title: 'Pharmacy Item Master (Capex & Non-Capex)',
+    title: 'Pharmacy Item Master (Pharmaceuticals & Pharmacy Consumables)',
     sheet: 'Medicines',
     columns: [
       ['name', 'Name / Item Title', true],
-      ['item_type', 'Item Type (capex / non_capex)', false],
+      ['pharmaceutical_type', 'Pharmacy Type (medicine / vaccine / iv_fluid / controlled_drug / pharmacy_consumable)', false],
       ['generic_name', 'Generic Name / Specification', false],
       ['brand', 'Brand / Manufacturer', false],
       ['category', 'Category (Custom or Standard)', true],
@@ -96,7 +96,7 @@ const ENTITY = {
     ],
     example: {
       name: 'Paracetamol 500mg',
-      item_type: 'capex',
+      pharmaceutical_type: 'medicine',
       generic_name: 'Paracetamol',
       brand: 'Calpol',
       category: 'Analgesic',
@@ -275,19 +275,20 @@ function normalize(entity, row, hospitalId, userId) {
   }
 
   if (entity === 'medicines') {
-    const rawType = str('item_type') || str('type') || '';
-    let itemType;
-    if (rawType.toLowerCase().includes('non')) {
-      itemType = 'non_capex';
-    } else if (rawType.toLowerCase().includes('capex')) {
-      itemType = 'capex';
-    }
+    const rawPharmacyType = String(str('pharmaceutical_type') || str('pharmacy_type') || str('type') || '').toLowerCase().trim();
+    const allowedPharmacyTypes = new Set(['medicine', 'vaccine', 'iv_fluid', 'controlled_drug', 'pharmacy_consumable']);
+    const pharmaceuticalType = allowedPharmacyTypes.has(rawPharmacyType) ? rawPharmacyType : 'medicine';
 
     return {
       hospitalId,
       name: str('name'),
-      item_type: itemType,
-      is_capex: itemType ? itemType === 'capex' : undefined,
+      inventory_domain: 'pharmaceutical',
+      stock_owner: 'pharmacy',
+      pharmaceutical_type: pharmaceuticalType,
+      accounting_treatment: 'inventory',
+      // Deprecated compatibility fields; new pharmacy inventory is never a fixed asset.
+      item_type: 'non_capex',
+      is_capex: false,
       generic_name: str('generic_name'),
       brand: str('brand'),
       category: str('category'),

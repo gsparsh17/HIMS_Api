@@ -19,13 +19,44 @@ const medicineSchema = new mongoose.Schema({
   nlem_code: { type: String, trim: true, index: true, sparse: true },
   created_from_purchase_order_id: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder', index: true },
   name: { type: String, required: true, trim: true, index: true },
+  // Canonical pharmacy ownership/classification. Pharmacy items are pharmaceuticals
+  // or pharmacy-managed consumables; equipment/assets belong to Store & Assets.
+  inventory_domain: {
+    type: String,
+    enum: ['pharmaceutical'],
+    default: 'pharmaceutical',
+    index: true
+  },
+  stock_owner: {
+    type: String,
+    enum: ['pharmacy'],
+    default: 'pharmacy',
+    index: true
+  },
+  pharmaceutical_type: {
+    type: String,
+    enum: ['medicine', 'vaccine', 'iv_fluid', 'controlled_drug', 'pharmacy_consumable'],
+    default: 'medicine',
+    index: true
+  },
+  accounting_treatment: {
+    type: String,
+    enum: ['inventory', 'expense'],
+    default: 'inventory',
+    index: true
+  },
+
+  // Deprecated compatibility fields. Historic records used these backwards
+  // (capex=medicine, non_capex=equipment). New pharmacy writes always use
+  // non_capex/false because medicines are not fixed assets. Keep the fields
+  // temporarily so older integrations can be migrated without breaking reads.
   item_type: {
     type: String,
     enum: ['capex', 'non_capex'],
-    default: 'capex',
+    default: 'non_capex',
     index: true
   },
-  is_capex: { type: Boolean, default: true, index: true },
+  is_capex: { type: Boolean, default: false, index: true },
   generic_name: { type: String, trim: true, index: true },
   brand: { type: String, trim: true, index: true },
   category: { type: String, required: true, index: true },
@@ -177,15 +208,15 @@ medicineSchema.pre('save', async function (next) {
     this.prescription_required = true;
   }
 
-  // Sync capex vs non-capex item type
-  const cat = String(this.category || '').toLowerCase();
-  const nonCapexKeywords = ['equipment', 'accessory', 'accessories', 'instrument', 'device', 'consumable', 'disposable', 'hardware', 'kit', 'surgical', 'furniture', 'ppe', 'sterilization'];
-  if (this.item_type === 'non_capex' || this.is_capex === false || nonCapexKeywords.some(kw => cat.includes(kw))) {
+  // Canonical pharmacy ownership. Do not infer accounting treatment from the
+  // category name. CapEx equipment/assets are managed by Store & Assets.
+  this.inventory_domain = 'pharmaceutical';
+  this.stock_owner = 'pharmacy';
+  if (!this.pharmaceutical_type) this.pharmaceutical_type = 'medicine';
+  if (!this.accounting_treatment) this.accounting_treatment = 'inventory';
+  if (this.isNew || this.isModified('inventory_domain') || this.isModified('stock_owner') || this.isModified('pharmaceutical_type') || this.isModified('accounting_treatment')) {
     this.item_type = 'non_capex';
     this.is_capex = false;
-  } else {
-    this.item_type = 'capex';
-    this.is_capex = true;
   }
 
   this.composition_keywords = buildCompositionKeywords(this);
@@ -230,6 +261,7 @@ medicineSchema.index({ name: 'text', generic_name: 'text', brand: 'text', compos
 medicineSchema.index({ hsn_code: 1, gst_rate: 1 });
 medicineSchema.index({ gst_rate: 1, is_active: 1 });
 medicineSchema.index({ hospitalId: 1, catalog_source: 1, name: 1 });
+medicineSchema.index({ hospitalId: 1, inventory_domain: 1, pharmaceutical_type: 1, is_active: 1 });
 medicineSchema.index({ hospitalId: 1, 'medicationSafety.formularyStatus': 1, 'medicationSafety.highRisk': 1 });
 
 addSoftDeleteFields(medicineSchema);

@@ -70,6 +70,19 @@ exports.addMedicine = async (req, res) => {
     ).trim();
     body.manufacturer = String(body.manufacturer || body.manufacturer_brand_owner || '').trim();
 
+    // Patch 1 canonical pharmacy contract. Equipment/fixed assets must be
+    // created in Store & Assets, never in the Medicine collection.
+    body.inventory_domain = 'pharmaceutical';
+    body.stock_owner = 'pharmacy';
+    body.pharmaceutical_type = ['medicine', 'vaccine', 'iv_fluid', 'controlled_drug', 'pharmacy_consumable'].includes(body.pharmaceutical_type)
+      ? body.pharmaceutical_type
+      : 'medicine';
+    body.accounting_treatment = ['inventory', 'expense'].includes(body.accounting_treatment)
+      ? body.accounting_treatment
+      : 'inventory';
+    body.item_type = 'non_capex';
+    body.is_capex = false;
+
     if (!body.name) {
       return res.status(400).json({
         error: 'Medicine name, brand name, or generic/salt name is required',
@@ -153,6 +166,7 @@ exports.addMedicine = async (req, res) => {
 // Legacy callers still receive the original array shape. High-volume screens opt in
 // to the compact paginated read model with ?view=list or ?view=pos.
 const NON_CAPEX_CATEGORY_REGEX = /(equipment|accessor|instrument|device|consumable|disposable|hardware|kit|surgical|furniture|ppe|sterilization)/i;
+const LEGACY_EQUIPMENT_CATEGORY_REGEX = /(equipment|accessor|instrument|device|hardware|furniture|monitor|stethoscope)/i;
 
 function medicineItemTypeMatch(itemType) {
   if (itemType === 'capex') {
@@ -182,6 +196,19 @@ function buildMedicineFilter(req, { includeSearch = true } = {}) {
   // This filter is used by both find() and aggregate(). Aggregate pipelines do
   // not cast schema fields, so normalize the tenant id here.
   const filter = aggregateMedicineScope(req, { is_active: true });
+  // Pharmacy reads are canonical pharmaceutical inventory. Legacy equipment that
+  // was historically stored in Medicine remains retrievable only when explicitly
+  // requested for migration/audit; it is not presented as pharmacy stock.
+  if (String(req.query.include_legacy_equipment || '') !== '1') {
+    filter.$and = [
+      ...(filter.$and || []),
+      { $or: [
+        { inventory_domain: 'pharmaceutical' },
+        { inventory_domain: { $exists: false }, category: { $not: LEGACY_EQUIPMENT_CATEGORY_REGEX } },
+        { inventory_domain: null, category: { $not: LEGACY_EQUIPMENT_CATEGORY_REGEX } }
+      ] }
+    ];
+  }
   const itemTypeMatch = medicineItemTypeMatch(req.query.item_type || req.query.itemType);
   if (itemTypeMatch) Object.assign(filter, itemTypeMatch);
 
@@ -562,7 +589,7 @@ exports.exportMedicineCatalogue = async (req, res) => {
     pipeline.push({ $sort: sortMap[sortBy] || sortMap.name });
     pipeline.push({ $project: {
       name: 1, generic_name: 1, composition: 1, brand: 1, category: 1, hsn_code: 1, gst_rate: 1,
-      item_type: 1, is_capex: 1, is_active: 1, stock_quantity: 1, batch_count: 1, earliest_expiry: 1, total_stock_value: 1
+      inventory_domain: 1, stock_owner: 1, pharmaceutical_type: 1, accounting_treatment: 1, item_type: 1, is_capex: 1, is_active: 1, stock_quantity: 1, batch_count: 1, earliest_expiry: 1, total_stock_value: 1
     } });
 
     const format = String(req.query.format || 'xls').toLowerCase() === 'csv' ? 'csv' : 'xls';
@@ -570,15 +597,13 @@ exports.exportMedicineCatalogue = async (req, res) => {
     const extension = format === 'csv' ? 'csv' : 'xls';
     res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.ms-excel; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="medicine-catalogue-${new Date().toISOString().slice(0, 10)}.${extension}"`);
-    res.write(['Type', 'Name', 'Generic/Molecule', 'Brand', 'Category', 'HSN', 'GST %', 'Stock', 'Batches', 'Earliest Expiry', 'Stock Value', 'Active']
+    res.write(['Pharmacy Type', 'Name', 'Generic/Molecule', 'Brand', 'Category', 'HSN', 'GST %', 'Stock', 'Batches', 'Earliest Expiry', 'Stock Value', 'Active']
       .map((value) => medicineDelimitedCell(value, separator)).join(separator) + '\n');
 
     const cursor = Medicine.aggregate(pipeline).allowDiskUse(true).cursor({ batchSize: 200 }).exec();
     for await (const medicine of cursor) {
-      const category = String(medicine.category || '');
-      const nonCapex = medicine.item_type === 'non_capex' || medicine.is_capex === false || NON_CAPEX_CATEGORY_REGEX.test(category);
       const row = [
-        nonCapex ? 'Non-Capex' : 'Capex', medicine.name || '', medicine.generic_name || medicine.composition || '',
+        medicine.pharmaceutical_type || 'medicine', medicine.name || '', medicine.generic_name || medicine.composition || '',
         medicine.brand || '', category, medicine.hsn_code || '', medicine.gst_rate ?? '', medicine.stock_quantity || 0,
         medicine.batch_count || 0, medicine.earliest_expiry ? new Date(medicine.earliest_expiry).toISOString().slice(0, 10) : '',
         medicine.total_stock_value || 0, medicine.is_active !== false ? 'Yes' : 'No'
@@ -736,6 +761,19 @@ exports.updateMedicine = async (req, res) => {
         requiresDoubleCheck: highRisk
       };
     }
+
+    // Canonicalize every active pharmacy edit. Equipment/assets are intentionally
+    // not supported in Medicine; legacy equipment is handled by the Patch 1 audit/migration.
+    req.body.inventory_domain = 'pharmaceutical';
+    req.body.stock_owner = 'pharmacy';
+    req.body.pharmaceutical_type = ['medicine', 'vaccine', 'iv_fluid', 'controlled_drug', 'pharmacy_consumable'].includes(req.body.pharmaceutical_type)
+      ? req.body.pharmaceutical_type
+      : (medicine.pharmaceutical_type || 'medicine');
+    req.body.accounting_treatment = ['inventory', 'expense'].includes(req.body.accounting_treatment)
+      ? req.body.accounting_treatment
+      : (medicine.accounting_treatment || 'inventory');
+    req.body.item_type = 'non_capex';
+    req.body.is_capex = false;
 
     const effectiveHsn = req.body.hsn_code !== undefined ? req.body.hsn_code : medicine.hsn_code;
     const effectiveGst = req.body.gst_rate !== undefined ? req.body.gst_rate : medicine.gst_rate;
