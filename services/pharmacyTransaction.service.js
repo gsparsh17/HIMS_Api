@@ -1246,7 +1246,13 @@ async function validateAndPrepareIpdMedicationSale({ items, patientId, admission
       throw new Error(`${medication.medicineName} is not an open pharmacy indent.`);
     }
 
-    const requestedQuantity = Number(medication.pharmacyRequest?.requestedQuantity || 0);
+    const requestedQuantity = Number(
+      medication.pharmacyRequest?.requestedQuantity ||
+      medication.requiredQtyBaseUnits ||
+      medication.doseQtyBaseUnits ||
+      medication.quantity ||
+      0
+    );
     const previouslyDispensed = Number(medication.pharmacyRequest?.dispensedQuantity || 0);
     const remainingQuantity = Math.max(0, requestedQuantity - previouslyDispensed);
     if (remainingQuantity <= 0) throw new Error(`${medication.medicineName} has already been fully dispensed against this indent.`);
@@ -1281,6 +1287,7 @@ async function markIpdMedicationSaleDispatched({ preparedIpdItems, sale, created
     medication.pharmacyRequest.saleId = sale._id;
     if (!Array.isArray(medication.pharmacyRequest.saleIds)) medication.pharmacyRequest.saleIds = [];
     if (!medication.pharmacyRequest.saleIds.some((id) => String(id) === String(sale._id))) medication.pharmacyRequest.saleIds.push(sale._id);
+    if (!Array.isArray(medication.pharmacyRequest.dispenseHistory)) medication.pharmacyRequest.dispenseHistory = [];
     medication.pharmacyRequest.dispenseHistory.push({ saleId: sale._id, medicineId: item.medicine_id, batchId: item.batch_id, quantityBaseUnits: item.quantity_base_units, dispensedAt: operationNow() });
     medication.pharmacyRequest.stockReceivedByNurse = false;
     medication.pharmacyRequest.stockReceivedAt = undefined;
@@ -1587,6 +1594,57 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
     error.code = 'CROSS_HOSPITAL_MEDICINE';
     throw error;
   }
+
+  // Auto-link IPD medication items if admissionId is provided but items lack explicit ipd_medication_chart_id
+  if (admissionId) {
+    try {
+      const openCharts = await IPDMedicationChart.find({
+        admissionId,
+        hospitalId,
+        $or: [
+          { 'pharmacyRequest.requestedToPharmacy': true, 'pharmacyRequest.pharmacyStatus': { $in: ['Pending', 'PartiallyDispensed', 'Delivered'] } },
+          { status: { $in: ['Requested', 'Active'] }, 'pharmacyRequest.dispensedFromPharmacy': { $ne: true } }
+        ]
+      }).session(session || null);
+
+      for (const item of items) {
+        if (!item.ipd_medication_chart_id) {
+          const medId = item.medicine_id ? String(item.medicine_id) : '';
+          const cleanItemName = (item.medicine_name || item._medicine?.name || '').trim().toLowerCase();
+          const cleanItemWords = cleanItemName.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+
+          const matchedChart = openCharts.find((chart) => {
+            if (medId && chart.medicineId && String(chart.medicineId) === medId) {
+              return true;
+            }
+            const chartName = (chart.medicineName || chart.genericName || '').trim().toLowerCase();
+            if (chartName && cleanItemName) {
+              if (cleanItemName === chartName || cleanItemName.includes(chartName) || chartName.includes(cleanItemName)) {
+                return true;
+              }
+              const chartWords = chartName.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+              if (chartWords.length > 0 && cleanItemWords.includes(chartWords[0])) {
+                return true;
+              }
+            }
+            return false;
+          });
+
+          if (matchedChart) {
+            item.ipd_medication_chart_id = matchedChart._id;
+            item.ipd_medication_id = matchedChart._id;
+            if (!item.doctor_id && matchedChart.prescribedBy) {
+              item.doctor_id = matchedChart.prescribedBy;
+              item.prescribed_by = matchedChart.prescribedBy;
+            }
+          }
+        }
+      }
+    } catch (chartLinkErr) {
+      console.error('Error auto-linking IPD medication charts:', chartLinkErr);
+    }
+  }
+
   const prescriptionControlledItems = items.filter((item) =>
     item._medicine?.prescription_required === true ||
     item._medicine?.is_high_risk === true ||
@@ -1824,8 +1882,8 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
       created_by_name: payload.created_by_name,
       billing_owner: consolidatedIpdCollection ? 'IPD' : 'PHARMACY',
       collection_mode: consolidatedIpdCollection ? 'IPD_CONSOLIDATED' : 'PHARMACY_SETTLEMENT',
-      payment_deferred: true,
-      deferral_reason: deferralReason,
+      payment_deferred: Boolean(balanceDue > 0 || advanceDepositTotal > 0),
+      deferral_reason: (balanceDue > 0 || advanceDepositTotal > 0) ? deferralReason : undefined,
       expected_payment_date: expectedPaymentDate,
       include_in_discharge_clearance: includeInDischargeClearance,
       advance_deposit_total: advanceDepositTotal,
@@ -1834,18 +1892,24 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
     }, session);
 
     if (admissionId) {
+      const remainingPharmacyDue = await getPatientOutstanding({ patientId, admissionId, session });
+      const isFullyCleared = (balanceDue <= 0 && (!remainingPharmacyDue || remainingPharmacyDue <= 0));
       await IPDAdmission.updateOne(
         { _id: admissionId, hospitalId },
-        {
-          $set: { pharmacyClearanceStatus: 'pending', financialClearanceStatus: 'in_progress' },
-          $unset: {
-            pharmacyClearanceDate: 1,
-            pharmacyClearanceBy: 1,
-            financialClearedAt: 1,
-            financialClearedBy: 1,
-            finalSettlementReceiptNumber: 1
-          }
-        },
+        isFullyCleared
+          ? {
+              $set: { pharmacyClearanceStatus: 'cleared', pharmacyClearanceDate: operationNow() }
+            }
+          : {
+              $set: { pharmacyClearanceStatus: 'pending', financialClearanceStatus: 'in_progress' },
+              $unset: {
+                pharmacyClearanceDate: 1,
+                pharmacyClearanceBy: 1,
+                financialClearedAt: 1,
+                financialClearedBy: 1,
+                finalSettlementReceiptNumber: 1
+              }
+            },
         session ? { session } : undefined
       );
     }

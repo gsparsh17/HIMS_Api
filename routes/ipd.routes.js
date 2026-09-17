@@ -504,7 +504,7 @@ router.patch(
 
 router.patch(
   '/medications/:id/stop',
-  requireActionPermission('ipd_clinical_write'),
+  requireAnyActionPermission(['ipd_clinical_write', 'ipd_medication_write']),
   meds.stopMedication
 );
 

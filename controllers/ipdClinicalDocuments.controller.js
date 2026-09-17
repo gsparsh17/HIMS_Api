@@ -1260,6 +1260,74 @@ exports.printDoctorInitialAssessment = async (req, res) => {
       hospitalId: admission.hospitalId || admission.hospital_id
     }).lean();
 
+    // Merge all signed clinical orders from linked prescriptions into the
+    // assessment payload so the print document can render them. The assessment
+    // schema stores orders in Prescription documents (not in planAndDisposition
+    // or investigationAdvised), so we aggregate all linked prescriptions and
+    // back-fill the fields the print template reads from.
+    if (assessment && Array.isArray(assessment.prescriptionIds) && assessment.prescriptionIds.length) {
+      const prescriptions = await Prescription.find({
+        _id: { $in: assessment.prescriptionIds }
+      }).lean();
+
+      const allItems = [];
+      const allLabs = [];
+      const allRads = [];
+      const allProcs = [];
+
+      for (const rx of prescriptions) {
+        if (Array.isArray(rx.items)) allItems.push(...rx.items);
+        if (Array.isArray(rx.lab_test_requests)) allLabs.push(...rx.lab_test_requests);
+        if (Array.isArray(rx.radiology_test_requests)) allRads.push(...rx.radiology_test_requests);
+        if (Array.isArray(rx.procedure_requests)) allProcs.push(...rx.procedure_requests);
+      }
+
+      // Map prescription medicines → treatmentPlanned format expected by the print template
+      if (allItems.length) {
+        assessment.planAndDisposition = assessment.planAndDisposition || {};
+        assessment.planAndDisposition.treatmentPlanned = allItems.map((item) => ({
+          drugNameAndForm: [item.medicine_type || item.dosage_form, item.medicine_name].filter(Boolean).join(' '),
+          medicine: item.medicine_name,
+          medicineName: item.medicine_name,
+          dosageForm: item.dosage_form || item.medicine_type || '',
+          dosage: item.dosage || '',
+          dose: item.dosage || '',
+          route: item.route_of_administration || '',
+          frequency: item.frequency || '',
+          duration: item.duration ? `${item.duration} day(s)` : '',
+          otherPlan: item.instructions || '',
+          remarks: item.instructions || ''
+        }));
+      }
+
+      // Map lab requests → investigationAdvised.pathology (list of test names)
+      if (allLabs.length) {
+        assessment.investigationAdvised = assessment.investigationAdvised || {};
+        const labNames = allLabs.map((l) => l.lab_test_name).filter(Boolean);
+        assessment.investigationAdvised.pathology = labNames;
+      }
+
+      // Map radiology + ECG requests → investigationAdvised.radiology (list of test names)
+      if (allRads.length) {
+        assessment.investigationAdvised = assessment.investigationAdvised || {};
+        const radNames = allRads.map((r) => r.imaging_test_name).filter(Boolean);
+        assessment.investigationAdvised.radiology = radNames;
+      }
+
+      // Map procedure requests → proceduresPerformedInER format
+      if (allProcs.length) {
+        assessment.planAndDisposition = assessment.planAndDisposition || {};
+        assessment.planAndDisposition.proceduresPerformedInER = allProcs.map((p) => ({
+          procedure: p.procedure_name || p.procedure_code || '',
+          performedBy: '',
+          sedationUsed: '',
+          time: '',
+          consentObtained: '',
+          sign: ''
+        }));
+      }
+    }
+
     res.json({
       success: true,
       payload: {
