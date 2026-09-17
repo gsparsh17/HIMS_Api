@@ -3596,15 +3596,26 @@ async function createCreditNoteInSession(invoice, payload, user, session) {
       adjustmentOfInvoiceNumber: invoice.invoice_number,
       adjustmentType: 'PATIENT_CREDIT_NOTE'
     },
-    payer_allocation: (originalAllocation.coverage_id || originalAllocation.payer_id) ? {
+    // A Credit Note is an adjustment document, not new patient/sponsor liability.
+    // Preserve payer identity only for audit linkage while keeping every monetary
+    // allocation at zero so liability reports cannot mistake the CRN for a new charge.
+    payer_allocation: {
       coverage_id: originalAllocation.coverage_id,
       payer_id: originalAllocation.payer_id,
       claim_id: originalAllocation.claim_id,
-      patient_liability: amount,
+      standard_amount: 0,
+      contracted_amount: 0,
+      eligible_amount: 0,
+      patient_liability: 0,
       sponsor_liability: 0,
+      non_admissible_amount: 0,
+      contractual_adjustment: 0,
+      hospital_concession: 0,
+      package_absorbed: 0,
       sponsor_paid_amount: 0,
-      sponsor_credit_amount: 0
-    } : undefined,
+      sponsor_credit_amount: 0,
+      fallback_count: 0
+    },
     service_items: [{
       description: `Credit note against ${invoice.invoice_number}: ${payload.reason.trim()}`,
       quantity: 1,
