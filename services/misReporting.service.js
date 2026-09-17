@@ -4,8 +4,7 @@ const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const IPDAdmission = require('../models/IPDAdmission');
 const { money } = require('../utils/financeNumbers');
 const { transactionExternalAmount, transactionAppliedAmount } = require('./financeInvariant.service');
-
-const REVENUE_EXCLUDED_TYPES = ['IPD Payment', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'Credit Note'];
+const { NON_REVENUE_INVOICE_TYPES } = require('./financeDocumentPolicy');
 
 function startOfDay(value) {
   const date = new Date(value);
@@ -38,7 +37,7 @@ function tenantCondition(hospitalId, field = 'hospital_id') {
 function issuedInvoiceFilter({ from, to, hospitalId, invoiceType, patientId, admissionId } = {}) {
   const filter = {
     issue_date: { $gte: from, $lte: to },
-    invoice_type: { $nin: REVENUE_EXCLUDED_TYPES },
+    invoice_type: { $nin: NON_REVENUE_INVOICE_TYPES },
     is_deleted: { $ne: true },
     status: { $nin: ['Cancelled', 'Draft'] },
     document_stage: { $ne: 'VOID' },

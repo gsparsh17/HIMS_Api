@@ -36,6 +36,7 @@ const { ensurePathologyOrder } = require('../services/otPathology.service');
 const { addAdditionalProcedure } = require('../services/otAdditionalProcedure.service');
 const { clinicalClosureCheck, financialReconciliation, validateClinicalPayload } = require('../services/otClinicalCompletion.service');
 const { can: canOt } = require('../services/otAccess.service');
+const { buildOTMedicationTrace, attachMedicationChartLinks, normalizeOTMedicationPayload } = require('../services/otMedicationTrace.service');
 const { requiresOtWorkflow } = require('../services/procedureWorkflow.service');
 
 
@@ -327,6 +328,12 @@ exports.getWorkspace = async (req, res, next) => {
       OTAdditionalProcedure.find(filter).populate('procedureId', 'code name category base_price').populate('billingChargeId', 'description netAmount patientLiability sponsorLiability').sort({ createdAt: 1 }),
       financialReconciliation(otCase)
     ]);
+    const medicationTrace = await buildOTMedicationTrace({
+      hospitalId: otCase.hospitalId,
+      admissionId: otCase.admissionId,
+      anesthesia,
+      recovery
+    });
     otCase.financialReconciliationStatus = reconciliation.status;
     otCase.financialReconciliationSummary = reconciliation;
     await otCase.save();
@@ -356,6 +363,7 @@ exports.getWorkspace = async (req, res, next) => {
         },
         financial: { ...financial.summary, reconciliation },
         readiness: financial.readiness,
+        medicationTrace,
         safety, pac, anesthesia, operative, recovery, inventory, specimens, schedule, additionalProcedures
       }
     });
@@ -850,11 +858,25 @@ async function saveForm(req, res, next, Model, eventType, afterSave) {
 exports.getPac = (req, res, next) => getForm(req, res, next, OTPreAnaesthesiaAssessment);
 exports.savePac = (req, res, next) => saveForm(req, res, next, OTPreAnaesthesiaAssessment, 'ot.pac.updated', async ({ otCase }) => ({ readiness: await reconcileOtReadiness({ otCase, userId: req.user._id, autoApprove: true }) }));
 exports.getAnesthesia = (req, res, next) => getForm(req, res, next, OTAnesthesiaRecord);
-exports.saveAnesthesia = (req, res, next) => { try { validateClinicalPayload('anesthesia', req.body); } catch (error) { return next(error); } return saveForm(req, res, next, OTAnesthesiaRecord, 'ot.anesthesia.updated'); };
+exports.saveAnesthesia = (req, res, next) => {
+  req.body = normalizeOTMedicationPayload('anesthesia', req.body);
+  try { validateClinicalPayload('anesthesia', req.body); } catch (error) { return next(error); }
+  return saveForm(req, res, next, OTAnesthesiaRecord, 'ot.anesthesia.updated', async ({ otCase, record }) => {
+    const linked = await attachMedicationChartLinks({ hospitalId: otCase.hospitalId, admissionId: otCase.admissionId, record, recordType: 'anesthesia' });
+    return { medicationTrace: linked.trace };
+  });
+};
 exports.getOperative = (req, res, next) => getForm(req, res, next, OTOperativeNote);
 exports.saveOperative = (req, res, next) => { try { validateClinicalPayload('operative', req.body); } catch (error) { return next(error); } return saveForm(req, res, next, OTOperativeNote, 'ot.operative_note.updated'); };
 exports.getRecovery = (req, res, next) => getForm(req, res, next, OTRecoveryRecord);
-exports.saveRecovery = (req, res, next) => { try { validateClinicalPayload('recovery', req.body); } catch (error) { return next(error); } return saveForm(req, res, next, OTRecoveryRecord, 'ot.recovery.updated'); };
+exports.saveRecovery = (req, res, next) => {
+  req.body = normalizeOTMedicationPayload('recovery', req.body);
+  try { validateClinicalPayload('recovery', req.body); } catch (error) { return next(error); }
+  return saveForm(req, res, next, OTRecoveryRecord, 'ot.recovery.updated', async ({ otCase, record }) => {
+    const linked = await attachMedicationChartLinks({ hospitalId: otCase.hospitalId, admissionId: otCase.admissionId, record, recordType: 'recovery' });
+    return { medicationTrace: linked.trace };
+  });
+};
 exports.getInventory = (req, res, next) => getForm(req, res, next, OTCaseInventoryUsage);
 exports.saveInventory = async (req, res, next) => {
   try {

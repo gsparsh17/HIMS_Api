@@ -21,6 +21,8 @@ const eventSchema = new mongoose.Schema({
   route: String,
   volumeMl: Number,
   notes: String,
+  ipdMedicationChartId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDMedicationChart' },
+  pharmacyLinkMatchedBy: { type: String, enum: ['EXPLICIT', 'EXACT_NAME', ''] , default: '' },
   recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { _id: true });
 

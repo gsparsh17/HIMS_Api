@@ -22,6 +22,15 @@ const observationSchema = new mongoose.Schema({
   recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { _id: true });
 
+const medicationSchema = new mongoose.Schema({
+  name: String,
+  dose: String,
+  route: String,
+  givenAt: Date,
+  ipdMedicationChartId: { type: mongoose.Schema.Types.ObjectId, ref: 'IPDMedicationChart' },
+  pharmacyLinkMatchedBy: { type: String, enum: ['EXPLICIT', 'EXACT_NAME', ''], default: '' }
+}, { _id: true });
+
 const schema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
   caseId: { type: mongoose.Schema.Types.ObjectId, ref: 'OTRequest', required: true, unique: true, index: true },
@@ -32,7 +41,7 @@ const schema = new mongoose.Schema({
   airwayStatus: String,
   oxygenSupport: String,
   observations: [observationSchema],
-  medications: [{ name: String, dose: String, route: String, givenAt: Date }],
+  medications: [medicationSchema],
   complications: String,
   dischargeCriteriaMet: Boolean,
   finalAldreteScore: Number,

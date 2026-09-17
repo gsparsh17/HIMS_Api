@@ -155,32 +155,54 @@ exports.getAllExpenses = async (req, res) => {
     const limitNum = Math.max(1, Math.min(100, parseInt(limit, 10)));
     const skip = (pageNum - 1) * limitNum;
 
-    // Sorting
-    const sort = {};
-    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    // Sorting is restricted to known Expense fields so the aggregate pipeline
+    // cannot be shaped by an arbitrary client-supplied field path.
+    const allowedSortFields = new Set(['date', 'created_at', 'updated_at', 'expense_number', 'category', 'vendor', 'total_amount', 'payment_status', 'approval_status']);
+    const sortField = allowedSortFields.has(sortBy) ? sortBy : 'date';
+    const sort = { [sortField]: sortOrder === 'asc' ? 1 : -1 };
 
-    // Execute queries
-    const [expenses, total] = await Promise.all([
-      Expense.find(filter)
-        .populate('created_by', 'name email')
-        .populate('approved_by', 'name email')
-        .populate('store_purchase_id', 'po_number supplier_name total_amount status payment_status')
-        .sort(sort)
-        .limit(limitNum)
-        .skip(skip),
-      Expense.countDocuments(filter)
-    ]);
-
-    // Calculate totals
-    const totalAmount = await Expense.aggregate([
+    // One Mongo round trip returns the page, total row count and monetary
+    // summary. The old implementation issued four separate queries.
+    const [facetResult] = await Expense.aggregate([
       { $match: filter },
-      { $group: { _id: null, total: { $sum: '$total_amount' } } }
+      {
+        $facet: {
+          data: [
+            { $sort: sort },
+            { $skip: skip },
+            { $limit: limitNum }
+          ],
+          meta: [
+            {
+              $group: {
+                _id: null,
+                total: { $sum: 1 },
+                totalAmount: { $sum: { $ifNull: ['$total_amount', 0] } },
+                paidAmount: {
+                  $sum: {
+                    $cond: [
+                      { $eq: ['$payment_status', 'Paid'] },
+                      { $ifNull: ['$paid_amount', 0] },
+                      0
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
     ]);
 
-    const paidAmount = await Expense.aggregate([
-      { $match: { ...filter, payment_status: 'Paid' } },
-      { $group: { _id: null, total: { $sum: '$paid_amount' } } }
+    const expenses = await Expense.populate(facetResult?.data || [], [
+      { path: 'created_by', select: 'name email' },
+      { path: 'approved_by', select: 'name email' },
+      { path: 'store_purchase_id', select: 'po_number supplier_name total_amount status payment_status' }
     ]);
+    const meta = facetResult?.meta?.[0] || { total: 0, totalAmount: 0, paidAmount: 0 };
+    const total = Number(meta.total || 0);
+    const totalAmount = Number(meta.totalAmount || 0);
+    const paidAmount = Number(meta.paidAmount || 0);
 
     res.json({
       expenses,
@@ -191,9 +213,9 @@ exports.getAllExpenses = async (req, res) => {
         pages: Math.ceil(total / limitNum)
       },
       summary: {
-        totalAmount: totalAmount[0]?.total || 0,
-        paidAmount: paidAmount[0]?.total || 0,
-        pendingAmount: totalAmount[0]?.total - (paidAmount[0]?.total || 0)
+        totalAmount,
+        paidAmount,
+        pendingAmount: totalAmount - paidAmount
       }
     });
   } catch (error) {
