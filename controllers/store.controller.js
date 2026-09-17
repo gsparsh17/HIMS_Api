@@ -77,22 +77,34 @@ async function createOrUpdateExpenseFromPO(po, req) {
     created_by: getUserId(req) || po.created_by,
     source_module: 'store_purchase',
     source_id: po._id,
+    source_key: `store_purchase:${po._id}`,
     store_purchase_id: po._id
   };
 
-  if (po.expense_id) {
-    const updatePayload = { ...payload };
-    delete updatePayload.expense_number;
-    return Expense.findByIdAndUpdate(
-      po.expense_id,
-      { $set: updatePayload },
-      { new: true, runValidators: true }
-    );
-  }
+  const updatePayload = { ...payload };
+  delete updatePayload.expense_number;
+  let expense = await Expense.findOneAndUpdate(
+    { hospital_id: hospitalId, $or: [{ source_key: `store_purchase:${po._id}` }, { store_purchase_id: po._id }], is_active: { $ne: false } },
+    { $set: updatePayload },
+    { new: true, runValidators: true }
+  );
 
-  const expense = await Expense.create(payload);
-  po.expense_id = expense._id;
-  await po.save();
+  if (!expense) {
+    try {
+      expense = await Expense.create(payload);
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      expense = await Expense.findOneAndUpdate(
+        { hospital_id: hospitalId, $or: [{ source_key: `store_purchase:${po._id}` }, { store_purchase_id: po._id }], is_active: { $ne: false } },
+        { $set: updatePayload },
+        { new: true, runValidators: true }
+      );
+    }
+  }
+  if (expense && String(po.expense_id || '') !== String(expense._id)) {
+    po.expense_id = expense._id;
+    await po.save();
+  }
   return expense;
 }
 
@@ -721,7 +733,7 @@ async function createLinkedExpense({ equipment, req, type, amount, vendor, descr
 
   return Expense.create({
     date: type === 'maintenance' ? new Date() : (equipment.invoice_date || equipment.purchase_date || new Date()),
-    category: type === 'maintenance' ? 'Equipment Maintenance' : 'Equipment Purchase',
+    category: type === 'maintenance' ? 'Maintenance' : 'Medical Equipment',
     description: description || `${type === 'maintenance' ? 'Maintenance for' : 'Purchase of'} ${equipment.name} (${equipment.item_code || 'new asset'})`,
     amount: totalAmount,
     tax_rate: 0,
@@ -736,8 +748,9 @@ async function createLinkedExpense({ equipment, req, type, amount, vendor, descr
     receipt_date: equipment.invoice_date,
     hospital_id: hospitalId,
     created_by: createdBy,
-    source_module: type === 'maintenance' ? 'equipment_maintenance' : 'equipment_purchase',
+    source_module: type === 'maintenance' ? 'maintenance' : 'asset_purchase',
     source_id: sourceId || equipment._id,
+    source_key: type === 'maintenance' ? undefined : `asset_purchase:${sourceId || equipment._id}`,
     equipment_id: equipment._id
   });
 }

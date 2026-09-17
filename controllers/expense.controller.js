@@ -11,6 +11,16 @@ const parseDateOrNull = (v) => {
   return isNaN(d.getTime()) ? null : d;
 };
 
+async function expenseScope(req, extra = {}) {
+  const hospitalId = await resolveHospitalId(req);
+  if (!hospitalId) {
+    const error = new Error('Authenticated user is not linked to a hospital');
+    error.statusCode = 403;
+    throw error;
+  }
+  return { ...extra, hospital_id: hospitalId, is_active: { $ne: false } };
+}
+
 // -------------------- Create Expense --------------------
 exports.createExpense = async (req, res) => {
   try {
@@ -107,10 +117,9 @@ exports.getAllExpenses = async (req, res) => {
     const filter = { is_active: { $ne: false } };
 
     // Filter by hospital
-    const hospitalId = req.user?.hospital_id;
-    if (hospitalId) {
-      filter.hospital_id = hospitalId;
-    }
+    const hospitalId = await resolveHospitalId(req);
+    if (!hospitalId) return res.status(403).json({ error: 'Authenticated user is not linked to a hospital' });
+    filter.hospital_id = hospitalId;
 
     // Apply filters
     if (category && category !== 'all') filter.category = category;
@@ -202,7 +211,7 @@ exports.getExpenseById = async (req, res) => {
       return res.status(400).json({ error: 'Invalid expense ID' });
     }
 
-    const expense = await Expense.findById(id)
+    const expense = await Expense.findOne(await expenseScope(req, { _id: id }))
       .populate('created_by', 'name email')
       .populate('approved_by', 'name email')
       .populate('store_purchase_id', 'po_number supplier_name total_amount status payment_status');
@@ -229,7 +238,7 @@ exports.updateExpense = async (req, res) => {
     }
 
     // Find existing expense
-    const expense = await Expense.findById(id);
+    const expense = await Expense.findOne(await expenseScope(req, { _id: id }));
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
     }
@@ -253,8 +262,8 @@ exports.updateExpense = async (req, res) => {
       updateData.payment_date = updateData.payment_date || new Date();
     }
 
-    const updatedExpense = await Expense.findByIdAndUpdate(
-      id,
+    const updatedExpense = await Expense.findOneAndUpdate(
+      await expenseScope(req, { _id: id }),
       { $set: updateData },
       { new: true, runValidators: true }
     )
@@ -281,7 +290,7 @@ exports.deleteExpense = async (req, res) => {
       return res.status(400).json({ error: 'Invalid expense ID' });
     }
 
-    const expense = await Expense.findOneAndUpdate({ _id: id, is_active: { $ne: false } }, { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Expense archived by user').trim() } }, { new: true });
+    const expense = await Expense.findOneAndUpdate(await expenseScope(req, { _id: id }), { $set: { is_active: false, deleted_at: new Date(), deleted_by: req.user?._id || null, deletion_reason: String(req.body?.reason || 'Expense archived by user').trim() } }, { new: true });
 
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
@@ -310,10 +319,9 @@ exports.getDailyExpenses = async (req, res) => {
     };
 
     // Filter by hospital
-    const hospitalId = req.user?.hospital_id;
-    if (hospitalId) {
-      filter.hospital_id = hospitalId;
-    }
+    const hospitalId = await resolveHospitalId(req);
+    if (!hospitalId) return res.status(403).json({ error: 'Authenticated user is not linked to a hospital' });
+    filter.hospital_id = hospitalId;
 
     const expenses = await Expense.find(filter)
       .populate('created_by', 'name email')
@@ -383,10 +391,9 @@ exports.getMonthlyExpenses = async (req, res) => {
     };
 
     // Filter by hospital
-    const hospitalId = req.user?.hospital_id;
-    if (hospitalId) {
-      filter.hospital_id = hospitalId;
-    }
+    const hospitalId = await resolveHospitalId(req);
+    if (!hospitalId) return res.status(403).json({ error: 'Authenticated user is not linked to a hospital' });
+    filter.hospital_id = hospitalId;
 
     const expenses = await Expense.find(filter)
       .populate('created_by', 'name email')
@@ -461,13 +468,12 @@ exports.getExpenseSummary = async (req, res) => {
   try {
     const { period = 'monthly', year, month, date } = req.query;
 
-    const filter = {};
+    const filter = { is_active: { $ne: false } };
 
     // Filter by hospital
-    const hospitalId = req.user?.hospital_id;
-    if (hospitalId) {
-      filter.hospital_id = hospitalId;
-    }
+    const hospitalId = await resolveHospitalId(req);
+    if (!hospitalId) return res.status(403).json({ error: 'Authenticated user is not linked to a hospital' });
+    filter.hospital_id = hospitalId;
 
     // Apply period filter
     if (period === 'daily' && date) {
@@ -607,21 +613,22 @@ exports.approveExpense = async (req, res) => {
     const { id } = req.params;
     const { status, notes } = req.body;
 
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({ error: 'Invalid expense ID' });
-    }
+    if (!isValidObjectId(id)) return res.status(400).json({ error: 'Invalid expense ID' });
+    if (!['Approved', 'Rejected', 'On Hold'].includes(status)) return res.status(400).json({ error: 'Invalid approval status' });
 
-    if (!['Approved', 'Rejected', 'On Hold'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid approval status' });
-    }
+    const scope = await expenseScope(req, { _id: id });
+    const existing = await Expense.findOne(scope).select('notes').lean();
+    if (!existing) return res.status(404).json({ error: 'Expense not found' });
 
-    const expense = await Expense.findByIdAndUpdate(
-      id,
+    const expense = await Expense.findOneAndUpdate(
+      scope,
       {
-        approval_status: status,
-        approved_by: req.user._id,
-        approved_date: new Date(),
-        notes: notes ? `${expense?.notes || ''}\nApproval Note: ${notes}`.trim() : expense?.notes
+        $set: {
+          approval_status: status,
+          approved_by: req.user._id,
+          approved_date: new Date(),
+          notes: notes ? `${existing.notes || ''}\nApproval Note: ${notes}`.trim() : existing.notes
+        }
       },
       { new: true, runValidators: true }
     )
@@ -629,17 +636,10 @@ exports.approveExpense = async (req, res) => {
       .populate('approved_by', 'name email')
       .populate('store_purchase_id', 'po_number supplier_name total_amount status payment_status');
 
-    if (!expense) {
-      return res.status(404).json({ error: 'Expense not found' });
-    }
-
-    res.json({
-      message: `Expense ${status.toLowerCase()} successfully`,
-      expense
-    });
+    res.json({ message: `Expense ${status.toLowerCase()} successfully`, expense });
   } catch (error) {
     console.error('Error approving expense:', error);
-    res.status(500).json({ error: 'Failed to update expense approval' });
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to update expense approval' });
   }
 };
 
@@ -657,7 +657,7 @@ exports.updatePaymentStatus = async (req, res) => {
       return res.status(400).json({ error: 'Invalid payment status' });
     }
 
-    const expense = await Expense.findById(id);
+    const expense = await Expense.findOne(await expenseScope(req, { _id: id }));
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found' });
     }
@@ -686,8 +686,8 @@ exports.updatePaymentStatus = async (req, res) => {
       updateData.notes = `${expense.notes || ''}\nPayment Note: ${notes}`.trim();
     }
 
-    const updatedExpense = await Expense.findByIdAndUpdate(
-      id,
+    const updatedExpense = await Expense.findOneAndUpdate(
+      await expenseScope(req, { _id: id }),
       { $set: updateData },
       { new: true, runValidators: true }
     )

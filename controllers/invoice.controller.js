@@ -20,6 +20,7 @@ const { default: mongoose } = require('mongoose');
 const { requestHospitalId } = require('../utils/hospitalScope');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 const { invoicePrintEnvelope } = require('../services/financeDocument.service');
+const financialProjection = require('../services/financialProjection.service');
 const {
   COMPUTER_GENERATED_BILL_EN,
   COMPUTER_GENERATED_BILL_HI,
@@ -1136,6 +1137,27 @@ exports.getInvoiceById = async (req, res) => {
     const invoice = compactView ? await query.lean() : await query;
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
 
+    const includeRelated = ['1', 'true', 'yes'].includes(String(req.query.includeRelated || '').toLowerCase());
+    if (compactView && includeRelated && invoice.is_pharmacy_sale && invoice.sale_id) {
+      const hospitalId = requestHospitalId(req);
+      const saleId = typeof invoice.sale_id === 'object' ? (invoice.sale_id._id || invoice.sale_id.id) : invoice.sale_id;
+      if (saleId && mongoose.Types.ObjectId.isValid(saleId)) {
+        const [sale, bill] = await Promise.all([
+          Sale.findOne({ _id: saleId, hospitalId }).select([
+            'sale_number', 'sale_date', 'status', 'payment_status', 'payment_method',
+            'subtotal', 'discount', 'tax_amount', 'total_amount', 'paid_amount', 'balance_due',
+            'patient_id', 'admission_id', 'doctor_id', 'items', 'return_refs'
+          ].join(' ')).lean(),
+          Bill.findOne({ sale_id: saleId, hospital_id: hospitalId }).select([
+            'bill_number', 'status', 'payment_status', 'subtotal', 'discount', 'tax_amount',
+            'total_amount', 'paid_amount', 'balance_due', 'pharmacy_outstanding_before',
+            'pharmacy_advance_used', 'pharmacy_advance_created', 'pharmacy_outstanding_after'
+          ].join(' ')).lean()
+        ]);
+        invoice.relatedPharmacy = { sale: sale || null, bill: bill || null };
+      }
+    }
+
     return res.json(invoice);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -1213,10 +1235,63 @@ exports.getInvoicesByType = async (req, res) => {
   }
 };
 
-// Get invoice statistics
+// Get invoice statistics. Financial headline metrics are now sourced from the
+// same canonical projection used by /finance/kpis and the Income workspace.
+// Specialist workflow counts remain here for backwards-compatible consumers.
 exports.getInvoiceStatistics = async (req, res) => {
   try {
     const { startDate, endDate, type, invoice_type, status, payment_method } = req.query;
+    const canonicalQuery = {
+      from: startDate || '1970-01-01',
+      to: endDate || new Date().toISOString().slice(0, 10),
+      invoiceType: type || invoice_type,
+      status,
+      paymentMethod: payment_method,
+      timezone: req.query.timezone || 'Asia/Kolkata'
+    };
+    const canonical = await financialProjection.getKpis(canonicalQuery, req.user);
+    const summary = canonical.summary || {};
+    const invoiceRows = canonical.invoiceRows || [];
+
+    const totalInvoices = Number(summary.invoiceCount || 0);
+    const totalRevenue = Number(summary.netRevenue || 0);
+    const paidRevenue = Number(summary.collections || 0);
+    const pendingRevenue = Number(summary.outstanding || 0);
+
+    const now = Date.now();
+    const agingBreakdown = { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90_plus: 0 };
+    let agingDaysTotal = 0;
+    let agingDaysCount = 0;
+    const invoiceIds = invoiceRows.map((row) => row.id).filter(Boolean);
+    if (invoiceIds.length) {
+      const agingRows = await Invoice.find(invoiceScope(req, { _id: { $in: invoiceIds } })).select('due_date balance_due').lean();
+      for (const row of agingRows) {
+        const due = row.due_date ? new Date(row.due_date).getTime() : NaN;
+        const balance = Math.max(0, Number(row.balance_due || 0));
+        const days = Number.isFinite(due) ? Math.max(0, Math.ceil((now - due) / 86400000)) : 0;
+        if (Number.isFinite(due)) { agingDaysTotal += days; agingDaysCount += 1; }
+        if (days === 0) agingBreakdown.current += balance;
+        else if (days <= 30) agingBreakdown.days1_30 += balance;
+        else if (days <= 60) agingBreakdown.days31_60 += balance;
+        else if (days <= 90) agingBreakdown.days61_90 += balance;
+        else agingBreakdown.days90_plus += balance;
+      }
+    }
+    const averageAge = agingDaysCount ? Math.round(agingDaysTotal / agingDaysCount) : 0;
+
+    const revenueByTypeMap = new Map();
+    const statusMap = new Map();
+    invoiceRows.forEach((row) => {
+      const key = row.invoiceType || 'Other';
+      const current = revenueByTypeMap.get(key) || { _id: key, total: 0, count: 0, avg: 0 };
+      current.total += Number(row.netRevenue || 0);
+      current.count += 1;
+      revenueByTypeMap.set(key, current);
+      const statusKey = row.status || 'Unknown';
+      statusMap.set(statusKey, (statusMap.get(statusKey) || 0) + 1);
+    });
+    const revenueByType = [...revenueByTypeMap.values()].map((row) => ({ ...row, avg: row.count ? row.total / row.count : 0 }));
+    const statusCounts = [...statusMap.entries()].map(([_id, count]) => ({ _id, count }));
 
     const filter = invoiceScope(req);
     const issueDateRange = invoiceDateRange(startDate, endDate);
@@ -1230,137 +1305,31 @@ exports.getInvoiceStatistics = async (req, res) => {
       else if (statuses.length > 1) filter.status = { $in: statuses };
     }
 
-    const totalInvoices = await Invoice.countDocuments(filter);
-
-    const financialTotals = await Invoice.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: null,
-          totalRevenue: { $sum: { $ifNull: ['$total', 0] } },
-          paidRevenue: { $sum: { $ifNull: ['$amount_paid', 0] } },
-          pendingRevenue: { $sum: { $ifNull: ['$balance_due', 0] } }
-        }
-      }
-    ]);
-    const totals = financialTotals[0] || { totalRevenue: 0, paidRevenue: 0, pendingRevenue: 0 };
-
-    const agingRows = await Invoice.find(filter).select('due_date balance_due').lean();
-    const agingBreakdown = { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90_plus: 0 };
-    let agingDaysTotal = 0;
-    let agingDaysCount = 0;
-    const now = Date.now();
-    for (const row of agingRows) {
-      const due = row.due_date ? new Date(row.due_date).getTime() : NaN;
-      const balance = Math.max(0, Number(row.balance_due || 0));
-      const days = Number.isFinite(due) ? Math.max(0, Math.ceil((now - due) / 86400000)) : 0;
-      if (Number.isFinite(due)) {
-        agingDaysTotal += days;
-        agingDaysCount += 1;
-      }
-      if (days === 0) agingBreakdown.current += balance;
-      else if (days <= 30) agingBreakdown.days1_30 += balance;
-      else if (days <= 60) agingBreakdown.days31_60 += balance;
-      else if (days <= 90) agingBreakdown.days61_90 += balance;
-      else agingBreakdown.days90_plus += balance;
-    }
-    const averageAge = agingDaysCount ? Math.round(agingDaysTotal / agingDaysCount) : 0;
-
-    const revenueByType = await Invoice.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: '$invoice_type',
-          total: { $sum: '$total' },
-          count: { $sum: 1 },
-          avg: { $avg: '$total' }
-        }
-      }
-    ]);
-
-    const statusCounts = await Invoice.aggregate([
-      { $match: filter },
-      { $group: { _id: '$status', count: { $sum: 1 } } }
-    ]);
-
-    const paymentMethodBreakdown = await Invoice.aggregate([
-      { $match: filter },
-      { $unwind: '$payment_history' },
-      {
-        $group: {
-          _id: '$payment_history.method',
-          amount: { $sum: '$payment_history.amount' },
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { amount: -1 } }
-    ]);
-
-    const procedureStats = await Invoice.aggregate([
-      { $match: { ...filter, has_procedures: true } },
-      { $unwind: '$procedure_items' },
-      {
-        $group: {
-          _id: '$procedure_items.status',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$procedure_items.total_price' }
-        }
-      }
-    ]);
-
-    const procedureRevenue = await Invoice.aggregate([
-      { $match: { ...filter, invoice_type: 'Procedure' } },
-      { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
-    ]);
-
-    const labTestStats = await Invoice.aggregate([
-      { $match: { ...filter, has_lab_tests: true } },
-      { $unwind: '$lab_test_items' },
-      {
-        $group: {
-          _id: '$lab_test_items.status',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$lab_test_items.total_price' }
-        }
-      }
-    ]);
-
-    const labTestRevenue = await Invoice.aggregate([
-      { $match: { ...filter, invoice_type: 'Lab Test' } },
-      { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
-    ]);
-
-    const radiologyStats = await Invoice.aggregate([
-      { $match: { ...filter, has_radiology: true } },
-      { $unwind: '$radiology_items' },
-      {
-        $group: {
-          _id: '$radiology_items.status',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$radiology_items.total_price' }
-        }
-      }
-    ]);
-
-    const radiologyRevenue = await Invoice.aggregate([
-      { $match: { ...filter, invoice_type: 'Radiology' } },
-      { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
+    const [procedureStats, procedureRevenue, labTestStats, labTestRevenue, radiologyStats, radiologyRevenue] = await Promise.all([
+      Invoice.aggregate([{ $match: { ...filter, has_procedures: true } }, { $unwind: '$procedure_items' }, { $group: { _id: '$procedure_items.status', count: { $sum: 1 }, totalAmount: { $sum: '$procedure_items.total_price' } } }]),
+      Invoice.aggregate([{ $match: { ...filter, invoice_type: 'Procedure' } }, { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }]),
+      Invoice.aggregate([{ $match: { ...filter, has_lab_tests: true } }, { $unwind: '$lab_test_items' }, { $group: { _id: '$lab_test_items.status', count: { $sum: 1 }, totalAmount: { $sum: '$lab_test_items.total_price' } } }]),
+      Invoice.aggregate([{ $match: { ...filter, invoice_type: 'Lab Test' } }, { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }]),
+      Invoice.aggregate([{ $match: { ...filter, has_radiology: true } }, { $unwind: '$radiology_items' }, { $group: { _id: '$radiology_items.status', count: { $sum: 1 }, totalAmount: { $sum: '$radiology_items.total_price' } } }]),
+      Invoice.aggregate([{ $match: { ...filter, invoice_type: 'Radiology' } }, { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }])
     ]);
 
     res.json({
       totalInvoices,
-      totalRevenue: totals.totalRevenue || 0,
-      paidRevenue: totals.paidRevenue || 0,
-      pendingRevenue: totals.pendingRevenue || 0,
+      totalRevenue,
+      paidRevenue,
+      pendingRevenue,
+      grossBilled: Number(summary.grossBilled || 0),
+      discounts: Number(summary.discounts || 0),
+      creditNotes: Number(summary.creditNotes || 0),
+      refunds: Number(summary.refunds || 0),
+      netCashCollection: Number(summary.netCashCollection || 0),
+      canonical: true,
       averageAge,
       agingBreakdown,
       revenueByType,
       statusCounts,
-      byPaymentMethod: paymentMethodBreakdown.map(item => ({
-        method: item._id,
-        amount: item.amount,
-        count: item.count
-      })),
+      byPaymentMethod: (canonical.paymentMethods || []).map((item) => ({ method: item.paymentMethod, amount: item.amount, count: item.count })),
       procedureStats,
       procedureRevenue: procedureRevenue[0]?.total || 0,
       procedureCount: procedureRevenue[0]?.count || 0,

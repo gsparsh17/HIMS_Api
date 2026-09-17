@@ -14,6 +14,32 @@ const {
 const money = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const EXCLUDED_INVOICE_TYPES = ['IPD Payment', 'IPD Advance Credit', 'Pharmacy Advance Credit', 'Credit Note'];
 
+const INVOICE_PROJECTION_FIELDS = [
+  'issue_date', 'invoice_number', 'invoice_type', 'is_pharmacy_sale', 'patient_type',
+  'admission_id', 'patient_id', 'patient', 'patient_snapshot', 'patient_name',
+  'doctor_snapshot', 'doctor', 'doctor_id', 'doctor_name', 'consultant', 'consultant_id', 'consultant_name',
+  'doctor_commission_snapshot', 'doctor_commission', 'commission', 'commission_percentage',
+  'department_snapshot', 'department', 'department_id', 'department_name',
+  'gross_amount', 'subtotal', 'total', 'line_discount_total', 'bill_discount_total',
+  'discount', 'discount_amount', 'settlement_discount_amount', 'credit_note_total',
+  'tax', 'tax_amount', 'amount_paid', 'paid_amount', 'balance_due', 'status', 'payment_history',
+  'service_items', 'procedure_items', 'lab_test_items', 'radiology_items', 'medicine_items', 'items',
+  'collection_owner', 'collection_mode', 'collection_transferred_to_ipd'
+].join(' ');
+
+const TRANSACTION_PROJECTION_FIELDS = [
+  'postedAt', 'createdAt', 'date', 'transactionDate', 'transactionNumber', 'referenceNumber',
+  'transactionType', 'direction', 'paymentMethod', 'amount', 'amountTendered', 'amountApplied',
+  'appliedAmount', 'externalAmount', 'changeReturned', 'advanceCreated', 'externalMoneyMovement',
+  'cashFlowClass', 'patientId', 'patient_id', 'invoiceId', 'invoice_id', 'billId', 'bill_id',
+  'admissionId', 'sourceModule', 'documentAllocations', 'notes', 'description', 'remarks', 'status'
+].join(' ');
+
+const UNBILLED_PROJECTION_FIELDS = [
+  'chargeDate', 'chargeType', 'netAmount', 'totalAmount', 'amount', 'financialPolicySnapshot',
+  'pricingSnapshot', 'invoiceId', 'status', 'admissionId', 'patientId'
+].join(' ');
+
 function hospitalFilter(hospitalId, field) {
   return hospitalId ? { [field]: hospitalId } : {};
 }
@@ -107,7 +133,16 @@ function applyInvoiceFilters(invoices, query = {}) {
     if (query.encounterSource && query.encounterSource !== 'all' && encounter !== query.encounterSource) return false;
     if (query.serviceSource && query.serviceSource !== 'all' && !invoiceServiceSources(invoice).includes(query.serviceSource)) return false;
     if (query.invoiceType && query.invoiceType !== 'all' && invoice.invoice_type !== query.invoiceType) return false;
-    if (query.status && query.status !== 'all' && invoice.status !== query.status) return false;
+    if (query.status && query.status !== 'all') {
+      const statuses = String(query.status).split(',').map((value) => value.trim()).filter(Boolean);
+      if (statuses.length && !statuses.includes(String(invoice.status || ''))) return false;
+    }
+    if (query.paymentMethod && query.paymentMethod !== 'all') {
+      const methods = Array.isArray(invoice.payment_history)
+        ? invoice.payment_history.map((entry) => String(entry?.method || entry?.payment_method || ''))
+        : [];
+      if (!methods.includes(String(query.paymentMethod))) return false;
+    }
     if (query.doctorId && query.doctorId !== 'all' && doctor.id !== String(query.doctorId)) return false;
     if (query.departmentId && query.departmentId !== 'all' && department.id !== String(query.departmentId)) return false;
     if (query.minAmount && total < Number(query.minAmount)) return false;
@@ -196,7 +231,7 @@ async function load({ query = {}, user = {} }) {
         { invoice_type: 'Pharmacy', collection_mode: 'IPD_CONSOLIDATED' },
         { invoice_type: 'Pharmacy', collection_transferred_to_ipd: true }
       ]
-    }).lean(),
+    }).select(INVOICE_PROJECTION_FIELDS).lean(),
     FinancialTransaction.find({
       ...hospitalFilter(hospitalId, 'hospitalId'),
       $or: [
@@ -204,13 +239,13 @@ async function load({ query = {}, user = {} }) {
         { postedAt: { $exists: false }, createdAt: { $gte: range.from, $lte: range.to } }
       ],
       status: 'POSTED'
-    }).lean(),
+    }).select(TRANSACTION_PROJECTION_FIELDS).lean(),
     IPDCharge.find({
       ...hospitalFilter(hospitalId, 'hospitalId'),
       chargeDate: { $gte: range.from, $lte: range.to },
       status: { $in: ['ACTIVE', 'UNBILLED'] },
       $or: [{ invoiceId: null }, { invoiceId: { $exists: false } }]
-    }).lean()
+    }).select(UNBILLED_PROJECTION_FIELDS).lean()
   ]);
   const invoices = applyInvoiceFilters(rawInvoices, query);
   const filteredInvoiceIds = new Set(invoices.map((invoice) => textId(invoice._id)));
