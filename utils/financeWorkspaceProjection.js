@@ -130,6 +130,7 @@ function compactTransaction(row) {
     advanceCreated: value.advanceCreated,
     paymentMethod: value.paymentMethod,
     paymentReference: value.paymentReference,
+    paymentMethodCorrections: value.paymentMethodCorrections || [],
     receiptType: value.receiptType,
     amountBeforeSettlement: value.amountBeforeSettlement,
     settlementDiscountAmount: value.settlementDiscountAmount,

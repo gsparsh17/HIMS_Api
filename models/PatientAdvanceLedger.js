@@ -1,10 +1,21 @@
 const mongoose = require('mongoose');
 const { operationNow } = require('../utils/operationTimeContext');
 
+const paymentMethodCorrectionSchema = new mongoose.Schema({
+  fromMethod: { type: String, trim: true },
+  toMethod: { type: String, trim: true },
+  oldReference: { type: String, trim: true },
+  newReference: { type: String, trim: true },
+  reason: { type: String, required: true, trim: true },
+  correctedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  correctedAt: { type: Date, default: operationNow }
+}, { _id: false });
+
 /**
  * Append-only patient advance wallet ledger. balanceAfter is written by the
- * financial service after an atomic admission balance update; historical rows
- * must never be edited or deleted.
+ * financial service after an atomic admission balance update; monetary values
+ * must never be edited or deleted. Payment-mode metadata may be corrected only
+ * with a paymentMethodCorrections audit entry.
  */
 const patientAdvanceLedgerSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
@@ -38,6 +49,8 @@ const patientAdvanceLedgerSchema = new mongoose.Schema({
     default: 'Cash'
   },
   referenceNumber: { type: String, trim: true },
+  paymentReference: { type: String, trim: true },
+  paymentMethodCorrections: { type: [paymentMethodCorrectionSchema], default: [] },
   documentType: { type: String, enum: ['Receipt', 'Invoice', 'Refund', 'Adjustment', 'PharmacySale'], default: 'Receipt' },
   documentId: { type: mongoose.Schema.Types.ObjectId },
   sourceModule: { type: String, enum: ['IPD', 'OPD', 'Pharmacy', 'Billing', 'Manual', 'Discharge'], default: 'IPD' },

@@ -997,7 +997,14 @@ async function applyToBill(bill, paymentAmount, discountAmount, payload, receipt
     bill.paid_amount = amount(Number(bill.paid_amount || 0) + paymentAmount);
     bill.payment_method = payload.paymentMethod || 'Cash';
     bill.payments = bill.payments || [];
-    bill.payments.push({ method: payload.paymentMethod || 'Cash', amount: paymentAmount, reference: receiptNumber || payload.reference, date: operationNow() });
+    bill.payments.push({
+      method: payload.paymentMethod || 'Cash',
+      amount: paymentAmount,
+      reference: receiptNumber || payload.reference,
+      receipt_number: receiptNumber || undefined,
+      payment_reference: payload.reference || undefined,
+      date: operationNow()
+    });
   }
   await bill.save(sessionOptions(session));
 }

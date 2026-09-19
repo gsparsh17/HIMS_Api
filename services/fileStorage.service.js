@@ -79,15 +79,21 @@ async function checksum(filePath) {
 
 async function copyLocalFileAtomically(source, destination) {
   await fsp.mkdir(path.dirname(destination), { recursive: true });
-  const partial = `${destination}.part-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+
+  const partial =
+    `${destination}.part-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+
   try {
     await fsp.copyFile(source, partial, fs.constants.COPYFILE_EXCL);
-    const handle = await fsp.open(partial, 'r');
+
+    const handle = await fsp.open(partial, 'r+');
+
     try {
       await handle.sync();
     } finally {
       await handle.close();
     }
+
     await fsp.rename(partial, destination);
   } catch (error) {
     await fsp.unlink(partial).catch(() => {});

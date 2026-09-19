@@ -1,11 +1,23 @@
 const mongoose = require('mongoose');
 const { operationNow } = require('../utils/operationTimeContext');
 
+const paymentMethodCorrectionSchema = new mongoose.Schema({
+  fromMethod: { type: String, trim: true },
+  toMethod: { type: String, trim: true },
+  oldReference: { type: String, trim: true },
+  newReference: { type: String, trim: true },
+  reason: { type: String, required: true, trim: true },
+  correctedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  correctedAt: { type: Date, default: operationNow }
+}, { _id: false });
+
 /**
  * A financial transaction is a movement of money or a financial adjustment.
  * Bills and invoices describe charges; this collection describes receipts,
  * advances, refunds, credit notes and invoice settlements. It is intentionally
- * append-only: reversals use reversalOf rather than deleting history.
+ * append-only for monetary values: reversals use reversalOf rather than deleting history.
+ * Non-monetary payment-mode corrections are permitted only with an immutable
+ * paymentMethodCorrections audit entry.
  */
 const financialTransactionSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
@@ -47,6 +59,7 @@ const financialTransactionSchema = new mongoose.Schema({
     default: 'Cash'
   },
   paymentReference: { type: String, trim: true },
+  paymentMethodCorrections: { type: [paymentMethodCorrectionSchema], default: [] },
   receiptType: { type: String, enum: ['Payment', 'Advance', 'Final Settlement', 'Refund', 'Adjustment'], default: 'Payment' },
   amountBeforeSettlement: { type: Number, default: 0, min: 0 },
   settlementDiscountAmount: { type: Number, default: 0, min: 0 },

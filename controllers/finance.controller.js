@@ -9,6 +9,7 @@ const financialPolicy = require('../services/financialPolicy.service');
 const { assertUserHospital } = require('../utils/hospitalScope');
 const { transactionPrintEnvelope } = require('../services/financeDocument.service');
 const Appointment = require('../models/Appointment');
+const paymentMethodCorrection = require('../services/paymentMethodCorrection.service');
 
 function sendError(res, error) {
   console.error('Finance module error:', error);
@@ -88,6 +89,24 @@ exports.resolveFinancialPolicy = async (req, res) => {
   } catch (error) { sendError(res, error); }
 };
 
+
+exports.correctTransactionPaymentMethod = async (req, res) => {
+  try {
+    const hospitalId = assertUserHospital(req.user);
+    const result = await paymentMethodCorrection.correctPaymentMethod({
+      transactionIdOrNumber: req.params.transactionId,
+      hospitalId,
+      payload: req.body,
+      user: req.user,
+      req
+    });
+    return res.json({
+      success: true,
+      message: `Payment mode corrected from ${result.fromMethod} to ${result.toMethod}`,
+      data: result
+    });
+  } catch (error) { return sendError(res, error); }
+};
 
 exports.getTransactionPrintData = async (req, res) => {
   try {

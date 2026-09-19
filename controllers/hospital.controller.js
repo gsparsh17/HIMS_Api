@@ -109,6 +109,7 @@ const updateHospitalDetails = async (req, res) => {
 
     return res.status(200).json({ message: 'Hospital details updated successfully.', hospital });
   } catch (error) {
+    console.error('Error updating hospital details:', error);
     // If the DB update failed after a new object was uploaded, clean up that orphan.
     if (newLogoUrl) await fileStorage.removeByUrl(newLogoUrl).catch(() => {});
     if (req.file?.path) fs.unlink(req.file.path, () => {});

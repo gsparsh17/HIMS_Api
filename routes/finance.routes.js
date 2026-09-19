@@ -16,6 +16,7 @@ router.get('/kpis', finance.getCanonicalKpis);
 router.get('/kpis/daily', finance.getCanonicalKpis);
 router.get('/reports/:reportKey', finance.getCanonicalFinanceReport);
 router.get('/transactions/:transactionId/print-data', finance.getTransactionPrintData);
+router.patch('/transactions/:transactionId/payment-method', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.correctTransactionPaymentMethod);
 router.get('/pharmacy/projection', finance.getPharmacyFinanceProjection);
 router.get('/pharmacy/integration-audit', requireActionPermission('billing_finalize'), finance.getPharmacyIntegrationAudit);
 router.get('/reconciliation/issues', requireActionPermission('billing_finalize'), reconciliation.list);

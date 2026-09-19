@@ -2,6 +2,16 @@ const mongoose = require('mongoose');
 const { addSoftDeleteFields } = require('../utils/softDelete');
 const { operationNow } = require('../utils/operationTimeContext');
 
+const paymentMethodCorrectionSchema = new mongoose.Schema({
+  fromMethod: { type: String, trim: true },
+  toMethod: { type: String, trim: true },
+  oldReference: { type: String, trim: true },
+  newReference: { type: String, trim: true },
+  reason: { type: String, required: true, trim: true },
+  correctedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  correctedAt: { type: Date, default: operationNow }
+}, { _id: false });
+
 const billItemSchema = new mongoose.Schema({
   description: {
     type: String,
@@ -300,6 +310,9 @@ const billSchema = new mongoose.Schema({
     },
     amount: Number,
     reference: String,
+    receipt_number: { type: String, trim: true },
+    payment_reference: { type: String, trim: true },
+    correction_history: { type: [paymentMethodCorrectionSchema], default: [] },
     date: { type: Date, default: operationNow }
   }],
 
