@@ -243,7 +243,6 @@ prescriptionSchema.index({ hospitalId: 1, patient_id: 1, issue_date: -1 });
 prescriptionSchema.index({ hospitalId: 1, idempotencyKey: 1 }, { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } });
 prescriptionSchema.index({ patient_id: 1, issue_date: -1 });
 prescriptionSchema.index({ doctor_id: 1, issue_date: -1 });
-prescriptionSchema.index({ prescription_number: 1 });
 prescriptionSchema.index({ status: 1 });
 prescriptionSchema.index({ diagnosis_icd11_code: 1 });
 prescriptionSchema.index({ ipd_admission_id: 1, source_type: 1 });

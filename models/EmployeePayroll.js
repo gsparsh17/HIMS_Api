@@ -280,11 +280,11 @@ employeePayrollSchema.index({ payroll_category: 1, source_model: 1 });
 employeePayrollSchema.index({ clearance_status: 1, status: 1 });
 employeePayrollSchema.index(
   { employee_id: 1, period_start: 1, period_end: 1, earning_type: 1 },
-  { unique: true, partialFilterExpression: { status: { $nin: ['cancelled', 'rejected'] } } }
+  { unique: true, partialFilterExpression: { status: { $in: ['draft', 'generated', 'approved', 'pending', 'processing', 'paid', 'hold'] } } }
 );
 employeePayrollSchema.index(
   { appointments: 1 },
-  { unique: true, partialFilterExpression: { earning_type: 'commission', status: { $nin: ['cancelled', 'rejected'] } } }
+  { unique: true, partialFilterExpression: { earning_type: 'commission', status: { $in: ['draft', 'generated', 'approved', 'pending', 'processing', 'paid', 'hold'] } } }
 );
 
 module.exports = mongoose.model('EmployeePayroll', employeePayrollSchema);

@@ -74,7 +74,6 @@ const customerSchema = new mongoose.Schema({
 });
 
 // Index for better query performance
-customerSchema.index({ phone: 1 });
 customerSchema.index({ email: 1 }, { sparse: true });
 customerSchema.index({ patient_id: 1 }, { sparse: true });
 customerSchema.index({ customer_type: 1 });

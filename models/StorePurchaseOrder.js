@@ -81,7 +81,6 @@ storePurchaseOrderSchema.pre('save', function(next) {
 });
 
 storePurchaseOrderSchema.index({ hospital_id: 1, order_date: -1 });
-storePurchaseOrderSchema.index({ po_number: 1 });
 storePurchaseOrderSchema.index({ status: 1 });
 storePurchaseOrderSchema.index({ expense_id: 1 });
 

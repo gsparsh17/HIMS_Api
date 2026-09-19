@@ -244,7 +244,6 @@ expenseSchema.pre('save', async function(next) {
 });
 
 // Indexes for better query performance
-expenseSchema.index({ expense_number: 1 });
 expenseSchema.index({ date: -1 });
 expenseSchema.index({ category: 1 });
 expenseSchema.index({ vendor: 1 });

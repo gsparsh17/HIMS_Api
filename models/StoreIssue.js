@@ -53,6 +53,5 @@ storeIssueSchema.pre('save', function(next) {
 
 storeIssueSchema.index({ hospital_id: 1, issue_date: -1 });
 storeIssueSchema.index({ department: 1 });
-storeIssueSchema.index({ issue_number: 1 });
 
 module.exports = mongoose.model('StoreIssue', storeIssueSchema);
