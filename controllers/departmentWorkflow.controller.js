@@ -257,6 +257,51 @@ async function searchedLabFlatPage({ filter, q, skip, limit }) {
   return { items: result.items || [], total: result.total?.[0]?.value || 0 };
 }
 
+async function searchedLabGroupPage({ filter, q, skip, limit }) {
+  const regex = new RegExp(escapedSearch(q), 'i');
+  const baseFilter = withoutDirectSearch(filter);
+  const [matchedPage = {}] = await LabRequest.aggregate([
+    { $match: baseFilter },
+    { $lookup: { from: Patient.collection.name, localField: 'patientId', foreignField: '_id', pipeline: [{ $project: { first_name: 1, last_name: 1, patientId: 1, uhid: 1, phone: 1 } }], as: '_patient' } },
+    { $lookup: { from: Doctor.collection.name, localField: 'doctorId', foreignField: '_id', pipeline: [{ $project: { firstName: 1, lastName: 1 } }], as: '_doctor' } },
+    { $lookup: { from: LabTest.collection.name, localField: 'labTestId', foreignField: '_id', pipeline: [{ $project: { name: 1, code: 1 } }], as: '_test' } },
+    { $set: {
+      _worklistGroupKey: labGroupKeyExpression(),
+      _patient: { $arrayElemAt: ['$_patient', 0] },
+      _doctor: { $arrayElemAt: ['$_doctor', 0] },
+      _test: { $arrayElemAt: ['$_test', 0] }
+    } },
+    { $match: { $or: [
+      { requestNumber: regex }, { testName: regex }, { testCode: regex }, { accessionNumber: regex }, { orderNumber: regex },
+      { '_patient.first_name': regex }, { '_patient.last_name': regex }, { '_patient.patientId': regex }, { '_patient.uhid': regex }, { '_patient.phone': regex },
+      { '_doctor.firstName': regex }, { '_doctor.lastName': regex },
+      { '_test.name': regex }, { '_test.code': regex }
+    ] } },
+    { $group: { _id: '$_worklistGroupKey', requestedDate: { $min: '$requestedDate' } } },
+    { $sort: { requestedDate: 1, _id: 1 } },
+    { $facet: { groups: [{ $skip: skip }, { $limit: limit }], total: [{ $count: 'value' }] } }
+  ]).allowDiskUse(true);
+
+  const groups = matchedPage.groups || [];
+  const groupKeys = groups.map((group) => String(group._id));
+  if (!groupKeys.length) return { groups: [], rows: [], total: matchedPage.total?.[0]?.value || 0 };
+
+  const rows = await LabRequest.aggregate([
+    { $match: baseFilter },
+    { $set: { _worklistGroupKey: labGroupKeyExpression() } },
+    { $match: { _worklistGroupKey: { $in: groupKeys } } },
+    { $project: { _worklistGroupKey: 0 } }
+  ]).allowDiskUse(true);
+
+  const hydratedRows = await LabRequest.populate(rows, [
+    { path: 'patientId', select: 'first_name last_name patientId uhid gender age phone' },
+    { path: 'doctorId', select: 'firstName lastName specialization' },
+    { path: 'admissionId', select: 'admissionNumber wardId roomId bedId coverageId' },
+    { path: 'labTestId', select: 'name code category specimen_type specimen_detail parameters normal_range units' }
+  ]);
+  return { groups, rows: hydratedRows, total: matchedPage.total?.[0]?.value || 0 };
+}
+
 async function searchedRadiologyFlatPage({ filter, q, skip, limit }) {
   const regex = new RegExp(escapedSearch(q), 'i');
   const [result = {}] = await RadiologyRequest.aggregate([
@@ -338,48 +383,43 @@ exports.labWorklist = async (req, res) => {
       return res.json({ success: true, grouped: false, items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
     }
 
-    // Determine only the requested group page inside MongoDB. Hydrate the
-    // requests belonging to those groups afterwards and pass them through the
-    // existing grouping service so group/status semantics stay byte-for-byte
-    // compatible with the legacy implementation.
+    // Determine only the requested group page inside MongoDB. When search is
+    // present, match patient/UHID/doctor/test fields first, then hydrate every
+    // request belonging to each matched order so a group never appears partial.
     const skip = (page - 1) * limit;
-    const [groupPage = {}] = await LabRequest.aggregate([
-      { $match: filter },
-      { $set: { _worklistGroupKey: labGroupKeyExpression() } },
-      {
-        $group: {
-          _id: '$_worklistGroupKey',
-          requestedDate: { $min: '$requestedDate' },
-          requestIds: { $push: '$_id' }
-        }
-      },
-      { $sort: { requestedDate: 1, _id: 1 } },
-      {
-        $facet: {
-          groups: [{ $skip: skip }, { $limit: limit }],
-          total: [{ $count: 'value' }]
-        }
-      }
-    ]).allowDiskUse(true);
+    let pageGroups = [];
+    let hydratedRows = [];
+    let total = 0;
 
-    const pageGroups = groupPage.groups || [];
-    const requestIds = pageGroups.flatMap((group) => group.requestIds || []);
-    const hydratedRows = requestIds.length
-      ? await LabRequest.find({ _id: { $in: requestIds }, hospitalId })
-        .populate('patientId', 'first_name last_name patientId uhid gender age phone')
-        .populate('doctorId', 'firstName lastName specialization')
-        .populate('admissionId', 'admissionNumber wardId roomId bedId coverageId')
-        .populate('labTestId', 'name code category specimen_type specimen_detail parameters normal_range units')
-        .lean()
-      : [];
+    if (req.query.q) {
+      const searched = await searchedLabGroupPage({ filter, q: req.query.q, skip, limit });
+      pageGroups = searched.groups;
+      hydratedRows = searched.rows;
+      total = searched.total;
+    } else {
+      const [groupPage = {}] = await LabRequest.aggregate([
+        { $match: filter },
+        { $set: { _worklistGroupKey: labGroupKeyExpression() } },
+        { $group: { _id: '$_worklistGroupKey', requestedDate: { $min: '$requestedDate' }, requestIds: { $push: '$_id' } } },
+        { $sort: { requestedDate: 1, _id: 1 } },
+        { $facet: { groups: [{ $skip: skip }, { $limit: limit }], total: [{ $count: 'value' }] } }
+      ]).allowDiskUse(true);
+      pageGroups = groupPage.groups || [];
+      total = groupPage.total?.[0]?.value || 0;
+      const requestIds = pageGroups.flatMap((group) => group.requestIds || []);
+      hydratedRows = requestIds.length
+        ? await LabRequest.find({ _id: { $in: requestIds }, hospitalId })
+          .populate('patientId', 'first_name last_name patientId uhid gender age phone')
+          .populate('doctorId', 'firstName lastName specialization')
+          .populate('admissionId', 'admissionNumber wardId roomId bedId coverageId')
+          .populate('labTestId', 'name code category specimen_type specimen_detail parameters normal_range units')
+          .lean()
+        : [];
+    }
 
     const hydratedGroups = groupLabRequests(hydratedRows);
     const groupMap = new Map(hydratedGroups.map((group) => [String(group.groupId), group]));
-    const items = pageGroups
-      .map((group) => groupMap.get(String(group._id)))
-      .filter(Boolean);
-    const total = groupPage.total?.[0]?.value || 0;
-
+    const items = pageGroups.map((group) => groupMap.get(String(group._id))).filter(Boolean);
     return res.json({ success: true, grouped: true, items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
   } catch (e) {
     sendError(res, e);

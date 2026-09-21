@@ -3021,78 +3021,15 @@ exports.referToDoctor = async (req, res) => {
   }
 };
 
-// Archive appointment. The record and ObjectId are retained for every historical reference.
+// Backward-compatible DELETE semantics: route through the canonical retained
+// cancellation workflow so finance reversal, audit history, queue/calendar
+// updates and notifications stay identical to PATCH /:id/cancel.
 exports.deleteAppointment = async (req, res) => {
-  try {
-    const hospitalId = requireHospitalId(req);
-    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Appointment not found' });
-    const appointment = await Appointment.findOne({
-      _id: req.params.id,
-      hospital_id: hospitalId,
-      is_active: { $ne: false }
-    });
-    if (!appointment) return res.status(404).json({ error: 'Appointment not found' });
-
-    const now = operationNow();
-    const reason = String(req.body?.reason || 'Appointment cancelled and archived by user').trim();
-    appointment.status = 'Cancelled';
-    appointment.is_active = false;
-    appointment.cancelledAt = appointment.cancelledAt || now;
-    appointment.cancelledBy = appointment.cancelledBy || req.user?._id || null;
-    appointment.cancellationReason = appointment.cancellationReason || reason;
-    appointment.lifecycleTimestamps = appointment.lifecycleTimestamps || {};
-    appointment.lifecycleTimestamps.cancelledAt = appointment.lifecycleTimestamps.cancelledAt || now;
-    if (!appointment.cancellationHistory.some((row) => row.reason === reason && row.cancelledAt)) {
-      appointment.cancellationHistory.push({ reason, cancelledAt: now, cancelledBy: req.user?._id || null });
-    }
-    appointment.deleted_at = now;
-    appointment.deleted_by = req.user?._id || null;
-    appointment.deletion_reason = reason;
-
-    await Promise.all([
-      appointment.save(),
-      AdmissionCoverage.updateMany(
-        { hospitalId, appointmentId: appointment._id, active: { $ne: false } },
-        {
-          $set: {
-            active: false,
-            is_active: false,
-            effectiveTo: now,
-            deleted_at: now,
-            deleted_by: req.user?._id || null,
-            deletion_reason: reason
-          }
-        }
-      )
-    ]);
-
-    // Calendar cleanup is best-effort. A missing/stale calendar must never prevent
-    // the committed appointment record from being safely archived.
-    try {
-      await removeAppointmentFromCalendar(appointment);
-    } catch (calendarError) {
-      console.error('Appointment archived but calendar cleanup failed:', calendarError);
-    }
-
-    try {
-      await recalculateQueue({
-        hospitalId,
-        departmentId: appointment.department_id,
-        date: appointment.appointment_date,
-        timeZone: appointment.scheduled_timezone || DEFAULT_HOSPITAL_TIME_ZONE
-      });
-    } catch (queueError) {
-      console.error('Appointment archived but queue recalculation failed:', queueError);
-    }
-
-    return res.json({
-      success: true,
-      message: 'Appointment cancelled and archived successfully',
-      appointment
-    });
-  } catch (err) {
-    return res.status(err.statusCode || 500).json({ error: err.message });
-  }
+  req.body = {
+    ...(req.body || {}),
+    reason: String(req.body?.reason || req.body?.cancellationReason || 'Appointment cancelled by user').trim()
+  };
+  return exports.cancelAppointment(req, res);
 };
 
 // Get appointments by Doctor ID

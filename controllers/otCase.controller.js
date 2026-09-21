@@ -17,6 +17,8 @@ const StoreItem = require('../models/StoreItem');
 const InventoryLot = require('../models/InventoryLot');
 const IPDAdmission = require('../models/IPDAdmission');
 const Procedure = require('../models/Procedure');
+const Patient = require('../models/Patient');
+const Doctor = require('../models/Doctor');
 const { reverseSourceFinancials } = require('../services/chargePosting.service');
 const Room = require('../models/Room');
 const { requireHospitalId } = require('../services/tenantScope.service');
@@ -286,22 +288,59 @@ exports.listCases = async (req, res, next) => {
     const search = String(req.query.search || '').trim();
     if (search) {
       const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escaped, 'i');
+      const [patientMatches, doctorMatches] = await Promise.all([
+        Patient.find({
+          hospitalId,
+          $or: [
+            { first_name: regex }, { last_name: regex }, { full_name: regex },
+            { patientId: regex }, { uhid: regex }, { phone: regex }
+          ]
+        }).select('_id').limit(100).lean(),
+        Doctor.find({
+          hospitalId,
+          $or: [{ firstName: regex }, { lastName: regex }, { doctorId: regex }, { licenseNumber: regex }]
+        }).select('_id').limit(100).lean()
+      ]);
+      const patientIds = patientMatches.map((row) => row._id);
+      const doctorIds = doctorMatches.map((row) => row._id);
       const searchOr = [
-        { requestNumber: { $regex: escaped, $options: 'i' } },
-        { procedureName: { $regex: escaped, $options: 'i' } },
-        { procedureCode: { $regex: escaped, $options: 'i' } }
+        { requestNumber: regex },
+        { procedureName: regex },
+        { procedureCode: regex },
+        ...(patientIds.length ? [{ patientId: { $in: patientIds } }] : []),
+        ...(doctorIds.length ? [
+          { doctorId: { $in: doctorIds } },
+          { primarySurgeonId: { $in: doctorIds } },
+          { anesthetistId: { $in: doctorIds } }
+        ] : [])
       ];
-      if (filter.$or) filter.$and = [{ $or: filter.$or }, { $or: searchOr }], delete filter.$or;
-      else filter.$or = searchOr;
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { $or: searchOr }];
+        delete filter.$or;
+      } else {
+        filter.$or = searchOr;
+      }
     }
     if (req.query.startDate || req.query.endDate) {
       filter.requestedDate = semanticDateRange(req.query.startDate, req.query.endDate);
     }
-    const [data, total] = await Promise.all([
+    const statusCountFilter = { ...filter };
+    delete statusCountFilter.status;
+    const [data, total, rawStatusCounts] = await Promise.all([
       casePopulate(OTRequest.find(filter)).sort({ scheduledStart: 1, requestedDate: -1 }).skip((page - 1) * limit).limit(limit),
-      OTRequest.countDocuments(filter)
+      OTRequest.countDocuments(filter),
+      OTRequest.aggregate([
+        { $match: statusCountFilter },
+        { $group: { _id: '$status', count: { $sum: 1 } } }
+      ])
     ]);
-    res.json({ success: true, data: data.map(decorateCase), total, page, limit, totalPages: Math.ceil(total / limit) });
+    const statusCounts = {};
+    for (const row of rawStatusCounts) {
+      const key = canonicalStatus(row._id);
+      statusCounts[key] = Number(statusCounts[key] || 0) + Number(row.count || 0);
+    }
+    res.json({ success: true, data: data.map(decorateCase), total, page, limit, totalPages: Math.ceil(total / limit), statusCounts });
   } catch (error) { next(error); }
 };
 

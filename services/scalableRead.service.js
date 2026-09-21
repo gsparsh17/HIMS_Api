@@ -75,8 +75,7 @@ function patientCareLookupStages(hospitalObjectId) {
                 $and: [
                   { $eq: ['$patient_id', '$$patientId'] },
                   { $eq: ['$hospital_id', hospitalObjectId] },
-                  { $ne: ['$is_active', false] },
-                  { $ne: ['$status', 'Cancelled'] }
+                  { $ne: ['$is_active', false] }
                 ]
               }
             }
@@ -325,7 +324,7 @@ async function computePatientWorklistMeta({ hospitalId }) {
       { $group: { _id: null, outstanding: { $sum: { $ifNull: ['$pharmacy_outstanding_balance', 0] } }, advance: { $sum: { $ifNull: ['$pharmacy_advance_balance', 0] } } } }
     ]),
     Appointment.aggregate([
-      { $match: { hospital_id: hospitalObjectId, is_active: { $ne: false }, status: { $ne: 'Cancelled' } } },
+      { $match: { hospital_id: hospitalObjectId, is_active: { $ne: false } } },
       { $group: { _id: '$patient_id' } },
       { $lookup: { from: Patient.collection.name, localField: '_id', foreignField: '_id', pipeline: [{ $match: patientMatch }, { $project: { _id: 1 } }], as: '_patient' } },
       { $match: { '_patient.0': { $exists: true } } },
@@ -416,8 +415,7 @@ async function getPatientVisitHistory({ hospitalId, patientId, query = {} }) {
   const filter = {
     hospital_id: hospitalObjectId,
     patient_id: patientObjectId,
-    is_active: { $ne: false },
-    status: { $ne: 'Cancelled' }
+    is_active: { $ne: false }
   };
   const [appointments, total] = await Promise.all([
     Appointment.find(filter)
@@ -478,6 +476,11 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
     baseMatch.$or = [{ appointment_date_key: keyRange }, { appointment_date: instantRange }];
   }
 
+  const bucket = String(query.bucket || 'all').toLowerCase();
+  if (!['all', 'today', 'upcoming', 'past'].includes(bucket)) {
+    const error = new Error('Invalid appointment time bucket'); error.statusCode = 400; throw error;
+  }
+
   const pipeline = [{ $match: baseMatch }];
   const hasCrossEntitySearch = Boolean(String(query.search || '').trim());
 
@@ -532,6 +535,9 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
   }
 
   pipeline.push({ $set: { _effectiveAppointmentDateKey: effectiveDateKeyExpr } });
+  if (bucket === 'today') pipeline.push({ $match: { _effectiveAppointmentDateKey: todayKey } });
+  else if (bucket === 'upcoming') pipeline.push({ $match: { _effectiveAppointmentDateKey: { $gte: todayKey }, status: { $nin: ['Completed', 'Cancelled'] } } });
+  else if (bucket === 'past') pipeline.push({ $match: { _effectiveAppointmentDateKey: { $lt: todayKey } } });
 
   const upcomingExpr = query.splitMode === 'date'
     ? {
@@ -555,7 +561,7 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
   const rowProject = {
     _id: 1, patient_id: 1, doctor_id: 1, department_id: 1, appointment_date: 1, appointment_date_key: 1,
     start_time: 1, end_time: 1, serial_number: 1, type: 1, appointment_type: 1, priority: 1,
-    notes: 1, status: 1, cancellationReason: 1, referral: 1, token: 1, queuePosition: 1,
+    notes: 1, status: 1, cancellationReason: 1, cancelledAt: 1, cancelledBy: 1, referral: 1, token: 1, queuePosition: 1,
     created_at: 1, createdAt: 1, updatedAt: 1
   };
 
@@ -579,7 +585,11 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
             today: { $sum: { $cond: [{ $eq: ['$_effectiveAppointmentDateKey', todayKey] }, 1, 0] } },
             pending: { $sum: { $cond: [{ $eq: ['$status', 'Scheduled'] }, 1, 0] } },
             upcoming: { $sum: { $cond: [upcomingExpr, 1, 0] } },
-            completed: { $sum: { $cond: [{ $not: [upcomingExpr] }, 1, 0] } }
+            completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
+            cancelled: { $sum: { $cond: [{ $eq: ['$status', 'Cancelled'] }, 1, 0] } },
+            scheduled: { $sum: { $cond: [{ $eq: ['$status', 'Scheduled'] }, 1, 0] } },
+            inProgress: { $sum: { $cond: [{ $eq: ['$status', 'In Progress'] }, 1, 0] } },
+            history: { $sum: { $cond: [{ $not: [upcomingExpr] }, 1, 0] } }
           }
         }
       ]
@@ -590,7 +600,7 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
   // Use small count queries so MongoDB can satisfy them from matching indexes instead
   // of grouping every appointment document for each worklist refresh.
   const globalBase = { hospital_id: hospitalObjectId, is_active: { $ne: false } };
-  const [[result = {}], globalTotal, globalToday, globalPending] = await Promise.all([
+  const [[result = {}], globalTotal, globalToday, globalScheduled, globalInProgress, globalCompleted, globalCancelled] = await Promise.all([
     Appointment.aggregate(pipeline).allowDiskUse(true),
     Appointment.countDocuments(globalBase),
     Appointment.countDocuments({
@@ -601,7 +611,10 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
         { appointment_date_key: null, appointment_date: { $gte: hospitalDayBounds(todayKey, timeZone).start, $lt: hospitalDayBounds(todayKey, timeZone).end } }
       ]
     }),
-    Appointment.countDocuments({ ...globalBase, status: 'Scheduled' })
+    Appointment.countDocuments({ ...globalBase, status: 'Scheduled' }),
+    Appointment.countDocuments({ ...globalBase, status: 'In Progress' }),
+    Appointment.countDocuments({ ...globalBase, status: 'Completed' }),
+    Appointment.countDocuments({ ...globalBase, status: 'Cancelled' })
   ]);
 
   const upcomingRows = result.upcoming || [];
@@ -648,13 +661,16 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
   const rowMap = new Map(populatedRows.map((row) => [String(row._id), decorate(row)]));
   const attachRows = (source) => source.map((row) => rowMap.get(String(row._id)) || decorate(row));
 
-  const filteredCounts = result.counts?.[0] || { total: 0, today: 0, pending: 0, upcoming: 0, completed: 0 };
+  const filteredCounts = result.counts?.[0] || { total: 0, today: 0, pending: 0, upcoming: 0, completed: 0, cancelled: 0, scheduled: 0, inProgress: 0, history: 0 };
   const counts = {
     total: globalTotal || 0,
     today: globalToday || 0,
-    pending: globalPending || 0,
+    pending: globalScheduled || 0,
     upcoming: filteredCounts.upcoming || 0,
-    completed: filteredCounts.completed || 0
+    completed: globalCompleted || 0,
+    cancelled: globalCancelled || 0,
+    scheduled: globalScheduled || 0,
+    inProgress: globalInProgress || 0
   };
 
   return {
@@ -663,7 +679,7 @@ async function appointmentWorklist({ hospitalId, query = {} }) {
     stats: counts,
     pagination: {
       upcoming: { page: upcomingPage, limit, total: counts.upcoming, totalPages: Math.max(1, Math.ceil(counts.upcoming / limit)) },
-      history: { page: historyPage, limit, total: counts.completed, totalPages: Math.max(1, Math.ceil(counts.completed / limit)) }
+      history: { page: historyPage, limit, total: filteredCounts.history || 0, totalPages: Math.max(1, Math.ceil((filteredCounts.history || 0) / limit)) }
     }
   };
 }
@@ -1060,8 +1076,7 @@ async function doctorPatientWorklist({ hospitalId, doctorId, query = {} }) {
       $match: {
         hospital_id: hospitalObjectId,
         doctor_id: doctorObjectId,
-        is_active: { $ne: false },
-        status: { $ne: 'Cancelled' }
+        is_active: { $ne: false }
       }
     },
     {
@@ -1165,8 +1180,7 @@ async function doctorPatientWorklist({ hospitalId, doctorId, query = {} }) {
                         { $eq: ['$patient_id', '$$patientId'] },
                         { $eq: ['$hospital_id', hospitalObjectId] },
                         { $eq: ['$doctor_id', doctorObjectId] },
-                        { $ne: ['$is_active', false] },
-                        { $ne: ['$status', 'Cancelled'] }
+                        { $ne: ['$is_active', false] }
                       ]
                     }
                   }
