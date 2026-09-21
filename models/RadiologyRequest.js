@@ -132,6 +132,9 @@ const radiologyRequestSchema = new mongoose.Schema({
     enum: ['Pending', 'Approved', 'Scheduled', 'In Progress', 'Completed', 'Result Entered', 'Verified', 'Reported', 'Amended', 'Cancelled'],
     default: 'Pending'
   },
+  cancelledAt: Date,
+  cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  cancellationReason: { type: String, trim: true },
   
   // Workflow tracking
   approvedBy: {
@@ -202,7 +205,11 @@ const radiologyRequestSchema = new mongoose.Schema({
     reason: { type: String, required: true },
     requestedAt: { type: Date, default: operationNow },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    previousStatus: String
+    previousStatus: String,
+    previousAccessionNumber: String,
+    previousReport: mongoose.Schema.Types.Mixed,
+    previousReportFinalisation: mongoose.Schema.Types.Mixed,
+    previousSchedule: mongoose.Schema.Types.Mixed
   }],
   notificationDeliveryIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'NotificationDelivery' }],
   contraindicationAssessment: {

@@ -68,6 +68,7 @@ router.get('/templates/:templateId', ...view, reportController.getTemplate);
 // Radiology workflow
 router.get('/worklist', ...view, workflow.radiologyWorklist);
 router.post('/requests/:id/schedule', ...manage, workflow.scheduleRadiology);
+router.patch('/requests/:id/preparation', ...manage, workflow.updateRadiologyPreparation);
 router.post('/requests/:id/start', ...manage, workflow.startRadiology);
 router.post('/requests/:id/results', ...manage, workflow.enterRadiologyResult);
 router.post('/requests/:id/verify', ...manage, workflow.verifyRadiology);

@@ -1004,10 +1004,40 @@ exports.radiologyWorklist = async (req, res) => {
 exports.scheduleRadiology = async (req, res) => {
   try {
     const { request, hospitalId } = await radiologyById(req);
+    const allowed = ['Pending', 'Approved', 'Scheduled'];
+    if (!allowed.includes(request.status)) {
+      return res.status(409).json({
+        success: false,
+        error: `Imaging can only be scheduled or rescheduled from ${allowed.join(', ')} status.`,
+        code: 'RADIOLOGY_SCHEDULE_STATE_INVALID',
+        status: request.status
+      });
+    }
 
-    const target = request.status === 'Pending' ? 'Approved' : request.status;
+    const patch = {};
+    for (const key of ['modality', 'scheduledStart', 'scheduledEnd', 'assignedTechnician', 'assignedRadiologist', 'contrastRequired', 'patientPreparation']) {
+      if (req.body[key] !== undefined) patch[key] = req.body[key];
+    }
 
-    if (target === 'Approved' && request.status === 'Pending') {
+    if (!patch.scheduledStart && !request.scheduledStart) {
+      return res.status(400).json({ success: false, error: 'Scheduled start is required' });
+    }
+
+    if (request.status === 'Scheduled') {
+      Object.assign(request, patch);
+      request.workflowHistory = request.workflowHistory || [];
+      request.workflowHistory.push({
+        from: 'Scheduled',
+        to: 'Scheduled',
+        at: operationNow(),
+        by: req.user?._id,
+        note: req.body.note || 'Imaging schedule updated'
+      });
+      await request.save();
+      return res.json({ success: true, data: request, rescheduled: true });
+    }
+
+    if (request.status === 'Pending') {
       await radiologyWorkflow.transition({
         req,
         request,
@@ -1023,15 +1053,7 @@ exports.scheduleRadiology = async (req, res) => {
       to: 'Scheduled',
       hospitalId,
       note: req.body.note,
-      patch: {
-        modality: req.body.modality,
-        scheduledStart: req.body.scheduledStart,
-        scheduledEnd: req.body.scheduledEnd,
-        assignedTechnician: req.body.assignedTechnician,
-        assignedRadiologist: req.body.assignedRadiologist,
-        contrastRequired: req.body.contrastRequired,
-        patientPreparation: req.body.patientPreparation
-      }
+      patch
     });
 
     res.json({ success: true, data });
@@ -1040,17 +1062,102 @@ exports.scheduleRadiology = async (req, res) => {
   }
 };
 
+exports.updateRadiologyPreparation = async (req, res) => {
+  try {
+    const { request } = await radiologyById(req);
+    const editableStates = ['Pending', 'Approved', 'Scheduled'];
+    if (!editableStates.includes(request.status)) {
+      return res.status(409).json({
+        success: false,
+        error: 'Patient preparation can only be updated before the imaging study starts.',
+        code: 'RADIOLOGY_PREPARATION_STATE_INVALID',
+        status: request.status
+      });
+    }
+
+    const allowedStatuses = ['not_required', 'pending', 'complete', 'failed'];
+    const status = req.body.status || request.patientPreparation?.status || 'pending';
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ success: false, error: 'Invalid preparation status' });
+    }
+
+    const current = request.patientPreparation?.toObject?.() || request.patientPreparation || {};
+    request.patientPreparation = {
+      ...current,
+      instructions: req.body.instructions !== undefined ? String(req.body.instructions || '').trim() : current.instructions,
+      status,
+      completedAt: ['complete', 'not_required'].includes(status) ? operationNow() : undefined,
+      completedBy: ['complete', 'not_required'].includes(status) ? req.user?._id : undefined
+    };
+    request.workflowHistory = request.workflowHistory || [];
+    request.workflowHistory.push({
+      from: request.status,
+      to: request.status,
+      at: operationNow(),
+      by: req.user?._id,
+      note: `Patient preparation updated (${status})${req.body.note ? `: ${req.body.note}` : ''}`
+    });
+    await request.save();
+    return res.json({ success: true, data: request.patientPreparation });
+  } catch (e) {
+    sendError(res, e);
+  }
+};
+
 exports.startRadiology = async (req, res) => {
   try {
     const { request, hospitalId } = await radiologyById(req);
+    const prep = request.patientPreparation || {};
+    const preparationInstructions = String(prep.instructions || '').trim();
+    if (prep.status === 'failed') {
+      return res.status(409).json({
+        success: false,
+        error: 'Patient preparation is marked failed. Resolve preparation before starting the study.',
+        code: 'RADIOLOGY_PREPARATION_FAILED'
+      });
+    }
+    if (preparationInstructions && (!prep.status || prep.status === 'pending')) {
+      return res.status(409).json({
+        success: false,
+        error: 'Complete or mark the required patient preparation before starting the study.',
+        code: 'RADIOLOGY_PREPARATION_PENDING'
+      });
+    }
 
+    const assessment = request.contraindicationAssessment || {};
+    const decision = assessment.decision || 'pending';
+    if (['defer', 'cancel'].includes(decision)) {
+      return res.status(409).json({
+        success: false,
+        error: `The current safety assessment decision is ${decision}. Update the assessment before starting the study.`,
+        code: 'RADIOLOGY_SAFETY_BLOCKED',
+        decision
+      });
+    }
+    if (request.contrastRequired && decision === 'pending') {
+      return res.status(409).json({
+        success: false,
+        error: 'A contraindication/safety assessment is required before starting a contrast study.',
+        code: 'RADIOLOGY_SAFETY_ASSESSMENT_REQUIRED'
+      });
+    }
+    if (decision === 'proceed_with_precautions' && !assessment.acknowledgedAt) {
+      return res.status(409).json({
+        success: false,
+        error: 'Acknowledge the documented precautions before starting the study.',
+        code: 'RADIOLOGY_SAFETY_ACK_REQUIRED'
+      });
+    }
+
+    const patch = {};
+    if (req.body.safetyChecklist !== undefined) patch.safetyChecklist = req.body.safetyChecklist;
     const data = await radiologyWorkflow.transition({
       req,
       request,
       to: 'In Progress',
       hospitalId,
       note: req.body.note,
-      patch: { safetyChecklist: req.body.safetyChecklist }
+      patch
     });
 
     res.json({ success: true, data });

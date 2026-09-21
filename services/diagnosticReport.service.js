@@ -29,6 +29,7 @@ function reportSnapshot(request) {
     // Radiology result content.
     findings: request.findings,
     impression: request.impression,
+    recommendations: request.recommendations,
     images: request.images,
     reportedAt: request.reportedAt,
     reportedBy: request.reportedBy
@@ -56,7 +57,7 @@ function finaliseDiagnosticReport(request, userId) {
   return request.reportFinalisation;
 }
 
-async function amendDiagnosticReport({ request, userId, reason, patch }) {
+async function amendDiagnosticReport({ request, userId, reason, patch, reopenForVerification = false }) {
   if (!request.reportFinalisation?.isFinal) {
     const error = new Error('Only final reports can be amended');
     error.statusCode = 409;
@@ -81,20 +82,26 @@ async function amendDiagnosticReport({ request, userId, reason, patch }) {
     'manual_report', 'report_url', 'report_mode', 'report_file_name',
     'report_mime_type', 'report_file_size', 'status',
     'result_value', 'result_interpretation', 'normal_range_used', 'is_abnormal',
-    'findings', 'impression', 'images'
+    'findings', 'impression', 'recommendations', 'images'
   ]);
   for (const [key, value] of Object.entries(patch || {})) {
     if (editableReportFields.has(key) && value !== undefined) {
       request[key] = value;
     }
   }
-  request.reportFinalisation = {
-    isFinal: true,
-    finalisedAt: operationNow(),
-    finalisedBy: userId,
-    checksum: checksum(reportSnapshot(request)),
-    version: Number(request.reportFinalisation.version || 1) + 1
-  };
+  const nextVersion = Number(request.reportFinalisation.version || 1) + 1;
+  request.reportFinalisation = reopenForVerification
+    ? {
+        isFinal: false,
+        version: nextVersion
+      }
+    : {
+        isFinal: true,
+        finalisedAt: operationNow(),
+        finalisedBy: userId,
+        checksum: checksum(reportSnapshot(request)),
+        version: nextVersion
+      };
   return request;
 }
 

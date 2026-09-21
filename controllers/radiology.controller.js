@@ -498,9 +498,9 @@ exports.updateRequestStatus = async (req, res) => {
     if (status === 'In Progress' && notes) patch.technician_notes = notes;
     if (status === 'Verified' && notes) patch.radiologist_notes = notes;
     if (status === 'Cancelled') {
-      patch.cancelled_at = operationNow();
-      patch.cancelled_by = req.user?._id;
-      patch.cancellation_reason = String(notes || '').trim();
+      patch.cancelledAt = operationNow();
+      patch.cancelledBy = req.user?._id;
+      patch.cancellationReason = String(notes || '').trim();
     }
 
     const data = await radiologyWorkflow.transition({
