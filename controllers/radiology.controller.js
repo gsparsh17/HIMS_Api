@@ -473,6 +473,13 @@ exports.updateRequestStatus = async (req, res) => {
     if (status === 'Cancelled' && !String(notes || '').trim()) {
       return res.status(400).json({ error: 'Cancellation reason is required so the financial reversal is auditable' });
     }
+    if (status === 'In Progress') {
+      return res.status(409).json({
+        error: 'Start the imaging study through the governed start action so financial, preparation and safety clearance are enforced.',
+        code: 'RADIOLOGY_START_ENDPOINT_REQUIRED',
+        endpoint: `/api/radiology/requests/${id}/start`
+      });
+    }
     if (status === 'Completed') {
       return res.status(409).json({
         error: 'Completed is a legacy radiology status. Enter results instead.',

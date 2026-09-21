@@ -18,6 +18,7 @@ const { quotePricing, pricingSnapshot } = require('../services/pricingEngine.ser
 const { recordPackageUtilization } = require('../services/packageAdjudication.service');
 const { activeCoverage } = require('../services/coverage.service');
 const { replaceCoverageUtilization } = require('../services/coverageUtilization.service');
+const { postSourceCharge, getSourceFinancialStatus } = require('../services/chargePosting.service');
 const {
   finaliseDiagnosticReport,
   notifyDiagnosticRelease
@@ -48,10 +49,44 @@ function setDiagnosticStatsCache(kind, hospitalId, payload) {
   });
 }
 
+const FINANCIAL_PROCEED_STATES = new Set(['CLEARED', 'POSTPAID_ALLOWED', 'EXCEPTION_APPROVED']);
+
+async function ensureDiagnosticFinancialReady({ request, user, sourceModule, label }) {
+  // Clinical workflow actions never mark a service paid. They only ensure the
+  // canonical source obligation exists and then read the authoritative finance
+  // projection. Collection itself remains protected by Finance settlement
+  // permissions on the canonical payment APIs.
+  await postSourceCharge({
+    sourceModule,
+    sourceId: request._id,
+    idempotencyKey: `${sourceModule}:${request._id}:charge`,
+    user
+  });
+  const status = await getSourceFinancialStatus({ sourceModule, sourceId: request._id, user });
+  if (!FINANCIAL_PROCEED_STATES.has(String(status.clearanceState || '').toUpperCase())) {
+    const error = new Error(`Financial clearance is required before ${label} can proceed (${status.clearanceState || 'PAYMENT_REQUIRED'})`);
+    error.statusCode = 409;
+    error.code = 'FINANCIAL_CLEARANCE_REQUIRED';
+    error.details = {
+      sourceModule,
+      clearanceState: status.clearanceState,
+      selectedMode: status.selectedMode,
+      requiredNow: status.requiredNow,
+      outstandingRequiredNow: status.outstandingRequiredNow,
+      paidNow: status.paidNow,
+      totalInvoiced: status.totalInvoiced
+    };
+    throw error;
+  }
+  return status;
+}
+
 function sendError(res, error) {
   return res.status(error.statusCode || 400).json({
     success: false,
-    error: error.message
+    error: error.message,
+    code: error.code,
+    details: error.details || null
   });
 }
 
@@ -430,6 +465,13 @@ exports.collectSpecimen = async (req, res) => {
   try {
     const { request, hospitalId } = await labById(req);
 
+    await ensureDiagnosticFinancialReady({
+      request,
+      user: req.user,
+      sourceModule: 'LabRequest',
+      label: 'specimen collection'
+    });
+
     if (['Sample Collected', 'Received', 'Processing', 'Result Entered', 'Completed', 'Verified', 'Reported', 'Amended'].includes(request.status)) {
       return res.status(200).json({ success: true, alreadyCollected: true, message: 'Specimen was already collected for this request', data: request });
     }
@@ -507,6 +549,17 @@ exports.accessionSpecimen = async (req, res) => {
 exports.updateLabStatus = async (req, res) => {
   try {
     const { request, hospitalId } = await labById(req);
+    if (req.body.status === 'Sample Collected') {
+      return res.status(409).json({
+        success: false,
+        error: 'Use the specimen collection action so financial clearance and collection metadata are enforced.',
+        code: 'LAB_COLLECTION_ENDPOINT_REQUIRED',
+        endpoint: `/api/lab/requests/${request._id}/collect`
+      });
+    }
+    if (req.body.status === 'Processing') {
+      await ensureDiagnosticFinancialReady({ request, user: req.user, sourceModule: 'LabRequest', label: 'laboratory processing' });
+    }
     if (request.reportFinalisation?.isFinal && req.body.status !== 'Reported') {
       return res.status(409).json({ success: false, error: 'Final reports are immutable. Use controlled amendment.' });
     }
@@ -1107,6 +1160,12 @@ exports.updateRadiologyPreparation = async (req, res) => {
 exports.startRadiology = async (req, res) => {
   try {
     const { request, hospitalId } = await radiologyById(req);
+    await ensureDiagnosticFinancialReady({
+      request,
+      user: req.user,
+      sourceModule: 'RadiologyRequest',
+      label: 'the imaging study'
+    });
     const prep = request.patientPreparation || {};
     const preparationInstructions = String(prep.instructions || '').trim();
     if (prep.status === 'failed') {

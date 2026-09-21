@@ -22,6 +22,25 @@ const STATUS_ORDER = [
 // Helpers
 // ============================================
 
+const FINANCIAL_BLOCKING_ORDER = [
+  'HOLD',
+  'AUTHORIZATION_REQUIRED',
+  'TPA_PENDING',
+  'PAYMENT_REQUIRED'
+];
+
+function aggregateFinancialState(rows) {
+  const states = rows.map((row) => String(row.financialClearanceState || '').toUpperCase()).filter(Boolean);
+  for (const state of FINANCIAL_BLOCKING_ORDER) {
+    if (states.includes(state)) return state;
+  }
+  if (states.includes('POSTPAID_ALLOWED')) return 'POSTPAID_ALLOWED';
+  if (states.includes('EXCEPTION_APPROVED')) return 'EXCEPTION_APPROVED';
+  if (states.includes('CLEARED')) return 'CLEARED';
+  return states[0] || 'PAYMENT_REQUIRED';
+}
+
+
 function isoMinute(value) {
   const date = new Date(value || Date.now());
 
@@ -165,6 +184,8 @@ function groupLabRequests(rows = []) {
         ? 'Urgent'
         : first.priority,
       status: aggregateStatus(tests),
+      financialClearanceState: aggregateFinancialState(tests),
+      requiredNowAmount: tests.reduce((sum, test) => sum + Number(test.requiredNowAmount || 0), 0),
       requestedDate: sorted[0]?.requestedDate || first.requestedDate,
       testCount: tests.length,
       requestIds: tests.map((test) => test._id),
@@ -178,6 +199,10 @@ function groupLabRequests(rows = []) {
         category: test.category,
         status: test.status,
         specimen: test.specimen,
+        financialClearanceState: test.financialClearanceState,
+        selectedBillingMode: test.selectedBillingMode,
+        requiredNowAmount: Number(test.requiredNowAmount || 0),
+        billingState: test.billingState,
         requestedDate: test.requestedDate,
         reportFinalisation: test.reportFinalisation,
         report_mode: test.report_mode
