@@ -730,10 +730,27 @@ async function getSourceFinancialStatus({ sourceModule, sourceId, user, session 
     const preauthRequired = Boolean(coverage?.preAuthorisation?.required);
     const preauthOk = !preauthRequired || ['approved', 'partially_approved', 'not_required'].includes(String(coverage?.preAuthorisation?.status || ''));
     clearanceState = eligible && preauthOk ? 'CLEARED' : (eligible ? 'TPA_PENDING' : 'AUTHORIZATION_REQUIRED');
-  } else if (requiredNow <= 0 || paidNow + 0.009 >= requiredNow) {
-    clearanceState = 'CLEARED';
   } else {
-    clearanceState = 'PAYMENT_REQUIRED';
+    const patientLiability = money(
+      policySnapshot?.appliedAmounts?.patientLiability
+      ?? policySnapshot?.amounts?.patientLiability
+      ?? charge?.patientLiability
+      ?? totalInvoiced
+      ?? 0
+    );
+    const hasFinancialDocument = Boolean(charge || bill || invoices.length || Object.keys(policySnapshot || {}).length);
+    const genuinelyZeroLiability = hasFinancialDocument && patientLiability <= 0.009 && totalInvoiced <= 0.009;
+    const requiredAmountSatisfied = requiredNow > 0.009 && paidNow + 0.009 >= requiredNow;
+
+    if (genuinelyZeroLiability || requiredAmountSatisfied) {
+      clearanceState = 'CLEARED';
+    } else {
+      // A zero required-now projection is not proof of payment. It can represent
+      // legacy/missing pricing data, an unposted source charge, or a policy state
+      // that still needs explicit authorisation. Keep it blocked rather than
+      // converting it to CLEARED merely by opening/refreshing the workflow.
+      clearanceState = 'PAYMENT_REQUIRED';
+    }
   }
 
   // Persist the current server-computed clearance so operational lists can show the

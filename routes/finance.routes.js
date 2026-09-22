@@ -33,7 +33,7 @@ router.get('/ipd/patients/:patientId/workspace', finance.getPatientIPDHistory);
 router.post('/patients/:patientId/charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.addOPDCharge);
 router.post('/patients/:patientId/invoices', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['billing_create', 'billing_finalize']), finance.issueOPDInvoice);
 router.post('/patients/:patientId/payments/preview', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.previewOPDPayment);
-router.post('/patients/:patientId/payments', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordOPDPayment);
+router.post('/patients/:patientId/payments', requireModuleAccess('billing_finance', 'manage'), finance.recordOPDPayment);
 router.post('/patients/:patientId/advances', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordOPDAdvance);
 router.post('/patients/:patientId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.refundOPDAdvance);
 
@@ -50,7 +50,7 @@ router.patch('/ipd/:admissionId/charges/:chargeId/reverse', requireModuleAccess(
 router.post('/ipd/:admissionId/bed-charges', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('billing_create'), finance.generateBedCharge);
 router.post('/ipd/:admissionId/discounts', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['billing_apply_discount', 'discount_override']), finance.applyIPDDiscount);
 router.post('/ipd/:admissionId/invoices', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['billing_create', 'billing_finalize']), finance.issueIPDInvoice);
-router.post('/ipd/:admissionId/payments', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordIPDPayment);
+router.post('/ipd/:admissionId/payments', requireModuleAccess('billing_finance', 'manage'), finance.recordIPDPayment);
 router.post('/ipd/:admissionId/advances', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('settlement'), finance.recordIPDAdvance);
 router.post('/ipd/:admissionId/advance-refunds', requireModuleAccess('billing_finance', 'manage'), requireAnyActionPermission(['refund', 'settlement']), finance.refundIPDAdvance);
 router.post('/ipd/:admissionId/final-clearance', requireModuleAccess('billing_finance', 'manage'), requireActionPermission('final_clearance'), finance.finaliseIPDClearance);

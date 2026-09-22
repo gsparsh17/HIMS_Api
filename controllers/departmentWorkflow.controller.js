@@ -480,16 +480,24 @@ exports.collectSpecimen = async (req, res) => {
       return res.status(200).json({ success: true, alreadyCollected: true, message: 'Duplicate collection event ignored', data: request });
     }
 
-    // Collection is a normal operational entry point for newly ordered tests.
-    // Preserve the formal NABH workflow by recording the required approval
-    // transition before moving a Pending request to Sample Collected.
+    // Approval/acceptance is a distinct laboratory action. Collection must never
+    // silently approve a Pending request because that collapses two auditable
+    // clinical decisions into one button and lets nursing collection bypass the
+    // laboratory acceptance step.
     if (request.status === 'Pending') {
-      await labWorkflow.transition({
-        req,
-        request,
-        to: 'Approved',
-        note: 'Approved during specimen collection',
-        hospitalId
+      return res.status(409).json({
+        success: false,
+        error: 'Approve / accept the laboratory request before specimen collection.',
+        code: 'LAB_APPROVAL_REQUIRED',
+        status: request.status
+      });
+    }
+    if (request.status !== 'Approved') {
+      return res.status(409).json({
+        success: false,
+        error: `Specimen collection is only available for Approved requests. Current status: ${request.status}.`,
+        code: 'LAB_COLLECTION_INVALID_STATE',
+        status: request.status
       });
     }
 

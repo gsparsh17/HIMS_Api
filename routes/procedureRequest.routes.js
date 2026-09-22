@@ -56,11 +56,7 @@ const requireCareManage = requireAnyModuleAccess([
   { moduleKey: 'operation_theatre', minimumAccess: 'manage' }
 ]);
 
-const clinicalManage = [(req, res, next) => {
-  const role = String(req.user?.role || '').toLowerCase();
-  if (['admin', 'mediqliq_super_admin'].includes(role)) return next();
-  return requireCareManage(req, res, () => requireActionPermission('ipd_clinical_write')(req, res, next));
-}];
+const clinicalManage = [requireCareManage];
 
 // Creating a non-surgical ProcedureRequest from an IPD patient file is an IPD
 // clinical-ordering action, not an OT-management action. This allows a registrar

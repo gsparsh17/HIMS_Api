@@ -26,6 +26,19 @@ function can(user, capability) {
   const moduleAccess = mainFeaturePermission(user, 'operation_theatre').access;
   if (!['view', 'manage'].includes(moduleAccess)) return false;
   if (capability === 'ot.case.view') return true;
+
+  // Ordinary hospital operating model: operation_theatre.manage is an umbrella
+  // permission for the full clinical OT lifecycle. Fine-grained OT actions are
+  // still honoured for view-only/custom roles. Money collection is deliberately
+  // separate and follows billing_finance.manage.
+  if (capability === 'ot.finance.manage') {
+    return mainFeaturePermission(user, 'billing_finance').access === 'manage';
+  }
+  if (capability === 'ot.finance.view') {
+    return moduleAccess === 'manage' || ['view', 'manage'].includes(mainFeaturePermission(user, 'billing_finance').access);
+  }
+  if (moduleAccess === 'manage') return true;
+
   const action = OT_CAPABILITY_TO_ACTION[capability];
   if (!action) return false;
   return hasAction(user, action);

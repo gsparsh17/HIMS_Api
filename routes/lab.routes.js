@@ -38,7 +38,11 @@ const order = [
 ];
 const collect = [
   protect,
-  requireModuleAccess('laboratory', 'manage')
+  (req, res, next) => {
+    const role = String(req.user?.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (role === 'nurse') return next();
+    return requireModuleAccess('laboratory', 'manage')(req, res, next);
+  }
 ];
 
 // Masters

@@ -1,5 +1,5 @@
 const express = require('express');
-const { protect, requireActionPermission, requireAnyActionPermission, requireAnyModuleAccess } = require('../middlewares/auth');
+const { protect, requireActionPermission, requireAnyActionPermission, requireAnyModuleAccess, requireModuleAccess } = require('../middlewares/auth');
 const sourceFinance = require('../controllers/sourceFinance.controller');
 const router = express.Router();
 
@@ -9,7 +9,11 @@ const router = express.Router();
 const viewClinicalFinance = requireAnyModuleAccess(['billing_finance', 'laboratory', 'radiology', 'operation_theatre', 'registration_opd', 'ipd']);
 router.get('/:sourceModule/:sourceId/status', protect, viewClinicalFinance, sourceFinance.getStatus);
 router.post('/:sourceModule/:sourceId/policy', protect, viewClinicalFinance, sourceFinance.previewPolicy);
-router.post('/:sourceModule/:sourceId/charge', protect, viewClinicalFinance, requireAnyActionPermission(['billing_create', 'settlement']), sourceFinance.postCharge);
+router.post('/:sourceModule/:sourceId/charge', protect, viewClinicalFinance, (req, res, next) => {
+  const permission = req.effectiveModulePermissions?.find((item) => item.moduleKey === 'billing_finance');
+  if (permission?.access === 'manage') return next();
+  return requireAnyActionPermission(['billing_create', 'settlement'])(req, res, next);
+}, sourceFinance.postCharge);
 router.post('/:sourceModule/:sourceId/reverse', protect, requireAnyModuleAccess(['billing_finance']), requireActionPermission('refund'), sourceFinance.reverseSource);
 
 module.exports = router;

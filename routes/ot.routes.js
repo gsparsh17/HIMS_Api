@@ -99,7 +99,7 @@ router.post('/requests/:id/complete', requireOtCapability('ot.operation_note.edi
 router.patch('/requests/:id/cancel', (req, _res, next) => { req.body.action = 'cancel'; next(); }, requireOtTransitionCapability, cases.transitionCase);
 
 // Existing payment/report/billing adapters retained for compatibility.
-router.post('/requests/:id/payment', ensureCaseTenant, requireOtCapability('ot.finance.manage'), requireActionPermission('settlement'), legacy.processOTPayment);
+router.post('/requests/:id/payment', ensureCaseTenant, requireOtCapability('ot.finance.manage'), legacy.processOTPayment);
 router.post('/requests/:id/upload-report', ensureCaseTenant, requireOtCapability('ot.operation_note.edit'), upload.single('report'), legacy.uploadSurgeryReport);
 router.get('/requests/:id/download-report', ensureCaseTenant, requireOtCapability('ot.case.view'), legacy.downloadSurgeryReport);
 router.post('/requests/:id/transfer-patient', ensureCaseTenant, requireOtCapability('ot.recovery.manage'), legacy.transferPatientPostOp);
