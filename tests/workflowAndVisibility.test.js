@@ -12,7 +12,10 @@ test('laboratory lifecycle rejects invalid transitions', () => {
 });
 
 test('radiology lifecycle separates scheduling, performance, verification and release', () => {
-  assert.ok(RADIOLOGY_TRANSITIONS.Pending.includes('Scheduled'));
+  assert.ok(RADIOLOGY_TRANSITIONS.Pending.includes('Approved'));
+  assert.equal(RADIOLOGY_TRANSITIONS.Pending.includes('Scheduled'), false);
+  assert.equal(RADIOLOGY_TRANSITIONS.Approved.includes('In Progress'), false);
+  assert.ok(RADIOLOGY_TRANSITIONS.Approved.includes('Scheduled'));
   assert.ok(RADIOLOGY_TRANSITIONS.Scheduled.includes('In Progress'));
   assert.ok(RADIOLOGY_TRANSITIONS['Result Entered'].includes('Verified'));
   assert.ok(RADIOLOGY_TRANSITIONS.Verified.includes('Reported'));
@@ -42,6 +45,7 @@ test('least-privilege action presets assign sensitive operations only to owners'
   assert.ok(roleDefaultActions('bed_manager', 'ipd').includes('transfer_reserve'));
   assert.equal(roleDefaultActions('doctor', 'billing_finance').includes('settlement'), false);
   assert.equal(defaultFeaturePermissions('nurse').find((row) => row.moduleKey === 'billing_finance').access, 'none');
+  assert.equal(defaultFeaturePermissions('staff').find((row) => row.moduleKey === 'procedures').access, 'manage');
 });
 
 test('accommodation duration is deterministic', () => {

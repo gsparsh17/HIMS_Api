@@ -44,6 +44,11 @@ const MAIN_FEATURES = Object.freeze([
     description: 'Imaging tests, imaging requests and reports'
   },
   {
+    key: 'procedures',
+    label: 'Procedures',
+    description: 'Non-surgical clinical procedure requests, scheduling, execution and findings'
+  },
+  {
     key: 'operation_theatre',
     label: 'Operation Theatre',
     description: 'OT requests, scheduling and OT records'
@@ -324,6 +329,8 @@ const EXACT_MODULE_MAP = Object.freeze({
   lab: 'laboratory',
   radiology: 'radiology',
   imaging: 'radiology',
+  procedure: 'procedures',
+  procedures: 'procedures',
   abdm: 'abdm',
   abha: 'abdm',
   ot: 'operation_theatre',
@@ -397,7 +404,8 @@ function toMainFeatureKey(moduleKey) {
   }
   if (raw.startsWith('radiology.') || raw.startsWith('masters.radiology')) return 'radiology';
   if (raw.startsWith('abdm.') || raw.startsWith('abha.')) return 'abdm';
-  if (raw.startsWith('ot.') || raw.startsWith('procedure.')) return 'operation_theatre';
+  if (raw.startsWith('procedure.')) return 'procedures';
+  if (raw.startsWith('ot.')) return 'operation_theatre';
   if (raw.startsWith('store.')) return 'store_inventory';
   if (raw.startsWith('hr.') || raw.startsWith('staff.')) return 'hr_staff';
   if (raw.startsWith('report.') || raw.startsWith('export.')) return 'reports';
@@ -407,7 +415,13 @@ function toMainFeatureKey(moduleKey) {
 
 function roleDefaultAccess(role, key) {
   const preset = ROLE_PRESET[normalizeRole(role)] || ROLE_PRESET.staff;
-  return normalizeAccess(preset['*'] || preset[key] || 'none');
+  if (preset['*']) return normalizeAccess(preset['*']);
+  if (key === 'procedures' && preset.procedures === undefined) {
+    return ['registration_opd', 'ipd', 'operation_theatre']
+      .map((legacyKey) => normalizeAccess(preset[legacyKey] || 'none'))
+      .sort((a, b) => ACCESS_ORDER[b] - ACCESS_ORDER[a])[0] || 'none';
+  }
+  return normalizeAccess(preset[key] || 'none');
 }
 
 function blankFeaturePermissions() {
@@ -511,8 +525,19 @@ function mainFeaturePermission(user, moduleKey) {
   }
 
   if (hasExplicitFeaturePermissions(user)) {
-    const access = (user.modulePermissions || [])
-      .filter((row) => toMainFeatureKey(row?.moduleKey) === mainModuleKey)
+    const explicitRows = (user.modulePermissions || [])
+      .filter((row) => toMainFeatureKey(row?.moduleKey) === mainModuleKey);
+
+    if (mainModuleKey === 'procedures' && explicitRows.length === 0) {
+      const legacyAccess = ['registration_opd', 'ipd', 'operation_theatre']
+        .flatMap((legacyKey) => (user.modulePermissions || [])
+          .filter((row) => toMainFeatureKey(row?.moduleKey) === legacyKey)
+          .map((row) => normalizeAccess(row?.access)))
+        .sort((a, b) => ACCESS_ORDER[b] - ACCESS_ORDER[a])[0] || 'none';
+      return { moduleKey: mainModuleKey, access: legacyAccess };
+    }
+
+    const access = explicitRows
       .map((row) => normalizeAccess(row?.access))
       .sort((a, b) => ACCESS_ORDER[b] - ACCESS_ORDER[a])[0] || 'none';
 
@@ -535,11 +560,19 @@ function effectiveMainFeaturePermissions(user) {
   );
 
   return MAIN_FEATURES.map(({ key, label, description }) => {
-    const permission = permissionByModule.get(key) || {
+    let permission = permissionByModule.get(key) || {
       moduleKey: key,
       access: roleDefaultAccess(role, key),
       actions: roleDefaultActions(role, key)
     };
+
+    if (key === 'procedures' && hasExplicitFeaturePermissions(user)) {
+      const hasExplicitProcedureRow = (user.modulePermissions || [])
+        .some((row) => toMainFeatureKey(row?.moduleKey) === 'procedures');
+      if (!hasExplicitProcedureRow) {
+        permission = { ...permission, ...mainFeaturePermission(user, 'procedures'), actions: [] };
+      }
+    }
 
     return {
       moduleKey: key,

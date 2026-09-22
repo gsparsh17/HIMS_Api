@@ -361,7 +361,9 @@ async function resolveFinancialPolicy({
 
   let defaultMode = upper(mergedPayment.defaultMode);
   if (!allowedModes.includes(defaultMode)) defaultMode = allowedModes[0];
-  const explicitSelection = clean(selectedMode) ? upper(selectedMode) : '';
+  const requestedSelection = clean(selectedMode) ? upper(selectedMode) : '';
+  const canSelectMode = hasFeatureAccess(user, 'billing_finance', 'manage');
+  const explicitSelection = canSelectMode ? requestedSelection : '';
   const inheritedSelection = clean(inheritedMode) ? upper(inheritedMode) : '';
   const desiredMode = explicitSelection || (allowedModes.includes(inheritedSelection) ? inheritedSelection : defaultMode);
   let modeOverride = false;
@@ -462,7 +464,7 @@ async function resolveFinancialPolicy({
     amounts: amountPolicy,
     policySnapshot,
     permissions: {
-      canSelectMode: hasFeatureAccess(user, 'billing_finance', 'manage') || hasFeatureAccess(user, 'registration_opd', 'manage') || hasFeatureAccess(user, 'ipd', 'manage'),
+      canSelectMode,
       canApplyDiscount: _hasActionPermission(user, 'billing_apply_discount'),
       canOverridePrice: _hasActionPermission(user, 'pricing_override'),
       canOverrideMode: _hasActionPermission(user, 'billing_mode_override'),

@@ -93,9 +93,7 @@ async function resolveOPDAppointmentIdFromRequest(request, hospitalId, session) 
 }
 
 function canSelectFinancialMode(user) {
-  return hasFeatureAccess(user, 'billing_finance', 'manage')
-    || hasFeatureAccess(user, 'registration_opd', 'manage')
-    || hasFeatureAccess(user, 'ipd', 'manage');
+  return hasFeatureAccess(user, 'billing_finance', 'manage');
 }
 
 function money(v) {
@@ -744,9 +742,11 @@ async function getSourceFinancialStatus({ sourceModule, sourceId, user, session 
 
     if (genuinelyZeroLiability || requiredAmountSatisfied) {
       clearanceState = 'CLEARED';
+    } else if (!hasFinancialDocument && requiredNow <= 0.009 && !selectedMode) {
+      clearanceState = 'PRICING_PENDING';
     } else {
       // A zero required-now projection is not proof of payment. It can represent
-      // legacy/missing pricing data, an unposted source charge, or a policy state
+      // an incomplete legacy price, an unposted source charge, or a policy state
       // that still needs explicit authorisation. Keep it blocked rather than
       // converting it to CLEARED merely by opening/refreshing the workflow.
       clearanceState = 'PAYMENT_REQUIRED';

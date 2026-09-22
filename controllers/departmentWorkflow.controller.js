@@ -565,6 +565,9 @@ exports.updateLabStatus = async (req, res) => {
         endpoint: `/api/lab/requests/${request._id}/collect`
       });
     }
+    if (request.status === 'Pending' && req.body.status === 'Approved') {
+      await ensureDiagnosticFinancialReady({ request, user: req.user, sourceModule: 'LabRequest', label: 'laboratory approval' });
+    }
     if (req.body.status === 'Processing') {
       await ensureDiagnosticFinancialReady({ request, user: req.user, sourceModule: 'LabRequest', label: 'laboratory processing' });
     }
@@ -1065,7 +1068,7 @@ exports.radiologyWorklist = async (req, res) => {
 exports.scheduleRadiology = async (req, res) => {
   try {
     const { request, hospitalId } = await radiologyById(req);
-    const allowed = ['Pending', 'Approved', 'Scheduled'];
+    const allowed = ['Approved', 'Scheduled'];
     if (!allowed.includes(request.status)) {
       return res.status(409).json({
         success: false,
@@ -1096,16 +1099,6 @@ exports.scheduleRadiology = async (req, res) => {
       });
       await request.save();
       return res.json({ success: true, data: request, rescheduled: true });
-    }
-
-    if (request.status === 'Pending') {
-      await radiologyWorkflow.transition({
-        req,
-        request,
-        to: 'Approved',
-        hospitalId,
-        note: 'Approved during scheduling'
-      });
     }
 
     const data = await radiologyWorkflow.transition({

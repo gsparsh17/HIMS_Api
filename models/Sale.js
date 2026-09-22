@@ -144,7 +144,7 @@ const saleSchema = new mongoose.Schema({
   required_now_amount: { type: Number, default: 0, min: 0 },
   financial_clearance_state: {
     type: String,
-    enum: ['CLEARED', 'PAYMENT_REQUIRED', 'POSTPAID_ALLOWED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'EXCEPTION_APPROVED', 'HOLD'],
+    enum: ['CLEARED', 'PAYMENT_REQUIRED', 'PRICING_PENDING', 'POSTPAID_ALLOWED', 'TPA_PENDING', 'AUTHORIZATION_REQUIRED', 'EXCEPTION_APPROVED', 'HOLD'],
     default: 'PAYMENT_REQUIRED',
     index: true
   },

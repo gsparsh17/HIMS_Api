@@ -14,8 +14,8 @@ const LAB_TRANSITIONS = Object.freeze({
 });
 
 const RADIOLOGY_TRANSITIONS = Object.freeze({
-  Pending: ['Approved', 'Scheduled', 'Cancelled'],
-  Approved: ['Scheduled', 'In Progress', 'Cancelled'],
+  Pending: ['Approved', 'Cancelled'],
+  Approved: ['Scheduled', 'Cancelled'],
   Scheduled: ['In Progress', 'Cancelled'],
   'In Progress': ['Result Entered', 'Cancelled'],
   'Result Entered': ['Verified', 'In Progress'],
