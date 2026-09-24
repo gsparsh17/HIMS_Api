@@ -133,6 +133,22 @@ function loadEveryModel() {
 // production indexes that are not currently declared there and verifies the
 // semantics of the most failure-prone unique/partial indexes.
 const SUPPLEMENTAL_INDEXES = [
+  // Canonical Doctor identifier uniqueness. Keep this here even though the
+  // Doctor schema declares the same index: it acts as a provisioning-time
+  // regression guard against accidentally deploying an older schema that used
+  // a sparse unique compound index and allowed doctorId=null conflicts.
+  {
+    model: 'Doctor',
+    key: { hospitalId: 1, doctorId: 1 },
+    options: {
+      name: 'hospitalId_1_doctorId_1',
+      unique: true,
+      partialFilterExpression: {
+        doctorId: { $type: 'string', $gt: '' }
+      }
+    }
+  },
+
   // Patient-wide billing / finance follow-up indexes.
   {
     model: 'Bill',
@@ -295,7 +311,29 @@ async function ensureSupplementalIndex(spec) {
   const model = mongoose.models[spec.model];
   if (!model) throw new Error(`Supplemental index references unregistered model: ${spec.model}`);
 
-  let indexes = await model.collection.indexes();
+  let indexes;
+  try {
+    indexes = await model.collection.indexes();
+  } catch (error) {
+    // In --verify-only mode a brand-new database may not have created the
+    // collection yet. Report the supplemental index as missing instead of
+    // aborting with NamespaceNotFound. During CREATE + VERIFY, treat the
+    // missing namespace as an empty index set and create the requested index.
+    if (error?.code === 26 || /NamespaceNotFound/i.test(error?.message || '')) {
+      if (VERIFY_ONLY) {
+        return {
+          model: spec.model,
+          collection: model.collection.collectionName,
+          index: spec.options?.name || JSON.stringify(spec.key),
+          status: 'missing'
+        };
+      }
+      indexes = [];
+    } else {
+      throw error;
+    }
+  }
+
   const equivalent = indexes.find((index) => (
     sameKeyPattern(index.key, spec.key)
     && desiredOptionMatches(index, spec.options)
