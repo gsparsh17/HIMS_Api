@@ -88,13 +88,27 @@ function generateRandomCode(length = 4) {
   return result;
 }
 
+async function generateDoctorId(hospitalId) {
+  const hospital = hospitalId ? await Hospital.findById(hospitalId).select('hospitalID') : await Hospital.findOne().select('hospitalID');
+  if (!hospital || !hospital.hospitalID) throw new Error('Hospital ID not found');
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const candidate = `${hospital.hospitalID}-${generateRandomCode(6)}`;
+    const exists = await mongoose.model('Doctor').exists({ hospitalId: hospital._id, doctorId: candidate });
+    if (!exists) return candidate;
+  }
+
+  const error = new Error('Unable to allocate a unique doctor identifier');
+  error.code = 'DOCTOR_ID_ALLOCATION_FAILED';
+  throw error;
+}
+
+doctorSchema.statics.generateDoctorId = generateDoctorId;
+
 doctorSchema.pre('save', async function (next) {
   try {
     if (!this.doctorId) {
-      const hospital = this.hospitalId ? await Hospital.findById(this.hospitalId) : await Hospital.findOne();
-      if (!hospital || !hospital.hospitalID) throw new Error('Hospital ID not found');
-      this.hospitalId = hospital._id;
-      this.doctorId = `${hospital.hospitalID}-${generateRandomCode(4)}`;
+      this.doctorId = await generateDoctorId(this.hospitalId);
     }
 
     // ✅ FIX: only set default if not provided
@@ -113,7 +127,13 @@ doctorSchema.pre('save', async function (next) {
 });
 
 
-doctorSchema.index({ hospitalId: 1, doctorId: 1 }, { unique: true, sparse: true });
+doctorSchema.index(
+  { hospitalId: 1, doctorId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { doctorId: { $type: 'string', $gt: '' } }
+  }
+);
 doctorSchema.index({ hospitalId: 1, email: 1 }, { unique: true });
 doctorSchema.index({ hospitalId: 1, licenseNumber: 1 }, { unique: true });
 doctorSchema.index({ hospitalId: 1, department: 1, isFullTime: 1 });

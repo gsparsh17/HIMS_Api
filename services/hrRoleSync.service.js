@@ -75,27 +75,36 @@ async function syncRoleCollectionsFromEmployee({ profile, body = {}, user = null
   let doctor = null;
 
   if (staffType !== 'doctor') {
+    const generatedStaffId = `HR-${String(hospitalId).slice(-6).toUpperCase()}-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     staff = await Staff.findOneAndUpdate(
       { email },
       {
-        hospitalId,
-        user_id: userId,
-        first_name: firstName,
-        last_name: lastName,
-        email,
-        phone: body.phone || profile.phone || 'N/A',
-        role: designation,
-        department: resolvedDepartmentId,
-        specialization: body.specialization || profile.specialization,
-        gender: body.gender || profile.gender,
-        status: body.employment_status || profile.employment_status || 'Active',
-        aadharNumber: body.aadhar_number || body.aadharNumber || profile.aadhar_number,
-        panNumber: body.pan_number || body.panNumber || profile.pan_number,
-        shift: body.shift || profile.shift,
-        joined_at: body.joining_date || body.joiningDate || profile.joining_date || new Date()
+        $set: {
+          hospitalId,
+          user_id: userId,
+          first_name: firstName,
+          last_name: lastName,
+          email,
+          phone: body.phone || profile.phone || 'N/A',
+          role: designation,
+          department: resolvedDepartmentId,
+          specialization: body.specialization || profile.specialization,
+          gender: body.gender || profile.gender,
+          status: body.employment_status || profile.employment_status || 'Active',
+          aadharNumber: body.aadhar_number || body.aadharNumber || profile.aadhar_number,
+          panNumber: body.pan_number || body.panNumber || profile.pan_number,
+          shift: body.shift || profile.shift,
+          joined_at: body.joining_date || body.joiningDate || profile.joining_date || new Date()
+        },
+        $setOnInsert: { staffId: generatedStaffId }
       },
       { upsert: true, new: true, runValidators: false, setDefaultsOnInsert: true }
     );
+
+    if (staff && !staff.staffId) {
+      staff.staffId = generatedStaffId;
+      await staff.save({ validateBeforeSave: false });
+    }
   }
 
   if (staffType === 'nurse') {
@@ -118,36 +127,45 @@ async function syncRoleCollectionsFromEmployee({ profile, body = {}, user = null
   if (staffType === 'doctor') {
     const generatedLicense = body.license_number || body.licenseNumber || profile.license_number ||
       `LIC-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const generatedDoctorId = await Doctor.generateDoctorId(hospitalId);
 
     doctor = await Doctor.findOneAndUpdate(
       { hospitalId, email },
       {
-        hospitalId,
-        user_id: userId,
-        firstName,
-        lastName,
-        email,
-        phone: body.phone || profile.phone || 'N/A',
-        dateOfBirth: body.date_of_birth || body.dateOfBirth || profile.date_of_birth,
-        gender: body.gender || profile.gender,
-        address: body.address || profile.address,
-        department: resolvedDepartmentId,
-        specialization: body.specialization || profile.specialization,
-        licenseNumber: generatedLicense,
-        experience: body.experience || body.experience_years || 0,
-        education: body.qualification || body.education || profile.qualification,
-        shift: body.shift_name || body.shift,
-        startDate: body.joining_date || body.joiningDate || profile.joining_date || new Date(),
-        isFullTime: (body.employment_type || profile.employment_type) !== 'Part Time' &&
-          (body.employment_type || profile.employment_type) !== 'Visiting',
-        paymentType: body.salary_type || body.paymentType || profile.salary_type || 'Salary',
-        amount: toNumber(body.salary_amount ?? body.amount ?? profile.salary_amount, 0),
-        aadharNumber: body.aadhar_number || body.aadharNumber || profile.aadhar_number,
-        panNumber: body.pan_number || body.panNumber || profile.pan_number,
-        notes: body.notes
+        $set: {
+          hospitalId,
+          user_id: userId,
+          firstName,
+          lastName,
+          email,
+          phone: body.phone || profile.phone || 'N/A',
+          dateOfBirth: body.date_of_birth || body.dateOfBirth || profile.date_of_birth,
+          gender: body.gender || profile.gender,
+          address: body.address || profile.address,
+          department: resolvedDepartmentId,
+          specialization: body.specialization || profile.specialization,
+          licenseNumber: generatedLicense,
+          experience: body.experience || body.experience_years || 0,
+          education: body.qualification || body.education || profile.qualification,
+          shift: body.shift_name || body.shift,
+          startDate: body.joining_date || body.joiningDate || profile.joining_date || new Date(),
+          isFullTime: (body.employment_type || profile.employment_type) !== 'Part Time' &&
+            (body.employment_type || profile.employment_type) !== 'Visiting',
+          paymentType: body.salary_type || body.paymentType || profile.salary_type || 'Salary',
+          amount: toNumber(body.salary_amount ?? body.amount ?? profile.salary_amount, 0),
+          aadharNumber: body.aadhar_number || body.aadharNumber || profile.aadhar_number,
+          panNumber: body.pan_number || body.panNumber || profile.pan_number,
+          notes: body.notes
+        },
+        $setOnInsert: { doctorId: generatedDoctorId }
       },
       { upsert: true, new: true, runValidators: false, setDefaultsOnInsert: true }
     );
+
+    if (doctor && !doctor.doctorId) {
+      doctor.doctorId = generatedDoctorId;
+      await doctor.save({ validateBeforeSave: false });
+    }
   }
 
   profile.department = resolvedDepartmentId;

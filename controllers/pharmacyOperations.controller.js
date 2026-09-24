@@ -2614,27 +2614,50 @@ exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
 
 // ========== NEW: Get Inventory Batches for POS ==========
 exports.getInventoryBatches = asyncHandler(async (req, res) => {
-  const { medicineId, status = 'active', limit = 100 } = req.query;
+  const { medicineId, status = 'active' } = req.query;
+  const requestedLimit = Number.parseInt(req.query.limit || '100', 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 5000) : 100;
   const today = operationNow();
   today.setHours(0, 0, 0, 0);
 
-  const query = { expiry_date: { $gt: today } };
+  const query = {};
   if (medicineId) query.medicine_id = medicineId;
-  if (status === 'active') query.is_active = true;
-  if (status === 'inactive') query.is_active = false;
 
-  // Only show batches with stock
-  query.quantity_base_units = { $gt: 0 };
+  // Keep the historical default behaviour for consumers that expect only
+  // saleable batches, while allowing Batch Management to explicitly request
+  // the complete inventory with status=all.
+  if (status === 'active') {
+    query.is_active = true;
+    query.expiry_date = { $gt: today };
+    query.quantity_base_units = { $gt: 0 };
+  } else if (status === 'inactive') {
+    query.is_active = false;
+  } else if (status === 'expired') {
+    query.expiry_date = { $lte: today };
+  } else if (status === 'soldout') {
+    query.quantity_base_units = { $lte: 0 };
+  } else if (status === 'expiring') {
+    const thirtyDaysFromNow = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+    query.is_active = true;
+    query.expiry_date = { $gt: today, $lte: thirtyDaysFromNow };
+    query.quantity_base_units = { $gt: 0 };
+  } else if (status !== 'all') {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid batch status filter. Use active, inactive, expired, expiring, soldout, or all.'
+    });
+  }
 
   const batches = await MedicineBatch.find(query)
-    .populate('medicine_id', 'name base_unit pack_unit units_per_pack gst_rate hsn_code allow_loose_sale')
+    .populate('medicine_id', 'name generic_name brand composition category base_unit pack_unit units_per_pack gst_rate hsn_code allow_loose_sale')
+    .populate('supplier_id', 'name companyName')
     .sort({ expiry_date: 1 })
-    .limit(Number(limit))
+    .limit(limit)
     .lean();
 
-  // Add computed fields for frontend
   const enrichedBatches = batches.map(batch => {
     const medicine = batch.medicine_id || {};
+    const supplier = batch.supplier_id || {};
     return {
       ...batch,
       sellingPricePerBaseUnit: batch.selling_price_per_base_unit,
@@ -2656,17 +2679,24 @@ exports.getInventoryBatches = asyncHandler(async (req, res) => {
       unitsPerPack: batch.units_per_pack,
       units_per_pack: batch.units_per_pack,
       tax_snapshot: batch.tax_snapshot,
-      // Medicine fields for frontend
       medicine_name: medicine.name,
+      generic_name: medicine.generic_name,
+      medicine_generic_name: medicine.generic_name,
+      brand: medicine.brand,
+      composition: medicine.composition,
+      category: medicine.category,
+      category_name: medicine.category,
       base_unit: medicine.base_unit,
       pack_unit: medicine.pack_unit,
       allow_loose_sale: medicine.allow_loose_sale,
-      gst_rate: batch.tax_snapshot?.gst_rate || medicine.gst_rate,
+      gst_rate: batch.tax_snapshot?.gst_rate ?? medicine.gst_rate,
       hsn_code: batch.tax_snapshot?.hsn_code || medicine.hsn_code,
+      supplier_name: supplier.name || supplier.companyName,
+      supplierName: supplier.name || supplier.companyName,
     };
   });
 
-  res.json({ success: true, batches: enrichedBatches });
+  res.json({ success: true, batches: enrichedBatches, count: enrichedBatches.length });
 });
 
 // ========== Hospital Details ==========

@@ -443,6 +443,7 @@ async function completeSuccessfulLogin(user, hospital, req, res, securityOverrid
   response.security = {
     mfaEnabled: Boolean(user.mfa?.enabled),
     idleLockMinutes: Number(setting?.security?.idleLockMinutes || 15),
+    passwordPolicy: setting?.security?.passwordPolicy,
     passwordExpiryDays: Number(setting?.security?.passwordPolicy?.expiryDays || 90),
     passwordChangeRequired: Boolean(user.mustChangePassword),
     ...securityOverrides
