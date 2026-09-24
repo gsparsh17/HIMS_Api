@@ -1,68 +1,98 @@
 const StockAdjustment = require('../models/StockAdjustment');
 const MedicineBatch = require('../models/MedicineBatch');
 const Medicine = require('../models/Medicine');
+const InventoryLedger = require('../models/InventoryLedger');
+const mongoose = require('mongoose');
+const { userHospitalId } = require('../utils/hospitalScope');
 
 // Create stock adjustment
 exports.createAdjustment = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
     const { medicine_id, batch_id, adjustment_type, quantity, reason, notes } = req.body;
-    
     if (!medicine_id || !adjustment_type || quantity === undefined || !reason) {
       return res.status(400).json({ error: 'Medicine, adjustment type, quantity, and reason are required.' });
     }
 
     const numQty = Number(quantity);
-    if (isNaN(numQty) || numQty <= 0) {
+    if (!Number.isFinite(numQty) || numQty <= 0) {
       return res.status(400).json({ error: 'Quantity must be a positive number.' });
     }
 
-    const adjustment = new StockAdjustment({
-      medicine_id,
-      batch_id: batch_id || null,
-      adjustment_type,
-      quantity: numQty,
-      reason: String(reason).trim(),
-      notes: notes ? String(notes).trim() : '',
-      adjusted_by: req.user?._id || req.user?.id
-    });
-    
-    await adjustment.save();
-    
-    // Update batch quantity if batch selected
-    if (batch_id) {
-      const batch = await MedicineBatch.findById(batch_id);
-      if (batch) {
-        if (adjustment_type === 'Addition') {
-          batch.quantity = (batch.quantity || 0) + numQty;
-          batch.quantity_base_units = (batch.quantity_base_units || 0) + numQty;
-        } else if (['Deduction', 'Damage', 'Expiry'].includes(adjustment_type)) {
-          batch.quantity = Math.max(0, (batch.quantity || 0) - numQty);
-          batch.quantity_base_units = Math.max(0, (batch.quantity_base_units || 0) - numQty);
-        }
-        await batch.save();
-      }
-    }
-    
-    // Update medicine total stock
-    const medicine = await Medicine.findById(medicine_id);
-    if (medicine) {
-      if (adjustment_type === 'Addition') {
-        medicine.stock_quantity = (medicine.stock_quantity || 0) + numQty;
-      } else if (['Deduction', 'Damage', 'Expiry'].includes(adjustment_type)) {
-        medicine.stock_quantity = Math.max(0, (medicine.stock_quantity || 0) - numQty);
-      }
-      await medicine.save();
+    const stockChanging = ['Addition', 'Deduction', 'Damage', 'Expiry'].includes(adjustment_type);
+    if (stockChanging && !batch_id) {
+      return res.status(400).json({ error: 'A batch is required for stock-changing adjustments so inventory history remains auditable.' });
     }
 
-    const populated = await StockAdjustment.findById(adjustment._id)
+    let createdAdjustment;
+    await session.withTransaction(async () => {
+      const hospitalId = userHospitalId(req.user);
+      const medicine = await Medicine.findOne({ _id: medicine_id, ...(hospitalId ? { hospitalId } : {}) }).session(session);
+      if (!medicine) throw Object.assign(new Error('Medicine not found for this hospital.'), { statusCode: 404 });
+
+      let batch = null;
+      let balanceAfter = null;
+      let signedDelta = 0;
+      if (batch_id) {
+        batch = await MedicineBatch.findOne({ _id: batch_id, medicine_id }).session(session);
+        if (!batch) throw Object.assign(new Error('Batch not found for this medicine.'), { statusCode: 404 });
+        const before = Number(batch.quantity_base_units ?? batch.quantity ?? 0);
+        if (adjustment_type === 'Addition') signedDelta = numQty;
+        if (['Deduction', 'Damage', 'Expiry'].includes(adjustment_type)) signedDelta = -numQty;
+        if (signedDelta < 0 && before < Math.abs(signedDelta)) {
+          throw Object.assign(new Error(`Adjustment exceeds available batch stock (${before}).`), { statusCode: 409 });
+        }
+        balanceAfter = before + signedDelta;
+        if (signedDelta !== 0) {
+          batch.quantity_base_units = balanceAfter;
+          batch.quantity = balanceAfter;
+          await batch.save({ session });
+          medicine.stock_quantity = Math.max(0, Number(medicine.stock_quantity || 0) + signedDelta);
+          await medicine.save({ session });
+        }
+      }
+
+      const [adjustment] = await StockAdjustment.create([{
+        medicine_id,
+        batch_id: batch_id || null,
+        adjustment_type,
+        quantity: numQty,
+        reason: String(reason).trim(),
+        notes: notes ? String(notes).trim() : '',
+        adjusted_by: req.user?._id || req.user?.id
+      }], { session });
+      createdAdjustment = adjustment;
+
+      if (batch && signedDelta !== 0) {
+        const movementType = adjustment_type === 'Addition'
+          ? 'ADJUSTMENT_IN'
+          : (['Damage', 'Expiry'].includes(adjustment_type) ? 'WASTE_OUT' : 'ADJUSTMENT_OUT');
+        await InventoryLedger.create([{
+          hospitalId: medicine.hospitalId || hospitalId,
+          medicineId: medicine._id,
+          batchId: batch._id,
+          movementType,
+          direction: signedDelta > 0 ? 'IN' : 'OUT',
+          quantityBaseUnits: Math.abs(signedDelta),
+          balanceAfterBaseUnits: balanceAfter,
+          sourceModule: 'StockAdjustment',
+          sourceId: adjustment._id,
+          notes: `${adjustment_type}: ${String(reason).trim()}`,
+          createdBy: req.user?._id || req.user?.id,
+        }], { session });
+      }
+    });
+
+    const populated = await StockAdjustment.findById(createdAdjustment._id)
       .populate('medicine_id', 'name generic_name brand category')
       .populate('adjusted_by', 'name email role')
-      .populate('batch_id', 'batch_number expiry_date');
-    
-    res.status(201).json({ success: true, adjustment: populated });
+      .populate('batch_id', 'batch_number expiry_date quantity quantity_base_units');
+    return res.status(201).json({ success: true, adjustment: populated });
   } catch (err) {
     console.error('Error creating stock adjustment:', err);
-    res.status(400).json({ error: err.message || 'Failed to create stock adjustment' });
+    return res.status(err.statusCode || 400).json({ error: err.message || 'Failed to create stock adjustment' });
+  } finally {
+    await session.endSession();
   }
 };
 

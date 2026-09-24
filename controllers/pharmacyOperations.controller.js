@@ -604,23 +604,30 @@ exports.getAllDeferredPayments = asyncHandler(async (req, res) => {
     query.sale_date = semanticDateRange(startDate, endDate);
   }
 
-  const deferredSales = await Sale.find(query)
-    .select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount')
-    .populate('patient_id', 'first_name last_name patientId uhid phone')
-    .populate('admission_id', 'admissionNumber shipNumber status')
-    .populate('doctor_id', 'firstName lastName')
-    .populate('items.medicine_id', 'name composition')
-    .sort({ sale_date: -1 })
-    .limit(Number(limit))
-    .lean();
-
-  const totalDeferredAmount = deferredSales.reduce((sum, sale) => sum + (sale.balance_due || 0), 0);
+  const safeLimit = Math.min(500, Math.max(1, Number(limit) || 100));
+  const [deferredSales, totals] = await Promise.all([
+    Sale.find(query)
+      .select('+total_purchase_cost +gross_profit +commission_amount +items.purchase_rate_per_base_unit +items.purchase_amount +items.gross_profit +items.commission_amount')
+      .populate('patient_id', 'first_name last_name patientId uhid phone')
+      .populate('admission_id', 'admissionNumber shipNumber status')
+      .populate('doctor_id', 'firstName lastName')
+      .populate('items.medicine_id', 'name composition')
+      .sort({ sale_date: -1 })
+      .limit(safeLimit)
+      .lean(),
+    Sale.aggregate([
+      { $match: query },
+      { $group: { _id: null, totalDeferredAmount: { $sum: '$balance_due' }, deferredCount: { $sum: 1 } } }
+    ])
+  ]);
 
   res.json({
     success: true,
     deferredPayments: deferredSales,
-    totalDeferredAmount,
-    deferredCount: deferredSales.length
+    totalDeferredAmount: normalizeMoney(totals[0]?.totalDeferredAmount || 0),
+    deferredCount: totals[0]?.deferredCount || 0,
+    returnedCount: deferredSales.length,
+    truncated: (totals[0]?.deferredCount || 0) > deferredSales.length
   });
 });
 
@@ -792,7 +799,8 @@ exports.getDoctorCommissionReport = asyncHandler(async (req, res) => {
   const range = (req.query.startDate || req.query.endDate)
     ? semanticDateRange(req.query.startDate, req.query.endDate)
     : { $gte: defaultStart, $lte: effectiveNow };
-  const match = { sale_date: range, 'items.is_own_brand': true };
+  const hospitalId = getHospitalId(req);
+  const match = { ...(hospitalId ? { hospitalId } : {}), sale_date: range, 'items.is_own_brand': true };
   const start = range.$gte;
   const end = range.$lt || range.$lte;
   if (req.query.doctorId) match.doctor_id = objectIdOrUndefined(req.query.doctorId);
@@ -840,7 +848,9 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
   const start = range.$gte;
   const end = range.$lt || range.$lte;
 
+  const hospitalId = getHospitalId(req);
   const match = {
+    ...(hospitalId ? { hospitalId } : {}),
     sale_date: range
   };
 
@@ -882,8 +892,8 @@ exports.getDoctorBillReport = asyncHandler(async (req, res) => {
 
   for (const sale of sales) {
     const [bill, invoice] = await Promise.all([
-      Bill.findOne({ sale_id: sale._id }).lean(),
-      Invoice.findOne({ sale_id: sale._id }).lean()
+      Bill.findOne({ sale_id: sale._id, ...(hospitalId ? { hospital_id: hospitalId } : {}) }).lean(),
+      Invoice.findOne({ sale_id: sale._id, ...(hospitalId ? { hospital_id: hospitalId } : {}) }).lean()
     ]);
 
     let salePurchaseCost = 0;
@@ -2376,7 +2386,9 @@ exports.getDashboard = asyncHandler(async (req, res) => {
 });
 
 exports.getInventoryAnalytics = asyncHandler(async (req, res) => {
-  const batches = await MedicineBatch.find({ is_active: true }).populate('medicine_id', 'name category base_unit pack_unit units_per_pack min_stock_level_base_units').lean();
+  const hospitalId = getHospitalId(req);
+  const medicineIds = hospitalId ? await Medicine.find({ hospitalId }).distinct('_id') : [];
+  const batches = await MedicineBatch.find({ is_active: true, ...(hospitalId ? { medicine_id: { $in: medicineIds } } : {}) }).populate('medicine_id', 'name category base_unit pack_unit units_per_pack min_stock_level_base_units').lean();
   const today = new Date();
   const nearExpiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
@@ -2423,20 +2435,24 @@ exports.getPurchaseAnalytics = asyncHandler(async (req, res) => {
   const start = range.$gte;
   const end = range.$lt || range.$lte;
 
+  const hospitalId = getHospitalId(req);
+  const purchaseMatch = { ...(hospitalId ? { hospitalId: objectIdOrUndefined(hospitalId) } : {}), order_date: range };
   const [byStatus, bySupplier, recent] = await Promise.all([
-    PurchaseOrder.aggregate([{ $match: { order_date: range } }, { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$total_amount' } } }]),
-    PurchaseOrder.aggregate([{ $match: { order_date: range } }, { $group: { _id: '$supplier_id', count: { $sum: 1 }, amount: { $sum: '$total_amount' } } }, { $sort: { amount: -1 } }, { $limit: 10 }]),
-    PurchaseOrder.find({}).populate('supplier_id', 'name').sort({ order_date: -1 }).limit(10).lean()
+    PurchaseOrder.aggregate([{ $match: purchaseMatch }, { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$total_amount' } } }]),
+    PurchaseOrder.aggregate([{ $match: purchaseMatch }, { $group: { _id: '$supplier_id', count: { $sum: 1 }, amount: { $sum: '$total_amount' } } }, { $sort: { amount: -1 } }, { $limit: 10 }]),
+    PurchaseOrder.find({ ...(hospitalId ? { hospitalId } : {}) }).populate('supplier_id', 'name').sort({ order_date: -1 }).limit(10).lean()
   ]);
 
   res.json({ success: true, range: { start, end }, byStatus, bySupplier, recent });
 });
 
 exports.getInventoryLedger = asyncHandler(async (req, res) => {
-  const query = {};
+  const hospitalId = getHospitalId(req);
+  const query = { ...(hospitalId ? { hospitalId } : {}) };
   if (req.query.medicineId) query.medicineId = objectIdOrUndefined(req.query.medicineId);
   if (req.query.batchId) query.batchId = objectIdOrUndefined(req.query.batchId);
-  const entries = await InventoryLedger.find(query).populate('medicineId', 'name').populate('batchId', 'batch_number').sort({ createdAt: -1 }).limit(Number(req.query.limit || 100)).lean();
+  if (req.query.startDate || req.query.endDate) query.movementAt = semanticDateRange(req.query.startDate, req.query.endDate);
+  const entries = await InventoryLedger.find(query).populate('medicineId', 'name').populate('batchId', 'batch_number').sort({ movementAt: -1, createdAt: -1 }).limit(Math.min(1000, Number(req.query.limit || 100))).lean();
   res.json({ success: true, entries });
 });
 
@@ -2614,50 +2630,27 @@ exports.getDeferredSettlementSummary = asyncHandler(async (req, res) => {
 
 // ========== NEW: Get Inventory Batches for POS ==========
 exports.getInventoryBatches = asyncHandler(async (req, res) => {
-  const { medicineId, status = 'active' } = req.query;
-  const requestedLimit = Number.parseInt(req.query.limit || '100', 10);
-  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 5000) : 100;
+  const { medicineId, status = 'active', limit = 100 } = req.query;
   const today = operationNow();
   today.setHours(0, 0, 0, 0);
 
-  const query = {};
+  const query = { expiry_date: { $gt: today } };
   if (medicineId) query.medicine_id = medicineId;
+  if (status === 'active') query.is_active = true;
+  if (status === 'inactive') query.is_active = false;
 
-  // Keep the historical default behaviour for consumers that expect only
-  // saleable batches, while allowing Batch Management to explicitly request
-  // the complete inventory with status=all.
-  if (status === 'active') {
-    query.is_active = true;
-    query.expiry_date = { $gt: today };
-    query.quantity_base_units = { $gt: 0 };
-  } else if (status === 'inactive') {
-    query.is_active = false;
-  } else if (status === 'expired') {
-    query.expiry_date = { $lte: today };
-  } else if (status === 'soldout') {
-    query.quantity_base_units = { $lte: 0 };
-  } else if (status === 'expiring') {
-    const thirtyDaysFromNow = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
-    query.is_active = true;
-    query.expiry_date = { $gt: today, $lte: thirtyDaysFromNow };
-    query.quantity_base_units = { $gt: 0 };
-  } else if (status !== 'all') {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid batch status filter. Use active, inactive, expired, expiring, soldout, or all.'
-    });
-  }
+  // Only show batches with stock
+  query.quantity_base_units = { $gt: 0 };
 
   const batches = await MedicineBatch.find(query)
-    .populate('medicine_id', 'name generic_name brand composition category base_unit pack_unit units_per_pack gst_rate hsn_code allow_loose_sale')
-    .populate('supplier_id', 'name companyName')
+    .populate('medicine_id', 'name base_unit pack_unit units_per_pack gst_rate hsn_code allow_loose_sale')
     .sort({ expiry_date: 1 })
-    .limit(limit)
+    .limit(Number(limit))
     .lean();
 
+  // Add computed fields for frontend
   const enrichedBatches = batches.map(batch => {
     const medicine = batch.medicine_id || {};
-    const supplier = batch.supplier_id || {};
     return {
       ...batch,
       sellingPricePerBaseUnit: batch.selling_price_per_base_unit,
@@ -2679,24 +2672,17 @@ exports.getInventoryBatches = asyncHandler(async (req, res) => {
       unitsPerPack: batch.units_per_pack,
       units_per_pack: batch.units_per_pack,
       tax_snapshot: batch.tax_snapshot,
+      // Medicine fields for frontend
       medicine_name: medicine.name,
-      generic_name: medicine.generic_name,
-      medicine_generic_name: medicine.generic_name,
-      brand: medicine.brand,
-      composition: medicine.composition,
-      category: medicine.category,
-      category_name: medicine.category,
       base_unit: medicine.base_unit,
       pack_unit: medicine.pack_unit,
       allow_loose_sale: medicine.allow_loose_sale,
-      gst_rate: batch.tax_snapshot?.gst_rate ?? medicine.gst_rate,
+      gst_rate: batch.tax_snapshot?.gst_rate || medicine.gst_rate,
       hsn_code: batch.tax_snapshot?.hsn_code || medicine.hsn_code,
-      supplier_name: supplier.name || supplier.companyName,
-      supplierName: supplier.name || supplier.companyName,
     };
   });
 
-  res.json({ success: true, batches: enrichedBatches, count: enrichedBatches.length });
+  res.json({ success: true, batches: enrichedBatches });
 });
 
 // ========== Hospital Details ==========
@@ -2730,6 +2716,7 @@ exports.getHospitalDetails = asyncHandler(async (_req, res) => {
 // ========== NEW: Enhanced Medicine Search ==========
 exports.searchMedicines = asyncHandler(async (req, res) => {
   const { query = '', limit = 30, searchBy = 'name' } = req.query;
+  const hospitalId = getHospitalId(req);
 
   if (!query || query.length < 2) {
     return res.json({ success: true, data: [] });
@@ -2765,6 +2752,7 @@ exports.searchMedicines = asyncHandler(async (req, res) => {
   }
 
   const medicines = await Medicine.find({
+    ...(hospitalId ? { hospitalId } : {}),
     is_active: true,
     $or: searchConditions.length > 0 ? searchConditions : [{ name: searchRegex }]
   })

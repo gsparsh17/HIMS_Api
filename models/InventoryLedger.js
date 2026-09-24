@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { operationNow } = require('../utils/operationTimeContext');
 
 const inventoryLedgerSchema = new mongoose.Schema({
   hospitalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', index: true },
@@ -16,9 +17,15 @@ const inventoryLedgerSchema = new mongoose.Schema({
   sourceModule: { type: String, enum: ['PharmacySale', 'PharmacyReturn', 'PurchaseOrder', 'StockAdjustment', 'IPDMedication', 'Manual'], default: 'PharmacySale' },
   sourceId: { type: mongoose.Schema.Types.ObjectId },
   notes: { type: String, trim: true },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // Business/effective movement time. This is intentionally separate from
+  // createdAt so approved back-dated operations remain reportable without
+  // falsifying the audit timestamp. Existing rows fall back to createdAt.
+  movementAt: { type: Date, default: operationNow, index: true }
 }, { timestamps: true });
 
+inventoryLedgerSchema.index({ hospitalId: 1, medicineId: 1, movementAt: -1 });
+inventoryLedgerSchema.index({ hospitalId: 1, batchId: 1, movementAt: -1 });
 inventoryLedgerSchema.index({ medicineId: 1, createdAt: -1 });
 inventoryLedgerSchema.index({ batchId: 1, createdAt: -1 });
 

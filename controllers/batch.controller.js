@@ -1,5 +1,7 @@
 const MedicineBatch = require('../models/MedicineBatch');
 const Medicine = require('../models/Medicine');
+const InventoryLedger = require('../models/InventoryLedger');
+const mongoose = require('mongoose');
 
 function startOfToday() {
   const today = new Date();
@@ -13,30 +15,50 @@ function inStockFilter() {
 
 // Add new batch
 exports.addBatch = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
-    const batch = new MedicineBatch(req.body);
-    if (!(Number(batch.selling_price_per_pack ?? batch.selling_price) > 0)) {
-      return res.status(400).json({ error: 'Selling price must be greater than zero' });
-    }
+    let created;
+    await session.withTransaction(async () => {
+      const medicine = await Medicine.findById(req.body.medicine_id).session(session);
+      if (!medicine) throw Object.assign(new Error('Medicine not found'), { statusCode: 404 });
 
-    const mrpPerPack = Number(batch.mrp_per_pack ?? 0);
-    const sellingPerPack = Number(batch.selling_price_per_pack ?? batch.selling_price ?? 0);
-    if (mrpPerPack > 0 && sellingPerPack - mrpPerPack > 0.009) {
-      return res.status(400).json({ error: 'Selling price cannot exceed MRP' });
-    }
+      const batch = new MedicineBatch(req.body);
+      if (!(Number(batch.selling_price_per_pack ?? batch.selling_price) > 0)) {
+        throw Object.assign(new Error('Selling price must be greater than zero'), { statusCode: 400 });
+      }
+      const mrpPerPack = Number(batch.mrp_per_pack ?? 0);
+      const sellingPerPack = Number(batch.selling_price_per_pack ?? batch.selling_price ?? 0);
+      if (mrpPerPack > 0 && sellingPerPack - mrpPerPack > 0.009) {
+        throw Object.assign(new Error('Selling price cannot exceed MRP'), { statusCode: 400 });
+      }
 
-    await batch.save();
+      await batch.save({ session });
+      const openingQty = Number(batch.quantity_base_units ?? batch.quantity ?? 0);
+      medicine.stock_quantity = Number(medicine.stock_quantity || 0) + openingQty;
+      await medicine.save({ session });
 
-    // Legacy/single-hospital deployment: the database is the tenant boundary.
-    // MedicineBatch is intentionally not scoped by hospitalId.
-    await Medicine.findByIdAndUpdate(
-      batch.medicine_id,
-      { $inc: { stock_quantity: Number(batch.quantity_base_units ?? batch.quantity ?? 0) } }
-    );
-
-    res.status(201).json(batch);
+      if (openingQty > 0) {
+        await InventoryLedger.create([{
+          hospitalId: medicine.hospitalId,
+          medicineId: medicine._id,
+          batchId: batch._id,
+          movementType: 'OPENING',
+          direction: 'IN',
+          quantityBaseUnits: openingQty,
+          balanceAfterBaseUnits: openingQty,
+          sourceModule: 'Manual',
+          sourceId: batch._id,
+          notes: `Batch ${batch.batch_number} opening stock`,
+          createdBy: req.user?._id || req.user?.id,
+        }], { session });
+      }
+      created = batch;
+    });
+    return res.status(201).json(created);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return res.status(err.statusCode || 400).json({ error: err.message });
+  } finally {
+    await session.endSession();
   }
 };
 
@@ -106,31 +128,64 @@ exports.getBatchesByMedicine = async (req, res) => {
 
 // Update batch
 exports.updateBatch = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
-    const update = { ...req.body };
-    // hospitalId may exist on some historical records, but is not required or
-    // used as an inventory boundary in a single-hospital database.
-    delete update.hospitalId;
-    delete update.hospital_id;
+    let updatedBatch;
+    await session.withTransaction(async () => {
+      const update = { ...req.body };
+      delete update.hospitalId;
+      delete update.hospital_id;
 
-    const nextSellingPerPack = Number(update.selling_price_per_pack ?? update.selling_price ?? NaN);
-    if (Number.isFinite(nextSellingPerPack) && !(nextSellingPerPack > 0)) {
-      return res.status(400).json({ error: 'Selling price must be greater than zero' });
-    }
-    const nextMrpPerPack = Number(update.mrp_per_pack ?? NaN);
-    if (Number.isFinite(nextMrpPerPack) && Number.isFinite(nextSellingPerPack) && nextMrpPerPack > 0 && nextSellingPerPack - nextMrpPerPack > 0.009) {
-      return res.status(400).json({ error: 'Selling price cannot exceed MRP' });
-    }
+      const batch = await MedicineBatch.findById(req.params.id).session(session);
+      if (!batch) throw Object.assign(new Error('Batch not found'), { statusCode: 404 });
+      const medicine = await Medicine.findById(batch.medicine_id).session(session);
+      if (!medicine) throw Object.assign(new Error('Medicine not found'), { statusCode: 404 });
 
-    const batch = await MedicineBatch.findByIdAndUpdate(
-      req.params.id,
-      update,
-      { new: true, runValidators: true }
-    );
-    if (!batch) return res.status(404).json({ error: 'Batch not found' });
-    res.json(batch);
+      const nextSellingPerPack = Number(update.selling_price_per_pack ?? update.selling_price ?? NaN);
+      if (Number.isFinite(nextSellingPerPack) && !(nextSellingPerPack > 0)) {
+        throw Object.assign(new Error('Selling price must be greater than zero'), { statusCode: 400 });
+      }
+      const nextMrpPerPack = Number(update.mrp_per_pack ?? NaN);
+      if (Number.isFinite(nextMrpPerPack) && Number.isFinite(nextSellingPerPack) && nextMrpPerPack > 0 && nextSellingPerPack - nextMrpPerPack > 0.009) {
+        throw Object.assign(new Error('Selling price cannot exceed MRP'), { statusCode: 400 });
+      }
+
+      const beforeQty = Number(batch.quantity_base_units ?? batch.quantity ?? 0);
+      let nextQty = beforeQty;
+      if (update.quantity_base_units !== undefined || update.quantity !== undefined) {
+        nextQty = Number(update.quantity_base_units ?? update.quantity);
+        if (!Number.isFinite(nextQty) || nextQty < 0) throw Object.assign(new Error('Batch quantity must be zero or greater'), { statusCode: 400 });
+        update.quantity_base_units = nextQty;
+        update.quantity = nextQty;
+      }
+
+      Object.assign(batch, update);
+      await batch.save({ session });
+      const delta = nextQty - beforeQty;
+      if (Math.abs(delta) > 1e-9) {
+        medicine.stock_quantity = Math.max(0, Number(medicine.stock_quantity || 0) + delta);
+        await medicine.save({ session });
+        await InventoryLedger.create([{
+          hospitalId: medicine.hospitalId,
+          medicineId: medicine._id,
+          batchId: batch._id,
+          movementType: delta > 0 ? 'ADJUSTMENT_IN' : 'ADJUSTMENT_OUT',
+          direction: delta > 0 ? 'IN' : 'OUT',
+          quantityBaseUnits: Math.abs(delta),
+          balanceAfterBaseUnits: nextQty,
+          sourceModule: 'Manual',
+          sourceId: batch._id,
+          notes: 'Batch quantity edited directly',
+          createdBy: req.user?._id || req.user?.id,
+        }], { session });
+      }
+      updatedBatch = batch;
+    });
+    return res.json(updatedBatch);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return res.status(err.statusCode || 400).json({ error: err.message });
+  } finally {
+    await session.endSession();
   }
 };
 

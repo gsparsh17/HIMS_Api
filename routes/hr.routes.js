@@ -37,6 +37,7 @@ router.get('/employees/:id', hrView, hrController.getEmployeeById);
 router.put('/employees/:id', hrManage, hrController.updateEmployee);
 router.put('/employees/:id/login', loginAccess, hrController.setEmployeeLogin);
 router.put('/employees/:id/deactivate', hrManage, hrController.deactivateEmployee);
+router.put('/employees/:id/activate', hrManage, hrController.activateEmployee);
 router.put('/employees/:id/salary', hrManage, hrController.updateEmployeeSalaryConfig);
 
 router.post('/attendance', hrManage, hrController.markAttendance);

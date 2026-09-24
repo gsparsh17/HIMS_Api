@@ -6,6 +6,10 @@ const { isEntitled } = require('../utils/entitlements');
 const Staff = require('../models/Staff');
 const Nurse = require('../models/Nurse');
 const Doctor = require('../models/Doctor');
+const PathologyStaff = require('../models/PathologyStaff');
+const LabStaff = require('../models/LabStaff');
+const RadiologyStaff = require('../models/RadiologyStaff');
+const OTStaff = require('../models/OTStaff');
 const Department = require('../models/Department');
 const HRStaffProfile = require('../models/HRStaffProfile');
 const StaffAttendance = require('../models/StaffAttendance');
@@ -21,8 +25,6 @@ const Appointment = require('../models/Appointment');
 const Hospital = require('../models/Hospital');
 const { syncAllExistingHRProfiles, syncHRProfileFromSource } = require('../services/hrProfileSync.service');
 const { syncProfessionalProfile } = require('../services/employeeProfessionalProfile.service');
-const { getOrCreateNabhSetting } = require('../services/nabhSetting.service');
-const { passwordPolicyErrors } = require('../services/nabhSecurity.service');
 const { requestHospitalId: resolveHospitalId } = require('../utils/hospitalScope');
 const { getHospitalPrintIdentity } = require('../services/hospitalPrintIdentity.service');
 const {
@@ -75,171 +77,6 @@ function startOfDay(value) {
   const d = value ? new Date(value) : new Date();
   d.setHours(0, 0, 0, 0);
   return d;
-}
-
-const EMPLOYEE_STAFF_TYPES = new Set([
-  'doctor', 'nurse', 'staff', 'admin', 'hr', 'store', 'pharmacy',
-  'pathology_staff', 'radiology_staff', 'ot_staff', 'receptionist',
-  'registrar', 'accountant', 'insurance_desk', 'bed_manager',
-  'housekeeping', 'other'
-]);
-
-function validateEmployeeCreateInput(body, fullName, staffType) {
-  const fieldErrors = {};
-  const email = String(body.email || '').trim().toLowerCase();
-  const phone = String(body.phone || '').trim();
-  const designation = String(body.designation || body.role || '').trim();
-  const gender = String(body.gender || '').trim().toLowerCase();
-
-  if (!String(fullName || '').trim()) fieldErrors.full_name = 'Full name is required.';
-  if (!email) fieldErrors.email = 'Email is required.';
-  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fieldErrors.email = 'Enter a valid email address.';
-  if (!phone) fieldErrors.phone = 'Phone number is required.';
-  else if (!/^[6-9]\d{9}$/.test(phone)) fieldErrors.phone = 'Enter a valid 10-digit Indian mobile number.';
-  if (!EMPLOYEE_STAFF_TYPES.has(staffType)) fieldErrors.role_label = 'Unsupported employee role.';
-  if (!designation) fieldErrors.designation = 'Designation is required.';
-  if (!gender) fieldErrors.gender = 'Gender is required.';
-  else if (!['male', 'female', 'other', 'prefer_not_to_say'].includes(gender)) fieldErrors.gender = 'Select a valid gender.';
-  if (!body.department && !body.department_name && !body.departmentName) fieldErrors.department = 'Department is required.';
-  if (body.department && !mongoose.isValidObjectId(body.department)) fieldErrors.department = 'Select a valid department.';
-  if (body.shift && !mongoose.isValidObjectId(body.shift)) fieldErrors.shift = 'Select a valid shift.';
-
-  const employmentTypes = new Set(['Full Time', 'Part Time', 'Contract', 'Visiting', 'Intern', 'Temporary']);
-  const employmentStatuses = new Set(['Active', 'Inactive', 'On Leave', 'Suspended', 'Terminated']);
-  const salaryTypes = new Set(['Salary', 'Per Hour', 'Fee per Visit', 'Contractual Salary', 'Commission']);
-  const availabilityStatuses = new Set(['available', 'busy', 'on_leave', 'off_duty', 'in_ot', 'in_ward', 'in_opd', 'emergency', 'unavailable']);
-  const sourceModels = new Set(['Doctor', 'Staff', 'Nurse', 'LabStaff', 'PathologyStaff', 'RadiologyStaff', 'OTStaff', 'Manual']);
-  if (body.employment_type && !employmentTypes.has(body.employment_type)) fieldErrors.employment_type = 'Select a valid employment type.';
-  if (body.employment_status && !employmentStatuses.has(body.employment_status)) fieldErrors.employment_status = 'Select a valid employment status.';
-  if (body.salary_type && !salaryTypes.has(body.salary_type)) fieldErrors.salary_type = 'Select a valid salary type.';
-  if (body.availability_status && !availabilityStatuses.has(body.availability_status)) fieldErrors.availability_status = 'Select a valid availability status.';
-  if (body.pay_cycle && !['monthly', 'weekly', 'daily'].includes(body.pay_cycle)) fieldErrors.pay_cycle = 'Select a valid pay cycle.';
-  if (body.unpaid_leave_policy && !['deduct_per_day', 'ignore'].includes(body.unpaid_leave_policy)) fieldErrors.unpaid_leave_policy = 'Select a valid unpaid leave policy.';
-  if (body.source_model && !sourceModels.has(body.source_model)) fieldErrors.source_model = 'Invalid employee source.';
-
-  if (body.aadhar_number && !/^\d{12}$/.test(String(body.aadhar_number))) {
-    fieldErrors.aadhar_number = 'Aadhar must be 12 digits.';
-  }
-  if (body.pan_number && !/^[A-Z]{5}\d{4}[A-Z]$/.test(String(body.pan_number).toUpperCase())) {
-    fieldErrors.pan_number = 'PAN must be in format ABCDE1234F.';
-  }
-  if (body.emergency_contact_phone && !/^[6-9]\d{9}$/.test(String(body.emergency_contact_phone))) {
-    fieldErrors.emergency_contact_phone = 'Enter a valid 10-digit emergency contact number.';
-  }
-  if (body.salary_amount !== undefined && body.salary_amount !== '') {
-    const salary = Number(body.salary_amount);
-    if (!Number.isFinite(salary) || salary < 0) fieldErrors.salary_amount = 'Salary must be a non-negative number.';
-  }
-  if (body.experience_years !== undefined && body.experience_years !== '') {
-    const experience = Number(body.experience_years);
-    if (!Number.isFinite(experience) || experience < 0) fieldErrors.experience_years = 'Experience must be a non-negative number.';
-  }
-  if (body.opd_consultation_fee !== undefined && body.opd_consultation_fee !== '') {
-    const fee = Number(body.opd_consultation_fee);
-    if (!Number.isFinite(fee) || fee < 0) fieldErrors.opd_consultation_fee = 'OPD consultation fee must be a non-negative number.';
-  }
-  if (body.visits_per_week !== undefined && body.visits_per_week !== '') {
-    const visits = Number(body.visits_per_week);
-    if (!Number.isFinite(visits) || visits < 0) fieldErrors.visits_per_week = 'Visits per week must be a non-negative number.';
-  }
-  if (body.revenue_percentage !== undefined && body.revenue_percentage !== '') {
-    const revenue = Number(body.revenue_percentage);
-    if (!Number.isFinite(revenue) || revenue < 0 || revenue > 100) fieldErrors.revenue_percentage = 'Revenue share must be between 0 and 100.';
-  }
-  if (body.max_simultaneous_cases !== undefined && body.max_simultaneous_cases !== '') {
-    const maxCases = Number(body.max_simultaneous_cases);
-    if (!Number.isFinite(maxCases) || maxCases < 1) fieldErrors.max_simultaneous_cases = 'Max simultaneous cases must be at least 1.';
-  }
-  if (body.ifsc_code && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(String(body.ifsc_code).toUpperCase())) {
-    fieldErrors.ifsc_code = 'Enter a valid IFSC code (for example SBIN0001234).';
-  }
-
-  const dob = body.date_of_birth || body.dateOfBirth;
-  if (dob) {
-    const parsed = new Date(dob);
-    if (Number.isNaN(parsed.getTime())) fieldErrors.date_of_birth = 'Enter a valid date of birth.';
-    else if (parsed > new Date()) fieldErrors.date_of_birth = 'Date of birth cannot be in the future.';
-  }
-
-  const joiningDate = body.joining_date || body.joiningDate;
-  if (joiningDate && Number.isNaN(new Date(joiningDate).getTime())) fieldErrors.joining_date = 'Enter a valid joining date.';
-
-  const contractStart = body.contract_start_date || body.contractStartDate;
-  const contractEnd = body.contract_end_date || body.contractEndDate;
-  if (contractStart && contractEnd) {
-    const start = new Date(contractStart);
-    const end = new Date(contractEnd);
-    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end < start) {
-      fieldErrors.contract_end_date = 'Contract end date cannot be before contract start date.';
-    }
-  }
-
-  if (staffType === 'doctor' && !String(body.license_number || body.licenseNumber || '').trim()) {
-    fieldErrors.license_number = 'Medical license number is required for doctors.';
-  }
-  if (staffType === 'pathology_staff' && !String(body.pathology_role || body.pathologyRole || '').trim()) {
-    fieldErrors.pathology_role = 'Pathology role is required.';
-  }
-  if (staffType === 'radiology_staff' && !String(body.radiology_designation || body.radiologyDesignation || '').trim()) {
-    fieldErrors.radiology_designation = 'Radiology designation is required.';
-  }
-  if (staffType === 'ot_staff' && !String(body.ot_designation || body.otDesignation || '').trim()) {
-    fieldErrors.ot_designation = 'OT designation is required.';
-  }
-
-  const credentialValidUntil = body.credential_valid_until || body.credentialValidUntil;
-  if (credentialValidUntil && Number.isNaN(new Date(credentialValidUntil).getTime())) {
-    fieldErrors.credential_valid_until = 'Enter a valid credential expiry date.';
-  }
-
-  return fieldErrors;
-}
-
-function duplicateEmployeeErrorPayload(error) {
-  const message = String(error?.message || '');
-  const duplicateCode = Number(error?.code || error?.cause?.code);
-  if (duplicateCode !== 11000 && !/E11000 duplicate key/i.test(message)) return null;
-  const keys = Object.keys(error.keyPattern || error.keyValue || error?.cause?.keyPattern || error?.cause?.keyValue || {});
-  const indexName = String(error?.index || error?.cause?.index || message);
-  if (keys.includes('licenseNumber') || indexName.includes('licenseNumber')) {
-    return { error: 'This medical license number is already assigned to another doctor.', code: 'DOCTOR_LICENSE_EXISTS', fieldErrors: { license_number: 'This medical license number is already in use.' } };
-  }
-  if (keys.includes('email') || /email_1/.test(indexName)) {
-    return { error: 'An employee or login with this email already exists.', code: 'EMPLOYEE_EMAIL_EXISTS', fieldErrors: { email: 'This email is already in use.' } };
-  }
-  if (keys.includes('doctorId') || indexName.includes('doctorId')) {
-    return { error: 'Unable to allocate a unique doctor identifier. Please retry.', code: 'DOCTOR_ID_CONFLICT' };
-  }
-  if (keys.includes('employee_code') || keys.includes('staffId') || keys.includes('employeeId') || /(employee_code|staffId|employeeId)/.test(indexName)) {
-    return { error: 'Unable to allocate a unique employee identifier. Please retry.', code: 'EMPLOYEE_ID_CONFLICT' };
-  }
-  return { error: 'A record with the same unique details already exists.', code: 'DUPLICATE_EMPLOYEE_DATA' };
-}
-
-function employeeValidationErrorPayload(error) {
-  if (error?.name !== 'ValidationError' || !error.errors) return null;
-  const fieldMap = {
-    licenseNumber: 'license_number',
-    dateOfBirth: 'date_of_birth',
-    opdConsultationFee: 'opd_consultation_fee',
-    revenuePercentage: 'revenue_percentage',
-    visitsPerWeek: 'visits_per_week',
-    maxSimultaneousCases: 'max_simultaneous_cases',
-    aadharNumber: 'aadhar_number',
-    panNumber: 'pan_number',
-    hospitalId: 'hospital_id',
-    hospital_id: 'hospital_id'
-  };
-  const fieldErrors = {};
-  for (const [path, detail] of Object.entries(error.errors)) {
-    const field = fieldMap[path] || path;
-    fieldErrors[field] = detail?.message || `Invalid value for ${field}.`;
-  }
-  return {
-    error: 'Please correct the highlighted employee details.',
-    code: 'EMPLOYEE_VALIDATION_FAILED',
-    fieldErrors
-  };
 }
 
 async function hospitalZoneFor(hospitalId) {
@@ -463,8 +300,7 @@ async function ensureDepartment(body, hospitalId) {
 }
 
 async function createOrUpdateUser({ body, role, existingUser }) {
-  const loginRequested = body.create_login === true || (typeof body.password === 'string' && body.password.length > 0);
-  if (!loginRequested) return null;
+  if (!body.create_login && !body.password && !existingUser) return null;
   const payload = {
     name: body.full_name || body.fullName || body.name,
     email: body.email,
@@ -572,7 +408,6 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
     const visitsRaw = body.visits_per_week ?? body.visitsPerWeek;
     const workflowRaw = body.opd_workflow_mode ?? body.opdWorkflowModeOverride;
 
-    const generatedDoctorId = await Doctor.generateDoctorId(hospitalId);
     doctor = await Doctor.findOneAndUpdate(
       profile?.doctor_id ? { _id: profile.doctor_id, hospitalId } : { hospitalId, email: normalizedEmail },
       {
@@ -608,18 +443,10 @@ async function syncRoleCollections({ body, user, departmentId, profile }) {
           aadharNumber: body.aadhar_number || body.aadharNumber,
           panNumber: body.pan_number || body.panNumber,
           notes: body.notes
-        },
-        $setOnInsert: { doctorId: generatedDoctorId }
+        }
       },
       { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
     );
-
-    // Legacy/upsert-created doctors may predate doctorId generation because
-    // findOneAndUpdate() does not execute pre('save') middleware.
-    if (!doctor.doctorId) {
-      doctor.doctorId = generatedDoctorId;
-      await doctor.save();
-    }
   }
 
   if (profile) {
@@ -646,10 +473,7 @@ exports.hrLogin = async (req, res) => {
       return res.status(403).json({ error: 'This account does not have HR dashboard access' });
     }
 
-    const [profile, setting] = await Promise.all([
-      HRStaffProfile.findOne({ user_id: user._id }),
-      user.hospital_id ? getOrCreateNabhSetting(user.hospital_id, user._id) : null
-    ]);
+    const profile = await HRStaffProfile.findOne({ user_id: user._id });
     return res.json({
       _id: user._id,
       name: user.name,
@@ -658,10 +482,7 @@ exports.hrLogin = async (req, res) => {
       dashboard: 'hr',
       token: generateToken(user._id, user.role),
       employeeId: profile?._id,
-      employeeCode: profile?.employee_code,
-      security: {
-        passwordPolicy: setting?.security?.passwordPolicy
-      }
+      employeeCode: profile?.employee_code
     });
   } catch (error) {
     console.error('HR login error:', error);
@@ -673,63 +494,27 @@ exports.createEmployee = async (req, res) => {
   try {
     const body = { ...req.body };
     const fullName = body.full_name || body.fullName || body.name;
-    body.email = String(body.email || '').trim().toLowerCase();
+    if (!fullName || !body.email) return res.status(400).json({ error: 'Full name and email are required' });
+    body.email = String(body.email).trim().toLowerCase();
 
     const hospitalId = await resolveHospitalId(req);
     const staffType = String(body.staff_type || body.staffType || 'staff').toLowerCase();
-    const fieldErrors = validateEmployeeCreateInput(body, fullName, staffType);
-    if (Object.keys(fieldErrors).length) {
-      return res.status(400).json({
-        error: 'Please correct the highlighted employee details.',
-        code: 'EMPLOYEE_VALIDATION_FAILED',
-        fieldErrors
-      });
+    if (staffType === 'doctor' && !String(body.license_number || body.licenseNumber || '').trim()) {
+      return res.status(400).json({ error: 'Medical license number is required for doctor onboarding' });
     }
-
-    const loginRequested = typeof body.password === 'string' && body.password.length > 0;
-    if (loginRequested) {
-      const setting = await getOrCreateNabhSetting(hospitalId, getUserId(req));
-      const policyErrors = passwordPolicyErrors(body.password, setting?.security?.passwordPolicy || {});
-      if (policyErrors.length) {
-        return res.status(400).json({
-          error: 'Password does not meet the hospital password policy.',
-          code: 'PASSWORD_POLICY_VIOLATION',
-          fieldErrors: { password: policyErrors.join('; ') },
-          errors: policyErrors
-        });
-      }
-    }
-
     const designation = body.designation || body.role || staffType;
     const userRole = body.user_role || roleFromStaffType(staffType, designation);
-    let profile = await HRStaffProfile.findOne({ email: body.email, hospital_id: hospitalId });
-
-    if (staffType === 'doctor') {
-      const licenseNumber = String(body.license_number || body.licenseNumber || '').trim();
-      const existingByLicense = await Doctor.findOne({ hospitalId, licenseNumber }).select('_id email').lean();
-      if (existingByLicense && String(existingByLicense._id) !== String(profile?.doctor_id || '')) {
-        return res.status(409).json({
-          error: 'This medical license number is already assigned to another doctor.',
-          code: 'DOCTOR_LICENSE_EXISTS',
-          fieldErrors: { license_number: 'This medical license number is already in use.' }
-        });
-      }
-    }
-
     const departmentId = await ensureDepartment({ ...body, department_name: body.department_name || body.departmentName }, hospitalId);
-    const existingUser = loginRequested ? await User.findOne({ email: body.email }) : null;
-    if (loginRequested && existingUser?.hospital_id && String(existingUser.hospital_id) !== String(hospitalId)) {
-      return res.status(409).json({
-        error: 'A login with this email already belongs to another hospital.',
-        code: 'LOGIN_EMAIL_OTHER_HOSPITAL',
-        fieldErrors: { email: 'This email is already used by a login in another hospital.' }
-      });
+    const existingUser = await User.findOne({ email: body.email });
+    if (existingUser?.hospital_id && String(existingUser.hospital_id) !== String(hospitalId)) {
+      return res.status(409).json({ error: 'A login with this email already belongs to another hospital' });
     }
     const user = await createOrUpdateUser({ body: { ...body, hospital_id: hospitalId, full_name: fullName }, role: userRole, existingUser });
     const { firstName, lastName } = splitName(fullName);
 
-    const profileSourceModel = body.source_model || profile?.source_model || 'Manual';
+    let profile = await HRStaffProfile.findOne({ email: body.email, hospital_id: hospitalId });
     const profilePayload = {
+      user_id: user?._id || existingUser?._id,
       full_name: fullName,
       first_name: firstName,
       last_name: lastName,
@@ -751,9 +536,9 @@ exports.createEmployee = async (req, res) => {
       employment_status: body.employment_status || body.status || 'Active',
       salary_type: body.salary_type || body.paymentType || 'Salary',
       salary_amount: toNumber(body.salary_amount || body.amount, 0),
-      source_model: profileSourceModel,
-      source_id: body.source_id || profile?.source_id || (
-        profileSourceModel === 'Manual'
+      source_model: body.source_model || 'Manual',
+      source_id: body.source_id || (
+        (body.source_model || 'Manual') === 'Manual'
           ? (user?._id || existingUser?._id || new mongoose.Types.ObjectId())
           : undefined
       ),
@@ -778,20 +563,13 @@ exports.createEmployee = async (req, res) => {
       pan_number: body.pan_number || body.panNumber,
       emergency_contact_name: body.emergency_contact_name,
       emergency_contact_phone: body.emergency_contact_phone,
+      login_enabled: Boolean(user),
       availability_status: body.availability_status || 'available',
       availability_note: body.availability_note,
       hospital_id: hospitalId,
+      created_by: getUserId(req),
       updated_by: getUserId(req)
     };
-
-    if (!profile) profilePayload.created_by = getUserId(req);
-
-    if (user) {
-      profilePayload.user_id = user._id;
-      profilePayload.login_enabled = user.is_active !== false;
-    } else if (!profile) {
-      profilePayload.login_enabled = false;
-    }
 
     if (profile) {
       Object.assign(profile, profilePayload);
@@ -836,28 +614,7 @@ exports.createEmployee = async (req, res) => {
     });
   } catch (error) {
     console.error('Create employee error:', error);
-    const duplicate = duplicateEmployeeErrorPayload(error);
-    if (duplicate) return res.status(409).json(duplicate);
-    const validation = employeeValidationErrorPayload(error);
-    if (validation) return res.status(400).json(validation);
-    if (['PASSWORD_POLICY_VIOLATION', 'PASSWORD_REUSE'].includes(error.code)) {
-      return res.status(400).json({
-        error: error.message,
-        code: error.code,
-        fieldErrors: {
-          password: Array.isArray(error.details) && error.details.length
-            ? error.details.join('; ')
-            : error.message
-        },
-        ...(Array.isArray(error.details) ? { errors: error.details } : {})
-      });
-    }
-    const status = Number(error.statusCode) || 400;
-    return res.status(status).json({
-      error: error.message || 'Unable to create employee',
-      ...(error.code ? { code: error.code } : {}),
-      ...(Array.isArray(error.details) ? { errors: error.details } : {})
-    });
+    res.status(400).json({ error: error.message });
   }
 };
 
@@ -1253,6 +1010,30 @@ exports.deactivateEmployee = async (req, res) => {
         { $set: { status: 'Inactive', is_active: false, deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
       ));
     }
+    if (employee.lab_staff_id) {
+      sourceUpdates.push(LabStaff.findOneAndUpdate(
+        { _id: employee.lab_staff_id },
+        { $set: { is_active: false, deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
+      ));
+    }
+    if (employee.pathology_staff_id) {
+      sourceUpdates.push(PathologyStaff.findOneAndUpdate(
+        { _id: employee.pathology_staff_id, hospitalId },
+        { $set: { status: 'Inactive', is_active: false, deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
+      ));
+    }
+    if (employee.radiology_staff_id) {
+      sourceUpdates.push(RadiologyStaff.findOneAndUpdate(
+        { _id: employee.radiology_staff_id, hospitalId },
+        { $set: { is_active: false, availabilityStatus: 'Unavailable', deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
+      ));
+    }
+    if (employee.ot_staff_id) {
+      sourceUpdates.push(OTStaff.findOneAndUpdate(
+        { _id: employee.ot_staff_id, hospitalId },
+        { $set: { is_active: false, deleted_at: now, deleted_by: getUserId(req), deletion_reason: reason } }
+      ));
+    }
     if (employee.user_id) {
       sourceUpdates.push(User.findOneAndUpdate(
         { _id: employee.user_id, hospital_id: hospitalId },
@@ -1264,6 +1045,113 @@ exports.deactivateEmployee = async (req, res) => {
     res.json({ message: 'Employee deactivated; source profile and references preserved', employee });
   } catch (error) {
     res.status(error.statusCode || 400).json({ error: error.message });
+  }
+};
+
+exports.activateEmployee = async (req, res) => {
+  try {
+    const hospitalId = await resolveHospitalId(req);
+    const employee = await HRStaffProfile.findOne({
+      _id: req.params.id,
+      hospital_id: hospitalId
+    });
+    if (!employee) return res.status(404).json({ error: 'Employee not found' });
+
+    if (employee.is_active !== false && employee.employment_status !== 'Inactive') {
+      return res.status(400).json({ error: 'Employee is already active' });
+    }
+
+    const userId = getUserId(req);
+    const reactivateLogin = req.body?.reactivate_login === true || req.body?.reactivateLogin === true;
+
+    employee.employment_status = 'Active';
+    employee.availability_status = req.body?.availability_status || 'available';
+    employee.is_active = true;
+    employee.deleted_at = null;
+    employee.deleted_by = null;
+    employee.deletion_reason = '';
+    employee.updated_by = userId;
+
+    // Employment reactivation and login access are deliberately separate. An
+    // existing login remains disabled unless HR explicitly asks to restore it.
+    employee.login_enabled = Boolean(reactivateLogin && employee.user_id);
+    await employee.save();
+
+    const restoreSoftDelete = {
+      is_active: true,
+      deleted_at: null,
+      deleted_by: null,
+      deletion_reason: ''
+    };
+    const updates = [];
+
+    if (employee.doctor_id) {
+      updates.push(Doctor.findOneAndUpdate(
+        { _id: employee.doctor_id, hospitalId },
+        { $set: restoreSoftDelete }
+      ));
+    }
+    if (employee.nurse_id) {
+      updates.push(Nurse.findOneAndUpdate(
+        { _id: employee.nurse_id, hospitalId },
+        { $set: restoreSoftDelete }
+      ));
+    }
+    if (employee.staff_id) {
+      updates.push(Staff.findOneAndUpdate(
+        { _id: employee.staff_id, hospitalId },
+        { $set: { ...restoreSoftDelete, status: 'Active' } }
+      ));
+    }
+    if (employee.lab_staff_id) {
+      updates.push(LabStaff.findOneAndUpdate(
+        { _id: employee.lab_staff_id },
+        { $set: restoreSoftDelete }
+      ));
+    }
+    if (employee.pathology_staff_id) {
+      updates.push(PathologyStaff.findOneAndUpdate(
+        { _id: employee.pathology_staff_id, hospitalId },
+        { $set: { ...restoreSoftDelete, status: 'Active' } }
+      ));
+    }
+    if (employee.radiology_staff_id) {
+      updates.push(RadiologyStaff.findOneAndUpdate(
+        { _id: employee.radiology_staff_id, hospitalId },
+        { $set: { ...restoreSoftDelete, availabilityStatus: 'Available' } }
+      ));
+    }
+    if (employee.ot_staff_id) {
+      updates.push(OTStaff.findOneAndUpdate(
+        { _id: employee.ot_staff_id, hospitalId },
+        { $set: restoreSoftDelete }
+      ));
+    }
+    if (employee.user_id) {
+      updates.push(User.findOneAndUpdate(
+        { _id: employee.user_id, hospital_id: hospitalId },
+        {
+          $set: reactivateLogin
+            ? { ...restoreSoftDelete, is_active: true }
+            : { is_active: false }
+        }
+      ));
+    }
+
+    await Promise.all(updates);
+    await employee.populate('user_id', 'name email role is_active');
+    await employee.populate('department', 'name');
+
+    return res.json({
+      message: reactivateLogin
+        ? 'Employee and existing login reactivated successfully'
+        : 'Employee reactivated successfully. Login remains disabled until enabled from Login & Access.',
+      employee,
+      loginReactivated: Boolean(reactivateLogin && employee.user_id)
+    });
+  } catch (error) {
+    console.error('Activate employee error:', error);
+    return res.status(error.statusCode || 400).json({ error: error.message });
   }
 };
 

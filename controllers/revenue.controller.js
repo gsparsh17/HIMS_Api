@@ -7,11 +7,13 @@ const Department = require('../models/Department');
 const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
 const Medicine = require('../models/Medicine');
+const Sale = require('../models/Sale');
 const PharmacyReturn = require('../models/PharmacyReturn');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const { semanticDateRange } = require('../utils/hospitalDateRange');
 const { operationNow } = require('../utils/operationTimeContext');
 const { hospitalDateKey } = require('../utils/hospitalDateTime');
+const { userHospitalId } = require('../utils/hospitalScope');
 
 const toObjectId = (id) => {
   try {
@@ -5723,17 +5725,14 @@ exports.exportIpdRevenue = async (req, res) => {
 
     let startOfDayUTC, endOfDayUTC;
 
-    if (startDate && endDate) {
-      startOfDayUTC = new Date(startDate);
-      startOfDayUTC.setHours(0, 0, 0, 0);
-      endOfDayUTC = new Date(endDate);
-      endOfDayUTC.setHours(23, 59, 59, 999);
+    if (startDate || endDate) {
+      const range = semanticDateRange(startDate, endDate);
+      startOfDayUTC = range.$gte;
+      const exclusiveEnd = range.$lt || new Date((range.$lte || operationNow()).getTime() + 1);
+      endOfDayUTC = new Date(exclusiveEnd.getTime() - 1);
     } else {
-      endOfDayUTC = new Date();
-      startOfDayUTC = new Date();
-      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
-      startOfDayUTC.setHours(0, 0, 0, 0);
-      endOfDayUTC.setHours(23, 59, 59, 999);
+      endOfDayUTC = operationNow();
+      startOfDayUTC = new Date(endOfDayUTC.getTime() - 30 * 86400000);
     }
 
     const dateFilter = {
@@ -6040,41 +6039,40 @@ async function getLabTestDetails(startDate, endDate, doctorsMap) {
 exports.getPharmacyRevenueAnalytics = async (req, res) => {
   try {
     const { startDate, endDate, medicineId, patientId, paymentMethod, status } = req.query;
+    const hospitalId = userHospitalId(req.user);
+    if (!hospitalId) return res.status(403).json({ success: false, error: 'Hospital context is required' });
 
-    let startOfDayUTC, endOfDayUTC;
-
-    if (startDate && endDate) {
-      startOfDayUTC = new Date(startDate);
-      startOfDayUTC.setHours(0, 0, 0, 0);
-      endOfDayUTC = new Date(endDate);
-      endOfDayUTC.setHours(23, 59, 59, 999);
+    let reportRange;
+    if (startDate || endDate) {
+      reportRange = semanticDateRange(startDate, endDate);
     } else {
-      endOfDayUTC = new Date();
-      startOfDayUTC = new Date();
-      startOfDayUTC.setDate(startOfDayUTC.getDate() - 30);
-      startOfDayUTC.setHours(0, 0, 0, 0);
-      endOfDayUTC.setHours(23, 59, 59, 999);
+      const now = operationNow();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      reportRange = { $gte: thirtyDaysAgo, $lte: now };
     }
 
     const dateFilter = {
       $or: [
-        { sale_date: { $gte: startOfDayUTC, $lte: endOfDayUTC } },
-        { generated_at: { $gte: startOfDayUTC, $lte: endOfDayUTC } },
-        { issue_date: { $gte: startOfDayUTC, $lte: endOfDayUTC } },
-        { created_at: { $gte: startOfDayUTC, $lte: endOfDayUTC } }
+        { sale_date: reportRange },
+        { generated_at: reportRange },
+        { issue_date: reportRange },
+        { created_at: reportRange }
       ]
     };
 
-    const salesFilter = { ...dateFilter };
+    const salesFilter = { hospitalId, ...dateFilter };
     if (patientId && patientId !== 'all') salesFilter.patient_id = toObjectId(patientId);
     if (status && status !== 'all') salesFilter.status = status;
+    if (medicineId && medicineId !== 'all') salesFilter['items.medicine_id'] = toObjectId(medicineId);
+    if (paymentMethod && paymentMethod !== 'all') salesFilter.payment_method = paymentMethod;
 
     const sales = await Sale.find(salesFilter)
+      .select('+total_purchase_cost +gross_profit +items.purchase_amount +items.purchase_rate_per_base_unit +items.gross_profit')
       .populate('patient_id', 'first_name last_name patientId')
       .populate('items.medicine_id', 'name category composition')
       .lean();
 
-    const billFilter = { is_pharmacy_bill: true, ...dateFilter };
+    const billFilter = { hospital_id: hospitalId, is_pharmacy_bill: true, ...dateFilter };
     if (patientId && patientId !== 'all') billFilter.patient_id = toObjectId(patientId);
     if (status && status !== 'all') billFilter.status = status;
 
@@ -6083,7 +6081,7 @@ exports.getPharmacyRevenueAnalytics = async (req, res) => {
       .populate('items.medicine_id', 'name category')
       .lean();
 
-    const invoiceFilter = { is_pharmacy_sale: true, ...dateFilter };
+    const invoiceFilter = { hospital_id: hospitalId, is_pharmacy_sale: true, ...dateFilter };
     if (patientId && patientId !== 'all') invoiceFilter.patient_id = toObjectId(patientId);
     if (status && status !== 'all') invoiceFilter.status = status;
 
@@ -6092,10 +6090,7 @@ exports.getPharmacyRevenueAnalytics = async (req, res) => {
       .populate('medicine_items.medicine_id', 'name category')
       .lean();
 
-    const returnFilter = {};
-    if (startDate && endDate) {
-      returnFilter.createdAt = { $gte: startOfDayUTC, $lte: endOfDayUTC };
-    }
+    const returnFilter = { hospitalId, createdAt: reportRange };
     if (patientId && patientId !== 'all') returnFilter.patientId = toObjectId(patientId);
 
     const returns = await PharmacyReturn.find(returnFilter).lean();
@@ -6227,10 +6222,11 @@ exports.getPharmacyRevenueAnalytics = async (req, res) => {
 
       const returnDate = returnItem.createdAt;
       const dateKey = returnDate ? new Date(returnDate).toISOString().split('T')[0] : 'unknown';
-      if (dailyRevenue[dateKey]) {
-        dailyRevenue[dateKey].returns += 1;
-        dailyRevenue[dateKey].revenue -= refundAmount;
+      if (!dailyRevenue[dateKey]) {
+        dailyRevenue[dateKey] = { date: dateKey, revenue: 0, sales: 0, returns: 0 };
       }
+      dailyRevenue[dateKey].returns += 1;
+      dailyRevenue[dateKey].revenue -= refundAmount;
     });
 
     netRevenue = totalRevenue - totalReturns;

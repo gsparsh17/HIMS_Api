@@ -13,10 +13,18 @@
  * If the Hospital collection contains more than one document, execution aborts unless:
  *   --allow-multiple-hospital-records
  *
+ * Pharmacy inventory behavior after a successful reset:
+ *   - Current MedicineBatch quantities are preserved by default.
+ *   - InventoryLedger history is purged with the other operational data.
+ *   - A fresh OPENING baseline is automatically created for every preserved batch
+ *     using the post-reset current quantity. This makes the reset timestamp the new
+ *     inventory reporting baseline; no separate inventory-ledger backfill is needed.
+ *
  * Optional pharmacy stock rollback:
  *   --restore-pharmacy-opening-stock
- * This restores MedicineBatch.quantity(_base_units) from opening_quantity_base_units.
- * It is intentionally OFF by default because the user asked to preserve pharmacy setup/stock.
+ * This first restores MedicineBatch.quantity(_base_units) from
+ * opening_quantity_base_units and then creates the fresh ledger baseline from the
+ * restored quantity.
  */
 
 const path = require('path');
@@ -270,8 +278,12 @@ function printHelp() {
 `If any collection remains unclassified, execution aborts by default. After\n` +
 `manual review only, override with:\n` +
 `  --allow-unclassified-collections\n\n` +
+`Pharmacy inventory ledger behavior:\n` +
+`  Every successful reset automatically creates a fresh InventoryLedger OPENING\n` +
+`  baseline from the post-reset MedicineBatch quantities. No separate ledger\n` +
+`  backfill is required after a routine reset.\n\n` +
 `Optional, only if you deliberately want pharmacy batch quantities returned to\n` +
-`their stored opening quantities:\n` +
+`their stored opening quantities before that new baseline is created:\n` +
 `  --restore-pharmacy-opening-stock\n\n` +
 `Optional safety check:\n` +
 `  --expected-db-name YOUR_DB_NAME\n`);
@@ -316,6 +328,181 @@ async function countCollection(db, name) {
   } catch (_error) {
     return 0;
   }
+}
+
+
+function finiteNonNegative(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, n);
+}
+
+async function getPharmacyInventoryBaselinePlan(options) {
+  const Medicine = requireModelFile('Medicine');
+  const MedicineBatch = requireModelFile('MedicineBatch');
+
+  if (!Medicine || !MedicineBatch) {
+    return {
+      totalBatches: 0,
+      baselinesToCreate: 0,
+      skippedNoMedicine: 0,
+      totalBaselineQuantity: 0,
+      rows: [],
+      unavailable: true
+    };
+  }
+
+  const batches = await MedicineBatch.find({})
+    .select('_id medicine_id batch_number quantity quantity_base_units opening_quantity_base_units')
+    .lean();
+
+  const medicineIds = [...new Set(batches.map((batch) => String(batch.medicine_id || '')).filter(Boolean))];
+  const medicines = medicineIds.length
+    ? await Medicine.find({ _id: { $in: medicineIds } }).select('_id hospitalId name').lean()
+    : [];
+  const medicineById = new Map(medicines.map((medicine) => [String(medicine._id), medicine]));
+
+  const rows = [];
+  let skippedNoMedicine = 0;
+  let totalBaselineQuantity = 0;
+
+  for (const batch of batches) {
+    const medicine = medicineById.get(String(batch.medicine_id));
+    if (!medicine) {
+      skippedNoMedicine += 1;
+      rows.push({
+        batchId: batch._id,
+        batchNumber: batch.batch_number,
+        medicineId: batch.medicine_id,
+        skipped: true,
+        reason: 'medicine not found'
+      });
+      continue;
+    }
+
+    const hasOpeningQuantity = Number.isFinite(Number(batch.opening_quantity_base_units));
+    const baselineQuantity = finiteNonNegative(
+      options.restorePharmacyOpeningStock && hasOpeningQuantity
+        ? batch.opening_quantity_base_units
+        : (batch.quantity_base_units ?? batch.quantity),
+      0
+    );
+
+    totalBaselineQuantity += baselineQuantity;
+    rows.push({
+      batchId: batch._id,
+      batchNumber: batch.batch_number,
+      medicineId: medicine._id,
+      hospitalId: medicine.hospitalId || null,
+      medicineName: medicine.name || '',
+      quantityBaseUnits: baselineQuantity,
+      skipped: false
+    });
+  }
+
+  return {
+    totalBatches: batches.length,
+    baselinesToCreate: rows.filter((row) => !row.skipped).length,
+    skippedNoMedicine,
+    totalBaselineQuantity,
+    rows,
+    unavailable: false
+  };
+}
+
+async function seedPharmacyInventoryOpeningBaselines(resetTimestamp) {
+  const InventoryLedger = requireModelFile('InventoryLedger');
+  if (!InventoryLedger) {
+    throw new Error('InventoryLedger model is unavailable; cannot rebuild pharmacy inventory baseline');
+  }
+
+  // Re-read after the optional restore step so the baseline always reflects the
+  // actual post-reset MedicineBatch quantity.
+  const plan = await getPharmacyInventoryBaselinePlan({ restorePharmacyOpeningStock: false });
+  if (plan.unavailable) {
+    throw new Error('Medicine/MedicineBatch model is unavailable; cannot rebuild pharmacy inventory baseline');
+  }
+  if (plan.skippedNoMedicine) {
+    throw new Error(`Cannot rebuild pharmacy inventory baseline: ${plan.skippedNoMedicine} batch(es) reference a missing medicine`);
+  }
+
+  const docs = plan.rows.map((row) => ({
+    hospitalId: row.hospitalId || undefined,
+    medicineId: row.medicineId,
+    batchId: row.batchId,
+    movementType: 'OPENING',
+    direction: 'IN',
+    quantityBaseUnits: row.quantityBaseUnits,
+    balanceAfterBaseUnits: row.quantityBaseUnits,
+    sourceModule: 'Manual',
+    sourceId: row.batchId,
+    notes: 'Operational reset inventory baseline',
+    movementAt: resetTimestamp
+  }));
+
+  if (docs.length) {
+    await InventoryLedger.insertMany(docs, { ordered: true });
+  }
+
+  return {
+    totalBatches: plan.totalBatches,
+    baselinesCreated: docs.length,
+    skippedNoMedicine: plan.skippedNoMedicine,
+    totalBaselineQuantity: plan.totalBaselineQuantity
+  };
+}
+
+async function verifyPharmacyInventoryBaselines() {
+  const MedicineBatch = requireModelFile('MedicineBatch');
+  const InventoryLedger = requireModelFile('InventoryLedger');
+  if (!MedicineBatch || !InventoryLedger) {
+    return { checkedBatches: 0, mismatches: [], unavailable: true };
+  }
+
+  const batches = await MedicineBatch.find({})
+    .select('_id batch_number quantity quantity_base_units medicine_id')
+    .lean();
+
+  const balances = await InventoryLedger.aggregate([
+    {
+      $group: {
+        _id: '$batchId',
+        balance: {
+          $sum: {
+            $cond: [
+              { $eq: ['$direction', 'IN'] },
+              '$quantityBaseUnits',
+              { $multiply: ['$quantityBaseUnits', -1] }
+            ]
+          }
+        },
+        entryCount: { $sum: 1 }
+      }
+    }
+  ]);
+
+  const balanceByBatch = new Map(balances.map((row) => [String(row._id), row]));
+  const mismatches = [];
+  const EPSILON = 1e-6;
+
+  for (const batch of batches) {
+    const expected = finiteNonNegative(batch.quantity_base_units ?? batch.quantity, 0);
+    const ledger = balanceByBatch.get(String(batch._id));
+    const actual = Number(ledger?.balance || 0);
+    if (Math.abs(expected - actual) > EPSILON) {
+      mismatches.push({
+        batchId: batch._id,
+        batchNumber: batch.batch_number,
+        medicineId: batch.medicine_id,
+        expectedBatchQuantity: expected,
+        ledgerBalance: actual,
+        ledgerEntryCount: ledger?.entryCount || 0,
+        delta: expected - actual
+      });
+    }
+  }
+
+  return { checkedBatches: batches.length, mismatches, unavailable: false };
 }
 
 async function resetPreservedEmbeddedOperationalState(db, collections, options) {
@@ -595,6 +782,18 @@ async function main() {
     console.log(`  - ${row.label}: ${suffix}`);
   }
 
+  const pharmacyBaselinePlan = await getPharmacyInventoryBaselinePlan(options);
+  console.log('\nPharmacy inventory baseline plan:');
+  if (pharmacyBaselinePlan.unavailable) {
+    console.log('  - unavailable: Medicine/MedicineBatch model could not be loaded');
+  } else {
+    console.log(`  - preserved batches: ${pharmacyBaselinePlan.totalBatches}`);
+    console.log(`  - OPENING baselines to create after reset: ${pharmacyBaselinePlan.baselinesToCreate}`);
+    console.log(`  - batches with missing medicine reference: ${pharmacyBaselinePlan.skippedNoMedicine}`);
+    console.log(`  - total baseline quantity (base units): ${pharmacyBaselinePlan.totalBaselineQuantity}`);
+    console.log(`  - quantity source: ${options.restorePharmacyOpeningStock ? 'opening_quantity_base_units (after restore)' : 'current preserved batch quantity'}`);
+  }
+
   if (!options.execute) {
     console.log('\nDRY RUN COMPLETE. No data was changed.');
     console.log(`To execute: node scripts/reset-hospital-operational-data.js --execute --confirm ${CONFIRM_TEXT}`);
@@ -603,6 +802,7 @@ async function main() {
   }
 
   console.log('\n=== EXECUTING RESET ===');
+  const resetTimestamp = new Date();
   const deletedSummary = [];
   for (const { name, count } of purgePlan) {
     if (!count) {
@@ -621,8 +821,31 @@ async function main() {
     else console.log(`  - ${row.label}: matched=${row.matched || 0}, modified=${row.modified || 0}`);
   }
 
+  const pharmacyBaselineSummary = await seedPharmacyInventoryOpeningBaselines(resetTimestamp);
+  console.log('\nPharmacy inventory baseline rebuild:');
+  console.log(`  - preserved batches: ${pharmacyBaselineSummary.totalBatches}`);
+  console.log(`  - OPENING baselines created: ${pharmacyBaselineSummary.baselinesCreated}`);
+  console.log(`  - total baseline quantity (base units): ${pharmacyBaselineSummary.totalBaselineQuantity}`);
+  console.log(`  - skipped missing medicine: ${pharmacyBaselineSummary.skippedNoMedicine}`);
+
+  const pharmacyBaselineVerification = await verifyPharmacyInventoryBaselines();
+  console.log('\nPharmacy inventory baseline verification:');
+  if (pharmacyBaselineVerification.unavailable) {
+    console.log('  - verification unavailable');
+  } else {
+    console.log(`  - batches checked: ${pharmacyBaselineVerification.checkedBatches}`);
+    console.log(`  - mismatches: ${pharmacyBaselineVerification.mismatches.length}`);
+  }
+
+  // InventoryLedger is intentionally rebuilt immediately after the purge, so it
+  // is the one operational collection that should no longer be empty here.
+  // Verify all other purge collections remain empty; InventoryLedger is checked
+  // separately against MedicineBatch balances below.
+  const inventoryLedgerModel = requireModelFile('InventoryLedger');
+  const inventoryLedgerCollection = inventoryLedgerModel?.collection?.name || 'inventoryledgers';
   const remaining = [];
   for (const name of presentPurgeCollections) {
+    if (name === inventoryLedgerCollection) continue;
     const count = await countCollection(db, name);
     if (count !== 0) remaining.push({ name, count });
   }
@@ -630,20 +853,33 @@ async function main() {
   console.log('\n=== RESET SUMMARY ===');
   console.log(`Purged collections: ${deletedSummary.length}`);
   console.log(`Deleted documents: ${deletedSummary.reduce((sum, row) => sum + row.deleted, 0)}`);
-  console.log(`Remaining docs in purge collections: ${remaining.reduce((sum, row) => sum + row.count, 0)}`);
+  console.log(`Remaining docs in purge collections (excluding rebuilt InventoryLedger): ${remaining.reduce((sum, row) => sum + row.count, 0)}`);
 
   if (remaining.length) {
     console.error('ERROR: Some purge collections are not empty:');
     for (const row of remaining) console.error(`  - ${row.name}: ${row.count}`);
     process.exitCode = 2;
   } else {
-    console.log('Operational/history collections are empty.');
+    console.log('Purged operational/history collections are empty; InventoryLedger contains only the new reset baseline.');
+  }
+
+  if (!pharmacyBaselineVerification.unavailable && pharmacyBaselineVerification.mismatches.length) {
+    console.error('ERROR: Pharmacy inventory ledger does not match preserved MedicineBatch quantities:');
+    for (const row of pharmacyBaselineVerification.mismatches.slice(0, 25)) {
+      console.error(`  - batch=${row.batchNumber || row.batchId} expected=${row.expectedBatchQuantity} ledger=${row.ledgerBalance} delta=${row.delta}`);
+    }
+    if (pharmacyBaselineVerification.mismatches.length > 25) {
+      console.error(`  ... and ${pharmacyBaselineVerification.mismatches.length - 25} more mismatch(es)`);
+    }
+    process.exitCode = 2;
+  } else if (!pharmacyBaselineVerification.unavailable) {
+    console.log('Pharmacy InventoryLedger baseline matches all preserved batch quantities.');
   }
 
   if (options.restorePharmacyOpeningStock) {
-    console.log('Pharmacy batch stock was restored from opening_quantity_base_units where available.');
+    console.log('Pharmacy batch stock was restored from opening_quantity_base_units and a fresh InventoryLedger baseline was created.');
   } else {
-    console.log('Pharmacy/current inventory quantities were PRESERVED. Use --restore-pharmacy-opening-stock only if that is intentionally desired.');
+    console.log('Pharmacy/current inventory quantities were PRESERVED and a fresh InventoryLedger baseline was created.');
   }
 
   if (unknownCollections.length) {

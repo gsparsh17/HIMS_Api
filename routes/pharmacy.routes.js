@@ -5,6 +5,7 @@ const router = express.Router();
 const operations = require('../controllers/pharmacyOperations.controller');
 const financial = require('../controllers/pharmacyFinancialV2.controller');
 const pharmacyLedgerSettlement = require('../controllers/pharmacyLedgerSettlement.controller');
+const reports = require('../controllers/pharmacyReports.controller');
 
 const { protect, requireModuleAccess, requirePharmacyFinancialAccess } = require('../middlewares/auth');
 
@@ -71,8 +72,16 @@ router.get('/inventory/ledger', pharmacyView, operations.getInventoryLedger);
 router.get('/dashboard', pharmacyFinanceView, operations.getDashboard);
 router.get('/analytics/inventory', pharmacyView, operations.getInventoryAnalytics);
 router.get('/analytics/purchases', pharmacyFinanceView, operations.getPurchaseAnalytics);
+router.get('/reports/doctor-options', pharmacyFinanceView, reports.getDoctorOptions);
 router.get('/reports/doctor-commission', pharmacyFinanceView, operations.getDoctorCommissionReport);
 router.get('/reports/doctor-bills', pharmacyFinanceView, operations.getDoctorBillReport);
+router.get('/reports/doctor-bills/export', pharmacyFinanceView, reports.exportDoctorBills);
+router.get('/reports/stock-item-wise', pharmacyView, reports.getStockItemWise);
+router.get('/reports/back-date-stock', pharmacyView, reports.getBackDateStock);
+router.get('/reports/expiry', pharmacyView, reports.getExpiryReport);
+router.get('/reports/sales-patient-wise', pharmacyFinanceView, reports.getSalesPatientWise);
+router.get('/reports/sales-tax-wise', pharmacyFinanceView, reports.getSalesTaxWise);
+router.get('/reports/profit-loss', pharmacyFinanceView, reports.getProfitLoss);
 router.get('/dose-calculation', pharmacyView, operations.getDoseCalculation);
 
 // ========== IPD PHARMACY ==========

@@ -593,7 +593,7 @@ async function deductStockAndCreateLedger({ items, saleId, createdBy, hospitalId
   }
 }
 
-async function restockAndCreateLedger({ items, returnId, createdBy }) {
+async function restockAndCreateLedger({ items, returnId, createdBy, hospitalId, pharmacyId }) {
   for (const item of items) {
     if (!item.restock || !item.batchId) continue;
     const batch = await MedicineBatch.findById(item.batchId);
@@ -604,6 +604,8 @@ async function restockAndCreateLedger({ items, returnId, createdBy }) {
     batch.quantity = nextQty;
     await batch.save();
     await InventoryLedger.create({
+      hospitalId,
+      pharmacyId,
       medicineId: item.medicineId,
       batchId: item.batchId,
       movementType: 'RETURN_IN',
@@ -2668,7 +2670,9 @@ async function legacyCreateReturn(payload, req = {}) {
   await restockAndCreateLedger({
     items: pharmacyReturn.items,
     returnId: pharmacyReturn._id,
-    createdBy
+    createdBy,
+    hospitalId,
+    pharmacyId
   });
 
   if (admissionId && patientId) {

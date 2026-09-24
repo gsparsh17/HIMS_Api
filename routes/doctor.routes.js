@@ -3,7 +3,7 @@ const router = express.Router();
 const doctorController = require('../controllers/doctor.controller');
 const { protect, authorize, requireModuleAccess } = require('../middlewares/auth');
 
-router.use(protect, requireModuleAccess('registration_opd'));
+router.use(protect);
 router.get('/options', doctorController.getDoctorOptions);
 router.get('/', doctorController.getAllDoctors);
 router.get('/department/:departmentId', doctorController.getDoctorsByDepartmentId);

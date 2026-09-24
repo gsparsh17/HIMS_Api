@@ -14,6 +14,7 @@ const IPDAdmission = require('../models/IPDAdmission');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const PharmacyReturn = require('../models/PharmacyReturn');
+const InventoryLedger = require('../models/InventoryLedger');
 const { createUnifiedSale } = require('../services/pharmacyTransaction.service');
 const { userHospitalId } = require('../utils/hospitalScope');
 
@@ -642,6 +643,20 @@ exports.receivePurchaseOrder = async (req, res) => {
       await batch.save();
       createdBatches.push(batch);
 
+      await InventoryLedger.create({
+        hospitalId,
+        medicineId: medicine._id,
+        batchId: batch._id,
+        movementType: 'PURCHASE_IN',
+        direction: 'IN',
+        quantityBaseUnits,
+        balanceAfterBaseUnits: quantityBaseUnits,
+        sourceModule: 'PurchaseOrder',
+        sourceId: order._id,
+        notes: `MRN receipt for PO ${order.order_number || order._id} / batch ${batchNumber}`,
+        createdBy: req.user?._id || req.user?.id,
+      });
+
       orderItem.received = alreadyReceivedPacks + receivedPacks;
       if (freePacks > 0) {
         orderItem.free_packs = toNumber(orderItem.free_packs, 0) + freePacks;
@@ -1013,6 +1028,20 @@ exports.voidSale = async (req, res) => {
           { $inc: { stock_quantity: Number(item.quantity_base_units || 0) } },
           { session }
         );
+        await InventoryLedger.create([{
+          hospitalId: sale.hospitalId,
+          pharmacyId: sale.pharmacy_id,
+          medicineId: item.medicine_id,
+          batchId: item.batch_id,
+          movementType: 'RETURN_IN',
+          direction: 'IN',
+          quantityBaseUnits: Number(item.quantity_base_units || 0),
+          balanceAfterBaseUnits: batch.quantity_base_units,
+          sourceModule: 'PharmacySale',
+          sourceId: sale._id,
+          notes: `Void reversal for sale ${sale.sale_number}`,
+          createdBy: req.user?._id || req.user?.id,
+        }], { session });
       }
 
       sale.status = 'Cancelled';
