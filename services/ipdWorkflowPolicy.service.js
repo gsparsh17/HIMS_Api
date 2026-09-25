@@ -35,10 +35,19 @@ const DEFAULT_IPD_WORKFLOW_POLICY = Object.freeze({
   }
 });
 
+// A configured order that omits PHARMACY_CLEARANCE is the admin-selected
+// "no pharmacy" workflow for hospitals without an in-house pharmacy.
+function isNoPharmacyOrder(value) {
+  const rows = Array.isArray(value) ? value.filter((stage) => CLEARANCE_STAGES.includes(stage)) : [];
+  return rows.length > 0 && !rows.includes('PHARMACY_CLEARANCE');
+}
+
 function normalizedClearanceOrder(value) {
   const rows = Array.isArray(value) ? value.filter((stage) => CLEARANCE_STAGES.includes(stage)) : [];
   const unique = [...new Set(rows)];
+  const noPharmacy = isNoPharmacyOrder(value);
   for (const stage of CLEARANCE_STAGES) {
+    if (noPharmacy && stage === 'PHARMACY_CLEARANCE') continue;
     if (!unique.includes(stage)) unique.push(stage);
   }
   // Final discharge is always the terminal state even when the UI order is edited.
@@ -63,7 +72,7 @@ function normalizePolicy(raw = {}) {
     requireMedicationCompletion: raw.requireMedicationCompletion !== false,
     requireSummaryFinalized: raw.requireSummaryFinalized !== false,
     requireStaffCompletedSummary: raw.requireStaffCompletedSummary !== false,
-    requirePharmacyClearance: raw.requirePharmacyClearance !== false,
+    requirePharmacyClearance: raw.requirePharmacyClearance !== false && !isNoPharmacyOrder(raw.clearanceOrder),
     autoExemptPharmacyWhenNoTransactions: raw.autoExemptPharmacyWhenNoTransactions !== false,
     requireFinalIPDInvoice: raw.requireFinalIPDInvoice !== false,
     requireAdvanceReconciliation: raw.requireAdvanceReconciliation !== false,
@@ -87,7 +96,40 @@ async function loadIPDWorkflowPolicy(hospitalId) {
 
 function stageBefore(policy, first, second) {
   const order = normalizedClearanceOrder(policy?.clearanceOrder);
+  // A stage absent from the order (e.g. Pharmacy in the no-pharmacy workflow)
+  // is never "before" or "after" anything.
+  if (!order.includes(first) || !order.includes(second)) return false;
   return order.indexOf(first) < order.indexOf(second);
+}
+
+// Returns the first IPD stage that the admin-configured order places before
+// Pharmacy Final Clearance but which is not complete yet, or null. The reverse
+// direction (Pharmacy before invoice/finance) is enforced in ipdFinancial.
+function pharmacyClearanceOrderBlocker(policy, { finalInvoiceIssued, financialClearanceStatus } = {}) {
+  if (!policy?.requirePharmacyClearance) return null;
+  if (
+    policy.requireFinalIPDInvoice &&
+    stageBefore(policy, 'IPD_FINAL_INVOICE', 'PHARMACY_CLEARANCE') &&
+    !finalInvoiceIssued
+  ) {
+    return {
+      stage: 'IPD_FINAL_INVOICE',
+      code: 'FINAL_IPD_INVOICE_REQUIRED_BEFORE_PHARMACY_CLEARANCE',
+      message: 'Hospital clearance order requires the Final IPD invoice before Pharmacy Final Clearance'
+    };
+  }
+  if (
+    policy.requireFinancialClearance &&
+    stageBefore(policy, 'IPD_FINANCIAL_CLEARANCE', 'PHARMACY_CLEARANCE') &&
+    !['cleared', 'exception_approved'].includes(String(financialClearanceStatus || ''))
+  ) {
+    return {
+      stage: 'IPD_FINANCIAL_CLEARANCE',
+      code: 'IPD_FINANCIAL_CLEARANCE_REQUIRED_BEFORE_PHARMACY_CLEARANCE',
+      message: 'Hospital clearance order requires IPD Finance Clearance before Pharmacy Final Clearance'
+    };
+  }
+  return null;
 }
 
 module.exports = {
@@ -95,5 +137,7 @@ module.exports = {
   DEFAULT_IPD_WORKFLOW_POLICY,
   normalizePolicy,
   loadIPDWorkflowPolicy,
-  stageBefore
+  stageBefore,
+  isNoPharmacyOrder,
+  pharmacyClearanceOrderBlocker
 };

@@ -20,6 +20,7 @@ const PharmacyLedgerEntry = require('../models/PharmacyLedgerEntry');
 const PharmacyLedgerSettlement = require('../models/PharmacyLedgerSettlement');
 const PatientAdvanceLedger = require('../models/PatientAdvanceLedger');
 const IPDAdmission = require('../models/IPDAdmission');
+const Invoice = require('../models/Invoice');
 const IPDCharge = require('../models/IPDCharge');
 const MedicineBatch = require('../models/MedicineBatch');
 const InventoryLedger = require('../models/InventoryLedger');
@@ -33,6 +34,7 @@ const {
 const { MONEY_EPSILON, money, nonNegativeMoney, currentSaleNet, calculateReturnAllocation, calculateFinalClearanceAmounts } = require('./pharmacyReturnClearance.math');
 const { userHospitalId, isPlatformAdmin } = require('../utils/hospitalScope');
 const { assertAdmissionOpenForMutation } = require('./ipdLifecycleGuard.service');
+const { loadIPDWorkflowPolicy, pharmacyClearanceOrderBlocker } = require('./ipdWorkflowPolicy.service');
 
 const REFUND_METHODS = new Set(['Cash', 'UPI', 'Card', 'Bank', 'Net Banking', 'IPDAdvance', 'PharmacyAdvance']);
 const CASH_REFUND_METHODS = new Set(['Cash', 'UPI', 'Card', 'Bank', 'Net Banking']);
@@ -893,6 +895,26 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
 
   const pharmacyPolicy = await loadPharmacyPolicy({ hospitalId: admission.hospitalId, pharmacyId: allSales[0]?.pharmacy_id, session });
 
+  // Admin-configured discharge clearance order (System Settings) can place the
+  // Final IPD invoice and/or IPD Finance Clearance ahead of Pharmacy.
+  const [workflowPolicy, finalIpdInvoice] = await Promise.all([
+    loadIPDWorkflowPolicy(admission.hospitalId),
+    queryWithSession(
+      Invoice.findOne({
+        admission_id: admission._id,
+        is_deleted: { $ne: true },
+        status: { $nin: ['Cancelled', 'Refunded'] },
+        document_stage: { $ne: 'VOID' },
+        $or: [{ invoice_type: 'IPD Final' }, { is_final_ipd_invoice: true }]
+      }).select('_id invoice_number'),
+      session
+    )
+  ]);
+  const clearanceOrderBlocker = pharmacyClearanceOrderBlocker(workflowPolicy, {
+    finalInvoiceIssued: Boolean(finalIpdInvoice),
+    financialClearanceStatus: admission.financialClearanceStatus
+  });
+
   const outstanding = operationalOnly
     ? 0
     : money(sales.reduce((sum, sale) => sum + Number(sale.balance_due || 0), 0));
@@ -977,6 +999,8 @@ async function getClearanceSnapshot({ admissionId, req, session }) {
       unusedPharmacyAdvanceAfterApplication: projectedUnusedPharmacyAdvance,
     },
     pharmacyPolicy,
+    clearanceOrder: workflowPolicy.clearanceOrder,
+    clearanceOrderBlocker,
     sourceVersion,
     generatedAt: new Date(),
   };
@@ -1133,6 +1157,12 @@ async function completeFinalClearance({ admissionId, payload, req }) {
         }
         const error = new Error('Pharmacy clearance is already complete.');
         error.status = 409;
+        throw error;
+      }
+      if (snapshot.clearanceOrderBlocker) {
+        const error = new Error(snapshot.clearanceOrderBlocker.message);
+        error.status = 409;
+        error.code = snapshot.clearanceOrderBlocker.code;
         throw error;
       }
       if (snapshot.pendingReturns.length > 0) {

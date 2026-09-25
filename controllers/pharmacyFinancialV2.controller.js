@@ -714,11 +714,15 @@ exports.clearancePreview = async (req, res) => {
         suggestedSettlement: snapshot.suggestedSettlement,
         sourceVersion: snapshot.sourceVersion,
         generatedAt: snapshot.generatedAt,
+        clearanceOrder: snapshot.clearanceOrder,
+        clearanceOrderBlocker: snapshot.clearanceOrderBlocker,
         canStartClearance:
+          !snapshot.clearanceOrderBlocker &&
           snapshot.pendingReturns.length === 0 &&
           snapshot.unsyncedSaleIds.length === 0 &&
           snapshot.admission.pharmacyClearanceStatus !== 'cleared',
         canFinalizeWithoutCollection:
+          !snapshot.clearanceOrderBlocker &&
           snapshot.outstanding === 0 &&
           snapshot.pendingReturns.length === 0 &&
           snapshot.unsyncedSaleIds.length === 0 &&
