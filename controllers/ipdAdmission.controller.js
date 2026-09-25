@@ -522,8 +522,15 @@ exports.createAdmission = async (req, res) => {
         is_active: { $ne: false },
         effectiveFrom: { $lte: operationNow() }
       }).sort({ effectiveFrom: -1, updatedAt: -1 }).session(session).lean();
-      configuredRegistrationFee = Math.max(0, Number(hospitalChargeConfig?.ipdCharges?.registrationFee || 0));
-      configuredAdmissionFee = Math.max(0, Number(hospitalChargeConfig?.ipdCharges?.admissionFee || 0));
+      // Amounts come from master data; whether each fee applies is the desk's
+      // explicit choice. Missing flags keep the legacy "charge both" behaviour.
+      const feeExcluded = (flag) => flag === false || String(flag).toLowerCase() === 'false';
+      configuredRegistrationFee = feeExcluded(payload.includeRegistrationFee)
+        ? 0
+        : Math.max(0, Number(hospitalChargeConfig?.ipdCharges?.registrationFee || 0));
+      configuredAdmissionFee = feeExcluded(payload.includeAdmissionFee)
+        ? 0
+        : Math.max(0, Number(hospitalChargeConfig?.ipdCharges?.admissionFee || 0));
       const requestedSelectedMode = payload.selectedMode || payload.selectedBillingMode || payload.billingMode;
       const requestedFixedAdmissionDiscount = payload.discountType === 'percentage'
         ? 0
