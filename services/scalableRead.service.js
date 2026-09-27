@@ -870,27 +870,33 @@ async function adminOverview({ hospitalId }) {
   const hospital = await Hospital.findById(hospitalObjectId).select('timezone').lean();
   const timeZone = hospital?.timezone || DEFAULT_HOSPITAL_TIME_ZONE;
   const todayKey = hospitalDateKey(new Date(), timeZone);
+  const { start: todayStart, end: todayEnd } = hospitalDayBounds(todayKey, timeZone);
   const nursingDepartments = await Department.find({ hospitalId: hospitalObjectId, name: /^nursing$/i, is_active: { $ne: false } }).select('_id').lean();
   const nursingDepartmentIds = nursingDepartments.map((row) => row._id);
+  const todayAppointmentScope = { hospital_id: hospitalObjectId, appointment_date_key: todayKey, is_active: { $ne: false } };
 
-  const [patientCount, staffCount, nursingStaffCount, doctorCount, todayAppointments, completedToday, pendingAppointments, recentPatients, recentAppointments] = await Promise.all([
+  const [
+    patientCount, newPatientsToday, staffCount, nursingStaffCount, doctorCount,
+    todayAppointments, completedToday, pendingAppointments, recentPatients, recentAppointments
+  ] = await Promise.all([
     Patient.countDocuments({ hospitalId: hospitalObjectId, is_active: { $ne: false } }),
+    Patient.countDocuments({ hospitalId: hospitalObjectId, is_active: { $ne: false }, registered_at: { $gte: todayStart, $lt: todayEnd } }),
     Staff.countDocuments({ hospitalId: hospitalObjectId, is_active: { $ne: false } }),
     nursingDepartmentIds.length ? Staff.countDocuments({ hospitalId: hospitalObjectId, department: { $in: nursingDepartmentIds }, is_active: { $ne: false } }) : 0,
     Doctor.countDocuments({ hospitalId: hospitalObjectId, is_active: { $ne: false } }),
-    Appointment.countDocuments({ hospital_id: hospitalObjectId, appointment_date_key: todayKey, is_active: { $ne: false } }),
-    Appointment.countDocuments({ hospital_id: hospitalObjectId, appointment_date_key: todayKey, status: 'Completed', is_active: { $ne: false } }),
+    Appointment.countDocuments(todayAppointmentScope),
+    Appointment.countDocuments({ ...todayAppointmentScope, status: 'Completed' }),
     Appointment.countDocuments({ hospital_id: hospitalObjectId, status: 'Scheduled', is_active: { $ne: false } }),
-    Patient.find({ hospitalId: hospitalObjectId, is_active: { $ne: false } }).select('_id first_name registered_at createdAt').sort({ registered_at: -1 }).limit(3).lean(),
+    Patient.find({ hospitalId: hospitalObjectId, is_active: { $ne: false } }).select('_id first_name last_name registered_at createdAt').sort({ registered_at: -1 }).limit(3).lean(),
     Appointment.find({ hospital_id: hospitalObjectId, is_active: { $ne: false } })
       .select('_id patient_id doctor_id appointment_date start_time type status updatedAt')
-      .populate('patient_id', 'first_name patient_image patientImage')
-      .populate('doctor_id', 'firstName')
+      .populate('patient_id', 'first_name last_name patientId patient_image patientImage')
+      .populate('doctor_id', 'firstName lastName')
       .sort({ appointment_date: -1, start_time: -1 }).limit(5).lean()
   ]);
 
   return {
-    counts: { patientCount, staffCount, nursingStaffCount, doctorCount, activeDoctorCount: 0, todayAppointments, completedToday, pendingAppointments },
+    counts: { patientCount, newPatientsToday, staffCount, nursingStaffCount, doctorCount, activeDoctorCount: 0, todayAppointments, completedToday, pendingAppointments },
     recentPatients,
     recentAppointments
   };
