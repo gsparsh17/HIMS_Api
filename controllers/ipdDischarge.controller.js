@@ -32,10 +32,9 @@ const { reopenChargeFreeze } = require('../services/ipdLifecycleGuard.service');
 const { resolveClinicalActor } = require('../services/clinicalActor.service');
 const { formatMedication } = require('../utils/medicationDisplay');
 const { formatDoctorName } = require('../utils/documentFormatters');
+const { isFinalLabRequest, isFinalRadiologyRequest } = require('../services/diagnosticFinality.service');
 
 const CANONICAL_DISCHARGE_TYPES = Object.freeze(['Normal', 'DOR', 'LAMA', 'Referred', 'Death']);
-const FINAL_LAB_STATUSES = new Set(['Verified', 'Completed', 'Reported', 'Released', 'Amended']);
-const FINAL_RADIOLOGY_STATUSES = new Set(['Verified', 'Completed', 'Reported', 'Amended']);
 
 function canonicalDischargeType(value = 'Normal') {
   const raw = String(value || 'Normal').trim();
@@ -70,12 +69,6 @@ function normalizeDeathDetails(dischargeType, payload = {}, existing = {}) {
   return { chiefComplaints, causeOfDeath, summary, deathDate: new Date(`${dateKey}T00:00:00.000Z`), deathTime: String(deathTime), deathAt };
 }
 
-function isFinalLabRequest(row) {
-  return Boolean(row?.reportFinalisation?.isFinal) || FINAL_LAB_STATUSES.has(String(row?.status || ''));
-}
-function isFinalRadiologyRequest(row) {
-  return Boolean(row?.reportFinalisation?.isFinal) || FINAL_RADIOLOGY_STATUSES.has(String(row?.status || ''));
-}
 function classifyInvestigation(row, kind) {
   const status = String(row?.status || 'Pending');
   const cancelled = ['Cancelled', 'Rejected'].includes(status);
