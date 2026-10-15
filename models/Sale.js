@@ -199,6 +199,18 @@ const saleSchema = new mongoose.Schema({
   },
   prescription_required: { type: Boolean, default: false },
   prescription_details: { type: String },
+  // Prescription from a doctor outside this hospital, verified by the pharmacist at the counter.
+  // Accepted in place of prescription_id for Rx medicines (Schedule H/H1 prescription register).
+  external_prescription: {
+    doctor_name: { type: String, trim: true },
+    doctor_registration_no: { type: String, trim: true },
+    prescription_date: { type: Date },
+    image_url: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    verified_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    verified_by_name: { type: String, trim: true },
+    verified_at: { type: Date },
+  },
   notes: { type: String },
   created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 

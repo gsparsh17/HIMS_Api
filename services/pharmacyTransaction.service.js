@@ -1478,6 +1478,41 @@ async function prepareSaleFinancialQuote(payload, req = {}, resolved = {}) {
   return { hospitalId, patientId, admissionId, prescriptionId, appointmentId, context, items, totals, pharmacyPricing, financialPolicy: policy };
 }
 
+/**
+ * Prescription from an outside doctor, verified by the pharmacist (walk-in Rx sales).
+ * Returns null when not supplied; throws 422 when supplied but incomplete.
+ */
+function normalizeExternalPrescription(payload = {}, req = {}) {
+  const raw = payload.external_prescription || payload.externalPrescription;
+  if (!raw || typeof raw !== 'object') return null;
+  const fail = (message) => {
+    const error = new Error(message);
+    error.statusCode = 422;
+    error.code = 'EXTERNAL_PRESCRIPTION_INVALID';
+    throw error;
+  };
+  const doctorName = String(raw.doctor_name || raw.doctorName || '').trim();
+  const date = new Date(raw.prescription_date || raw.prescriptionDate || '');
+  if (doctorName.length < 2) fail('Outside prescription: enter the prescribing doctor’s name.');
+  if (Number.isNaN(date.getTime())) fail('Outside prescription: enter the prescription date.');
+  if (date.getTime() > Date.now() + 24 * 60 * 60 * 1000) fail('Outside prescription: the prescription date cannot be in the future.');
+  if (raw.confirmed !== true) fail('Outside prescription: the pharmacist must confirm the original prescription was seen and verified.');
+  return {
+    doctor_name: doctorName,
+    doctor_registration_no: String(raw.doctor_registration_no || raw.doctorRegistrationNo || '').trim() || undefined,
+    prescription_date: date,
+    image_url: String(raw.image_url || raw.imageUrl || '').trim() || undefined,
+    notes: String(raw.notes || '').trim() || undefined,
+    verified_by: getCreatedBy(req),
+    verified_by_name: String(req.user?.name || req.user?.full_name || req.user?.email || '').trim() || undefined,
+    verified_at: new Date(),
+  };
+}
+
+const externalPrescriptionSummary = (rx) => (rx
+  ? `Outside prescription: Dr. ${rx.doctor_name}${rx.doctor_registration_no ? ` (Reg. ${rx.doctor_registration_no})` : ''}, dated ${rx.prescription_date.toISOString().slice(0, 10)}; verified by ${rx.verified_by_name || 'pharmacist'}`
+  : undefined);
+
 async function createUnifiedSaleCore(payload, req = {}, session = null) {
 
   const createdBy = getCreatedBy(req);
@@ -1653,10 +1688,13 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
     item._medicine?.is_high_alert === true ||
     item._medicine?.medicationSafety?.highRisk === true
   );
-  const hasLinkedClinicalOrder = Boolean(prescriptionId) ||
+  const externalPrescription = prescriptionControlledItems.length && !prescriptionId
+    ? normalizeExternalPrescription(payload, req)
+    : null;
+  const hasLinkedClinicalOrder = Boolean(prescriptionId) || Boolean(externalPrescription) ||
     (prescriptionControlledItems.length > 0 && prescriptionControlledItems.every((item) => item.ipd_medication_chart_id));
   if (prescriptionControlledItems.length && !hasLinkedClinicalOrder) {
-    const error = new Error(`A valid doctor prescription/IPD medication order is required before dispensing: ${prescriptionControlledItems.map((item) => item.medicine_name).join(', ')}`);
+    const error = new Error(`A valid doctor prescription/IPD medication order (or a verified outside prescription) is required before dispensing: ${prescriptionControlledItems.map((item) => item.medicine_name).join(', ')}`);
     error.statusCode = 422;
     error.code = 'PRESCRIPTION_REQUIRED_FOR_DISPENSING';
     error.details = { medicineIds: prescriptionControlledItems.map((item) => item.medicine_id), medicines: prescriptionControlledItems.map((item) => item.medicine_name) };
@@ -1829,6 +1867,8 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
       appointment_id: appointmentId,
       prescription_id: prescriptionId,
       prescription_required: saleRequiresPrescription,
+      external_prescription: externalPrescription || undefined,
+      prescription_details: externalPrescriptionSummary(externalPrescription),
       doctor_id: context.doctorId,
       doctor_name: context.doctorName,
       uhid: context.uhid,
@@ -2243,6 +2283,8 @@ async function createUnifiedSaleCore(payload, req = {}, session = null) {
     appointment_id: appointmentId,
     prescription_id: prescriptionId,
     prescription_required: saleRequiresPrescription,
+    external_prescription: externalPrescription || undefined,
+    prescription_details: externalPrescriptionSummary(externalPrescription),
     doctor_id: context.doctorId,
     doctor_name: context.doctorName,
     uhid: context.uhid,
