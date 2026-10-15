@@ -120,6 +120,12 @@ exports.getTransactionPrintData = async (req, res) => {
 exports.getCanonicalKpis = async (req, res) => {
   try {
     const data = await financialProjection.getKpis(req.query, req.user);
+    if (req.query.view === 'summary') {
+      // Dashboards need totals and breakdowns only; the per-invoice / per-line / per-transaction
+      // rows of a 30-day window can be megabytes and dominate response time.
+      const { invoiceRows, serviceRows, transactionRows, ...summary } = data;
+      return res.json({ success: true, ...summary });
+    }
     res.json({ success: true, ...data });
   } catch (error) { sendError(res, error); }
 };
