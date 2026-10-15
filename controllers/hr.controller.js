@@ -2864,6 +2864,39 @@ exports.downloadMyPayslip = async (req, res) => {
   } catch (error) { selfError(res, error); }
 };
 
+// Self-service: the logged-in employee edits their own contact details. HR-owned fields (code,
+// department, designation, shift, salary, status) are never accepted here.
+exports.updateMyProfile = async (req, res) => {
+  try {
+    const employee = await resolveSelfEmployee(req);
+    const text = (value) => (value === undefined || value === null ? undefined : String(value).trim());
+    const firstName = text(req.body.first_name);
+    const lastName = text(req.body.last_name);
+    const phone = text(req.body.phone);
+
+    if (firstName !== undefined && !firstName) {
+      return res.status(400).json({ success: false, error: 'First name is required' });
+    }
+    if (phone && !/^[6-9]\d{9}$/.test(phone.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, ''))) {
+      return res.status(400).json({ success: false, error: 'Enter a valid 10-digit mobile number' });
+    }
+
+    if (firstName !== undefined) employee.first_name = firstName;
+    if (lastName !== undefined) employee.last_name = lastName;
+    if (firstName !== undefined || lastName !== undefined) {
+      employee.full_name = [employee.first_name, employee.last_name].filter(Boolean).join(' ').trim() || employee.full_name;
+    }
+    if (phone !== undefined) employee.phone = phone.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    ['address', 'qualification', 'specialization'].forEach((field) => {
+      const value = text(req.body[field]);
+      if (value !== undefined) employee[field] = value;
+    });
+
+    await employee.save();
+    res.json({ success: true, data: employee });
+  } catch (error) { selfError(res, error); }
+};
+
 exports.updateMyAvailability = async (req, res) => {
   try {
     const employee = await resolveSelfEmployee(req);

@@ -27,6 +27,7 @@ router.get('/me/leave-balances', ...staffSelfAccess, hrController.getMyLeaveBala
 router.get('/me/payrolls', ...staffSelfAccess, hrController.getMyPayrolls);
 router.get('/me/payrolls/:id/payslip', ...staffSelfAccess, hrController.downloadMyPayslip);
 router.patch('/me/availability', ...staffSelfAccess, hrController.updateMyAvailability);
+router.patch('/me/profile', ...staffSelfAccess, hrController.updateMyProfile);
 
 router.get('/dashboard', hrView, hrController.getDashboard);
 router.post('/sync-profiles', hrManage, hrController.syncHRProfiles);
